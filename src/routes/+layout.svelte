@@ -8,6 +8,7 @@
   <div class="links">
     <a href="/" class:active={$page.url.pathname === "/"}>Главная</a>
     <a href="/profiles" class:active={$page.url.pathname.startsWith("/profiles")}>Профили</a>
+    <a href="/analyze" class:active={$page.url.pathname === "/analyze"}>Анализ</a>
     <a href="/settings" class:active={$page.url.pathname === "/settings"}>Настройки</a>
   </div>
 </nav>

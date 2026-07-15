@@ -53,7 +53,7 @@ pub fn run() {
                     settings::JsonSettingsService::new(data_dir),
                 ),
                 launch_engine: Arc::new(launch_engine::ProcessLaunchEngine),
-                analyzer: Arc::new(analyzer::SimpleAnalyzer),
+                analyzer: Arc::new(analyzer::FsProjectAnalyzer),
             };
 
             // Регистрируем состояние — оно будет доступно
