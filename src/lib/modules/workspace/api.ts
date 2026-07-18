@@ -5,7 +5,11 @@ import type {
   ProcessLogs,
   ProjectContext,
   SessionInfo,
+  FileEntry,
+  FileContent,
 } from "./types";
+
+// ===== Process commands =====
 
 export async function spawnProcess(
   command: string,
@@ -37,7 +41,7 @@ export async function getProcessLogs(id: string): Promise<ProcessLogs> {
   return invoke("get_process_logs", { id });
 }
 
-// --- Project context ---
+// ===== Project context =====
 
 export async function setCurrentProject(
   profileName: string,
@@ -61,6 +65,30 @@ export async function clearCurrentProject(): Promise<void> {
   return invoke("clear_current_project");
 }
 
+export async function openProjectFromPath(path: string): Promise<ProjectContext> {
+  return invoke("open_project_from_path", { path });
+}
+
+// ===== Session =====
+
 export async function getSessionInfo(): Promise<SessionInfo | null> {
   return invoke("get_session_info");
+}
+
+// ===== File explorer =====
+
+export async function listDirectory(path: string): Promise<FileEntry[]> {
+  return invoke("list_directory", { path });
+}
+
+export async function readFile(path: string): Promise<FileContent> {
+  return invoke("read_file", { path });
+}
+
+export async function writeFile(path: string, content: string): Promise<void> {
+  return invoke("write_file", { path, content });
+}
+
+export async function openInVSCode(path: string): Promise<void> {
+  return invoke("open_in_vscode", { path });
 }

@@ -1,8 +1,45 @@
-/// Runtime — manages active process monitoring & session state.
-/// Gets process data from ProcessManager and exposes it to Workspace.
-pub struct RuntimeService;
+use crate::modules::workspace::models::{ProcessStatus, TrackedProcess};
 
-impl RuntimeService {
+/// Service for runtime process monitoring.
+/// Aggregates process data from ProcessManager and can add
+/// session-scoped filtering, restart logic, etc.
+pub trait RuntimeService: Send + Sync {
+    fn filter_session_processes(&self, processes: &[TrackedProcess], session_id: Option<&str>) -> Vec<TrackedProcess>;
+    fn count_by_status(&self, processes: &[TrackedProcess]) -> RuntimeCounts;
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeCounts {
+    pub running: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub killed: usize,
+}
+
+pub struct DefaultRuntimeService;
+
+impl RuntimeService for DefaultRuntimeService {
+    fn filter_session_processes(&self, processes: &[TrackedProcess], _session_id: Option<&str>) -> Vec<TrackedProcess> {
+        // TODO: filter by session_id once TrackedProcess has session_id field
+        processes.to_vec()
+    }
+
+    fn count_by_status(&self, processes: &[TrackedProcess]) -> RuntimeCounts {
+        let mut counts = RuntimeCounts { running: 0, succeeded: 0, failed: 0, killed: 0 };
+        for p in processes {
+            match p.status {
+                ProcessStatus::Running => counts.running += 1,
+                ProcessStatus::Exited(0) => counts.succeeded += 1,
+                ProcessStatus::Exited(_) => counts.failed += 1,
+                ProcessStatus::Crashed => counts.failed += 1,
+                ProcessStatus::Killed => counts.killed += 1,
+            }
+        }
+        counts
+    }
+}
+
+impl DefaultRuntimeService {
     pub fn new() -> Self {
         Self
     }

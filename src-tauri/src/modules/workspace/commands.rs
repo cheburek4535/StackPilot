@@ -1,6 +1,12 @@
 use tauri::State;
 use crate::modules::workspace::models::*;
 use crate::modules::workspace::WorkspaceState;
+use crate::modules::workspace::file_explorer;
+use crate::modules::workspace::project::ProjectService;
+use crate::modules::workspace::session::SessionService;
+use crate::modules::workspace::file_explorer::FileExplorerService;
+
+// ===== Process commands =====
 
 #[tauri::command]
 pub fn spawn_process(
@@ -11,12 +17,16 @@ pub fn spawn_process(
     label: String,
 ) -> Result<TrackedProcess, String> {
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    state.process_manager.spawn_and_track(
+    let session_id = state.session.get_session().map(|s| s.started_at.clone());
+    let proc = state.process_manager.spawn_and_track(
         &command,
         &args_refs,
         working_dir.as_deref(),
         &label,
-    )
+        session_id,
+    )?;
+    state.session.link_process(&proc.id);
+    Ok(proc)
 }
 
 #[tauri::command]
@@ -45,7 +55,7 @@ pub fn get_process_logs(
     state.process_manager.get_logs(&id)
 }
 
-// --- Project context commands ---
+// ===== Project context commands =====
 
 #[tauri::command]
 pub fn set_current_project(
@@ -62,43 +72,72 @@ pub fn set_current_project(
         stack,
         opened_at: crate::modules::workspace::project::timestamp_now(),
     };
-    state.project.set(ctx.clone());
+    state.project.set_current(ctx.clone());
+    state.session.start_session(&ctx);
     ctx
 }
 
 #[tauri::command]
-pub fn get_current_project(
-    state: State<'_, WorkspaceState>,
-) -> Option<ProjectContext> {
-    state.project.get()
+pub fn get_current_project(state: State<'_, WorkspaceState>) -> Option<ProjectContext> {
+    state.project.get_current()
 }
 
 #[tauri::command]
 pub fn clear_current_project(state: State<'_, WorkspaceState>) {
-    state.project.clear();
+    state.project.clear_current();
+    state.session.end_session();
 }
 
-// --- Session info (derived) ---
+#[tauri::command]
+pub fn open_project_from_path(
+    state: State<'_, WorkspaceState>,
+    path: String,
+) -> ProjectContext {
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let ctx = state.project.open_project(&path, &name, "", &[]);
+    state.session.start_session(&ctx);
+    ctx
+}
+
+// ===== Session commands =====
 
 #[tauri::command]
-pub fn get_session_info(
-    state: State<'_, WorkspaceState>,
-) -> Option<SessionInfo> {
-    let project = state.project.get()?;
-    let started = project.opened_at.parse::<u64>().unwrap_or(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let processes = state.process_manager.list();
-    let error_count = processes.iter().filter(|p| {
-        matches!(p.status, ProcessStatus::Crashed | ProcessStatus::Killed)
-    }).count();
+pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo> {
+    state.session.get_session()
+}
 
-    Some(SessionInfo {
-        started_at: project.opened_at.clone(),
-        duration_secs: now.saturating_sub(started),
-        process_count: processes.len(),
-        error_count,
-    })
+// ===== File explorer commands =====
+
+#[tauri::command]
+pub fn list_directory(
+    state: State<'_, WorkspaceState>,
+    path: String,
+) -> Result<Vec<file_explorer::FileEntry>, String> {
+    state.file_explorer.list_directory(&path)
+}
+
+#[tauri::command]
+pub fn read_file(
+    state: State<'_, WorkspaceState>,
+    path: String,
+) -> Result<file_explorer::FileContent, String> {
+    state.file_explorer.read_file(&path)
+}
+
+#[tauri::command]
+pub fn write_file(
+    state: State<'_, WorkspaceState>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    state.file_explorer.write_file(&path, &content)
+}
+
+#[tauri::command]
+pub fn open_in_vscode(state: State<'_, WorkspaceState>, path: String) -> Result<(), String> {
+    state.file_explorer.open_in_vscode(&path)
 }

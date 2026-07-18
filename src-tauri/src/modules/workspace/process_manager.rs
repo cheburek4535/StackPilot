@@ -24,6 +24,7 @@ pub trait ProcessManager: Send + Sync {
         args: &[&str],
         working_dir: Option<&str>,
         label: &str,
+        session_id: Option<String>
     ) -> Result<TrackedProcess, String>;
 
     fn list(&self) -> Vec<TrackedProcess>;
@@ -85,6 +86,7 @@ impl ProcessManager for OsProcessManager {
         args: &[&str],
         working_dir: Option<&str>,
         label: &str,
+        session_id: Option<String>
     ) -> Result<TrackedProcess, String> {
         let mut cmd = Command::new(command);
         cmd.args(args)
@@ -109,6 +111,7 @@ impl ProcessManager for OsProcessManager {
             duration_secs: 0,
             restarts: 0,
             last_error: None,
+            session_id: session_id
         };
 
         let stdout_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

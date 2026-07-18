@@ -4,6 +4,9 @@ mod modules;
 use std::sync::Arc;
 use tauri::Manager;
 
+#[cfg(feature = "plugins")]
+use modules::plugins::mini_ide;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -20,6 +23,13 @@ pub fn run() {
 
             std::fs::create_dir_all(data_dir.join("profiles"))
                 .expect("Failed to create profiles dir");
+
+            // === Plugins ===
+            #[cfg(feature = "plugins")]
+            {
+                let ide_state = mini_ide::commands::IdeState::new();
+                app.manage(ide_state);
+            }
 
             // === Core services ===
             let settings_service: Arc<dyn core::settings::SettingsService> = Arc::new(
@@ -67,10 +77,26 @@ pub fn run() {
             modules::workspace::commands::get_current_project,
             modules::workspace::commands::clear_current_project,
             modules::workspace::commands::get_session_info,
+            modules::workspace::commands::open_project_from_path,
+            modules::workspace::commands::list_directory,
+            modules::workspace::commands::read_file,
+            modules::workspace::commands::write_file,
+            modules::workspace::commands::open_in_vscode,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,
             core::settings::reset_settings,
+            // Plugin commands
+            #[cfg(feature = "plugins")]
+            mini_ide::commands::get_completions,
+            #[cfg(feature = "plugins")]
+            mini_ide::commands::get_diagnostics,
+            #[cfg(feature = "plugins")]
+            mini_ide::commands::get_hover,
+            #[cfg(feature = "plugins")]
+            mini_ide::commands::go_to_definition,
+            #[cfg(feature = "plugins")]
+            mini_ide::commands::format_code,
         ])
         .run(tauri::generate_context!())
         .expect("Error starting Tauri application");

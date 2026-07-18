@@ -8,32 +8,35 @@ pub mod session;
 pub mod logs;
 pub mod problems;
 pub mod info;
+pub mod file_explorer;
 
 use std::sync::Arc;
 use crate::modules::workspace::process_manager::ProcessManager;
 
 pub struct WorkspaceState {
     pub process_manager: Arc<dyn ProcessManager>,
-    pub project: project::ProjectState,
-    pub overview: overview::OverviewService,
-    pub runtime: runtime::RuntimeService,
-    pub session: session::SessionService,
-    pub logs: logs::LogsService,
-    pub problems: problems::ProblemsService,
-    pub info: info::InfoService,
+    pub project: project::DefaultProjectService,
+    pub overview: overview::DefaultOverviewService,
+    pub runtime: runtime::DefaultRuntimeService,
+    pub session: session::DefaultSessionService,
+    pub logs: logs::DefaultLogsService,
+    pub problems: problems::DefaultProblemsService,
+    pub info: info::DefaultInfoService,
+    pub file_explorer: file_explorer::DefaultFileExplorerService,
 }
 
 impl WorkspaceState {
     pub fn new(process_manager: Arc<dyn ProcessManager>) -> Self {
         Self {
             process_manager,
-            project: project::ProjectState::new(),
-            overview: overview::OverviewService::new(),
-            runtime: runtime::RuntimeService::new(),
-            session: session::SessionService::new(),
-            logs: logs::LogsService::new(),
-            problems: problems::ProblemsService::new(),
-            info: info::InfoService::new(),
+            project: project::DefaultProjectService::new(),
+            overview: overview::DefaultOverviewService::new(),
+            runtime: runtime::DefaultRuntimeService::new(),
+            session: session::DefaultSessionService::new(),
+            logs: logs::DefaultLogsService::new(),
+            problems: problems::DefaultProblemsService::new(),
+            info: info::DefaultInfoService::new(),
+            file_explorer: file_explorer::DefaultFileExplorerService::new(),
         }
     }
 }

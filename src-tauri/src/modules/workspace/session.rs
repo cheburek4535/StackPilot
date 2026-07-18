@@ -1,9 +1,79 @@
-/// Session — tracks a development session from start to finish.
-/// Receives session start/end events from DevLauncher.
-pub struct SessionService;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use crate::modules::workspace::models::{SessionInfo, ProjectContext};
 
-impl SessionService {
+pub trait SessionService: Send + Sync {
+    fn start_session(&self, ctx: &ProjectContext);
+    fn end_session(&self);
+    fn get_session(&self) -> Option<SessionInfo>;
+    fn link_process(&self, process_id: &str);
+    fn get_linked_processes(&self) -> Vec<String>;
+}
+
+struct ActiveSession {
+    context: ProjectContext,
+    started_at: u64,
+    process_ids: Vec<String>,
+    error_count: usize,
+}
+
+pub struct DefaultSessionService {
+    current: Arc<Mutex<Option<ActiveSession>>>,
+}
+
+impl DefaultSessionService {
     pub fn new() -> Self {
-        Self
+        Self { current: Arc::new(Mutex::new(None)) }
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+}
+
+impl SessionService for DefaultSessionService {
+    fn start_session(&self, ctx: &ProjectContext) {
+        let session = ActiveSession {
+            context: ctx.clone(),
+            started_at: Self::now_secs(),
+            process_ids: Vec::new(),
+            error_count: 0,
+        };
+        *self.current.lock().expect("session lock poisoned") = Some(session);
+    }
+
+    fn end_session(&self) {
+        *self.current.lock().expect("session lock poisoned") = None;
+    }
+
+    fn get_session(&self) -> Option<SessionInfo> {
+        let guard = self.current.lock().expect("session lock poisoned");
+        guard.as_ref().map(|s| {
+            let now = Self::now_secs();
+            SessionInfo {
+                started_at: s.started_at.to_string(),
+                duration_secs: now.saturating_sub(s.started_at),
+                process_count: s.process_ids.len(),
+                error_count: s.error_count,
+            }
+        })
+    }
+
+    fn link_process(&self, process_id: &str) {
+        if let Some(ref mut session) = *self.current.lock().expect("session lock poisoned") {
+            session.process_ids.push(process_id.to_string());
+        }
+    }
+
+    fn get_linked_processes(&self) -> Vec<String> {
+        self.current
+            .lock()
+            .expect("session lock poisoned")
+            .as_ref()
+            .map(|s| s.process_ids.clone())
+            .unwrap_or_default()
     }
 }

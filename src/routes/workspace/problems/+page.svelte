@@ -41,6 +41,7 @@
       <a href="/workspace/logs">Logs</a>
       <a href="/workspace/problems" class="active">Problems</a>
       <a href="/workspace/info">Info</a>
+      <a href="/workspace/files">Files</a>
     </nav>
   </aside>
 

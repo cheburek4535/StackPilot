@@ -11,7 +11,7 @@ use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
 
 pub trait LaunchEngine: Send + Sync {
-    fn execute_action(&self, action: &LaunchAction) -> Result<ActionStatus, String>;
+    fn execute_action(&self, action: &LaunchAction, session_id: Option<String>) -> Result<ActionStatus, String>;
 }
 
 pub struct ProcessLaunchEngine {
@@ -24,7 +24,7 @@ impl ProcessLaunchEngine {
     }
 }
 impl LaunchEngine for ProcessLaunchEngine {
-    fn execute_action(&self, action: &LaunchAction) -> Result<ActionStatus, String> {
+    fn execute_action(&self, action: &LaunchAction, session_id: Option<String>) -> Result<ActionStatus, String> {
         if !action.enabled {
             return Ok(ActionStatus::Skipped {
                 reason: format!("Action '{}' disabled", action.label),
@@ -35,7 +35,7 @@ impl LaunchEngine for ProcessLaunchEngine {
             ActionType::RunCommand { command, working_dir } => {
                 let dir_ref = working_dir.as_deref();
 
-                match self.process_manager.spawn_and_track("cmd", &["/C", command], dir_ref, &action.label){
+                match self.process_manager.spawn_and_track("cmd", &["/C", command], dir_ref, &action.label, session_id){
                     Ok(tracked_proc) => Ok(ActionStatus::Success {
                         message: format!("Процесс запущен под контролем менеджера. ID: {}", tracked_proc.id),
                     }),
@@ -139,7 +139,7 @@ impl LaunchEngine for ProcessLaunchEngine {
                 };
 
                 // 1. Запускаем скрипт под контролем менеджера, чтобы он появился в UI
-                let tracked_proc = self.process_manager.spawn_and_track(shell_name, &[flag, script], None, &action.label).map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
+                let tracked_proc = self.process_manager.spawn_and_track(shell_name, &[flag, script], None, &action.label, session_id).map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
                 
                 let proc_id = tracked_proc.id;
 

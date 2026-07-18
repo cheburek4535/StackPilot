@@ -77,8 +77,9 @@ pub fn delete_profile(state: State<'_, DevLauncherState>, name: String) -> Resul
 pub fn execute_action(
     state: State<'_, DevLauncherState>,
     action: LaunchAction,
+    session_id: Option<String>
 ) -> Result<ActionStatus, String> {
-    state.launch_engine.execute_action(&action)
+    state.launch_engine.execute_action(&action, session_id)
 }
 
 #[tauri::command]

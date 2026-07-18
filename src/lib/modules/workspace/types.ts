@@ -13,6 +13,7 @@ export type TrackedProcess = {
   duration_secs: number;
   restarts: number;
   last_error: string | null;
+  session_id: string | null;
 };
 
 export type ProcessLogs = {
@@ -45,4 +46,16 @@ export type SessionInfo = {
   duration_secs: number;
   process_count: number;
   error_count: number;
+};
+
+export type FileEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+};
+
+export type FileContent = {
+  content: string;
+  language: string;
 };
