@@ -13,21 +13,21 @@
   });
 
   function goToProfile(name: string) {
-    goto(`/devlauncher/profiles/${encodeURIComponent(name)}`);
+    goto(`/profiles/${encodeURIComponent(name)}`);
   }
 </script>
 
 <main>
-  <h1>📋 Все профили</h1>
-  <p class="subtitle">Сохранённые конфигурации запуска проектов</p>
+  <h1>📋 All Profiles</h1>
+  <p class="subtitle">Saved launch configurations</p>
 
   {#if loading}
-    <p class="empty">Загрузка...</p>
+    <p class="empty">Loading...</p>
   {:else if profiles.length === 0}
     <div class="empty-state">
-      <p class="empty">Нет сохранённых профилей.</p>
-      <p class="hint">Профили появятся здесь после того, как вы проанализируете проект или создадите профиль вручную.</p>
-      <button class="primary" onclick={() => goto("/devlauncher")}>На главную</button>
+      <p class="empty">No saved profiles.</p>
+      <p class="hint">Profiles appear here after you analyze a project or create one manually.</p>
+      <button class="primary" onclick={() => goto("/")}>Go home</button>
     </div>
   {:else}
     <div class="profile-cards">
@@ -38,7 +38,7 @@
             <span class="desc">{profile.description}</span>
           </div>
           <div class="card-meta">
-            <span class="count">{profile.actions.length} действий</span>
+            <span class="count">{profile.actions.length} actions</span>
             <span class="arrow">→</span>
           </div>
         </button>

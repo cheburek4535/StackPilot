@@ -27,14 +27,16 @@ pub fn run() {
             );
 
             // === Workspace module ===
-            let workspace_state = modules::workspace::WorkspaceState::new(
-                Arc::new(modules::workspace::process_manager::OsProcessManager::new()),
-            );
+            let os_pm = modules::workspace::process_manager::OsProcessManager::new();
+            os_pm.set_app_handle(app.handle().clone());
+            let process_manager: Arc<dyn modules::workspace::process_manager::ProcessManager> =
+                Arc::new(os_pm);
+            let workspace_state = modules::workspace::WorkspaceState::new(process_manager.clone());
 
             // === DevLauncher module ===
             let devlauncher_state = modules::devlauncher::DevLauncherState::new(
                 data_dir.join("profiles"),
-                Arc::new(modules::devlauncher::launch_engine::ProcessLaunchEngine),
+                Arc::new(modules::devlauncher::launch_engine::ProcessLaunchEngine::new(process_manager)),
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
             );
 
@@ -60,6 +62,11 @@ pub fn run() {
             modules::workspace::commands::list_processes,
             modules::workspace::commands::kill_process,
             modules::workspace::commands::refresh_process,
+            modules::workspace::commands::get_process_logs,
+            modules::workspace::commands::set_current_project,
+            modules::workspace::commands::get_current_project,
+            modules::workspace::commands::clear_current_project,
+            modules::workspace::commands::get_session_info,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

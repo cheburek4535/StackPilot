@@ -1,16 +1,28 @@
 use std::time::Duration;
-use std::process::{Command, Stdio};
 use std::thread;
+use std::process::Command as StdCommand;
+use std::process::Stdio;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::io::{Write, BufReader, BufRead};
+use std::sync::Arc;
+
 use crate::modules::devlauncher::models::*;
+use crate::modules::workspace::models::ProcessStatus;
+use crate::modules::workspace::process_manager::ProcessManager;
 
 pub trait LaunchEngine: Send + Sync {
     fn execute_action(&self, action: &LaunchAction) -> Result<ActionStatus, String>;
 }
 
-pub struct ProcessLaunchEngine;
+pub struct ProcessLaunchEngine {
+    process_manager: Arc<dyn ProcessManager>
+}
 
+impl ProcessLaunchEngine {
+    pub fn new(process_manager: Arc<dyn ProcessManager>) -> Self {
+        Self {process_manager}
+    }
+}
 impl LaunchEngine for ProcessLaunchEngine {
     fn execute_action(&self, action: &LaunchAction) -> Result<ActionStatus, String> {
         if !action.enabled {
@@ -21,18 +33,13 @@ impl LaunchEngine for ProcessLaunchEngine {
 
         match &action.action_type {
             ActionType::RunCommand { command, working_dir } => {
-                let mut cmd = Command::new("cmd");
-                cmd.arg("/C").arg(command)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                if let Some(dir) = working_dir {
-                    cmd.current_dir(dir);
-                }
-                match cmd.spawn() {
-                    Ok(_) => Ok(ActionStatus::Success {
-                        message: format!("Command started: {}", command),
+                let dir_ref = working_dir.as_deref();
+
+                match self.process_manager.spawn_and_track("cmd", &["/C", command], dir_ref, &action.label){
+                    Ok(tracked_proc) => Ok(ActionStatus::Success {
+                        message: format!("Процесс запущен под контролем менеджера. ID: {}", tracked_proc.id),
                     }),
-                    Err(e) => Err(format!("Failed to start process: {}", e)),
+                    Err(e) => Err(format!("Менеджер не смог запустить команду: {}", e)),
                 }
             }
 
@@ -46,7 +53,7 @@ impl LaunchEngine for ProcessLaunchEngine {
             }
 
             ActionType::OpenApplication { path, args } => {
-                let mut cmd = Command::new(path);
+                let mut cmd = StdCommand::new(path);
                 cmd.stdout(Stdio::null()).stderr(Stdio::null());
                 if let Some(args_str) = args {
                     cmd.args(args_str.split_whitespace());
@@ -55,7 +62,7 @@ impl LaunchEngine for ProcessLaunchEngine {
                     Ok(_) => Ok(ActionStatus::Success {
                         message: format!("App launched: {}", path),
                     }),
-                    Err(e) => Err(format!("Failed to launch app: {}", e)),
+                    Err(e) => Err(format!("Failed to launch '{}': {}", path, e)),
                 }
             }
 
@@ -130,24 +137,53 @@ impl LaunchEngine for ProcessLaunchEngine {
                     "powershell" | "pwsh" => "-Command",
                     _ => "-c",
                 };
-                let exit = Command::new(shell_name)
-                    .args([flag, script])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|e| format!("Failed to run shell '{}': {}", shell_name, e))?;
 
-                if exit.success() {
-                    Ok(ActionStatus::Success {
-                        message: format!("Script executed: {}", script),
-                    })
-                } else {
-                    let code = exit.code().unwrap_or(-1);
-                    Ok(ActionStatus::Failed {
-                        error: format!("Script exited with code {}", code),
-                    })
+                // 1. Запускаем скрипт под контролем менеджера, чтобы он появился в UI
+                let tracked_proc = self.process_manager.spawn_and_track(shell_name, &[flag, script], None, &action.label).map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
+                
+                let proc_id = tracked_proc.id;
+
+                // 2. Запускаем цикл неблокирующего ожидания (Polling)
+                loop {
+                    // Засыпаем на 500 миллисекунд, чтобы не перегружать процессор частыми запросами
+                    thread::sleep(Duration::from_millis(500));
+
+                    // 3. Опрашиваем менеджер о состоянии нашего скрипта
+                    match self.process_manager.refresh_status(&proc_id) {
+                        Ok(ProcessStatus::Running) => {
+                            // Скрипт еще работает. Ничего не делаем, цикл идет на следующий круг
+                            continue;
+                        }
+                        Ok(ProcessStatus::Exited(0)) => {
+                            // Скрипт успешно завершился! Выходим из цикла с успехом
+                            return Ok(ActionStatus::Success {
+                                message: format!("Скрипт успешно выполнен: {}", script),
+                            });
+                        }
+                        Ok(ProcessStatus::Exited(code)) => {
+                            // Скрипт завершился, но с ошибкой
+                            return Ok(ActionStatus::Failed {
+                                error: format!("Скрипт завершился с кодом ошибки {}", code),
+                            });
+                        }
+                        Ok(ProcessStatus::Crashed) => {
+                            return Ok(ActionStatus::Failed {
+                                error: "Скрипт аварийно завершил работу (Crashed)".to_string(),
+                            });
+                        }
+                        Ok(ProcessStatus::Killed) => {
+                            return Ok(ActionStatus::Failed {
+                                error: "Выполнение скрипта было принудительно остановлено".to_string(),
+                            });
+                        }
+                        Err(e) => {
+                            // Произошла какая-то системная ошибка при проверке
+                            return Err(format!("Ошибка мониторинга скрипта: {}", e));
+                        }
+                    }
                 }
             }
+
         }
     }
 }

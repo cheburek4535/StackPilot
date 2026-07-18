@@ -7,10 +7,10 @@
   <a href="/" class="brand">StackPilot</a>
   <div class="links">
     <a href="/" class:active={$page.url.pathname === "/"}>Home</a>
-    <a href="/devlauncher" class:active={$page.url.pathname.startsWith("/devlauncher")}>DevLauncher</a>
-    <a href="/devlauncher/profiles" class:active={$page.url.pathname.startsWith("/devlauncher/profiles")}>Profiles</a>
-    <a href="/devlauncher/analyze" class:active={$page.url.pathname === "/devlauncher/analyze"}>Analyze</a>
-    <a href="/workspace" class:active={$page.url.pathname.startsWith("/workspace")}>Processes</a>
+    <a href="/analyze" class:active={$page.url.pathname === "/analyze"}>Analyze</a>
+    <a href="/profiles" class:active={$page.url.pathname.startsWith("/profiles")}>Profiles</a>
+    <a href="/processes" class:active={$page.url.pathname.startsWith("/processes")}>Processes</a>
+    <a href="/workspace" class:active={$page.url.pathname.startsWith("/workspace")}>Workspace</a>
     <a href="/settings" class:active={$page.url.pathname === "/settings"}>Settings</a>
   </div>
 </nav>

@@ -379,7 +379,7 @@
     {#if savedOk}
       <div class="msg success">
         ✅ Профиль сохранён!
-        <button class="link" onclick={() => goto("/devlauncher/profiles")}>Перейти к профилям →</button>
+        <button class="link" onclick={() => goto("/profiles")}>Go to profiles →</button>
       </div>
     {/if}
   </div>
