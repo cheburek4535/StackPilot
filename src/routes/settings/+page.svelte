@@ -11,8 +11,8 @@
   // ================================================================
 
   import { onMount } from "svelte";
-  import { getSettings, updateSettings, resetSettings } from "$lib/api";
-  import type { AppSettings } from "$lib/types";
+  import { getSettings, updateSettings, resetSettings } from "$lib/core/api";
+  import type { AppSettings } from "$lib/core/types";
 
   // ---- Состояние формы ----
 

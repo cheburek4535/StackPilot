@@ -1,84 +1,70 @@
-// ============================================================
-// Точка сборки приложения DevLauncher.
-//
-// Здесь происходит "сборка" (wiring):
-//   1. Объявляем модули (каждый в своём файле)
-//   2. В setup() создаём экземпляры модулей
-//   3. Регистрируем состояние (State) и команды
-//   4. Запускаем Tauri
-//
-// Это единственное место, где все модули соединяются.
-// Каждый модуль ничего не знает о других модулях.
-// ============================================================
-
-mod models;
-mod profile_manager;
-mod launch_engine;
-mod analyzer;
-mod commands;
-mod settings;
+mod core;
+mod modules;
 
 use std::sync::Arc;
 use tauri::Manager;
-use commands::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // --- Плагины ---
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-
-        // --- Настройка приложения ---
         .setup(|app| {
-            // Получаем стандартную папку для данных приложения
             let data_dir = app
                 .path()
                 .app_data_dir()
-                .expect("Не удалось получить папку данных приложения");
+                .expect("Failed to get app data dir");
 
-            // Папка для JSON-файлов профилей
-            let profiles_dir = data_dir.join("profiles");
+            std::fs::create_dir_all(&data_dir)
+                .expect("Failed to create data dir");
 
-            // Создаём папку, если её нет
-            std::fs::create_dir_all(&profiles_dir)
-                .expect("Не удалось создать папку профилей");
+            std::fs::create_dir_all(data_dir.join("profiles"))
+                .expect("Failed to create profiles dir");
 
-            // Создаём состояние приложения с реальными реализациями
-            let app_state = AppState {
-                profile_manager: Arc::new(
-                    profile_manager::JsonProfileManager::new(profiles_dir),
-                ),
-                settings: Arc::new(
-                    settings::JsonSettingsService::new(data_dir),
-                ),
-                launch_engine: Arc::new(launch_engine::ProcessLaunchEngine),
-                analyzer: Arc::new(analyzer::FsProjectAnalyzer),
-            };
+            // === Core services ===
+            let settings_service: Arc<dyn core::settings::SettingsService> = Arc::new(
+                core::settings::JsonSettingsService::new(data_dir.clone()),
+            );
 
-            // Регистрируем состояние — оно будет доступно
-            // во всех командах через State<'_, AppState>
-            app.manage(app_state);
+            // === Workspace module ===
+            let workspace_state = modules::workspace::WorkspaceState::new(
+                Arc::new(modules::workspace::process_manager::OsProcessManager::new()),
+            );
+
+            // === DevLauncher module ===
+            let devlauncher_state = modules::devlauncher::DevLauncherState::new(
+                data_dir.join("profiles"),
+                Arc::new(modules::devlauncher::launch_engine::ProcessLaunchEngine),
+                Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
+            );
+
+            // Register all states
+            app.manage(devlauncher_state);
+            app.manage(workspace_state);
+            app.manage(core::settings::SettingsState(settings_service));
 
             Ok(())
         })
-
-        // --- Команды ---
         .invoke_handler(tauri::generate_handler![
-            commands::ping_rust,
-            commands::get_demo_profile,
-            commands::list_profiles,
-            commands::get_profile,
-            commands::save_profile,
-            commands::delete_profile,
-            commands::execute_action,
-            commands::get_settings,
-            commands::update_settings,
-            commands::reset_settings,
-            commands::analyze_project,
+            // DevLauncher commands
+            modules::devlauncher::commands::ping_rust,
+            modules::devlauncher::commands::get_demo_profile,
+            modules::devlauncher::commands::list_profiles,
+            modules::devlauncher::commands::get_profile,
+            modules::devlauncher::commands::save_profile,
+            modules::devlauncher::commands::delete_profile,
+            modules::devlauncher::commands::execute_action,
+            modules::devlauncher::commands::analyze_project,
+            // Workspace commands
+            modules::workspace::commands::spawn_process,
+            modules::workspace::commands::list_processes,
+            modules::workspace::commands::kill_process,
+            modules::workspace::commands::refresh_process,
+            // Core commands
+            core::settings::get_settings,
+            core::settings::update_settings,
+            core::settings::reset_settings,
         ])
-
-        // --- Запуск ---
         .run(tauri::generate_context!())
-        .expect("Ошибка при запуске Tauri приложения");
+        .expect("Error starting Tauri application");
 }

@@ -4,12 +4,14 @@
 </script>
 
 <nav class="topbar">
-  <a href="/" class="brand">DevLauncher</a>
+  <a href="/" class="brand">StackPilot</a>
   <div class="links">
-    <a href="/" class:active={$page.url.pathname === "/"}>Главная</a>
-    <a href="/profiles" class:active={$page.url.pathname.startsWith("/profiles")}>Профили</a>
-    <a href="/analyze" class:active={$page.url.pathname === "/analyze"}>Анализ</a>
-    <a href="/settings" class:active={$page.url.pathname === "/settings"}>Настройки</a>
+    <a href="/" class:active={$page.url.pathname === "/"}>Home</a>
+    <a href="/devlauncher" class:active={$page.url.pathname.startsWith("/devlauncher")}>DevLauncher</a>
+    <a href="/devlauncher/profiles" class:active={$page.url.pathname.startsWith("/devlauncher/profiles")}>Profiles</a>
+    <a href="/devlauncher/analyze" class:active={$page.url.pathname === "/devlauncher/analyze"}>Analyze</a>
+    <a href="/workspace" class:active={$page.url.pathname.startsWith("/workspace")}>Processes</a>
+    <a href="/settings" class:active={$page.url.pathname === "/settings"}>Settings</a>
   </div>
 </nav>
 

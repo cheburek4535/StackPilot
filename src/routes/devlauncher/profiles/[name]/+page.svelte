@@ -1,13 +1,9 @@
 <script lang="ts">
-  // Страница детального просмотра профиля.
-  // URL: /profiles/{name}
-  // name берётся из $page.params (SvelteKit dynamic route)
-
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { getProfile, getDemoProfile, executeAction } from "$lib/api";
-  import type { LaunchProfile, ActionType, ActionStatus } from "$lib/types";
+  import { getProfile, getDemoProfile, executeAction } from "$lib/modules/devlauncher/api";
+  import type { LaunchProfile, ActionType, ActionStatus } from "$lib/modules/devlauncher/types";
 
   let profile = $state<LaunchProfile | null>(null);
   let loading = $state(true);
@@ -15,29 +11,32 @@
   let actionResults = $state<Map<string, string>>(new Map());
   let runningAll = $state(false);
 
-  // Имя профиля из URL-параметра
   let profileName = $derived($page.params.name);
 
   onMount(async () => {
     await loadProfile();
   });
 
-  // Загружаем профиль по имени.
-  // Если совпадает с именем демо-профиля — берём getDemoProfile().
   async function loadProfile() {
     loading = true;
     errorMsg = "";
+    const name = profileName;
+
+    if (!name) {
+      errorMsg = "Profile name not specified";
+      loading = false;
+      return;
+    }
 
     try {
-      // Пробуем загрузить демо-профиль, если имя совпадает
       const demo = await getDemoProfile();
-      if (demo.name === profileName) {
+      if (demo.name === name) {
         profile = demo;
       } else {
-        profile = await getProfile(profileName);
+        profile = await getProfile(name);
       }
     } catch (e) {
-      errorMsg = `Не удалось загрузить профиль "${profileName}": ${e}`;
+      errorMsg = `Не удалось загрузить профиль "${name}": ${e}`;
     }
 
     loading = false;
@@ -106,7 +105,7 @@
   }
 
   function goBack() {
-    goto("/profiles");
+    goto("/devlauncher/profiles");
   }
 </script>
 

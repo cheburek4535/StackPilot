@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { listProfiles, getDemoProfile } from "$lib/api";
-  import type { LaunchProfile } from "$lib/types";
+  import { listProfiles } from "$lib/modules/devlauncher/api";
+  import type { LaunchProfile } from "$lib/modules/devlauncher/types";
 
   let profiles = $state<LaunchProfile[]>([]);
   let loading = $state(true);
@@ -13,7 +13,7 @@
   });
 
   function goToProfile(name: string) {
-    goto(`/profiles/${encodeURIComponent(name)}`);
+    goto(`/devlauncher/profiles/${encodeURIComponent(name)}`);
   }
 </script>
 
@@ -27,7 +27,7 @@
     <div class="empty-state">
       <p class="empty">Нет сохранённых профилей.</p>
       <p class="hint">Профили появятся здесь после того, как вы проанализируете проект или создадите профиль вручную.</p>
-      <button class="primary" onclick={() => goto("/")}>На главную</button>
+      <button class="primary" onclick={() => goto("/devlauncher")}>На главную</button>
     </div>
   {:else}
     <div class="profile-cards">

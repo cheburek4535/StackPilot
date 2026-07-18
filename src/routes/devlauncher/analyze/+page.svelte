@@ -1,10 +1,9 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { analyzeProject, saveProfile, getSettings } from "$lib/api";
+  import { analyzeProject, saveProfile } from "$lib/modules/devlauncher/api";
+  import { getSettings } from "$lib/core/api";
   import { goto } from "$app/navigation";
-  import type { LaunchProfile, LaunchAction, ActionType } from "$lib/types";
-
-  // ==================== Состояние ====================
+  import type { LaunchProfile, LaunchAction, ActionType } from "$lib/modules/devlauncher/types";
 
   let projectPath = $state("");
   let profile = $state<LaunchProfile | null>(null);
@@ -13,17 +12,12 @@
   let error = $state("");
   let savedOk = $state(false);
 
-  // Для drag & drop
   let dragIndex = $state<number | null>(null);
   let dragOverIndex = $state<number | null>(null);
 
-  // Какие карточки развёрнуты для редактирования
   let expanded = $state(new Set<string>());
 
-  // Меню добавления действий
   let showAddMenu = $state(false);
-
-  // ==================== Выбор папки ====================
 
   async function pickFolder() {
     const selected = await open({
@@ -38,8 +32,6 @@
       savedOk = false;
     }
   }
-
-  // ==================== Анализ ====================
 
   async function handleAnalyze() {
     if (!projectPath) return;
@@ -56,8 +48,6 @@
     loading = false;
   }
 
-  // ==================== Сохранение ====================
-
   async function handleSave() {
     if (!profile) return;
     saving = true;
@@ -71,8 +61,6 @@
     }
     saving = false;
   }
-
-  // ==================== Drag & Drop ====================
 
   function onDragStart(e: DragEvent, index: number) {
     dragIndex = index;
@@ -106,8 +94,6 @@
     dragOverIndex = null;
   }
 
-  // ==================== Управление действиями ====================
-
   function toggleExpand(id: string) {
     const next = new Set(expanded);
     if (next.has(id)) next.delete(id);
@@ -137,13 +123,11 @@
     profile = { ...profile, actions };
   }
 
-  // ==================== Редактирование параметров действия ====================
-
   function updateActionField(index: number, path: string[], value: unknown) {
     if (!profile) return;
-    const actions = profile.actions.map((a, i) => {
+    const actions: LaunchAction[] = profile.actions.map((a, i) => {
       if (i !== index) return a;
-      return setNestedField(a, path, value);
+      return setNestedField(a, path, value) as LaunchAction;
     });
     profile = { ...profile, actions };
   }
@@ -154,11 +138,9 @@
     if (typeof obj === "object" && obj !== null && !Array.isArray(obj)) {
       const record = obj as Record<string, unknown>;
       if (first === "action_type" && rest.length > 0) {
-        // Special handling for discriminated union action_type
         const currentType = record.action_type as Record<string, unknown>;
         const variantKey = Object.keys(currentType)[0];
         if (rest.length === 1 && rest[0] === variantKey) {
-          // Replacing the variant field entirely
           const nested = setNestedField(currentType[variantKey], [], value);
           return { ...record, action_type: { [variantKey]: nested } };
         }
@@ -167,7 +149,7 @@
           return { ...record, action_type: { [variantKey]: nested } };
         }
         if (rest[0] !== variantKey) {
-          return record; // ignore mismatched path
+          return record;
         }
       }
       return { ...record, [first]: setNestedField(record[first], rest, value) };
@@ -261,8 +243,6 @@
     expanded = next;
   }
 
-  // ==================== Вспомогательные функции ====================
-
   function actionIcon(act: ActionType): string {
     if ("RunCommand" in act) return "▶";
     if ("OpenUrl" in act) return "🌐";
@@ -305,7 +285,6 @@
     return (act as Record<string, unknown>)[key] as Record<string, unknown>;
   }
 
-  // Типы действий для выпадающего меню
   const actionTypes = [
     { key: "RunCommand", icon: "▶", label: "Команда", desc: "Запустить команду в терминале" },
     { key: "OpenUrl", icon: "🌐", label: "URL", desc: "Открыть веб-страницу" },
@@ -316,7 +295,6 @@
     { key: "ExecuteScript", icon: "📜", label: "Скрипт", desc: "Выполнить скрипт" },
   ];
 
-  // ==================== Поля редактора для каждого типа действия ====================
   function getEditorFields(act: ActionType): Array<{ label: string; path: string[]; type: string; value: unknown; placeholder: string }> {
     const key = Object.keys(act)[0];
     const val = (act as Record<string, unknown>)[key] as Record<string, unknown>;
@@ -380,7 +358,6 @@
   <h1>📊 Анализ проекта</h1>
   <p class="subtitle">Выберите папку с проектом — DevLauncher проанализирует структуру и предложит готовый профиль запуска</p>
 
-  <!-- Панель выбора папки -->
   <div class="picker-card">
     <div class="picker-row">
       <button class="primary" onclick={pickFolder}>📁 Выбрать папку</button>
@@ -402,12 +379,11 @@
     {#if savedOk}
       <div class="msg success">
         ✅ Профиль сохранён!
-        <button class="link" onclick={() => goto("/profiles")}>Перейти к профилям →</button>
+        <button class="link" onclick={() => goto("/devlauncher/profiles")}>Перейти к профилям →</button>
       </div>
     {/if}
   </div>
 
-  <!-- Результат анализа + редактор -->
   {#if profile}
     <section class="editor">
       <div class="editor-header">
@@ -420,7 +396,6 @@
         </button>
       </div>
 
-      <!-- Список действий (интерактивный) -->
       <div class="action-list" role="list">
         {#each profile.actions as action, i (action.id)}
           <div
@@ -435,7 +410,6 @@
             ondrop={(e) => { e.preventDefault(); onDrop(i); }}
             ondragend={onDragEnd}
           >
-            <!-- Верхняя строка (всегда видна) -->
             <div class="card-header">
               <span class="drag-handle" title="Перетащить чтобы изменить порядок">⠿</span>
               <span class="card-icon">{actionIcon(action.action_type)}</span>
@@ -464,7 +438,6 @@
               </div>
             </div>
 
-            <!-- Расширенный редактор (открывается по клику) -->
             {#if expanded.has(action.id)}
               <div class="card-editor">
                 <div class="field">
@@ -488,7 +461,6 @@
                   </select>
                 </div>
 
-                <!-- Поля в зависимости от типа -->
                 {#each getEditorFields(action.action_type) as field}
                   <div class="field">
                     <label>{field.label}</label>
@@ -528,7 +500,6 @@
         {/each}
       </div>
 
-      <!-- Кнопка "Добавить действие" -->
       <div class="add-wrapper">
         <button class="secondary add-btn" onclick={() => (showAddMenu = !showAddMenu)}>
           + Добавить действие
@@ -548,7 +519,6 @@
         {/if}
       </div>
 
-      <!-- Кнопка сохранения внизу (дубль для удобства) -->
       <div class="footer-save">
         <button class="primary" onclick={handleSave} disabled={saving}>
           {saving ? "Сохранение..." : "💾 Сохранить профиль"}
@@ -575,7 +545,6 @@
   h1 { margin: 0; font-size: 1.3rem; }
   .subtitle { color: #888; font-size: 0.9rem; margin: 0.2rem 0 1.5rem; }
 
-  /* ===== Карточка выбора папки ===== */
   .picker-card {
     background: #fff;
     border: 1px solid #e0e0e0;
@@ -612,7 +581,6 @@
   .msg.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
   .msg .link { background: none; border: none; color: #396cd8; cursor: pointer; text-decoration: underline; font-size: 0.9rem; }
 
-  /* ===== Редактор ===== */
   .editor { margin-top: 0; }
 
   .editor-header {
@@ -629,7 +597,6 @@
 
   .save-btn { white-space: nowrap; }
 
-  /* ===== Список действий ===== */
   .action-list {
     display: flex;
     flex-direction: column;
@@ -749,7 +716,6 @@
   .icon-btn:active { background: #eee; }
   .expand-btn { min-width: 2em; }
 
-  /* ===== Расширенный редактор ===== */
   .card-editor {
     border-top: 1px solid #e0e0e0;
     padding: 0.75rem 0.8rem 1rem 2.7rem;
@@ -797,7 +763,6 @@
     font-family: "Cascadia Code", "Fira Code", monospace;
   }
 
-  /* ===== Кнопка "Добавить действие" ===== */
   .add-wrapper {
     position: relative;
     margin-top: 0.75rem;
@@ -863,7 +828,6 @@
     text-align: center;
   }
 
-  /* ===== Кнопки ===== */
   button.primary {
     padding: 0.5rem 1.2rem;
     border-radius: 8px;
@@ -891,7 +855,6 @@
   button.secondary:hover:not(:disabled) { background: #f0f0f0; }
   button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  /* ===== Тёмная тема ===== */
   @media (prefers-color-scheme: dark) {
     :root { color: #f6f6f6; background-color: #2f2f2f; }
 
