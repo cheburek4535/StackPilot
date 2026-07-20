@@ -8,6 +8,7 @@ pub trait SessionService: Send + Sync {
     fn get_session(&self) -> Option<SessionInfo>;
     fn link_process(&self, process_id: &str);
     fn get_linked_processes(&self) -> Vec<String>;
+    fn increment_errors(&self);
 }
 
 struct ActiveSession {
@@ -75,5 +76,10 @@ impl SessionService for DefaultSessionService {
             .as_ref()
             .map(|s| s.process_ids.clone())
             .unwrap_or_default()
+    }
+    fn increment_errors(&self) {
+        if let Some(ref mut session) = *self.current.lock().expect("session lock poisoned") {
+            session.error_count += 1;
+        }
     }
 }

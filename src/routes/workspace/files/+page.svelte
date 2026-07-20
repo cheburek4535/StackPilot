@@ -215,6 +215,7 @@
                 value={editedContent}
                 language={fileContent.language}
                 onchange={handleEditorChange}
+                onsave={saveFile}
               />
             </div>
           {/if}

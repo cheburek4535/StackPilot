@@ -1,6 +1,7 @@
 use crate::modules::workspace::models::{ProcessStatus, TrackedProcess};
+use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Problem {
     pub process_id: String,
     pub process_label: String,
@@ -9,7 +10,7 @@ pub struct Problem {
     pub severity: ProblemSeverity,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProblemSeverity {
     Error,
     Warning,
@@ -28,7 +29,9 @@ pub trait ProblemsService: Send + Sync {
     fn clear(&self);
 }
 
-pub struct DefaultProblemsService;
+pub struct DefaultProblemsService {
+    storage: Arc<Mutex<Vec<Problem>>>,
+}
 
 impl ProblemsService for DefaultProblemsService {
     fn collect_from_processes(&self, processes: &[TrackedProcess]) -> Vec<Problem> {
@@ -40,33 +43,37 @@ impl ProblemsService for DefaultProblemsService {
                 _ => false,
             };
             if is_error {
-                problems.push(Problem {
+                let problem = Problem {
                     process_id: p.id.clone(),
                     process_label: p.label.clone(),
                     status: format!("{:?}", p.status),
                     error_message: p.last_error.clone(),
                     severity: ProblemSeverity::Error,
-                });
+                };
+                problems.push(problem.clone());
+                self.storage.lock().expect("storage lock poisoned").push(problem);
             }
         }
         problems
     }
 
-    fn add_problem(&self, _problem: Problem) {
-        // TODO: store in-memory problem list for external problem sources
+    fn add_problem(&self, problem: Problem) {
+        self.storage.lock().expect("storage lock poisoned").push(problem);
     }
 
     fn get_all(&self) -> Vec<Problem> {
-        Vec::new()
+        self.storage.lock().expect("storage lock poisoned").iter().cloned().collect()
     }
 
     fn clear(&self) {
-        // TODO: clear stored problems
+        self.storage.lock().expect("storage lock poisoned").clear();
     }
 }
 
 impl DefaultProblemsService {
     pub fn new() -> Self {
-        Self
+        Self {
+            storage: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }

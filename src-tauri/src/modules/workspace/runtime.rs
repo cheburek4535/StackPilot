@@ -19,9 +19,11 @@ pub struct RuntimeCounts {
 pub struct DefaultRuntimeService;
 
 impl RuntimeService for DefaultRuntimeService {
-    fn filter_session_processes(&self, processes: &[TrackedProcess], _session_id: Option<&str>) -> Vec<TrackedProcess> {
-        // TODO: filter by session_id once TrackedProcess has session_id field
-        processes.to_vec()
+    fn filter_session_processes(&self, processes: &[TrackedProcess], session_id: Option<&str>) -> Vec<TrackedProcess> {
+        match session_id {
+            Some(sid) => processes.iter().filter(|p| p.session_id.as_deref() == Some(sid)).cloned().collect(),
+            None => processes.to_vec(), // если сессии нет — все процессы
+        }
     }
 
     fn count_by_status(&self, processes: &[TrackedProcess]) -> RuntimeCounts {

@@ -9,12 +9,14 @@
   import { html } from "@codemirror/lang-html";
   import { css } from "@codemirror/lang-css";
   import { oneDark } from "@codemirror/theme-one-dark";
+  import { keymap } from "@codemirror/view";
 
-  let { value = "", language = "plaintext", readonly = false, onchange }: {
+  let { value = "", language = "plaintext", readonly = false, onchange, onsave }: {
     value?: string;
     language?: string;
     readonly?: boolean;
     onchange?: (val: string) => void;
+    onsave?: (val: string) => void;
   } = $props();
 
   let container: HTMLDivElement;
@@ -39,6 +41,15 @@
     }
     if (matchMedia("(prefers-color-scheme: dark)").matches) {
       exts.push(oneDark);
+    }
+    if (onsave) {
+      exts.push(keymap.of([{
+        key: "Mod-s",
+        run: () => {
+          onsave(view.state.doc.toString());
+          return true;
+        },
+      }]));
     }
     return exts;
   }

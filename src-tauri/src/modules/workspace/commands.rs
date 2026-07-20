@@ -5,6 +5,8 @@ use crate::modules::workspace::file_explorer;
 use crate::modules::workspace::project::ProjectService;
 use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::file_explorer::FileExplorerService;
+use crate::modules::workspace::problems::{ProblemsService, Problem};
+use crate::modules::workspace::overview::{OverviewService, OverviewData};
 
 // ===== Process commands =====
 
@@ -140,4 +142,31 @@ pub fn write_file(
 #[tauri::command]
 pub fn open_in_vscode(state: State<'_, WorkspaceState>, path: String) -> Result<(), String> {
     state.file_explorer.open_in_vscode(&path)
+}
+
+
+// ===== Problems commands =====
+
+#[tauri::command]
+pub fn get_problems(state: State<'_, WorkspaceState>) -> Vec<Problem> {
+    let processes = state.process_manager.list();
+    state.problems.collect_from_processes(&processes);
+    state.problems.get_all()
+}
+
+#[tauri::command]
+pub fn clear_problems(state: State<'_, WorkspaceState>) {
+    state.problems.clear()
+}
+
+
+// other
+#[tauri::command]
+pub fn get_workspace_overview(
+    state: State<'_, WorkspaceState>,
+) -> OverviewData {
+    let processes = state.process_manager.list();
+    let session_started = state.session.get_session()
+        .and_then(|s| s.started_at.parse::<u64>().ok());
+    state.overview.compute_overview(&processes, session_started)
 }

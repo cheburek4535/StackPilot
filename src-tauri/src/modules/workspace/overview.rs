@@ -1,6 +1,8 @@
 use crate::modules::workspace::models::{ProcessStatus, TrackedProcess};
 
-#[derive(Debug, Clone)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OverviewData {
     pub total_processes: usize,
     pub running_processes: usize,

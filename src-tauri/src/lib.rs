@@ -2,10 +2,11 @@ mod core;
 mod modules;
 
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Listener, Manager};
 
 #[cfg(feature = "plugins")]
 use modules::plugins::mini_ide;
+use modules::workspace::session::SessionService;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -42,7 +43,6 @@ pub fn run() {
             let process_manager: Arc<dyn modules::workspace::process_manager::ProcessManager> =
                 Arc::new(os_pm);
             let workspace_state = modules::workspace::WorkspaceState::new(process_manager.clone());
-
             // === DevLauncher module ===
             let devlauncher_state = modules::devlauncher::DevLauncherState::new(
                 data_dir.join("profiles"),
@@ -54,6 +54,23 @@ pub fn run() {
             app.manage(devlauncher_state);
             app.manage(workspace_state);
             app.manage(core::settings::SettingsState(settings_service));
+
+            // Auto-track process errors in the session
+            let handle = app.handle().clone();
+            app.listen("process-status", move |event| {
+                if let Ok(payload) = serde_json::from_str::<modules::workspace::models::ProcessStatusEvent>(event.payload()) {
+                    let is_error = match &payload.status {
+                        modules::workspace::models::ProcessStatus::Crashed => true,
+                        modules::workspace::models::ProcessStatus::Exited(c) if *c != 0 => true,
+                        _ => false,
+                    };
+                    if is_error {
+                        if let Some(session) = handle.try_state::<modules::workspace::WorkspaceState>() {
+                            session.inner().session.increment_errors();
+                        }
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -82,6 +99,9 @@ pub fn run() {
             modules::workspace::commands::read_file,
             modules::workspace::commands::write_file,
             modules::workspace::commands::open_in_vscode,
+            modules::workspace::commands::get_workspace_overview,
+            modules::workspace::commands::get_problems,
+            modules::workspace::commands::clear_problems,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,
