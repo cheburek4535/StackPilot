@@ -1,0 +1,737 @@
+{
+  "project_types": [
+    {
+      "id": "rest-api",
+      "label": "REST API",
+      "description": "Backend service with HTTP endpoints",
+      "icon": "rest-api.png",
+      "tags": ["web", "api", "backend"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "desktop-app",
+      "label": "Desktop Application",
+      "description": "Native desktop application",
+      "icon": "desktop-app.png",
+      "tags": ["desktop", "native"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "web-app",
+      "label": "Web Application",
+      "description": "Full-stack web application",
+      "icon": "web-app.png",
+      "tags": ["web", "fullstack", "frontend"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "cli-tool",
+      "label": "CLI Tool",
+      "description": "Command-line interface tool",
+      "icon": "cli-tool.png",
+      "tags": ["cli", "terminal"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "telegram-bot",
+      "label": "Telegram Bot",
+      "description": "Automated Telegram bot",
+      "icon": "telegram-bot.webp",
+      "tags": ["bot", "messenger"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "library",
+      "label": "Library",
+      "description": "Reusable library or package",
+      "icon": "library.png",
+      "tags": ["library", "package"],
+      "allow_custom_stack": false
+    },
+    
+    {
+      "id": "mobile-app",
+      "label": "Mobile App",
+      "description": "Cross-platform or native mobile application",
+      "icon": "mobile-app.svg",
+      "tags": ["mobile", "app", "ios", "android"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "game",
+      "label": "Game",
+      "description": "2D/3D game development",
+      "icon": "game.png",
+      "tags": ["game", "3d", "2d"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "browser-extension",
+      "label": "Browser Extension",
+      "description": "Extension for Chrome, Firefox, etc.",
+      "icon": "browser-ex.png",
+      "tags": ["browser", "extension"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "data-pipeline",
+      "label": "Data Pipeline / ETL",
+      "description": "Data processing pipeline or ETL job",
+      "icon": "data-pipeline2.png",
+      "tags": ["data", "etl", "processing"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "embedded",
+      "label": "Embedded / IoT",
+      "description": "Firmware or IoT application",
+      "icon": "iot.png",
+      "tags": ["embedded", "iot", "hardware"],
+      "allow_custom_stack": false
+    },
+    {
+      "id": "empty-project",
+      "label": "Empty Project",
+      "description": "Start from scratch with configuration",
+      "icon": "empty-project.png",
+      "tags": ["empty", "minimal"],
+      "allow_custom_stack": true
+    },
+    {
+      "id": "custom",
+      "label": "Custom Stack",
+      "description": "Build your own recipe from scratch",
+      "icon": "custom.png",
+      "tags": ["custom"],
+      "allow_custom_stack": true
+    }
+  ],
+  "languages": [
+    {
+      "id": "python",
+      "label": "Python",
+      "icon": "python.webp",
+      "color": "#3776AB",
+      "knowledge_key": "python"
+    },
+    {
+      "id": "rust",
+      "label": "Rust",
+      "icon": "rust.png",
+      "color": "#DEA584",
+      "knowledge_key": "rust"
+    },
+    {
+      "id": "go",
+      "label": "Go",
+      "icon": "go.webp",
+      "color": "#00ADD8",
+      "knowledge_key": "go"
+    },
+    {
+      "id": "typescript",
+      "label": "TypeScript",
+      "icon": "typescript.webp",
+      "color": "#3178C6",
+      "knowledge_key": null
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript / Node.js",
+      "icon": "node.png",
+      "color": "#F7DF1E",
+      "knowledge_key": null
+    },
+    {
+      "id": "java",
+      "label": "Java",
+      "icon": "java.png",
+      "color": "#ED8B00",
+      "knowledge_key": null
+    },
+    {
+      "id": "csharp",
+      "label": "C#",
+      "icon": "csharp.webp",
+      "color": "#239120",
+      "knowledge_key": null
+    },
+    {
+      "id": "cpp",
+      "label": "C++",
+      "icon": "cpp.webp",
+      "color": "#00599C",
+      "knowledge_key": null
+    },
+    {
+      "id": "dart",
+      "label": "Dart",
+      "icon": "dart.webp",
+      "color": "#00B4AB",
+      "knowledge_key": null
+    },
+    {
+      "id": "kotlin",
+      "label": "Kotlin",
+      "icon": "kotlin.webp",
+      "color": "#7F52FF",
+      "knowledge_key": null
+    },
+    {
+      "id": "php",
+      "label": "PHP",
+      "icon": "php.webp",
+      "color": "#777BB4",
+      "knowledge_key": null
+    },
+    {
+      "id": "swift",
+      "label": "Swift",
+      "icon": "swift.svg",
+      "color": "#F05138",
+      "knowledge_key": null
+    },
+    {
+    "id": "zig",
+    "label": "Zig",
+    "icon": "zig.svg",
+    "color": "#F7A41D",
+    "knowledge_key": null
+  },
+  {
+    "id": "elixir",
+    "label": "Elixir",
+    "icon": "elixir.svg",
+    "color": "#4B275F",
+    "knowledge_key": null
+  },
+  {
+    "id": "gleam",
+    "label": "Gleam",
+    "icon": "gleam.svg",
+    "color": "#FFAFF3",
+    "knowledge_key": null
+  }
+  ],
+  "frameworks": [
+    {
+      "id": "fastapi",
+      "label": "FastAPI",
+      "description": "Modern async Python web framework with automatic OpenAPI docs",
+      "icon": "fastapi.svg",
+      "knowledge_key": "fastapi"
+    },
+    {
+      "id": "django",
+      "label": "Django",
+      "description": "Batteries-included Python web framework",
+      "icon": "django.svg",
+      "knowledge_key": "django"
+    },
+    {
+      "id": "flask",
+      "label": "Flask",
+      "description": "Lightweight Python web framework",
+      "icon": "flask.png",
+      "knowledge_key": "flask"
+    },
+    {
+      "id": "axum",
+      "label": "Axum",
+      "description": "Ergonomic Rust web framework built on Tokio",
+      "icon": null,
+      "knowledge_key": "axum"
+    },
+    {
+      "id": "tauri",
+      "label": "Tauri",
+      "description": "Lightweight desktop app with web frontend",
+      "icon": "tauri.svg",
+      "knowledge_key": "tauri"
+    },
+    {
+      "id": "clap",
+      "label": "Clap",
+      "description": "Rust CLI argument parser with derive macros",
+      "icon": "clap.svg",
+      "knowledge_key": "clap"
+    },
+    {
+      "id": "gin",
+      "label": "Gin",
+      "description": "Fast Go HTTP framework",
+      "icon": "go-gin.png",
+      "knowledge_key": "gin"
+    },
+    {
+      "id": "cobra",
+      "label": "Cobra",
+      "description": "Powerful Go CLI framework",
+      "icon": null,
+      "knowledge_key": "cobra"
+    },
+    {
+      "id": "nextjs",
+      "label": "Next.js",
+      "description": "React full-stack framework",
+      "icon": "nextjs.svg",
+      "knowledge_key": "nextjs"
+    },
+    {
+      "id": "sveltekit",
+      "label": "SvelteKit",
+      "description": "Full-stack Svelte framework",
+      "icon": "svelte.svg",
+      "knowledge_key": "sveltekit"
+    },
+    {
+      "id": "nuxt",
+      "label": "Nuxt",
+      "description": "Full-stack Vue framework",
+      "icon": "nuxt.png",
+      "knowledge_key": "nuxt"
+    },
+    {
+      "id": "express",
+      "label": "Express",
+      "description": "Minimal Node.js web framework",
+      "icon": "express.png",
+      "knowledge_key": null
+    },
+    {
+      "id": "electron",
+      "label": "Electron",
+      "description": "Cross-platform desktop app with Node.js",
+      "icon": "electron.webp",
+      "knowledge_key": "electron"
+    },
+    {
+      "id": "aiogram",
+      "label": "Aiogram",
+      "description": "Async Python Telegram bot framework",
+      "icon": null,
+      "knowledge_key": "aiogram"
+    },
+    {
+      "id": "telegraf",
+      "label": "Telegraf",
+      "description": "Modern Node.js Telegram bot framework",
+      "icon": "telegraf.png",
+      "knowledge_key": "telegraf"
+    },
+    {
+      "id": "spring-boot",
+      "label": "Spring Boot",
+      "description": "Production-grade Java web/REST framework",
+      "icon": null,
+      "knowledge_key": "spring-boot"
+    },
+    {
+      "id": "android",
+      "label": "Android SDK",
+      "description": "Native Android development (Java/Kotlin)",
+      "icon": null,
+      "knowledge_key": "android"
+    },
+    {
+      "id": "aspnetcore",
+      "label": "ASP.NET Core",
+      "description": ".NET web/REST framework",
+      "icon": null,
+      "knowledge_key": "aspnetcore"
+    },
+    {
+      "id": "unity",
+      "label": "Unity",
+      "description": "Game engine with C# scripting",
+      "icon": null,
+      "knowledge_key": "unity"
+    },
+    {
+      "id": "maui",
+      "label": "MAUI",
+      "description": ".NET cross-platform desktop/mobile UI",
+      "icon": null,
+      "knowledge_key": "maui"
+    },
+    {
+      "id": "unreal",
+      "label": "Unreal Engine",
+      "description": "C++ game engine",
+      "icon": null,
+      "knowledge_key": "unreal"
+    },
+    {
+      "id": "qt",
+      "label": "Qt",
+      "description": "C++ cross-platform desktop/embedded framework",
+      "icon": null,
+      "knowledge_key": "qt"
+    },
+    {
+      "id": "godot",
+      "label": "Godot",
+      "description": "Open-source game engine (C++, C#)",
+      "icon": null,
+      "knowledge_key": "godot"
+    },
+    {
+      "id": "flutter",
+      "label": "Flutter",
+      "description": "Dart cross-platform mobile/web/desktop",
+      "icon": null,
+      "knowledge_key": "flutter"
+    },
+    {
+      "id": "laravel",
+      "label": "Laravel",
+      "description": "PHP full-stack web framework",
+      "icon": null,
+      "knowledge_key": "laravel"
+    },
+    {
+      "id": "symfony",
+      "label": "Symfony",
+      "description": "Modular PHP web framework",
+      "icon": null,
+      "knowledge_key": "symfony"
+    },
+    {
+      "id": "jetpack-compose",
+      "label": "Jetpack Compose",
+      "description": "Modern Android UI toolkit (Kotlin)",
+      "icon": null,
+      "knowledge_key": "jetpack-compose"
+    },
+    {
+      "id": "ktor",
+      "label": "Ktor",
+      "description": "Async Kotlin web/REST framework",
+      "icon": null,
+      "knowledge_key": "ktor"
+    },
+    {
+      "id": "swiftui",
+      "label": "SwiftUI",
+      "description": "Native iOS/macOS UI framework",
+      "icon": null,
+      "knowledge_key": "swiftui"
+    },
+    {
+      "id": "vapor",
+      "label": "Vapor",
+      "description": "Swift web framework",
+      "icon": null,
+      "knowledge_key": "vapor"
+    },
+    {
+      "id": "react-native",
+      "label": "React Native",
+      "description": "JS/TS mobile app framework",
+      "icon": null,
+      "knowledge_key": "react-native"
+    },
+    {
+      "id": "plasmo",
+      "label": "Plasmo",
+      "description": "Browser extension framework (JS/TS)",
+      "icon": null,
+      "knowledge_key": "plasmo"
+    },
+    {
+    "id": "zig-cli",
+    "label": "Zig CLI (std)",
+    "description": "Native CLI with Zig standard library",
+    "icon": null,
+    "knowledge_key": null
+  },
+  {
+    "id": "expo",
+    "label": "Expo",
+    "description": "Managed React Native development",
+    "icon": null,
+    "knowledge_key": "expo"
+  },
+  {
+    "id": "phoenix",
+    "label": "Phoenix",
+    "description": "Elixir web framework for real-time apps",
+    "icon": null,
+    "knowledge_key": "phoenix"
+  },
+  {
+    "id": "nest",
+    "label": "NestJS",
+    "description": "Structured Node.js server framework",
+    "icon": null,
+    "knowledge_key": "nestjs"
+  },
+  {
+    "id": "fastify",
+    "label": "Fastify",
+    "description": "Fast, low-overhead Node.js web server",
+    "icon": null,
+    "knowledge_key": null
+  },
+  {
+    "id": "solidjs",
+    "label": "SolidStart",
+    "description": "Full-stack Solid.js framework",
+    "icon": null,
+    "knowledge_key": null
+  }
+  ],
+  "tools": [
+    {
+      "id": "postgresql",
+      "label": "PostgreSQL",
+      "description": "Relational database",
+      "icon": "postgresql.webp",
+      "category": "database",
+      "knowledge_key": null
+    },
+    {
+      "id": "redis",
+      "label": "Redis",
+      "description": "In-memory cache and message broker",
+      "icon": null,
+      "category": "cache",
+      "knowledge_key": null
+    },
+    {
+      "id": "docker",
+      "label": "Docker",
+      "description": "Containerization platform",
+      "icon": "docker.png",
+      "category": "container",
+      "knowledge_key": null
+    },
+    {
+      "id": "pytest",
+      "label": "Pytest",
+      "description": "Python testing framework",
+      "icon": null,
+      "category": "testing",
+      "knowledge_key": null
+    },
+    {
+      "id": "sqlalchemy",
+      "label": "SQLAlchemy",
+      "description": "Python SQL toolkit and ORM",
+      "icon": null,
+      "category": "database",
+      "knowledge_key": null
+    },
+    {
+      "id": "alembic",
+      "label": "Alembic",
+      "description": "Database migrations for SQLAlchemy",
+      "icon": null,
+      "category": "database",
+      "knowledge_key": null
+    },
+    {
+      "id": "ruff",
+      "label": "Ruff",
+      "description": "Fast Python linter",
+      "icon": null,
+      "category": "tooling",
+      "knowledge_key": null
+    },
+    {
+      "id": "npm",
+      "label": "NPM",
+      "description": "Node.js package manager",
+      "icon": "npm.png",
+      "category": "tooling",
+      "knowledge_key": null
+    },
+    {
+      "id": "gradle",
+      "label": "Gradle",
+      "description": "Build tool for Java/Kotlin",
+      "icon": null,
+      "category": "tooling",
+      "knowledge_key": null
+    },
+    {
+      "id": "maven",
+      "label": "Maven",
+      "description": "Build tool for Java projects",
+      "icon": null,
+      "category": "tooling",
+      "knowledge_key": null
+    },
+    {
+      "id": "mongodb",
+      "label": "MongoDB",
+      "description": "NoSQL document database",
+      "icon": null,
+      "category": "database",
+      "knowledge_key": null
+    },
+    {
+      "id": "sqlite",
+      "label": "SQLite",
+      "description": "Embedded relational database",
+      "icon": null,
+      "category": "database",
+      "knowledge_key": null
+    },
+    {
+      "id": "firebase",
+      "label": "Firebase",
+      "description": "Mobile/backend platform (auth, DB, etc.)",
+      "icon": null,
+      "category": "baas",
+      "knowledge_key": null
+    },
+    {
+      "id": "kafka",
+      "label": "Apache Kafka",
+      "description": "Distributed message broker",
+      "icon": null,
+      "category": "messaging",
+      "knowledge_key": null
+    },
+    {
+    "id": "clickhouse",
+    "label": "ClickHouse",
+    "description": "OLAP columnar database for analytics",
+    "icon": null,
+    "category": "database",
+    "knowledge_key": null
+  },
+  {
+    "id": "airflow",
+    "label": "Apache Airflow",
+    "description": "Workflow orchestrator for ETL pipelines",
+    "icon": null,
+    "category": "orchestration",
+    "knowledge_key": null
+  },
+  {
+    "id": "dbt",
+    "label": "dbt",
+    "description": "Data build tool for SQL transformations",
+    "icon": null,
+    "category": "etl",
+    "knowledge_key": null
+  },
+  {
+    "id": "grafana",
+    "label": "Grafana",
+    "description": "Observability dashboards and alerting",
+    "icon": null,
+    "category": "observability",
+    "knowledge_key": null
+  },
+  {
+    "id": "terra",
+    "label": "Terraform",
+    "description": "Infrastructure as code",
+    "icon": null,
+    "category": "infra",
+    "knowledge_key": null
+  },
+  {
+    "id": "prisma",
+    "label": "Prisma",
+    "description": "Modern ORM for Node.js/TypeScript",
+    "icon": null,
+    "category": "database",
+    "knowledge_key": null
+  },
+  {
+    "id": "drizzle",
+    "label": "Drizzle ORM",
+    "description": "Lightweight TypeScript ORM",
+    "icon": null,
+    "category": "database",
+    "knowledge_key": null
+  },
+  {
+    "id": "opentelemetry",
+    "label": "OpenTelemetry",
+    "description": "Tracing, metrics, and logs collection",
+    "icon": null,
+    "category": "observability",
+    "knowledge_key": null
+  }
+  ],
+  "project_language_map": {
+    "rest-api": ["python", "rust", "go", "typescript", "javascript", "java", "csharp", "php", "kotlin", "swift", "elixir", "zig", "gleam"],
+    "desktop-app": ["rust", "typescript", "javascript", "csharp", "cpp", "dart", "java"],
+    "web-app": ["typescript", "javascript", "python", "java", "csharp", "php", "dart", "kotlin", "elixir"],
+    "cli-tool": ["rust", "go", "python", "cpp", "java", "csharp", "kotlin", "dart", "zig", "gleam"],
+    "telegram-bot": ["python", "typescript", "java", "kotlin"],
+    "library": ["rust", "python", "typescript", "javascript", "java", "csharp", "cpp", "dart", "kotlin", "php", "swift", "zig"],
+    "empty-project": ["python", "rust", "go", "typescript", "javascript", "java", "csharp", "cpp", "dart", "kotlin", "php", "swift", "zig", "elixir", "gleam"],
+    "custom": ["python", "rust", "go", "typescript", "javascript", "java", "csharp", "cpp", "dart", "kotlin", "php", "swift", "zig", "elixir", "gleam"],
+    "mobile-app": ["dart", "kotlin", "swift", "java", "csharp", "typescript", "javascript"],
+    "game": ["csharp", "cpp", "java", "rust"],
+    "browser-extension": ["typescript", "javascript"],
+    "data-pipeline": ["python", "java", "go", "rust", "csharp", "kotlin", "elixir"],
+    "embedded": ["cpp", "rust", "zig"]
+  },
+  "language_framework_map": {
+    "python": ["fastapi", "django", "flask", "aiogram"],
+    "rust": ["axum", "tauri", "clap"],
+    "go": ["gin", "cobra"],
+    "typescript": ["nextjs", "sveltekit", "nuxt", "telegraf", "react-native", "plasmo", "expo", "nest", "fastify", "solidjs"],
+    "javascript": ["nextjs", "sveltekit", "nuxt", "express", "electron", "react-native", "plasmo", "expo", "nest", "fastify"],
+    "java": ["spring-boot", "android"],
+    "csharp": ["aspnetcore", "unity", "maui", "godot"],
+    "cpp": ["unreal", "qt", "godot"],
+    "dart": ["flutter"],
+    "kotlin": ["jetpack-compose", "ktor"],
+    "php": ["laravel", "symfony"],
+    "swift": ["swiftui", "vapor"],
+    "zig": ["zig-cli"],
+    "elixir": ["phoenix"],
+    "gleam": []
+  },
+  "framework_tool_map": {
+    "fastapi": ["postgresql", "redis", "sqlalchemy", "alembic", "docker", "pytest", "ruff"],
+    "django": ["postgresql", "redis", "docker", "pytest"],
+    "flask": ["postgresql", "redis", "sqlalchemy", "docker", "pytest"],
+    "axum": ["postgresql", "redis", "docker"],
+    "tauri": ["docker", "npm"],
+    "clap": ["docker"],
+    "gin": ["postgresql", "redis", "docker"],
+    "cobra": ["docker"],
+    "nextjs": ["postgresql", "docker", "npm"],
+    "sveltekit": ["postgresql", "docker", "npm"],
+    "nuxt": ["postgresql", "docker", "npm"],
+    "express": ["postgresql", "redis", "docker", "npm"],
+    "electron": ["docker", "npm"],
+    "aiogram": ["redis", "docker", "pytest", "ruff"],
+    "telegraf": ["redis", "docker", "npm"],
+    "spring-boot": ["postgresql", "redis", "docker", "maven", "gradle", "mongodb", "kafka"],
+    "android": ["gradle", "firebase", "sqlite"],
+    "aspnetcore": ["postgresql", "redis", "docker", "sqlite", "mongodb"],
+    "unity": [],
+    "maui": [],
+    "unreal": [],
+    "qt": ["docker"],
+    "godot": [],
+    "flutter": ["firebase", "docker", "sqlite"],
+    "laravel": ["postgresql", "redis", "docker", "sqlite"],
+    "symfony": ["postgresql", "redis", "docker"],
+    "jetpack-compose": ["firebase", "sqlite", "gradle"],
+    "ktor": ["postgresql", "redis", "docker", "kafka"],
+    "swiftui": ["firebase", "sqlite"],
+    "vapor": ["postgresql", "redis", "docker"],
+    "react-native": ["firebase", "npm"],
+    "plasmo": ["npm"],
+    "zig-cli": ["docker"],
+    "expo": ["npm", "firebase"],
+    "phoenix": ["postgresql", "clickhouse", "docker", "opentelemetry"],
+    "nest": ["postgresql", "prisma", "drizzle", "redis", "docker", "npm", "opentelemetry"],
+    "fastify": ["postgresql", "prisma", "redis", "docker", "npm"],
+    "solidjs": ["postgresql", "drizzle", "docker", "npm"],
+    "airflow": ["postgresql", "clickhouse", "docker", "dbt", "grafana"],
+    "dbt": ["clickhouse", "postgresql"]
+
+  }
+}

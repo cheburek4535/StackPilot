@@ -7,6 +7,11 @@ use tauri::{Listener, Manager};
 #[cfg(feature = "plugins")]
 use modules::plugins::mini_ide;
 use modules::workspace::session::SessionService;
+use modules::project_creator::analysis::DefaultProjectAnalyzer;
+use modules::project_creator::engine::DefaultRecipeEngine;
+use modules::project_creator::generators::GeneratorRegistry;
+use modules::project_creator::knowledge::DefaultKnowledgeBase;
+use modules::project_creator::packs::DefaultPackRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,9 +55,19 @@ pub fn run() {
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
             );
 
+            // === ProjectCreator module ===
+            let project_creator_state = modules::project_creator::ProjectCreatorState::new(
+                Arc::new(DefaultProjectAnalyzer::new()),
+                Arc::new(DefaultRecipeEngine::new()),
+                Arc::new(GeneratorRegistry::new()),
+                Arc::new(DefaultPackRegistry::new()),
+                Arc::new(DefaultKnowledgeBase::new()),
+            );
+
             // Register all states
             app.manage(devlauncher_state);
             app.manage(workspace_state);
+            app.manage(project_creator_state);
             app.manage(core::settings::SettingsState(settings_service));
 
             // Auto-track process errors in the session
@@ -102,6 +117,12 @@ pub fn run() {
             modules::workspace::commands::get_workspace_overview,
             modules::workspace::commands::get_problems,
             modules::workspace::commands::clear_problems,
+            // ProjectCreator commands
+            modules::project_creator::commands::ping_project_creator,
+            modules::project_creator::commands::get_wizard_tree,
+            modules::project_creator::commands::get_project_types,
+            modules::project_creator::commands::start_wizard,
+            modules::project_creator::commands::submit_wizard_answer,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,
