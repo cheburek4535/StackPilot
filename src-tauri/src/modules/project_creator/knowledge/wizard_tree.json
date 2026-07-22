@@ -110,7 +110,7 @@
     {
       "id": "python",
       "label": "Python",
-      "icon": "python.webp",
+      "icon": "python.svg",
       "color": "#3776AB",
       "knowledge_key": "python"
     },
@@ -323,112 +323,112 @@
       "id": "spring-boot",
       "label": "Spring Boot",
       "description": "Production-grade Java web/REST framework",
-      "icon": null,
+      "icon": "spring-boot.svg",
       "knowledge_key": "spring-boot"
     },
     {
       "id": "android",
       "label": "Android SDK",
       "description": "Native Android development (Java/Kotlin)",
-      "icon": null,
+      "icon": "android.svg",
       "knowledge_key": "android"
     },
     {
       "id": "aspnetcore",
       "label": "ASP.NET Core",
       "description": ".NET web/REST framework",
-      "icon": null,
+      "icon": "aspnetcore.png",
       "knowledge_key": "aspnetcore"
     },
     {
       "id": "unity",
       "label": "Unity",
       "description": "Game engine with C# scripting",
-      "icon": null,
+      "icon": "unity.svg",
       "knowledge_key": "unity"
     },
     {
       "id": "maui",
       "label": "MAUI",
       "description": ".NET cross-platform desktop/mobile UI",
-      "icon": null,
+      "icon": "maui.png",
       "knowledge_key": "maui"
     },
     {
       "id": "unreal",
       "label": "Unreal Engine",
       "description": "C++ game engine",
-      "icon": null,
+      "icon": "unreal-engine.svg",
       "knowledge_key": "unreal"
     },
     {
       "id": "qt",
       "label": "Qt",
       "description": "C++ cross-platform desktop/embedded framework",
-      "icon": null,
+      "icon": "qt.svg",
       "knowledge_key": "qt"
     },
     {
       "id": "godot",
       "label": "Godot",
       "description": "Open-source game engine (C++, C#)",
-      "icon": null,
+      "icon": "godot.svg",
       "knowledge_key": "godot"
     },
     {
       "id": "flutter",
       "label": "Flutter",
       "description": "Dart cross-platform mobile/web/desktop",
-      "icon": null,
+      "icon": "flutter.svg",
       "knowledge_key": "flutter"
     },
     {
       "id": "laravel",
       "label": "Laravel",
       "description": "PHP full-stack web framework",
-      "icon": null,
+      "icon": "laravel.svg",
       "knowledge_key": "laravel"
     },
     {
       "id": "symfony",
       "label": "Symfony",
       "description": "Modular PHP web framework",
-      "icon": null,
+      "icon": "symfony.svg",
       "knowledge_key": "symfony"
     },
     {
       "id": "jetpack-compose",
       "label": "Jetpack Compose",
       "description": "Modern Android UI toolkit (Kotlin)",
-      "icon": null,
+      "icon": "jetpack-compose.svg",
       "knowledge_key": "jetpack-compose"
     },
     {
       "id": "ktor",
       "label": "Ktor",
       "description": "Async Kotlin web/REST framework",
-      "icon": null,
+      "icon": "ktor.svg",
       "knowledge_key": "ktor"
     },
     {
       "id": "swiftui",
       "label": "SwiftUI",
       "description": "Native iOS/macOS UI framework",
-      "icon": null,
+      "icon": "swift.svg",
       "knowledge_key": "swiftui"
     },
     {
       "id": "vapor",
       "label": "Vapor",
       "description": "Swift web framework",
-      "icon": null,
+      "icon": "vapor.svg",
       "knowledge_key": "vapor"
     },
     {
       "id": "react-native",
       "label": "React Native",
       "description": "JS/TS mobile app framework",
-      "icon": null,
+      "icon": "reactnative.svg",
       "knowledge_key": "react-native"
     },
     {
@@ -439,54 +439,54 @@
       "knowledge_key": "plasmo"
     },
     {
-    "id": "zig-cli",
-    "label": "Zig CLI (std)",
-    "description": "Native CLI with Zig standard library",
-    "icon": null,
-    "knowledge_key": null
-  },
-  {
-    "id": "expo",
-    "label": "Expo",
-    "description": "Managed React Native development",
-    "icon": null,
-    "knowledge_key": "expo"
-  },
-  {
-    "id": "phoenix",
-    "label": "Phoenix",
-    "description": "Elixir web framework for real-time apps",
-    "icon": null,
-    "knowledge_key": "phoenix"
-  },
-  {
-    "id": "nest",
-    "label": "NestJS",
-    "description": "Structured Node.js server framework",
-    "icon": null,
-    "knowledge_key": "nestjs"
-  },
-  {
-    "id": "fastify",
-    "label": "Fastify",
-    "description": "Fast, low-overhead Node.js web server",
-    "icon": null,
-    "knowledge_key": null
-  },
-  {
-    "id": "solidjs",
-    "label": "SolidStart",
-    "description": "Full-stack Solid.js framework",
-    "icon": null,
-    "knowledge_key": null
-  }
-  ],
+      "id": "zig-cli",
+      "label": "Zig CLI (std)",
+      "description": "Native CLI with Zig standard library",
+      "icon": "zig.svg",
+      "knowledge_key": null
+    },
+    {
+      "id": "expo",
+      "label": "Expo",
+      "description": "Managed React Native development",
+      "icon": "expo.svg",
+      "knowledge_key": "expo"
+    },
+    {
+      "id": "phoenix",
+      "label": "Phoenix",
+      "description": "Elixir web framework for real-time apps",
+      "icon": "phoenix-framework.svg",
+      "knowledge_key": "phoenix"
+    },
+    {
+      "id": "nest",
+      "label": "NestJS",
+      "description": "Structured Node.js server framework",
+      "icon": "nestjs.svg",
+      "knowledge_key": "nestjs"
+    },
+    {
+      "id": "fastify",
+      "label": "Fastify",
+      "description": "Fast, low-overhead Node.js web server",
+      "icon": "fastify.svg",
+      "knowledge_key": null
+    },
+    {
+      "id": "solidjs",
+      "label": "SolidStart",
+      "description": "Full-stack Solid.js framework",
+      "icon": "solidjs.svg",
+      "knowledge_key": null
+    }
+],
   "tools": [
     {
       "id": "postgresql",
       "label": "PostgreSQL",
       "description": "Relational database",
-      "icon": "postgresql.webp",
+      "icon": "postgresql.svg",
       "category": "database",
       "knowledge_key": null
     },
@@ -494,7 +494,7 @@
       "id": "redis",
       "label": "Redis",
       "description": "In-memory cache and message broker",
-      "icon": null,
+      "icon": "redis.svg",
       "category": "cache",
       "knowledge_key": null
     },
@@ -502,7 +502,7 @@
       "id": "docker",
       "label": "Docker",
       "description": "Containerization platform",
-      "icon": "docker.png",
+      "icon": "docker.svg",
       "category": "container",
       "knowledge_key": null
     },
@@ -510,7 +510,7 @@
       "id": "pytest",
       "label": "Pytest",
       "description": "Python testing framework",
-      "icon": null,
+      "icon": "pytest.svg",
       "category": "testing",
       "knowledge_key": null
     },
@@ -518,7 +518,7 @@
       "id": "sqlalchemy",
       "label": "SQLAlchemy",
       "description": "Python SQL toolkit and ORM",
-      "icon": null,
+      "icon": "sqlalchemy.svg",
       "category": "database",
       "knowledge_key": null
     },
@@ -534,7 +534,7 @@
       "id": "ruff",
       "label": "Ruff",
       "description": "Fast Python linter",
-      "icon": null,
+      "icon": "ruff.svg",
       "category": "tooling",
       "knowledge_key": null
     },
@@ -542,7 +542,7 @@
       "id": "npm",
       "label": "NPM",
       "description": "Node.js package manager",
-      "icon": "npm.png",
+      "icon": "npm.svg",
       "category": "tooling",
       "knowledge_key": null
     },
@@ -550,7 +550,7 @@
       "id": "gradle",
       "label": "Gradle",
       "description": "Build tool for Java/Kotlin",
-      "icon": null,
+      "icon": "gradle.svg",
       "category": "tooling",
       "knowledge_key": null
     },
@@ -558,7 +558,7 @@
       "id": "maven",
       "label": "Maven",
       "description": "Build tool for Java projects",
-      "icon": null,
+      "icon": "maven.svg",
       "category": "tooling",
       "knowledge_key": null
     },
@@ -566,7 +566,7 @@
       "id": "mongodb",
       "label": "MongoDB",
       "description": "NoSQL document database",
-      "icon": null,
+      "icon": "mongodb.svg",
       "category": "database",
       "knowledge_key": null
     },
@@ -574,7 +574,7 @@
       "id": "sqlite",
       "label": "SQLite",
       "description": "Embedded relational database",
-      "icon": null,
+      "icon": "sqlite.svg",
       "category": "database",
       "knowledge_key": null
     },
@@ -582,7 +582,7 @@
       "id": "firebase",
       "label": "Firebase",
       "description": "Mobile/backend platform (auth, DB, etc.)",
-      "icon": null,
+      "icon": "firebase.svg",
       "category": "baas",
       "knowledge_key": null
     },
@@ -590,23 +590,23 @@
       "id": "kafka",
       "label": "Apache Kafka",
       "description": "Distributed message broker",
-      "icon": null,
+      "icon": "kafka.svg",
       "category": "messaging",
       "knowledge_key": null
     },
-    {
+  {
     "id": "clickhouse",
     "label": "ClickHouse",
     "description": "OLAP columnar database for analytics",
-    "icon": null,
+    "icon": "clickhouse.svg",
     "category": "database",
-    "knowledge_key": null
+    "knowledge_key": null  
   },
   {
     "id": "airflow",
     "label": "Apache Airflow",
     "description": "Workflow orchestrator for ETL pipelines",
-    "icon": null,
+    "icon": "airflow.svg",
     "category": "orchestration",
     "knowledge_key": null
   },
@@ -614,7 +614,7 @@
     "id": "dbt",
     "label": "dbt",
     "description": "Data build tool for SQL transformations",
-    "icon": null,
+    "icon": "dbt.svg",
     "category": "etl",
     "knowledge_key": null
   },
@@ -622,7 +622,7 @@
     "id": "grafana",
     "label": "Grafana",
     "description": "Observability dashboards and alerting",
-    "icon": null,
+    "icon": "grafana.svg",
     "category": "observability",
     "knowledge_key": null
   },
@@ -630,7 +630,7 @@
     "id": "terra",
     "label": "Terraform",
     "description": "Infrastructure as code",
-    "icon": null,
+    "icon": "terra.svg",
     "category": "infra",
     "knowledge_key": null
   },
@@ -638,7 +638,7 @@
     "id": "prisma",
     "label": "Prisma",
     "description": "Modern ORM for Node.js/TypeScript",
-    "icon": null,
+    "icon": "prisma.svg",
     "category": "database",
     "knowledge_key": null
   },
@@ -646,7 +646,7 @@
     "id": "drizzle",
     "label": "Drizzle ORM",
     "description": "Lightweight TypeScript ORM",
-    "icon": null,
+    "icon": "drizzle.svg",
     "category": "database",
     "knowledge_key": null
   },
@@ -654,11 +654,12 @@
     "id": "opentelemetry",
     "label": "OpenTelemetry",
     "description": "Tracing, metrics, and logs collection",
-    "icon": null,
+    "icon": "opentelemetry.svg",
     "category": "observability",
     "knowledge_key": null
   }
-  ],
+],
+
   "project_language_map": {
     "rest-api": ["python", "rust", "go", "typescript", "javascript", "java", "csharp", "php", "kotlin", "swift", "elixir", "zig", "gleam"],
     "desktop-app": ["rust", "typescript", "javascript", "csharp", "cpp", "dart", "java"],
