@@ -123,6 +123,9 @@ pub fn run() {
             modules::project_creator::commands::get_project_types,
             modules::project_creator::commands::start_wizard,
             modules::project_creator::commands::submit_wizard_answer,
+            modules::project_creator::commands::analyze_project_technologies,
+            modules::project_creator::commands::preview_project_recipe,
+            modules::project_creator::commands::start_project_execution,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

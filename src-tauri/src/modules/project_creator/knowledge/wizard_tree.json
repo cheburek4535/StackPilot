@@ -131,49 +131,49 @@
     {
       "id": "typescript",
       "label": "TypeScript",
-      "icon": "typescript.webp",
+      "icon": "typescript.svg",
       "color": "#3178C6",
       "knowledge_key": null
     },
     {
       "id": "javascript",
       "label": "JavaScript / Node.js",
-      "icon": "node.png",
+      "icon": "node.svg",
       "color": "#F7DF1E",
       "knowledge_key": null
     },
     {
       "id": "java",
       "label": "Java",
-      "icon": "java.png",
+      "icon": "java.svg",
       "color": "#ED8B00",
       "knowledge_key": null
     },
     {
       "id": "csharp",
       "label": "C#",
-      "icon": "csharp.webp",
+      "icon": "csharp.svg",
       "color": "#239120",
       "knowledge_key": null
     },
     {
       "id": "cpp",
       "label": "C++",
-      "icon": "cpp.webp",
+      "icon": "cpp.svg",
       "color": "#00599C",
       "knowledge_key": null
     },
     {
       "id": "dart",
       "label": "Dart",
-      "icon": "dart.webp",
+      "icon": "dart.svg",
       "color": "#00B4AB",
       "knowledge_key": null
     },
     {
       "id": "kotlin",
       "label": "Kotlin",
-      "icon": "kotlin.webp",
+      "icon": "kotlin.svg",
       "color": "#7F52FF",
       "knowledge_key": null
     },
@@ -232,7 +232,7 @@
       "id": "flask",
       "label": "Flask",
       "description": "Lightweight Python web framework",
-      "icon": "flask.png",
+      "icon": "flask.svg",
       "knowledge_key": "flask"
     },
     {
@@ -528,7 +528,10 @@
       "description": "Database migrations for SQLAlchemy",
       "icon": null,
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": ["sqlalchemy"],
+      "conflicts": []
     },
     {
       "id": "ruff",
@@ -592,7 +595,10 @@
       "description": "Distributed message broker",
       "icon": "kafka.svg",
       "category": "messaging",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": []
     },
   {
     "id": "clickhouse",
@@ -600,7 +606,10 @@
     "description": "OLAP columnar database for analytics",
     "icon": "clickhouse.svg",
     "category": "database",
-    "knowledge_key": null  
+    "knowledge_key": null,
+    "requires_docker": true,
+    "requires": [],
+    "conflicts": []
   },
   {
     "id": "airflow",
@@ -608,7 +617,10 @@
     "description": "Workflow orchestrator for ETL pipelines",
     "icon": "airflow.svg",
     "category": "orchestration",
-    "knowledge_key": null
+    "knowledge_key": null,
+    "requires_docker": true,
+    "requires": [],
+    "conflicts": []
   },
   {
     "id": "dbt",
@@ -624,7 +636,10 @@
     "description": "Observability dashboards and alerting",
     "icon": "grafana.svg",
     "category": "observability",
-    "knowledge_key": null
+    "knowledge_key": null,
+    "requires_docker": true,
+    "requires": [],
+    "conflicts": []
   },
   {
     "id": "terra",
@@ -656,7 +671,10 @@
     "description": "Tracing, metrics, and logs collection",
     "icon": "opentelemetry.svg",
     "category": "observability",
-    "knowledge_key": null
+    "knowledge_key": null,
+    "requires_docker": true,
+    "requires": [],
+    "conflicts": []
   }
 ],
 

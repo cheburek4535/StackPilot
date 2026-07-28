@@ -34,6 +34,9 @@ export type ToolDef = {
   icon: string | null;
   category: string;
   knowledge_key: string | null;
+  requires_docker: boolean;
+  requires: string[];
+  conflicts: string[];
 };
 
 export type WizardTreeData = {
@@ -105,6 +108,155 @@ export type WizardCondition =
 // ============================================================
 // Legacy (deprecated)
 // ============================================================
+
+// ============================================================
+// Analysis — отчет об анализе существующего проекта
+// ============================================================
+
+export type AnalysisReport = {
+  project_path: string;
+  detected_technologies: DetectedTech[];
+  existing_configs: string[];
+  missing_configs: string[];
+  has_docker: boolean;
+  has_git: boolean;
+  has_ci: boolean;
+  has_tests: boolean;
+  has_readme: boolean;
+  has_license: boolean;
+  project_type_hints: string[];
+  summary: string;
+};
+
+export type DetectedTech = {
+  name: string;
+  version: string | null;
+  confidence: "Certain" | "Likely" | "Possible";
+  evidence: string[];
+};
+
+// ============================================================
+// Execution — выполнение рецепта
+// ============================================================
+
+export type Step =
+  | { Command: CommandStep }
+  | { WriteFile: WriteFileStep }
+  | { RenderTemplate: RenderTemplateStep }
+  | { CreateDirectory: CreateDirStep }
+  | { Generate: GenerateStep }
+  | { Parallel: ParallelStep };
+
+export type CommandStep = {
+  id: string; label: string; description: string;
+  command: string; args: string[];
+  working_dir: string | null; env: Record<string, string> | null;
+  timeout_secs: number | null;
+  condition: StepCondition | null; on_error: "Abort" | "Skip";
+};
+
+export type WriteFileStep = {
+  id: string; label: string; description: string;
+  path: string; content: string; overwrite: boolean;
+  condition: StepCondition | null; on_error: "Abort" | "Skip";
+};
+
+export type RenderTemplateStep = {
+  id: string; label: string; description: string;
+  path: string; template: string; context: Record<string, string>;
+  overwrite: boolean;
+  condition: StepCondition | null; on_error: "Abort" | "Skip";
+};
+
+export type CreateDirStep = {
+  id: string; label: string; description: string;
+  path: string;
+  condition: StepCondition | null; on_error: "Abort" | "Skip";
+};
+
+export type GenerateStep = {
+  id: string; label: string; description: string;
+  generator_id: string; generator_config: unknown;
+  condition: StepCondition | null; on_error: "Abort" | "Skip";
+};
+
+export type ParallelStep = {
+  id: string; label: string; description: string;
+  steps: Step[]; condition: StepCondition | null;
+  on_error: "Abort" | "Skip";
+};
+
+export type StepCondition =
+  | { Always: null }
+  | { ContextHas: { key: string; value: string } }
+  | { ContextMissing: { key: string } }
+  | { FileExists: { path: string } }
+  | { FileNotExists: { path: string } }
+  | { TechnologyDetected: { name: string } }
+  | { TechnologyNotDetected: { name: string } }
+  | { FeatureEnabled: { feature: string } };
+
+export type ExecutionPlan = {
+  recipe: Recipe;
+  context: WizardContext;
+  project_path: string;
+  steps: Step[];
+};
+
+export type Recipe = {
+  id: string; name: string; description: string;
+  tags: string[]; steps: Step[];
+};
+
+export type RecipePreview = {
+  recipe_id: string; recipe_name: string;
+  step_previews: StepPreview[];
+  total_steps: number; will_execute_count: number;
+  will_skip_count: number;
+};
+
+export type StepPreview = {
+  id: string; label: string; description: string;
+  action: string; will_execute: boolean;
+  skip_reason: string | null;
+};
+
+export type ExecutionEvent = {
+  event_type: ExecutionEventType;
+  step_id: string; step_index: number; total_steps: number;
+  step_name: string; step_description: string;
+  timestamp: string;
+};
+
+export type ExecutionEventType =
+  | "StepStarted"
+  | { StepProgress: { stdout: string; stderr: string } }
+  | { StepCompleted: { status: StepStatus; duration_ms: number } }
+  | { AllCompleted: { result: ExecutionResult } }
+  | { Error: { message: string } };
+
+export type StepStatus =
+  | "Pending"
+  | "Running"
+  | { Success: { message: string } }
+  | { Skipped: { reason: string } }
+  | { Failed: { error: string } };
+
+export type ExecutionResult = {
+  recipe_id: string; total_duration_ms: number;
+  step_results: StepResult[];
+  overall: OverallStatus;
+};
+
+export type StepResult = {
+  step_id: string; label: string;
+  status: StepStatus; duration_ms: number;
+};
+
+export type OverallStatus =
+  | "Success"
+  | { PartialFailure: { failed_steps: string[] } }
+  | { Aborted: { last_step: string | null; reason: string } };
 
 /** @deprecated Use ProjectTypeDef instead */
 export type Category = {

@@ -58,6 +58,12 @@ pub struct ToolDef {
     pub icon: Option<String>,
     pub category: String,
     pub knowledge_key: Option<String>,
+    #[serde(default)]
+    pub requires_docker: bool,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub conflicts: Vec<String>,
 }
 
 // Устаревшие типы — будут удалены после миграции
@@ -233,6 +239,37 @@ pub enum Step {
         command: String,
         args: Vec<String>,
         working_dir: Option<String>,
+        env: Option<HashMap<String, String>>,
+        timeout_secs: Option<u64>,
+        condition: Option<StepCondition>,
+        on_error: ErrorMode,
+    },
+    WriteFile {
+        id: String,
+        label: String,
+        description: String,
+        path: String,
+        content: String,
+        overwrite: bool,
+        condition: Option<StepCondition>,
+        on_error: ErrorMode,
+    },
+    // RenderTemplate {
+    //     id: String,
+    //     label: String,
+    //     description: String,
+    //     path: String,
+    //     template: String,
+    //     context: HashMap<String, String>,
+    //     overwrite: bool,
+    //     condition: Option<StepCondition>,
+    //     on_error: ErrorMode,
+    // },
+    CreateDirectory {
+        id: String,
+        label: String,
+        description: String,
+        path: String,
         condition: Option<StepCondition>,
         on_error: ErrorMode,
     },
@@ -248,7 +285,9 @@ pub enum Step {
     Parallel {
         id: String,
         label: String,
+        description: String,
         steps: Vec<Step>,
+        condition: Option<StepCondition>,
         on_error: ErrorMode,
     },
 }
@@ -321,6 +360,43 @@ pub struct ExecutionResult {
     pub total_duration_ms: u64,
     pub step_results: Vec<StepResult>,
     pub overall: OverallStatus,
+}
+
+/// План выполнения — конкретный список шагов для конкретного проекта
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub recipe: Recipe,
+    pub context: WizardContext,
+    pub project_path: PathBuf,
+    /// «Развёрнутые» шаги (после раскрытия Parallel, после фильтрации по condition)
+    pub steps: Vec<Step>,
+}
+
+impl ExecutionPlan {
+    pub fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+}
+
+/// Событие выполнения шага — стримится на фронтенд через Tauri events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionEvent {
+    pub event_type: ExecutionEventType,
+    pub step_id: String,
+    pub step_index: usize,
+    pub total_steps: usize,
+    pub step_name: String,
+    pub step_description: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExecutionEventType {
+    StepStarted,
+    StepProgress { stdout: String, stderr: String },
+    StepCompleted { status: StepStatus, duration_ms: u64 },
+    AllCompleted { result: ExecutionResult },
+    Error { message: String },
 }
 
 // ============================================================
