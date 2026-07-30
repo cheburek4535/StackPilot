@@ -58,3 +58,7 @@ export function startProjectExecution(
 ): Promise<ExecutionPlan> {
   return invoke("start_project_execution", { context, projectPath });
 }
+
+export function checkFolderExists(path: string): Promise<boolean> {
+  return invoke("check_project_folder_exists", { path });
+}

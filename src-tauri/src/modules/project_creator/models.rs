@@ -36,6 +36,8 @@ pub struct LanguageDef {
     pub label: String,
     pub icon: Option<String>,
     pub color: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>, // "backend", "frontend", "static", или null/None
     pub knowledge_key: Option<String>,
 }
 
@@ -46,7 +48,11 @@ pub struct FrameworkDef {
     pub label: String,
     pub description: String,
     pub icon: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>, // "backend", "frontend", "none"
     pub knowledge_key: Option<String>,
+    #[serde(default)]
+    pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим
 }
 
 /// Инструмент (БД, кеш, CI, тесты...)
@@ -131,6 +137,10 @@ pub enum WizardCondition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WizardContext {
     pub project_path: Option<PathBuf>,
+    /// Пользовательское имя проекта (для package.json, README и т.д.).
+    /// Может отличаться от имени папки на диске (см. conflictResolvedFolder).
+    #[serde(default)]
+    pub project_name: Option<String>,
     pub is_existing: bool,
     /// ID типа проекта (rest-api, desktop-app...)
     pub project_type: Option<String>,
@@ -156,6 +166,7 @@ impl Default for WizardContext {
     fn default() -> Self {
         Self {
             project_path: None,
+            project_name: None,
             is_existing: false,
             project_type: None,
             languages: Vec::new(),
@@ -230,6 +241,28 @@ pub struct Recipe {
     pub steps: Vec<Step>,
 }
 
+/// Один интерактивный ответ: обнаружли триггер в выводе → отправили response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractiveEntry {
+    /// Подстрока для поиска в rolling‑буфере stdout (регистронезависимо)
+    pub trigger: String,
+    /// Что и как отправить в stdin процесса
+    pub response_type: ResponseType,
+}
+
+/// Способ ответа на интерактивный запрос CLI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ResponseType {
+    /// Просто текст + enter (например "TypeScript / JavaScript\n")
+    Text(String),
+    /// Подтвердить / отказаться (y / n)
+    Confirm(bool),
+    /// Выбрать N-ый пункт в списке стрелками (0‑индексация)
+    Select(usize),
+    /// Произвольная последовательность байт (ANSI‑escape и т.п.)
+    Keys(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Step {
     Command {
@@ -243,6 +276,9 @@ pub enum Step {
         timeout_secs: Option<u64>,
         condition: Option<StepCondition>,
         on_error: ErrorMode,
+        /// Список ожидаемых интерактивных запросов и ответов на них
+        #[serde(default)]
+        interactive: Vec<InteractiveEntry>,
     },
     WriteFile {
         id: String,

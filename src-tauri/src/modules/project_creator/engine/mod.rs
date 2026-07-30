@@ -1,10 +1,12 @@
+pub mod content;
 pub mod executor;
-pub mod template;
+// pub mod template;
 use std::path::{Path};
 use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
+use chrono::Local;
 
 use crate::modules::project_creator::models::*;
 
@@ -35,14 +37,14 @@ pub trait RecipeEngine: Send + Sync {
 /// DefaultRecipeEngine — заглушка. Всю логику будете писать вы по TZ.
 /// ============================================================================
 pub struct DefaultRecipeEngine {
-    pub template_engine: Arc<template::TemplateEngine>,
+    // pub template_engine: Arc<template::TemplateEngine>,
     pub executor: Arc<executor::StepExecutor>,
 }
 
 impl DefaultRecipeEngine {
     pub fn new() -> Self {
         Self {
-            template_engine: Arc::new(template::TemplateEngine::new()),
+            // template_engine: Arc::new(template::TemplateEngine::new()),
             executor: Arc::new(executor::StepExecutor::new()),
         }
     }
@@ -55,7 +57,12 @@ impl RecipeEngine for DefaultRecipeEngine {
         context: &WizardContext,
         project_path: &Path,
     ) -> Result<ExecutionPlan, String> {
-        let recipe = compose_recipe(context)?;
+        let folder_name = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("app");
+        let recipe = compose_recipe(context, folder_name)?;
+        // context.project_name (если задан) будет использован внутри compose_recipe
         let steps = flatten_and_filter(&recipe, context, project_path);
         Ok(ExecutionPlan {
             recipe,
@@ -244,16 +251,13 @@ impl RecipeEngine for DefaultRecipeEngine {
 // ============================================================================
 
 /// Составить рецепт на основе WizardContext (TZ Task 1)
-fn compose_recipe(context: &WizardContext) -> Result<Recipe, String> {
+fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, String> {
+    // project_name может отличаться от folder_name (при auto-rename папки)
+    let project_name = context.project_name.as_deref().unwrap_or(folder_name);
     let mut steps: Vec<Step> = Vec::new();
     let project_path = context.project_path.as_ref()
         .and_then(|p| p.to_str())
         .unwrap_or(".");
-    
-    let project_name = Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app");
 
      steps.push(Step::CreateDirectory {
         id: "create_root".into(),
@@ -268,13 +272,13 @@ fn compose_recipe(context: &WizardContext) -> Result<Recipe, String> {
         steps.extend(steps_for_language(lang, project_name, project_path));
     }
     for fw in &context.frameworks {
-        steps.extend(steps_for_framework(fw, project_path, project_name));
+        steps.extend(steps_for_framework(fw, project_path, project_name, context));
     }
     steps.extend(steps_for_tools(&context.tools, project_path));
-    steps.extend(steps_for_docker(context, project_path));
-    steps.extend(steps_for_git(context, project_path));
-    steps.extend(steps_for_ci(context, project_path));
-    steps.extend(steps_for_readme(context, project_path));
+    steps.extend(steps_for_docker(context, project_path, project_name));
+    steps.extend(steps_for_git(context, project_path, project_name));
+    steps.extend(steps_for_ci(context, project_path, project_name));
+    steps.extend(steps_for_readme(context, project_path, project_name));
     steps.extend(steps_for_vscode(context));
 
     
@@ -347,8 +351,8 @@ fn evaluate_condition(cond: Option<&StepCondition>, context: &WizardContext) -> 
 }
 
 fn chrono_event_time() -> String {
-    // Simplified; in production use chrono
-    "now".to_string()
+    let local_time = Local::now();
+    local_time.format("%H::%M:%S").to_string()
 }
 
 fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec<Step> {
@@ -362,9 +366,10 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
             args: vec![],
             working_dir: Some(project_path.to_string()),
             env: None,
-            timeout_secs: Some(60), // Разумный таймаут по умолчанию
+            timeout_secs: Some(60),
             condition: None,
             on_error: ErrorMode::Abort,
+            interactive: vec![],
         }
     };
 
@@ -396,8 +401,9 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
                     label: "Create package.json".into(),
                     description: "Initialize package.json with project metadata".into(),
                     path: "package.json".into(),
-                    content: format!(r#"
-"name": "{}",
+                    content: format!(
+    r#"{{
+  "name": "{}",
   "version": "1.0.0",
   "description": "",
   "main": "src/index.{}",
@@ -512,7 +518,8 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
                 env: None,
                 timeout_secs: Some(120),
                 condition: None,
-                on_error: ErrorMode::Skip, // Maven может отсутствовать
+                on_error: ErrorMode::Skip,
+                interactive: vec![],
             },
         ],
 
@@ -633,12 +640,26 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
                 timeout_secs: Some(5),
                 condition: None,
                 on_error: ErrorMode::Skip,
+                interactive: vec![],
             },
         ],
     }
 }
 
-fn steps_for_framework(fw: &str, project_path: &str, project_name: &str) -> Vec<Step> {
+/// Вспомогательные функции для определения категорий языков
+fn is_frontend_lang(l: &str) -> bool {
+    matches!(l, "typescript" | "javascript" | "dart" | "kotlin" | "swift" | "csharp")
+}
+fn _is_backend_lang(l: &str) -> bool {
+    matches!(l, "rust" | "python" | "go" | "java" | "csharp" | "php" | "elixir" | "zig" | "gleam" | "cpp" | "c")
+}
+
+fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
+    // Определяем язык фронтенда (для Tauri, Expo и др.)
+    let frontend_lang = context.languages.iter().find(|l| is_frontend_lang(l));
+    let has_typescript = context.languages.iter().any(|l| l == "typescript");
+    let has_javascript = context.languages.iter().any(|l| l == "javascript");
+
     let cmd = |id: &str, label: &str, desc: &str, command: &str, args: Vec<&str>| -> Step {
         Step::Command {
             id: id.to_string(),
@@ -648,9 +669,27 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str) -> Vec<
             args: args.into_iter().map(String::from).collect(),
             working_dir: Some(project_path.to_string()),
             env: None,
-            timeout_secs: Some(300), // Некоторые фреймворки долго ставятся
+            timeout_secs: Some(300),
             condition: None,
-            on_error: ErrorMode::Skip, // Не у всех установлены глобальные CLI
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        }
+    };
+
+    // cmd_i — то же самое, но с interactive-записями
+    let cmd_i = |id: &str, label: &str, desc: &str, command: &str, args: Vec<&str>, interactive: Vec<InteractiveEntry>| -> Step {
+        Step::Command {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: desc.to_string(),
+            command: command.to_string(),
+            args: args.into_iter().map(String::from).collect(),
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(300),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive,
         }
     };
 
@@ -687,10 +726,46 @@ async fn main() {{
                 "cargo", vec!["add", "axum", "tokio", "--features", "tokio/full"]),
         ],
 
-        "tauri" => vec![
-            cmd("tauri_init", "Init Tauri", "Initialize Tauri in current project",
-                "cargo", vec!["tauri", "init", "--app-name", project_name, "--window-title", project_name, "--dev-url", "http://localhost:1420", "--before-dev-command", "", "--before-build-command", ""]),
-        ],
+        "tauri" => {
+            // Определяем язык фронтенда для Tauri
+            let frontend_choice = if frontend_lang.is_some() {
+                "TypeScript / JavaScript"
+            } else if has_typescript {
+                "TypeScript / JavaScript"
+            } else {
+                "Rust"
+            };
+            vec![
+                cmd_i("tauri_init", "Init Tauri", "Initialize Tauri in current project",
+                    "cargo", vec!["tauri", "init", "--app-name", project_name, "--window-title", project_name, "--dev-url", "http://localhost:1420", "--before-dev-command", "", "--before-build-command", ""],
+                    vec![
+                        InteractiveEntry {
+                            trigger: "Choose which language to use for your frontend".into(),
+                            response_type: ResponseType::Text(frontend_choice.to_string()),
+                        },
+                        InteractiveEntry {
+                            trigger: "Choose your package manager".into(),
+                            response_type: ResponseType::Text("npm".to_string()),
+                        },
+                        InteractiveEntry {
+                            trigger: "Choose your UI template".into(),
+                            response_type: if context.frameworks.iter().any(|f| f == "react" || f == "nextjs") {
+                                ResponseType::Text("React".to_string())
+                            } else if context.frameworks.iter().any(|f| f == "vue" || f == "nuxt") {
+                                ResponseType::Text("Vue".to_string())
+                            } else if context.frameworks.iter().any(|f| f == "svelte" || f == "sveltekit") {
+                                ResponseType::Text("Svelte".to_string())
+                            } else {
+                                ResponseType::Text("Vanilla".to_string())
+                            },
+                        },
+                        InteractiveEntry {
+                            trigger: "Would you like to install WiX Toolset v3?".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                    ]),
+            ]
+        },
 
         "clap" => vec![
             cmd("add_clap_deps", "Add Clap dependency", "Add clap with derive feature",
@@ -787,18 +862,76 @@ if __name__ == "__main__":
 
         // ==================== JavaScript / TypeScript ====================
         "nextjs" => vec![
-            cmd("nextjs_create", "Create Next.js app", "Scaffold Next.js project",
-                "npx", vec!["create-next-app@latest", ".", "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm"]),
+            cmd_i("nextjs_create", "Create Next.js app", "Scaffold Next.js project",
+                "npx", vec!["create-next-app@latest", ".", "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm"],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Would you like to use TypeScript?".into(),
+                        response_type: if has_typescript { ResponseType::Confirm(true) } else { ResponseType::Confirm(false) },
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to use ESLint?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to use Tailwind CSS?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like your code inside a `src/` directory?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to use App Router?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to customize the import alias".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                ]),
         ],
 
-        "sveltekit" => vec![
-            cmd("sveltekit_create", "Create SvelteKit app", "Scaffold SvelteKit project",
-                "npx", vec!["sv", "create", "."]),
-        ],
+        "sveltekit" => {
+            // SvelteKit CLI: выбор шаблона, TypeScript, доп. инструменты
+            let ts_choice = if has_typescript {
+                "Yes, using TypeScript syntax"
+            } else {
+                "No"
+            };
+            vec![
+                cmd_i("sveltekit_create", "Create SvelteKit app", "Scaffold SvelteKit project",
+                    "npx", vec!["sv", "create", "."],
+                    vec![
+                        InteractiveEntry {
+                            trigger: "Which Svelte app template?".into(),
+                            response_type: ResponseType::Select(1), // "Skeleton project"
+                        },
+                        InteractiveEntry {
+                            trigger: "Add type checking with TypeScript?".into(),
+                            response_type: ResponseType::Text(ts_choice.into()),
+                        },
+                        InteractiveEntry {
+                            trigger: "Select additional options".into(),
+                            response_type: ResponseType::Keys("\n".to_string()), // Enter (ничего не выбираем)
+                        },
+                    ]),
+            ]
+        },
 
         "nuxt" => vec![
-            cmd("nuxt_create", "Create Nuxt app", "Scaffold Nuxt project",
-                "npx", vec!["nuxi", "init", "."]),
+            cmd_i("nuxt_create", "Create Nuxt app", "Scaffold Nuxt project",
+                "npx", vec!["nuxi", "init", "."],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Which package manager would you like to use?".into(),
+                        response_type: ResponseType::Text("npm".to_string()),
+                    },
+                    InteractiveEntry {
+                        trigger: "Initialize a new git repository?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                ]),
         ],
 
         "express" => vec![
@@ -832,8 +965,18 @@ app.listen(PORT, () => {{
         ],
 
         "electron" => vec![
-            cmd("electron_init", "Init Electron", "Create Electron app with electron-forge",
-                "npx", vec!["create-electron-app", project_name]),
+            cmd_i("electron_init", "Init Electron", "Create Electron app with electron-forge",
+                "npx", vec!["create-electron-app", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Choose a template:".into(),
+                        response_type: if has_typescript { ResponseType::Text("TypeScript".to_string()) } else { ResponseType::Text("Vite".to_string()) },
+                    },
+                    InteractiveEntry {
+                        trigger: "Initialize a git repository?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                ]),
         ],
 
         "telegraf" => vec![
@@ -860,23 +1003,82 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
         ],
 
         "react-native" => vec![
-            cmd("rn_init", "Init React Native", "Create React Native project",
-                "npx", vec!["@react-native-community/cli", "init", project_name]),
+            cmd_i("rn_init", "Init React Native", "Create React Native project",
+                "npx", vec!["@react-native-community/cli", "init", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Do you want to install CocoaPods dependencies?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                    InteractiveEntry {
+                        trigger: "Downloading and installing the modern architecture dependencies. Proceed?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                ]),
         ],
 
-        "expo" => vec![
-            cmd("expo_init", "Init Expo", "Create Expo project",
-                "npx", vec!["create-expo-app", project_name]),
-        ],
+        "expo" => {
+            let expo_template = if has_typescript {
+                "Blank (TypeScript)"
+            } else {
+                "Blank"
+            };
+            vec![
+                cmd_i("expo_init", "Init Expo", "Create Expo project",
+                    "npx", vec!["create-expo-app", project_name],
+                    vec![
+                        InteractiveEntry {
+                            trigger: "What is your app named?".into(),
+                            response_type: ResponseType::Text(project_name.into()),
+                        },
+                        InteractiveEntry {
+                            trigger: "Choose a template:".into(),
+                            response_type: ResponseType::Text(expo_template.into()),
+                        },
+                        InteractiveEntry {
+                            trigger: "Download and install CocoaPods dependencies?".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                        InteractiveEntry {
+                            trigger: "Do you want to log in".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                        InteractiveEntry {
+                            trigger: "Install the iOS and Android".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                    ]),
+            ]
+        },
 
         "plasmo" => vec![
-            cmd("plasmo_init", "Init Plasmo", "Create browser extension with Plasmo",
-                "npx", vec!["plasmo", "init", project_name]),
+            cmd_i("plasmo_init", "Init Plasmo", "Create browser extension with Plasmo",
+                "npx", vec!["plasmo", "init", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Project name".into(),
+                        response_type: ResponseType::Text(project_name.into()),
+                    },
+                    InteractiveEntry {
+                        trigger: "Select your primary framework/compiler".into(),
+                        response_type: if has_typescript || has_javascript {
+                            ResponseType::Text("React (Next-like)".to_string())
+                        } else {
+                            ResponseType::Text("Vanilla".to_string())
+                        },
+                    },
+                ]),
         ],
 
         "nest" => vec![
-            cmd("nest_new", "Create NestJS project", "Scaffold NestJS application",
-                "npx", vec!["@nestjs/cli", "new", project_name, "--package-manager", "npm"]),
+            cmd_i("nest_new", "Create NestJS project", "Scaffold NestJS application",
+                "npx", vec!["@nestjs/cli", "new", project_name, "--package-manager", "npm"],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Which package manager would you love to use".into(),
+                        response_type: ResponseType::Text("npm".to_string()),
+                    },
+                ]),
         ],
 
         "fastify" => vec![
@@ -915,8 +1117,18 @@ start();
         ],
 
         "solidjs" => vec![
-            cmd("solid_init", "Create SolidStart app", "Scaffold SolidStart project",
-                "npx", vec!["create-solid", "."]),
+            cmd_i("solid_init", "Create SolidStart app", "Scaffold SolidStart project",
+                "npx", vec!["create-solid", "."],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Is this a server-side rendered app".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                    InteractiveEntry {
+                        trigger: "Use TypeScript?".into(),
+                        response_type: if has_typescript { ResponseType::Confirm(true) } else { ResponseType::Confirm(false) },
+                    },
+                ]),
         ],
 
         // ==================== Go ====================
@@ -1087,15 +1299,51 @@ fun main() {{
 
         // ==================== PHP ====================
         "laravel" => vec![
-            cmd("laravel_new", "Create Laravel project",
+            cmd_i("laravel_new", "Create Laravel project",
                 "Scaffold Laravel application",
-                "composer", vec!["create-project", "laravel/laravel", project_name]),
+                "npx", vec!["laravel", "new", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Would you like to install a starter kit?".into(),
+                        response_type: ResponseType::Select(1), // "Breeze" (index 1)
+                    },
+                    InteractiveEntry {
+                        trigger: "Which frontend stack would you like to use?".into(),
+                        response_type: if has_typescript || has_javascript {
+                            ResponseType::Text("React with Inertia".to_string())
+                        } else {
+                            ResponseType::Text("Blade with Alpine".to_string())
+                        },
+                    },
+                    InteractiveEntry {
+                        trigger: "Which testing framework do you prefer?".into(),
+                        response_type: ResponseType::Text("Pest".to_string()),
+                    },
+                    InteractiveEntry {
+                        trigger: "Which database will your application use?".into(),
+                        response_type: ResponseType::Text("SQLite".to_string()),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to run the default database migrations?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                ]),
         ],
 
         "symfony" => vec![
-            cmd("symfony_new", "Create Symfony project",
+            cmd_i("symfony_new", "Create Symfony project",
                 "Scaffold Symfony application",
-                "composer", vec!["create-project", "symfony/skeleton", project_name]),
+                "symfony", vec!["new", project_name, "--dir", project_path],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Do you want to include support for Docker?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                    InteractiveEntry {
+                        trigger: "wants to execute a script. Do you confirm?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                ]),
         ],
 
         // ==================== Swift ====================
@@ -1106,8 +1354,22 @@ fun main() {{
         ],
 
         "vapor" => vec![
-            cmd("vapor_new", "Create Vapor project", "Scaffold Vapor application",
-                "vapor", vec!["new", project_name]),
+            cmd_i("vapor_new", "Create Vapor project", "Scaffold Vapor application",
+                "vapor", vec!["new", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Would you like to use Fluent?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                    InteractiveEntry {
+                        trigger: "Choose a database engine:".into(),
+                        response_type: ResponseType::Text("SQLite".to_string()),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to use Leaf?".into(),
+                        response_type: ResponseType::Confirm(false),
+                    },
+                ]),
         ],
 
         // ==================== Zig ====================
@@ -1125,8 +1387,18 @@ pub fn main() !void {{
 
         // ==================== Elixir ====================
         "phoenix" => vec![
-            cmd("phoenix_new", "Create Phoenix project", "Scaffold Phoenix application",
-                "mix", vec!["phx.new", project_name]),
+            cmd_i("phoenix_new", "Create Phoenix project", "Scaffold Phoenix application",
+                "mix", vec!["phx.new", project_name],
+                vec![
+                    InteractiveEntry {
+                        trigger: "Fetch and install dependencies?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                    InteractiveEntry {
+                        trigger: "Would you like to build assets?".into(),
+                        response_type: ResponseType::Confirm(true),
+                    },
+                ]),
         ],
 
         _ => vec![
@@ -1191,6 +1463,7 @@ def get_db():
                     timeout_secs: Some(30),
                     condition: None,
                     on_error: ErrorMode::Skip,
+                    interactive: vec![],
                 });
             }
             "prisma" => {
@@ -1205,6 +1478,7 @@ def get_db():
                     timeout_secs: Some(30),
                     condition: None,
                     on_error: ErrorMode::Skip,
+                    interactive: vec![],
                 });
             }
             "drizzle" => {
@@ -1261,7 +1535,7 @@ indent-style = "space"
                 steps.push(write_file(&format!("env_{}", tool_id), 
                     &format!("Environment for {}", tool_id),
                     ".env.example",
-                    &get_env_example(tool_id)));
+                    &content::get_env_example(tool_id)));
             }
             "grafana" | "opentelemetry" => {
                 steps.push(write_file(&format!("config_{}", tool_id),
@@ -1290,50 +1564,17 @@ indent-style = "space"
     steps
 }
 
-fn get_env_example(tool_id: &str) -> String {
-    match tool_id {
-        "postgresql" => r#"POSTGRES_USER=user
-POSTGRES_PASSWORD=password
-POSTGRES_DB=dbname
-POSTGRES_PORT=5432
-DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-"#.to_string(),
-        "redis" => r#"REDIS_URL=redis://localhost:6379/0
-"#.to_string(),
-        "mongodb" => r#"MONGODB_URI=mongodb://localhost:27017
-MONGODB_DB=dbname
-"#.to_string(),
-        "mysql" => r#"MYSQL_ROOT_PASSWORD=rootpassword
-MYSQL_DATABASE=dbname
-MYSQL_USER=user
-MYSQL_PASSWORD=password
-MYSQL_PORT=3306
-"#.to_string(),
-        _ => format!("# Environment variables for {}\n", tool_id),
-    }
-}
 
 
-struct DockerService {
-    name: String,
-    image: String,
-    ports: Vec<String>,
-    environment: Vec<(String, String)>,
-    volumes: Vec<String>,
-    depends_on: Vec<String>
-}
-
-fn steps_for_docker(context: &WizardContext, project_path: &str) -> Vec<Step> {
+fn steps_for_docker(context: &WizardContext, _project_path: &str, project_name: &str) -> Vec<Step> {
     if context.docker == false {return Vec::new()}
-
-    let project_name = Path::new(project_path).file_name().and_then(|f| f.to_str()).unwrap_or("app");
 
     let primary_lang = context.languages.first().map(|s| s.as_str()).unwrap_or("python");
     let primary_fw = context.frameworks.first().map(|s| s.as_str());
 
     let mut result = Vec::new();
 
-    if let Some(dockerfile_content) = generate_dockerfile_content(primary_lang, primary_fw, project_name) {
+    if let Some(dockerfile_content) = content::generate_dockerfile_content(primary_lang, primary_fw, project_name) {
         result.push(Step::WriteFile{
             id: "dockerfile".into(),
             label: "Create Dockerfile".into(),
@@ -1350,12 +1591,12 @@ fn steps_for_docker(context: &WizardContext, project_path: &str) -> Vec<Step> {
         label: ("Create .dockerignore".into()), 
         description: ("Generate .dockerignore file".into()), 
         path: (".dockerignore".into()), 
-        content: (dockerignore_content(primary_lang)),
+        content: (content::dockerignore_content(primary_lang)),
         overwrite: (true), 
         condition: (None), 
         on_error: (ErrorMode::Skip) });
 
-    let services = collect_docker_services(&context.tools);
+    let services = content::collect_docker_services(&context.tools);
     if !services.is_empty() {
         let app_port = match primary_fw {
             Some("django") | Some("fastapi") => "8000",
@@ -1369,7 +1610,7 @@ fn steps_for_docker(context: &WizardContext, project_path: &str) -> Vec<Step> {
             label: "Create docker-compose".into(),
             description: "Generate docker-compose file".into(),
             path: "docker-compose.yaml".into(),
-            content: generate_docker_compose(&services, project_name, app_port),
+            content: content::generate_docker_compose(&services, project_name, app_port),
             overwrite: true,
             condition: None,
             on_error: ErrorMode::Skip
@@ -1379,639 +1620,15 @@ fn steps_for_docker(context: &WizardContext, project_path: &str) -> Vec<Step> {
     result
 }
 
-fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
-    let mut services = Vec::new();
-    
-    for tool in tools.iter() {
-        match tool.as_str() {
-            "postgresql" => services.push(DockerService {
-                name: "postgres".into(),
-                image: "postgres:16-alpine".into(),
-                ports: vec!["5432:5432".into()],
-                environment: vec![
-                    ("POSTGRES_USER".into(), "postgres".into()),
-                    ("POSTGRES_PASSWORD".into(), "12345".into()),
-                    ("POSTGRES_DB".into(), "postgres".into()),
-                ],
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-            
-            "redis" => services.push(DockerService { 
-                name: "redis".into(),
-                image: "redis:7-alpine".into(),
-                ports: vec!["6379:6379".into()],
-                environment: Vec::new(),
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-
-            "mongodb" => services.push(DockerService {
-                name: "mongodb".into(),
-                image: "mongo:7".into(),
-                ports: vec!["27017:27017".into()],
-                environment: vec![
-                    ("MONGO_INITDB_ROOT_USERNAME".into(), "root".into()),
-                    ("MONGO_INITDB_ROOT_PASSWORD".into(), "example".into()),
-                ],
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-
-            "mysql" => services.push(DockerService {
-                name: "mysql".into(),
-                image: "mysql:8".into(),
-                ports: vec!["3306:3306".into()],
-                environment: vec![
-                    ("MYSQL_ROOT_PASSWORD".into(), "root_pwd".into()),
-                    ("MYSQL_DATABASE".into(), "mydb".into()),
-                ],
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-
-            "kafka" => {
-                services.push(DockerService {
-                    name: "zookeeper".into(),
-                    image: "confluentinc/cp-zookeeper:latest".into(),
-                    ports: vec!["2181:2181".into()],
-                    environment: vec![
-                        ("ZOOKEEPER_CLIENT_PORT".into(), "2181".into()),
-                        ("ZOOKEEPER_TICK_TIME".into(), "2000".into()),
-                    ],
-                    volumes: Vec::new(),
-                    depends_on: Vec::new(),
-                });
-
-                services.push(DockerService {
-                    name: "kafka".into(),
-                    image: "confluentinc/cp-kafka:latest".into(),
-                    ports: vec!["9092:9092".into()],
-                    environment: vec![
-                        ("KAFKA_BROKER_ID".into(), "1".into()),
-                        ("KAFKA_ZOOKEEPER_CONNECT".into(), "zookeeper:2181".into()),
-                        ("KAFKA_ADVERTISED_LISTENERS".into(), "PLAINTEXT://localhost:9092".into()),
-                        ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(), "1".into()),
-                    ],
-                    volumes: Vec::new(),
-                    depends_on: vec!["Zookeeper".into()],
-                });
-            },
-
-            "clickhouse" => services.push(DockerService {
-                name: "clickHouse".into(),
-                image: "clickhouse/clickhouse-server:latest".into(),
-                ports: vec!["8123:8123".into(), "9000:9000".into()],
-                environment: Vec::new(),
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-
-            "mailpit" => services.push(DockerService {
-                name: "mailpit".into(),
-                image: "axllent/mailpit:latest".into(),
-                ports: vec!["1025:1025".into(), "8025:8025".into()],
-                environment: Vec::new(),
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
-
-            _ => {}
-        }
-    }
-    
-    services
-}
-
-/// Генерирует готовый контент Dockerfile как строку.
-/// Возвращает Option, потому что для некоторых фреймворков Docker не нужен (например, Tauri).
-fn generate_dockerfile_content(
-    lang: &str, 
-    framework: Option<&str>, 
-    project_name: &str
-) -> Option<String> {
-    match lang {
-        "python" => {
-            // Базовые значения для Python
-            let (base_image, entrypoint, port) = match framework {
-                Some("fastapi") => (
-                    "python:3.13-slim",
-                    "src/main.py",
-                    "3000"
-                ),
-                Some("django") => (
-                    "python:3.13-slim", 
-                    "manage.py",        // Django запускается иначе
-                    "8000"              // Django default port
-                ),
-                Some("flask") => (
-                    "python:3.13-slim",
-                    "src/app.py",
-                    "3000"
-                ),
-                _ => (
-                    "python:3.13-slim",
-                    "src/main.py",
-                    "3000"
-                ),
-            };
-
-            Some(format!(r#"FROM {base_image}
-
-WORKDIR /app
-
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY . .
-
-# Expose the port
-EXPOSE {port}
-
-# Run the application
-CMD ["python", "{entrypoint}"]
-"#))
-        }
-
-        "rust" => {
-            let (port, bin_name) = match framework {
-                Some("axum") => ("3000", project_name),
-                Some("clap") => return None, // CLI не нужен Docker
-                _ => ("3000", project_name),
-            };
-
-            Some(format!(r#"# Build stage
-FROM rust:1.83-slim-bookworm AS builder
-
-WORKDIR /app
-COPY . .
-RUN cargo build --release
-
-# Runtime stage
-FROM debian:bookworm-slim
-
-WORKDIR /app
-COPY --from=builder /app/target/release/{bin_name} .
-
-EXPOSE {port}
-
-CMD ["./{bin_name}"]
-"#))
-        }
-
-        "typescript" | "javascript" | "node" => {
-    let (base_image, needs_build, entrypoint, port, build_steps) = match framework {
-        Some("nextjs") => (
-            "node:22-alpine",
-            true,
-            "node_modules/.bin/next",
-            "3000",
-            "RUN npm run build\n",  // Next.js запускается через next start
-        ),
-        Some("nuxt") => (
-            "node:22-alpine",
-            true,
-            ".output/server/index.mjs",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("sveltekit") => (
-            "node:22-alpine",
-            true,
-            "build/index.js",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("nest") => (
-            "node:22-alpine",
-            true,
-            "dist/main.js",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("fastify") | Some("express") => (
-            "node:22-alpine",
-            false,
-            "src/index.js",
-            "3000",
-            "",
-        ),
-        _ => (
-            "node:22-alpine",
-            false,
-            "src/index.js",
-            "3000",
-            "",
-        ),
-    };
-
-    if needs_build {
-        // Для фреймворков, которым нужна сборка
-        Some(format!(r#"FROM {base_image}
-
-WORKDIR /app
-
-# Install all dependencies (including dev for build)
-COPY package*.json ./
-RUN npm ci
-
-# Copy source and build
-COPY . .
-RUN npm run build
-
-# Prune dev dependencies for production
-RUN npm prune --production
-
-EXPOSE {port}
-
-CMD ["node", "{entrypoint}"]
-"#))
-    } else {
-        // Для простых серверов без сборки
-        Some(format!(r#"FROM {base_image}
-
-WORKDIR /app
-
-# Install production dependencies only
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Copy application code
-COPY . .
-
-EXPOSE {port}
-
-CMD ["node", "{entrypoint}"]
-"#))
-    }
-}
-
-    "go" => {
-            if framework == Some("cobra") {return None}
-            Some(format!(r#"# Build stage
-FROM golang:1.24-alpine AS builder
-
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -o app ./cmd/main.go
-
-# Runtime stage
-FROM alpine:3.21
-
-WORKDIR /app
-COPY --from=builder /app/app .
-
-EXPOSE 3000
-
-CMD ["./app"]
-"#))
-    }
-    "csharp" => {
-    let (runtime_image, port, project_file) = match framework {
-        Some("aspnetcore") => (
-            "mcr.microsoft.com/dotnet/aspnet:8.0",
-            "EXPOSE 8080",
-            format!("{}.csproj", project_name)
-        ),
-        _ => (
-            "mcr.microsoft.com/dotnet/runtime:8.0",
-            "",
-            format!("{}.csproj", project_name)
-        ),
-    };
-
-    Some(format!(r#"FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /src
-COPY {project_file} .
-RUN dotnet restore
-COPY . .
-RUN dotnet publish -c Release -o /app/publish
-
-FROM {runtime_image} AS final
-WORKDIR /app
-{port}
-COPY --from=build /app/publish .
-ENTRYPOINT ["dotnet", "{project_name}.dll"]
-"#))
-},
-    "java" => {
-        let has_spring = framework == Some("spring-boot");
-        if !has_spring {
-            return None; // Только Spring Boot поддерживает Docker из коробки
-        }
-    Some(format!(r#"FROM eclipse-temurin:21-jdk-alpine AS build
-WORKDIR /app
-COPY mvnw pom.xml ./
-COPY .mvn .mvn
-RUN ./mvnw dependency:go-offline
-COPY src ./src
-RUN ./mvnw package -DskipTests
-
-FROM eclipse-temurin:21-jre-alpine AS final
-WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
-"#))
-},
-    "php" => {
-    let has_laravel = framework == Some("laravel") || framework == Some("symfony");
-    if !has_laravel {
-        return None;
-    }
-    Some(format!(r#"FROM php:8.3-fpm-alpine
-
-RUN docker-php-ext-install pdo pdo_mysql
-
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
-
-WORKDIR /app
-COPY composer.json composer.lock ./
-RUN composer install --no-dev --optimize-autoloader
-
-COPY . .
-RUN php artisan config:cache || true
-
-EXPOSE 8000
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
-"#))
-},
-    "elixir" => {
-    let is_phoenix = framework == Some("phoenix");
-    if !is_phoenix {
-        return None;
-    }
-    Some(format!(r#"FROM hexpm/elixir:1.17-erlang-27-alpine AS build
-WORKDIR /app
-RUN mix local.hex --force && mix local.rebar --force
-COPY mix.exs mix.lock ./
-RUN mix deps.get --only prod
-COPY . .
-RUN mix compile
-
-FROM hexpm/elixir:1.17-erlang-27-alpine AS final
-WORKDIR /app
-COPY --from=build /app/_build/prod/rel/{project_name} .
-EXPOSE 4000
-CMD ["./bin/{project_name}", "start"]
-"#))
-},
-    "cpp" => {
-        let is_qt = framework == Some("qt");
-        if is_qt {
-            Some(format!(r#"FROM stateoftheartio/qt6:6.7-gcc-ubuntu-24.04 AS build
-WORKDIR /app
-COPY . .
-RUN mkdir build && cd build && \
-    qt-cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    cmake --build .
-
-FROM ubuntu:24.04 AS final
-RUN apt-get update && apt-get install -y \
-    libqt6gui6 libqt6core6 libqt6widgets6 \
-    libgl1-mesa-glx \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY --from=build /app/build/{project_name} .
-ENTRYPOINT ["./{project_name}", "-platform", "offscreen"]"#))
-        } else {
-            Some(format!(r#"FROM ubuntu:24.04 AS build
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY . .
-RUN mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    cmake --build .
-
-FROM ubuntu:24.04 AS final
-WORKDIR /app
-
-COPY --from=build /app/build/{project_name} .
-ENTRYPOINT ["./{project_name}"]"#))
-        }
-    },
-    "zig" => {
-Some(format!(r#"FROM ziglang/zig:0.13.0 AS build
-WORKDIR /app
-
-COPY build.zig build.zig.zon ./
-COPY src/ ./src/
-
-RUN zig build -Doptimize=ReleaseFast
-
-FROM scratch
-WORKDIR /
-
-COPY --from=build /app/zig-out/bin/{project_name} /{project_name}
-
-ENTRYPOINT ["/{project_name}"]
-"#))
-    },
-    "kotlin" => {
-    let has_fw = framework == Some("ktor") || framework == Some("spring-boot");
-    if has_fw {
-        Some(format!(r#"FROM gradle:8.10-jdk21 AS build
-WORKDIR /app
-COPY build.gradle.kts settings.gradle.kts ./
-RUN gradle dependencies --no-daemon
-COPY src ./src
-RUN gradle build -x test --no-daemon
-
-FROM eclipse-temurin:21-jre-alpine AS final
-WORKDIR /app
-EXPOSE 8080
-# Копируем все JAR файлы и находим тот, что без plain/sources
-COPY --from=build /app/build/libs/ ./libs/
-RUN cp $(ls ./libs/*.jar | grep -v -E 'plain|sources|javadoc') app.jar
-ENTRYPOINT ["java", "-jar", "app.jar"]
-"#))
-    } else {
-        None  // Без фреймворка не генерируем Dockerfile
-    }
-},
-    "swift" => {
-    let has_fw = framework == Some("vapor");
-    if has_fw {
-        Some(format!(r#"FROM swift:6.0-noble AS build
-WORKDIR /build
-COPY Package.swift Package.resolved ./
-RUN swift package resolve
-COPY . .
-RUN swift build -c release --static-swift-backtrace
-
-FROM swift:6.0-noble-slim AS final
-WORKDIR /app
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-EXPOSE 8080
-COPY --from=build /build/.build/release/{project_name} ./App
-COPY --from=build /build/Public ./Public
-ENTRYPOINT ["./App"]
-"#))
-    } else {
-        Some(format!(r#"FROM swift:6.0-noble AS build
-WORKDIR /build
-COPY Package.swift ./
-RUN swift package resolve
-COPY . .
-RUN swift build -c release
-
-FROM swift:6.0-noble-slim AS final
-WORKDIR /app
-COPY --from=build /build/.build/release/{project_name} ./
-ENTRYPOINT ["./{project_name}"]
-"#))
-    }
-},
-    "dart" => {
-        Some(format!(r#"# Этап сборки
-FROM dart:3.5 AS build
-WORKDIR /app
-COPY pubspec.yaml ./
-RUN dart pub get
-COPY . .
-RUN dart compile exe bin/main.dart -o bin/main
-
-# Этап запуска
-FROM scratch
-COPY --from=build /app/bin/main /main
-ENTRYPOINT ["/main"]
-"#))
-    },
-    "gleam" => {
-    Some(format!(r#"FROM ghcr.io/gleam-lang/gleam:v1.4-erlang-alpine AS build
-WORKDIR /app
-COPY gleam.toml manifest.toml ./
-RUN gleam deps download
-COPY . .
-RUN gleam export erlang-shipment
-
-FROM erlang:27-alpine AS final
-WORKDIR /app
-COPY --from=build /app/build/erlang-shipment ./
-ENTRYPOINT ["/app/entrypoint.sh"]
-"#))
-},
-        _ => None, // Неизвестный язык — не генерируем Dockerfile
-    }
-}
-
-fn generate_docker_compose(services: &[DockerService], project_name: &str, app_port: &str) -> String {
-    let mut result = String::new();
-    let mut volumes_section = String::new();
-
-    result.push_str("version: '3.8'\n\nservices:\n");
-    
-    // App service всегда добавляется
-    result.push_str(&format!(r#"  app:
-    build: .
-    container_name: {project_name}_app
-    ports:
-      - "{app_port}:{app_port}"
-"#));
-
-    // Если есть сервисы — добавляем depends_on
-    if !services.is_empty() {
-        result.push_str("    depends_on:\n");
-        for service in services.iter() {
-            result.push_str(&format!("      - {}\n", service.name));
-        }
-        result.push_str("    environment:\n");
-        // Стандартные переменные окружения для подключения к сервисам
-        for service in services.iter() {
-            match service.name.as_str() {
-                "postgres" => result.push_str("      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname\n"),
-                "redis" => result.push_str("      - REDIS_URL=redis://redis:6379/0\n"),
-                "mongodb" => result.push_str("      - MONGODB_URI=mongodb://mongodb:27017\n"),
-                _ => {}
-            }
-        }
-    }
-    result.push('\n');
-
-    // Сервисы БД/кешей
-    for service in services.iter() {
-        result.push_str(&format!("  {}:\n", service.name));
-        result.push_str(&format!("    image: {}\n", service.image));
-        result.push_str(&format!("    container_name: {}_{}\n", project_name, service.name));
-        
-        if !service.ports.is_empty() {
-            result.push_str("    ports:\n");
-            for port in &service.ports {
-                result.push_str(&format!("      - \"{}\"\n", port));
-            }
-        }
-        
-        if !service.environment.is_empty() {
-            result.push_str("    environment:\n");
-            for (key, value) in &service.environment {
-                result.push_str(&format!("      {}: {}\n", key.to_uppercase(), value));
-            }
-        }
-        
-        if !service.volumes.is_empty() {
-            result.push_str("    volumes:\n");
-            for volume in &service.volumes {
-                result.push_str(&format!("      - {}\n", volume));
-                // Извлекаем имя volume для секции volumes в конце файла
-                let vol_name = volume.split(':').next().unwrap_or(volume);
-                volumes_section.push_str(&format!("\n  {}:", vol_name));
-            }
-        }
-        if !service.depends_on.is_empty() {
-            result.push_str("   depends_on:\n");
-            for dep in &service.depends_on {
-                result.push_str(&format!("   - {}\n", dep.to_lowercase()))
-            }
-        }
-        
-        result.push('\n');
-    }
-
-    // Секция volumes в конце файла
-    if !volumes_section.is_empty() {
-        result.push_str("volumes:");
-        result.push_str(&volumes_section);
-        result.push('\n');
-    }
-
-    result
-}
-
-fn dockerignore_content(lang: &str) -> String {
-    let common = ".git\n.gitignore\n.env\n*.md\n";
-    let specific = match lang {
-        "rust" => "target/\n",
-        "python" => "__pycache__/\n.venv/\n*.pyc\n",
-        _ => "node_modules/\ndist/\n",
-    };
-    format!("{}{}", common, specific)
-}
-
-fn steps_for_git(context: &WizardContext, project_path: &str) -> Vec<Step> {
+fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str) -> Vec<Step> {
     let mut steps = Vec::new();
     
     if !context.git_init {
         return steps;
     }
     
-    let project_name = Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app");
-    
     // .gitignore с контентом под все языки проекта
-    let gitignore = gitignore_content(&context.languages);
+    let gitignore = content::gitignore_content(&context.languages);
     steps.push(Step::WriteFile {
         id: "gitignore".into(),
         label: "Create .gitignore".into(),
@@ -2034,7 +1651,8 @@ fn steps_for_git(context: &WizardContext, project_path: &str) -> Vec<Step> {
         env: None,
         timeout_secs: Some(10),
         condition: None,
-        on_error: ErrorMode::Skip, // Не критично, если git не установлен
+        on_error: ErrorMode::Skip,
+        interactive: vec![],
     });
     
     // git add + commit (опционально)
@@ -2049,6 +1667,7 @@ fn steps_for_git(context: &WizardContext, project_path: &str) -> Vec<Step> {
         timeout_secs: Some(10),
         condition: None,
         on_error: ErrorMode::Skip,
+        interactive: vec![],
     });
     
     steps.push(Step::Command {
@@ -2066,246 +1685,20 @@ fn steps_for_git(context: &WizardContext, project_path: &str) -> Vec<Step> {
         timeout_secs: Some(10),
         condition: None,
         on_error: ErrorMode::Skip,
+        interactive: vec![],
     });
     
     steps
 }
 
-fn gitignore_content(languages: &[String]) -> String {
-    let mut content = String::from(
-        "# OS generated files\n\
-         .DS_Store\n\
-         .DS_Store?\n\
-         ._*\n\
-         .Spotlight-V100\n\
-         .Trashes\n\
-         ehthumbs.db\n\
-         Thumbs.db\n\
-         \n\
-         # IDE\n\
-         .vscode/\n\
-         .idea/\n\
-         *.swp\n\
-         *.swo\n\
-         *~\n\
-         \n\
-         # Environment\n\
-         .env\n\
-         .env.local\n\
-         .env.*.local\n\
-         \n\
-         # Logs\n\
-         *.log\n\
-         logs/\n\
-         \n"
-    );
-    
-    for lang in languages {
-        match lang.as_str() {
-            "rust" => {
-                content.push_str("# Rust\n\
-                                  target/\n\
-                                  **/*.rs.bk\n\
-                                  *.pdb\n\
-                                  \n");
-            }
-            "python" => {
-                content.push_str("# Python\n\
-                                  __pycache__/\n\
-                                  *.py[cod]\n\
-                                  *$py.class\n\
-                                  *.so\n\
-                                  .Python\n\
-                                  build/\n\
-                                  develop-eggs/\n\
-                                  dist/\n\
-                                  downloads/\n\
-                                  eggs/\n\
-                                  .eggs/\n\
-                                  lib/\n\
-                                  lib64/\n\
-                                  parts/\n\
-                                  sdist/\n\
-                                  var/\n\
-                                  wheels/\n\
-                                  *.egg-info/\n\
-                                  .installed.cfg\n\
-                                  *.egg\n\
-                                  MANIFEST\n\
-                                  *.manifest\n\
-                                  *.spec\n\
-                                  pip-log.txt\n\
-                                  pip-delete-this-directory.txt\n\
-                                  htmlcov/\n\
-                                  .tox/\n\
-                                  .nox/\n\
-                                  .coverage\n\
-                                  .coverage.*\n\
-                                  .cache\n\
-                                  nosetests.xml\n\
-                                  coverage.xml\n\
-                                  *.cover\n\
-                                  .hypothesis/\n\
-                                  .pytest_cache/\n\
-                                  *.mo\n\
-                                  *.pot\n\
-                                  venv/\n\
-                                  .venv/\n\
-                                  ENV/\n\
-                                  env/\n\
-                                  \n");
-            }
-            "typescript" | "javascript" | "node" => {
-                content.push_str("# Node\n\
-                                  node_modules/\n\
-                                  npm-debug.log*\n\
-                                  yarn-debug.log*\n\
-                                  yarn-error.log*\n\
-                                  lerna-debug.log*\n\
-                                  .pnpm-debug.log*\n\
-                                  report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json\n\
-                                  pids\n\
-                                  *.pid\n\
-                                  *.seed\n\
-                                  *.pid.lock\n\
-                                  lib-cov\n\
-                                  coverage/\n\
-                                  .nyc_output\n\
-                                  .grunt\n\
-                                  bower_components\n\
-                                  .lock-wscript\n\
-                                  build/Release\n\
-                                  jspm_packages/\n\
-                                  typings/\n\
-                                  .npm\n\
-                                  .eslintcache\n\
-                                  .node_repl_history\n\
-                                  *.tgz\n\
-                                  .yarn-integrity\n\
-                                  .next/\n\
-                                  .nuxt/\n\
-                                  dist/\n\
-                                  \n");
-            }
-            "go" => {
-                content.push_str("# Go\n\
-                                  *.exe\n\
-                                  *.exe~\n\
-                                  *.dll\n\
-                                  *.so\n\
-                                  *.dylib\n\
-                                  *.test\n\
-                                  *.out\n\
-                                  go.work\n\
-                                  \n");
-            }
-            "java" => {
-                content.push_str("# Java\n\
-                                  *.class\n\
-                                  *.jar\n\
-                                  *.war\n\
-                                  *.nar\n\
-                                  *.ear\n\
-                                  *.zip\n\
-                                  *.tar.gz\n\
-                                  *.rar\n\
-                                  hs_err_pid*\n\
-                                  .gradle/\n\
-                                  build/\n\
-                                  target/\n\
-                                  \n");
-            }
-            "csharp" => {
-                content.push_str("# .NET\n\
-                                  bin/\n\
-                                  obj/\n\
-                                  *.user\n\
-                                  *.suo\n\
-                                  *.cache\n\
-                                  *.docstates\n\
-                                  packages/\n\
-                                  \n");
-            }
-            "cpp" | "c" => {
-                content.push_str("# C/C++\n\
-                                  *.o\n\
-                                  *.obj\n\
-                                  *.exe\n\
-                                  *.out\n\
-                                  *.app\n\
-                                  *.a\n\
-                                  *.so\n\
-                                  *.dylib\n\
-                                  \n");
-            }
-            "php" => {
-                content.push_str("# PHP\n\
-                                  vendor/\n\
-                                  composer.lock\n\
-                                  \n");
-            }
-            "zig" => {
-                content.push_str("# Zig\n\
-                                  zig-out/\n\
-                                  zig-cache/\n\
-                                  \n");
-            }
-            "swift" => {
-                content.push_str("# Swift\n\
-                                  .build/\n\
-                                  DerivedData/\n\
-                                  *.xcodeproj\n\
-                                  *.xcworkspace\n\
-                                  \n");
-            }
-            "kotlin" => {
-                content.push_str("# Kotlin\n\
-                                  .gradle/\n\
-                                  build/\n\
-                                  .idea/\n\
-                                  *.iml\n\
-                                  out/\n\
-                                  local.properties\n\
-                                  \n");
-            }
-            "elixir" => {
-                content.push_str("# Elixir\n\
-                                  _build/\n\
-                                  deps/\n\
-                                  .elixir_ls/\n\
-                                  \n");
-            }
-            "dart" => {
-                content.push_str("# Dart\n\
-                                  .dart_tool/\n\
-                                  .packages\n\
-                                  build/\n\
-                                  pubspec.lock\n\
-                                  \n");
-            }
-            "gleam" => {
-                content.push_str("# Gleam\n\
-                                  build/\n\
-                                  \n");
-            }
-            _ => {}
-        }
-    }
-    
-    content
-}
 
-fn steps_for_ci(context: &WizardContext, project_path: &str) -> Vec<Step> {
+
+fn steps_for_ci(context: &WizardContext, _project_path: &str, project_name: &str) -> Vec<Step> {
     let mut steps = Vec::new();
     
     if !context.ci {
         return steps;
     }
-    
-    let project_name = Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app");
     
     let primary_lang = context.languages.first().map(|s| s.as_str()).unwrap_or("python");
     let primary_fw = context.frameworks.first().map(|s| s.as_str());
@@ -2320,7 +1713,7 @@ fn steps_for_ci(context: &WizardContext, project_path: &str) -> Vec<Step> {
         on_error: ErrorMode::Skip,
     });
     
-    let ci_content = generate_ci_content(primary_lang, primary_fw, project_name);
+    let ci_content = content::generate_ci_content(primary_lang, primary_fw, project_name);
     
     steps.push(Step::WriteFile {
         id: "ci_workflow".into(),
@@ -2336,176 +1729,14 @@ fn steps_for_ci(context: &WizardContext, project_path: &str) -> Vec<Step> {
     steps
 }
 
-fn generate_ci_content(lang: &str, framework: Option<&str>, project_name: &str) -> String {
-    match lang {
-        "rust" => format!(r#"name: CI
 
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
 
-env:
-  CARGO_TERM_COLOR: always
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{{{ runner.os }}}}-cargo-${{{{ hashFiles('**/Cargo.lock') }}}}
-      - name: Run tests
-        run: cargo test --verbose
-      - name: Build
-        run: cargo build --release
-"#),
-        
-        "python" => format!(r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check .
-      - name: Test with pytest
-        run: |
-          pip install pytest
-          pytest
-"#),
-        
-        "typescript" | "javascript" | "node" => format!(r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-      - name: Install dependencies
-        run: npm ci
-      - name: Run tests
-        run: npm test
-      - name: Build
-        run: npm run build --if-present
-"#),
-        
-        "go" => format!(r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - name: Test
-        run: go test ./...
-      - name: Build
-        run: go build -v ./...
-"#),
-        
-        "java" => format!(r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-      - name: Setup Gradle
-        uses: gradle/gradle-build-action@v3
-      - name: Run tests
-        run: ./gradlew test
-      - name: Build
-        run: ./gradlew build -x test
-"#),
-        
-        _ => format!(r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run build script
-        run: echo "Add build steps here for {lang} project"
-"#),
-    }
-}
-
-fn steps_for_readme(context: &WizardContext, project_path: &str) -> Vec<Step> {
-    let project_name = Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app");
-    
+fn steps_for_readme(context: &WizardContext, _project_path: &str, project_name: &str) -> Vec<Step> {
     let primary_lang = context.languages.first().map(|s| s.as_str()).unwrap_or("python");
     let primary_fw = context.frameworks.first().map(|s| s.as_str());
     let project_type = context.project_type.as_deref().unwrap_or("project");
     
-    let readme = generate_readme(project_name, primary_lang, primary_fw, project_type, &context.tools);
+    let readme = content::generate_readme(project_name, primary_lang, primary_fw, project_type, &context.tools);
     
     vec![Step::WriteFile {
         id: "readme".into(),
@@ -2519,58 +1750,7 @@ fn steps_for_readme(context: &WizardContext, project_path: &str) -> Vec<Step> {
     }]
 }
 
-fn generate_readme(name: &str, lang: &str, framework: Option<&str>, project_type: &str, tools: &[String]) -> String {
-    let fw_str = framework.map(|f| format!(" with {}", f)).unwrap_or_default();
-    let tools_str = if tools.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n## Tools & Services\n\n{}", tools.iter()
-            .map(|t| format!("- {}", t))
-            .collect::<Vec<_>>()
-            .join("\n"))
-    };
-    
-    format!(r#"# {name}
 
-A {project_type} built on {lang}{fw_str}.
-
-## Getting Started
-
-### Prerequisites
-
-- {lang} installed on your system
-
-### Installation
-
-```bash
-# Clone the repository
-git clone <repo-url>
-cd {name}
-
-# Install dependencies
-# (instructions depend on the language)
-```bash
-
-### Running the application
-```bash
-# Run the application
-# (add specific instructions here)
-```bash
-
-###Project Structure
-```text
-{name}/
-├── src/           # Source code
-├── tests/         # Test files
-└── README.md      # This file
-```text
-
-{tools_str}
-
-
-***Made with StackPilot***"#)
-
-}
 
 
 fn steps_for_vscode(context: &WizardContext) -> Vec<Step> {
@@ -2597,7 +1777,7 @@ fn steps_for_vscode(context: &WizardContext) -> Vec<Step> {
         label: "Create VS Code settings".into(),
         description: "Generate .vscode/settings.json".into(),
         path: ".vscode/settings.json".into(),
-        content: generate_vscode_settings(primary_lang),
+        content: content::generate_vscode_settings(primary_lang),
         overwrite: true,
         condition: None,
         on_error: ErrorMode::Skip,
@@ -2609,7 +1789,7 @@ fn steps_for_vscode(context: &WizardContext) -> Vec<Step> {
         label: "Create VS Code extensions".into(),
         description: "Generate .vscode/extensions.json with recommended extensions".into(),
         path: ".vscode/extensions.json".into(),
-        content: generate_vscode_extensions(primary_lang),
+        content: content::generate_vscode_extensions(primary_lang),
         overwrite: true,
         condition: None,
         on_error: ErrorMode::Skip,
@@ -2618,101 +1798,9 @@ fn steps_for_vscode(context: &WizardContext) -> Vec<Step> {
     steps
 }
 
-fn generate_vscode_settings(lang: &str) -> String {
-    match lang {
-        "rust" => r#"{
-    "rust-analyzer.checkOnSave.command": "clippy",
-    "[rust]": {
-        "editor.formatOnSave": true
-    }
-}"#.to_string(),
-        
-        "python" => r#"{
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
-    "python.analysis.typeCheckingMode": "basic",
-    "[python]": {
-        "editor.formatOnSave": true,
-        "editor.defaultFormatter": "charliermarsh.ruff",
-        "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
-        }
-    }
-}"#.to_string(),
-        
-        "typescript" | "javascript" | "node" => r#"{
-    "typescript.tsdk": "node_modules/typescript/lib",
-    "editor.formatOnSave": true,
-    "editor.defaultFormatter": "esbenp.prettier-vscode",
-    "[typescript]": {
-        "editor.defaultFormatter": "esbenp.prettier-vscode"
-    }
-}"#.to_string(),
-        
-        "go" => r#"{
-    "go.useLanguageServer": true,
-    "go.lintTool": "golangci-lint",
-    "go.formatTool": "goimports",
-    "[go]": {
-        "editor.formatOnSave": true,
-        "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
-        }
-    }
-}"#.to_string(),
-        
-        _ => r#"{
-    "editor.formatOnSave": true
-}"#.to_string(),
-    }
-}
 
-fn generate_vscode_extensions(lang: &str) -> String {
-    match lang {
-        "rust" => r#"{
-    "recommendations": [
-        "rust-lang.rust-analyzer",
-        "tamasfe.even-better-toml"
-    ]
-}"#.to_string(),
-        
-        "python" => r#"{
-    "recommendations": [
-        "ms-python.python",
-        "charliermarsh.ruff",
-        "ms-python.mypy-type-checker"
-    ]
-}"#.to_string(),
-        
-        "typescript" | "javascript" | "node" => r#"{
-    "recommendations": [
-        "dbaeumer.vscode-eslint",
-        "esbenp.prettier-vscode"
-    ]
-}"#.to_string(),
-        
-        "go" => r#"{
-    "recommendations": [
-        "golang.go"
-    ]
-}"#.to_string(),
-        
-        "java" => r#"{
-    "recommendations": [
-        "vscjava.vscode-java-pack"
-    ]
-}"#.to_string(),
-        
-        "csharp" => r#"{
-    "recommendations": [
-        "ms-dotnettools.csharp"
-    ]
-}"#.to_string(),
-        
-        _ => r#"{
-    "recommendations": []
-}"#.to_string(),
-    }
-}
+
+
 // Helper methods on Step (нужны, так как enum не может иметь методов напрямую)
 // ============================================================================
 

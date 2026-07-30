@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
-use super::engine::RecipeEngine;
+
 use super::models::*;
 use super::ProjectCreatorState;
 
@@ -37,6 +37,11 @@ pub fn submit_wizard_answer(
 #[tauri::command]
 pub fn ping_project_creator() -> Result<String, String> {
     Ok("ProjectCreator module is loaded".to_string())
+}
+
+#[tauri::command]
+pub fn check_project_folder_exists(path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&path).exists())
 }
 
 #[tauri::command]

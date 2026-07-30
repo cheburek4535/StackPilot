@@ -126,6 +126,7 @@ pub fn run() {
             modules::project_creator::commands::analyze_project_technologies,
             modules::project_creator::commands::preview_project_recipe,
             modules::project_creator::commands::start_project_execution,
+            modules::project_creator::commands::check_project_folder_exists,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

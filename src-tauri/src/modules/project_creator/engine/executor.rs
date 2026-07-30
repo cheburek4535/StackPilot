@@ -1,8 +1,40 @@
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use chrono::Local;
+use std::time::Duration;
 use crate::modules::project_creator::engine::ExecutionPlan;
 use crate::modules::project_creator::models::*;
+
+/// Стандартные fallback-триггеры на все случаи, когда step‑специфичных нет.
+static FALLBACK_TRIGGERS: &[(&str, &str)] = &[
+    // Node.js / npx
+    ("need to install the following packages", "y"),
+    ("ok to proceed?", "y"),
+    ("do you want to proceed?", "y"),
+    // Универсальные булевы паттерны
+    ("would you like to", "n"),
+    ("do you want to", "n"),
+    ("(y/n)", "y"),
+    ("(y/n)", "y"),
+    ("(y/n)", "y"),
+    ("[y/n]", "y"),
+    ("[y/n]", "y"),
+    ("proceed?", "y"),
+    ("accept?", "y"),
+    // Зависимости
+    ("install dependencies", "y"),
+    ("download and install", "n"),
+    ("install the ios and android", "n"),
+    ("initialize a new git", "y"),
+    // CocoaPods (macOS)
+    ("install cocoapods", "n"),
+    // Expo
+    ("do you want to log in", "n"),
+    // Лицензии
+    ("accept the license", "y"),
+    ("review licenses", "y"),
+];
 
 /// StepExecutor — выполняет отдельные шаги плана.
 pub struct StepExecutor;
@@ -10,6 +42,151 @@ pub struct StepExecutor;
 impl StepExecutor {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Собрать карту триггеров из interactive-поля шага (владеющие данные).
+    fn build_trigger_map(step: &Step) -> Vec<(String, ResponseType)> {
+        let mut map: Vec<(String, ResponseType)> = Vec::new();
+        if let Step::Command { interactive, .. } = step {
+            for entry in interactive {
+                map.push((entry.trigger.clone(), entry.response_type.clone()));
+            }
+        }
+        map
+    }
+
+    /// Отправить ответ в stdin процесса согласно ResponseType.
+    async fn send_response(
+        stdin: &mut tokio::process::ChildStdin,
+        rt: &ResponseType,
+    ) {
+        let bytes: Vec<u8> = match rt {
+            ResponseType::Text(val) => {
+                format!("{}\n", val).into_bytes()
+            }
+            ResponseType::Confirm(true) => b"y\n".to_vec(),
+            ResponseType::Confirm(false) => b"n\n".to_vec(),
+            ResponseType::Select(idx) => {
+                // *idx* раз нажать стрелку вниз, затем Enter
+                let mut seq = Vec::new();
+                for _ in 0..*idx {
+                    seq.extend_from_slice(b"\x1b[B"); // Down arrow
+                }
+                seq.push(b'\n');                     // Enter
+                seq
+            }
+            ResponseType::Keys(raw) => raw.as_bytes().to_vec(),
+        };
+        let _ = stdin.write_all(&bytes).await;
+        let _ = stdin.flush().await;
+    }
+
+    /// Проверить rolling‑буфер на совпадение с любым триггером.
+    /// Возвращает true, если совпадение найдено и ответ отправлен.
+    async fn check_triggers(
+        rolling: &str,
+        trigger_map: &[(String, ResponseType)],
+        stdin: &mut tokio::process::ChildStdin,
+    ) -> bool {
+        let lower = rolling.to_lowercase();
+        for (trigger, response_type) in trigger_map {
+            if lower.contains(&trigger.to_lowercase()) {
+                Self::send_response(stdin, response_type).await;
+                return true;
+            }
+        }
+        // Fallback — более широкая сеть
+        for (trigger, response) in FALLBACK_TRIGGERS {
+            if lower.contains(trigger) {
+                let _ = stdin.write_all(response.as_bytes()).await;
+                let _ = stdin.write_all(b"\n").await;
+                let _ = stdin.flush().await;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Прочитать stdout с побайтовым накоплением, детекцией триггеров и отправкой ответов.
+    async fn read_stdout_loop(
+        mut stdout: tokio::process::ChildStdout,
+        mut stdin: tokio::process::ChildStdin,
+        trigger_map: Vec<(String, ResponseType)>, // владеющие данные
+        tx: mpsc::Sender<ExecutionEvent>,
+        step_id: String,
+        step_name: String,
+        step_desc: String,
+        index: usize,
+        total_steps: usize,
+    ) {
+        // 256‑байтовый буфер — не ждём \n, читаем как только данные появляются
+        let mut buf = [0u8; 256];
+        // Скользящее окно 2048 символов
+        let mut rolling = String::with_capacity(2048);
+        // Таймаут бездействия перед fallback-опросом
+        let idle_timeout = Duration::from_secs(4);
+
+        loop {
+            let read_fut = stdout.read(&mut buf);
+            let result = tokio::time::timeout(idle_timeout, read_fut).await;
+
+            match result {
+                // Данные пришли
+                Ok(Ok(0)) => break, // EOF — процесс закрыл stdout
+                Ok(Ok(n)) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+
+                    // Печатаем в консоль для отладки
+                    print!("{}", chunk);
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+                    // Добавляем в скользящее окно
+                    rolling.push_str(&chunk);
+                    if rolling.len() > 2048 {
+                        rolling.drain(..rolling.len() - 2048);
+                    }
+
+                    // Ищем триггеры
+                    let matched = Self::check_triggers(&rolling, &trigger_map, &mut stdin).await;
+                    if matched {
+                        rolling.clear(); // Очищаем окно после ответа
+                    }
+
+                    // Шлём событие на фронтенд
+                    let _ = tx
+                        .send(ExecutionEvent {
+                            event_type: ExecutionEventType::StepProgress {
+                                stdout: chunk.into(),
+                                stderr: String::new(),
+                            },
+                            step_id: step_id.clone(),
+                            step_index: index,
+                            total_steps,
+                            step_name: step_name.clone(),
+                            step_description: step_desc.clone(),
+                            timestamp: local_time(),
+                        })
+                        .await;
+                }
+                // Ошибка чтения
+                Ok(Err(_)) => break,
+                // Таймаут — процесс молчит, возможно ждёт ввода без триггера
+                Err(_elapsed) => {
+                    // Пробуем последний раз проверить буфер и отправить fallback
+                    if !rolling.is_empty() {
+                        let matched = Self::check_triggers(&rolling, &trigger_map, &mut stdin).await;
+                        if matched {
+                            rolling.clear();
+                            continue;
+                        }
+                    }
+                    // Если процесс ещё жив — отправляем "y\n" как последнее средство
+                    // (иначе выходим — процесс сам завершится)
+                    let _ = stdin.write_all(b"\n").await;
+                    let _ = stdin.flush().await;
+                }
+            }
+        }
     }
 
     pub async fn run_command(
@@ -46,7 +223,6 @@ impl StepExecutor {
     // Кроссплатформенный запуск через shell
     let mut cmd = match OS {
         "windows" => {
-            // Проверяем, нужна ли PowerShell
             let is_powershell = command.starts_with("powershell")
                 || command.starts_with("pwsh")
                 || command.contains("Get-")
@@ -73,13 +249,20 @@ impl StepExecutor {
             }
         }
         _ => {
-            // Linux, macOS и остальные Unix-подобные
             let mut unix_cmd = tokio::process::Command::new("sh");
             unix_cmd.arg("-c");
-            unix_cmd.arg(command);
-            if !args.is_empty() {
-                unix_cmd.args(args);
+            let mut shell_cmd = String::from(command);
+            for arg in args.iter() {
+                shell_cmd.push(' ');
+                if arg.contains(' ') {
+                    shell_cmd.push('"');
+                    shell_cmd.push_str(arg);
+                    shell_cmd.push('"');
+                } else {
+                    shell_cmd.push_str(arg);
+                }
             }
+            unix_cmd.arg(shell_cmd);
             unix_cmd
         }
     };
@@ -95,9 +278,9 @@ impl StepExecutor {
         cmd.envs(env_map);
     }
 
-    // Используем tokio::process::Stdio для кроссплатформенной совместимости
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped());
 
     let start = std::time::Instant::now();
     let total_steps = plan.step_count();
@@ -148,41 +331,34 @@ impl StepExecutor {
 
     let stdout = child.stdout.take().expect("stdout should be piped");
     let stderr = child.stderr.take().expect("stderr should be piped");
+    let stdin = child.stdin.take().expect("stdin should be piped");
 
+    // Строим карту триггеров из interactive-поля шага
+    let trigger_map = Self::build_trigger_map(step);
+
+    // Запускаем stdout-читалку в отдельном таске
     let tx_stdout = tx.clone();
-    let tx_stderr = tx.clone();
-
-    // Для stdout
     let step_id_out = step_id(step);
     let step_name_out = step_label(step);
     let step_desc_out = step_description(step);
 
     let stdout_handle = tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        while let Ok(Some(line)) = lines.next_line().await {
-            tx_stdout
-                .send(ExecutionEvent {
-                    event_type: ExecutionEventType::StepProgress {
-                        stdout: line,
-                        stderr: String::new(),
-                    },
-                    step_id: step_id_out.clone(),
-                    step_index: index,
-                    total_steps,
-                    step_name: step_name_out.clone(),
-                    step_description: step_desc_out.clone(),
-                    timestamp: local_time(),
-                })
-                .await
-                .ok();
-        }
+        Self::read_stdout_loop(
+            stdout,
+            stdin,
+            trigger_map,
+            tx_stdout,
+            step_id_out,
+            step_name_out,
+            step_desc_out,
+            index,
+            total_steps,
+        )
+        .await;
     });
 
     // Для stderr
+    let tx_stderr = tx.clone();
     let step_id_err = step_id(step);
     let step_name_err = step_label(step);
     let step_desc_err = step_description(step);

@@ -16,6 +16,7 @@ export type LanguageDef = {
   label: string;
   icon: string | null;
   color: string | null;
+  category?: string | null;
   knowledge_key: string | null;
 };
 
@@ -24,7 +25,9 @@ export type FrameworkDef = {
   label: string;
   description: string;
   icon: string | null;
+  category?: string | null;
   knowledge_key: string | null;
+  conflicts?: string[];
 };
 
 export type ToolDef = {
@@ -55,6 +58,7 @@ export type WizardTreeData = {
 
 export type WizardContext = {
   project_path: string | null;
+  project_name: string | null;
   is_existing: boolean;
   project_type: string | null;
   languages: string[];
