@@ -368,7 +368,7 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
             env: None,
             timeout_secs: Some(60),
             condition: None,
-            on_error: ErrorMode::Abort,
+            on_error: ErrorMode::Skip,
             interactive: vec![],
         }
     };
@@ -430,7 +430,7 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
             if lang == "typescript" {
                 steps.push(cmd("tsc_init", "Init TypeScript", 
                     "Generate tsconfig.json",
-                    "npx tsc --init --target ES2022 --module commonjs --outDir dist --rootDir src"));
+                    "npx -p typescript tsc --init --target ES2022 --module commonjs --outDir dist --rootDir src"));
                 steps.push(Step::WriteFile {
                     id: "ts_src_index".into(),
                     label: "Create src/index.ts".into(),
@@ -526,7 +526,7 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
         "csharp" => vec![
             cmd("dotnet_new", "Init .NET project", 
                 "Create new .NET console project",
-                &format!("dotnet new console -n {}", project_name)),
+                &format!("dotnet new console -n {} --force", project_name)),
         ],
 
         "c" | "cpp" => {
@@ -1002,20 +1002,23 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
 "#, project_name)),
         ],
 
-        "react-native" => vec![
-            cmd_i("rn_init", "Init React Native", "Create React Native project",
-                "npx", vec!["@react-native-community/cli", "init", project_name],
-                vec![
-                    InteractiveEntry {
-                        trigger: "Do you want to install CocoaPods dependencies?".into(),
-                        response_type: ResponseType::Confirm(false),
-                    },
-                    InteractiveEntry {
-                        trigger: "Downloading and installing the modern architecture dependencies. Proceed?".into(),
-                        response_type: ResponseType::Confirm(false),
-                    },
-                ]),
-        ],
+        "react-native" => {
+            let rn_name = project_name.replace('-', "_");
+            vec![
+                cmd_i("rn_init", "Init React Native", "Create React Native project",
+                    "npx", vec!["@react-native-community/cli", "init", &rn_name],
+                    vec![
+                        InteractiveEntry {
+                            trigger: "Do you want to install CocoaPods dependencies?".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                        InteractiveEntry {
+                            trigger: "Downloading and installing the modern architecture dependencies. Proceed?".into(),
+                            response_type: ResponseType::Confirm(false),
+                        },
+                    ]),
+            ]
+        },
 
         "expo" => {
             let expo_template = if has_typescript {
@@ -1206,7 +1209,7 @@ func main() {{
         // ==================== C# ====================
         "aspnetcore" => vec![
             cmd("aspnet_new", "Create ASP.NET Core Web API", "Scaffold Web API project",
-                "dotnet", vec!["new", "webapi", "-n", project_name]),
+                "dotnet", vec!["new", "webapi", "-n", project_name, "--force"]),
         ],
 
         "unity" => vec![
@@ -1217,7 +1220,7 @@ func main() {{
 
         "maui" => vec![
             cmd("maui_new", "Create MAUI app", "Scaffold .NET MAUI project",
-                "dotnet", vec!["new", "maui", "-n", project_name]),
+                "dotnet", vec!["new", "maui", "-n", project_name, "--force"]),
         ],
 
         "godot" => vec![
