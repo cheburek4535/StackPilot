@@ -7,6 +7,7 @@ use tauri::{Listener, Manager};
 #[cfg(feature = "plugins")]
 use modules::plugins::mini_ide;
 use modules::workspace::session::SessionService;
+use modules::toolchain::ToolchainState;
 use modules::project_creator::analysis::DefaultProjectAnalyzer;
 use modules::project_creator::engine::DefaultRecipeEngine;
 use modules::project_creator::generators::GeneratorRegistry;
@@ -63,6 +64,10 @@ pub fn run() {
                 Arc::new(DefaultPackRegistry::new()),
                 Arc::new(DefaultKnowledgeBase::new()),
             );
+
+            // === ToolchainManager module ===
+            let toolchain_state = ToolchainState::new();
+            app.manage(toolchain_state);
 
             // Register all states
             app.manage(devlauncher_state);
@@ -127,6 +132,11 @@ pub fn run() {
             modules::project_creator::commands::preview_project_recipe,
             modules::project_creator::commands::start_project_execution,
             modules::project_creator::commands::check_project_folder_exists,
+            // ToolchainManager commands
+            modules::toolchain::commands::ping_toolchain,
+            modules::toolchain::commands::tc_get_tool_definitions,
+            modules::toolchain::commands::tc_get_environment_info,
+            modules::toolchain::commands::tc_check_environment,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

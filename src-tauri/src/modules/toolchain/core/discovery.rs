@@ -1,0 +1,299 @@
+// ============================================================
+// Обнаружение инструментов (discovery.rs)
+// ============================================================
+// Узнаёт, что установлено на машине пользователя, по трём уликам
+// (в порядке надёжности):
+//   1. пробы версии — запускаем бинарник (node --version);
+//   2. известные пути — C:/Program Files/nodejs существует;
+//   3. ключи реестра Windows — reg query HKLM\SOFTWARE\Node.js.
+//
+// Все три источника перечислены в detection правилах tools.json,
+// так что логика тут общая, а данные — декларативные.
+//
+// Асинхронность: пробы выполняются через tokio::process, чтобы
+// медленный или зависший бинарник не заморозил UI — у каждой
+// пробы есть таймаут (PROBE_TIMEOUT_SECS).
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
+
+use crate::modules::toolchain::models::{ToolDefinition, ToolStatus};
+
+use super::version;
+
+/// Максимальное время одной пробы/запроса к реестру.
+const PROBE_TIMEOUT_SECS: u64 = 5;
+
+// ------------------------------------------------------------
+// Запуск процессов
+// ------------------------------------------------------------
+
+/// Запускает команду и ждёт stdout.
+/// Возвращает None, если: таймаут, не удалось запустить,
+/// или процесс завершился с ненулевым кодом (такое бывает,
+/// когда бинарник есть, но команда не для него).
+async fn run_capture(program: &str, args: &[String]) -> Option<String> {
+    let output = timeout(
+        Duration::from_secs(PROBE_TIMEOUT_SECS),
+        TokioCommand::new(program).args(args).output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Some(stdout.trim().to_string())
+    } else {
+        None
+    }
+}
+
+// ------------------------------------------------------------
+// Улики
+// ------------------------------------------------------------
+
+/// Пробует пробы версии по очереди, пока одна не ответит.
+/// Возвращает сырой вывод (например «node v22.12.0»), дальше
+/// его разбирает version.rs.
+async fn probe_version(def: &ToolDefinition) -> Option<String> {
+    for probe in &def.detection.version_probes {
+        if probe.is_empty() {
+            continue;
+        }
+        if let Some(out) = run_capture(&probe[0], &probe[1..]).await {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// Расширяет %VAR% в путях из tools.json (%LOCALAPPDATA% и т.п.)
+/// и приводит к PathBuf. На не-Windows переменные просто остаются
+/// как есть — путь не существует, улика не срабатывает.
+fn expand_env(raw: &str) -> PathBuf {
+    const VARS: [(&str, &str); 4] = [
+        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
+        ("%APPDATA%", "APPDATA"),
+        ("%ProgramFiles%", "ProgramFiles"),
+        ("%USERPROFILE%", "USERPROFILE"),
+    ];
+
+    let mut expanded = raw.to_string();
+    for (pattern, var) in VARS {
+        if expanded.contains(pattern) {
+            if let Ok(value) = std::env::var(var) {
+                expanded = expanded.replace(pattern, &value);
+            }
+        }
+    }
+    PathBuf::from(expanded)
+}
+
+/// Есть ли на диске хотя бы один из известных путей установки.
+fn known_path_found(def: &ToolDefinition) -> bool {
+    def.detection
+        .known_paths
+        .iter()
+        .any(|p| expand_env(p).exists())
+}
+
+/// Отвечает ли reg.exe, что ключ реестра существует.
+/// На не-Windows reg.exe нет — команда падает, получаем false.
+async fn registry_key_exists(key: &str) -> bool {
+    let result = timeout(
+        Duration::from_secs(PROBE_TIMEOUT_SECS),
+        TokioCommand::new("reg").args(["query", key]).output(),
+    )
+    .await;
+    matches!(result, Ok(Ok(out)) if out.status.success())
+}
+
+async fn any_registry_found(def: &ToolDefinition) -> bool {
+    for key in &def.detection.registry_keys {
+        if registry_key_exists(key).await {
+            return true;
+        }
+    }
+    false
+}
+
+// ------------------------------------------------------------
+// Интерпретация результатов
+// ------------------------------------------------------------
+
+/// Сверяет полученную версию с правилами tools.json:
+/// ниже recommended → UpdateAvailable, иначе Installed.
+/// Если версию не удалось разобрать, но команда ответила —
+/// считаем инструмент установленным (запас в пользу пользователя).
+pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> ToolStatus {
+    let version = raw_version.trim().to_string();
+
+    let Ok(parsed) = version::parse_version(raw_version) else {
+        return ToolStatus::Installed { version };
+    };
+
+    if let Some(recommended_raw) = &def.versions.recommended {
+        if let Ok(recommended) = version::parse_version(recommended_raw) {
+            if version::compare(&parsed, &recommended) == std::cmp::Ordering::Less {
+                return ToolStatus::UpdateAvailable {
+                    installed: version,
+                    recommended: recommended_raw.clone(),
+                };
+            }
+        }
+    }
+
+    ToolStatus::Installed { version }
+}
+
+// ------------------------------------------------------------
+// Главная функция
+// ------------------------------------------------------------
+
+/// Полное обнаружение одного инструмента по его определению.
+///
+/// Логика:
+///   1. ответила проба версии        → Installed / UpdateAvailable;
+///   2. бинарник есть в PATH, но молчит → PathBroken (сломана установка);
+///   3. нашёлся известный путь/реестр  → PathBroken (не в PATH);
+///   4. ничего                         → Missing.
+pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
+    if let Some(raw) = probe_version(def).await {
+        return apply_version_rules(def, &raw);
+    }
+
+    // Бинарь в PATH есть, но ни одна проба не ответила:
+    // установка сломана (dll потерялись, версия не поддерживается...)
+    for probe in &def.detection.version_probes {
+        if !probe.is_empty() && which::which(&probe[0]).is_ok() {
+            return ToolStatus::PathBroken {
+                reason: format!(
+                    "{} найден в PATH, но не отвечает на `{}`",
+                    probe[0],
+                    probe.join(" ")
+                ),
+            };
+        }
+    }
+
+    // Установка есть, но не в PATH — типично для node/python
+    // из инсталлятора, когда забыли галочку «Add to PATH».
+    if known_path_found(def) || any_registry_found(def).await {
+        let footprint = def
+            .detection
+            .known_paths
+            .first()
+            .or_else(|| def.detection.registry_keys.first())
+            .cloned()
+            .unwrap_or_default();
+        return ToolStatus::PathBroken {
+            reason: format!("Установка найдена ({}), но бинарник не в PATH", footprint),
+        };
+    }
+
+    ToolStatus::Missing
+}
+
+// ============================================================
+// Тесты
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::toolchain::{defs, models::ToolDefinition};
+
+    fn def(id: &str) -> ToolDefinition {
+        defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == id)
+            .unwrap_or_else(|| panic!("инструмента {id} нет в tools.json"))
+    }
+
+    #[test]
+    fn new_version_is_installed() {
+        // node: min 18, recommended 22
+        match apply_version_rules(&def("node"), "node v24.3.0") {
+            ToolStatus::Installed { version } => assert_eq!(version, "node v24.3.0"),
+            other => panic!("ожидали Installed, получили {other:?}"),
+        }
+    }
+
+    #[test]
+    fn old_version_is_update_available() {
+        match apply_version_rules(&def("node"), "v18.19.0") {
+            ToolStatus::UpdateAvailable {
+                installed,
+                recommended,
+            } => {
+                assert_eq!(installed, "v18.19.0");
+                assert_eq!(recommended, "22");
+            }
+            other => panic!("ожидали UpdateAvailable, получили {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_above_recommended_is_installed() {
+        // winget: min 1.4, recommended 1.10 — 1.10.1 новее рекомендуемой
+        match apply_version_rules(&def("winget"), "v1.10.1") {
+            ToolStatus::Installed { .. } => {}
+            other => panic!("ожидали Installed, получили {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_below_recommended_is_update_available() {
+        // winget 1.9.25200 старее рекомендуемой 1.10
+        match apply_version_rules(&def("winget"), "v1.9.25200") {
+            ToolStatus::UpdateAvailable {
+                installed,
+                recommended,
+            } => {
+                assert_eq!(installed, "v1.9.25200");
+                assert_eq!(recommended, "1.10");
+            }
+            other => panic!("ожидали UpdateAvailable, получили {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparseable_output_still_installed() {
+        match apply_version_rules(&def("git"), "git version ?unknown") {
+            ToolStatus::Installed { .. } => {}
+            other => panic!("ожидали Installed, получили {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_env_replaces_vars() {
+        let expanded = expand_env("%USERPROFILE%\\dev");
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            assert_eq!(expanded, PathBuf::from(format!("{home}\\dev")));
+        }
+    }
+
+    #[test]
+    fn expand_env_keeps_plain_paths() {
+        assert_eq!(
+            expand_env("C:/Program Files/nodejs"),
+            PathBuf::from("C:/Program Files/nodejs")
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_tool_is_detected_as_missing() {
+        let fake = def("sqlite").clone(); // sqlite3 почти ни у кого не установлен
+        let status = detect_tool(&fake).await;
+        // если sqlite3 вдруг установлен — тест всё равно валиден,
+        // главное: результат не может быть «грязной» ошибкой
+        assert!(
+            matches!(status, ToolStatus::Missing | ToolStatus::Installed { .. }),
+            "неожиданный статус: {status:?}"
+        );
+    }
+}

@@ -1,0 +1,940 @@
+[
+  {
+    "id": "winget",
+    "category": "utility",
+    "display": "Winget (App Installer)",
+    "description": "Менеджер пакетов Windows — основной источник установки ПО",
+    "icon": null,
+    "detection": {
+      "version_probes": [["winget", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "1.4", "recommended": "1.10" },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "winget-msix",
+          "url": "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [],
+      "macos": []
+    },
+    "size_mb": 80,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Winget распространяется как Microsoft App Installer (MSIX). Устанавливается через Add-AppxPackage с официального GitHub-релиза, без прав администратора."
+  },
+  {
+    "id": "node",
+    "category": "language",
+    "display": "Node.js",
+    "description": "Рантайм JavaScript/TypeScript, нужен npm, npx и всем JS-фреймворкам",
+    "icon": null,
+    "detection": {
+      "version_probes": [["node", "--version"]],
+      "known_paths": ["C:/Program Files/nodejs", "%LOCALAPPDATA%/Programs/nodejs"],
+      "registry_keys": ["HKLM\\SOFTWARE\\Node.js"]
+    },
+    "versions": { "min": "18", "recommended": "22" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "OpenJS.NodeJS.LTS", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "node-msi", "url": "https://nodejs.org/dist/v22.12.0/node-v22.12.0-x64.msi", "args": ["/quiet"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "nodejs", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "node", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 30,
+    "needs_admin": true,
+    "path_entries": ["%ProgramFiles%\\nodejs", "%LOCALAPPDATA%\\Programs\\nodejs"],
+    "bundled_with": null,
+    "health_checks": [
+      { "label": "npm", "command": ["npm", "--version"] },
+      { "label": "npx", "command": ["npx", "--version"] }
+    ],
+    "notes": null
+  },
+  {
+    "id": "npm",
+    "category": "package_manager",
+    "display": "NPM",
+    "description": "Менеджер пакетов Node.js (поставляется вместе с Node.js)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["npm", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "9", "recommended": "11" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": "node",
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "python",
+    "category": "language",
+    "display": "Python",
+    "description": "Интерпретатор Python, нужен pip, venv и Python-фреймворкам",
+    "icon": null,
+    "detection": {
+      "version_probes": [["python", "--version"], ["python3", "--version"]],
+      "known_paths": ["C:/Program Files/Python313", "%LOCALAPPDATA%/Programs/Python/Python313"],
+      "registry_keys": ["HKLM\\SOFTWARE\\Python\\PythonCore"]
+    },
+    "versions": { "min": "3.11", "recommended": "3.13" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Python.Python.3.13", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "python-installer", "url": "https://www.python.org/ftp/python/3.13.1/python-3.13.1-amd64.exe", "args": ["/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_test=0"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "python3", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "python@3.13", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 30,
+    "needs_admin": true,
+    "path_entries": ["%LOCALAPPDATA%\\Programs\\Python\\Python313", "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts"],
+    "bundled_with": null,
+    "health_checks": [
+      { "label": "pip", "command": ["python", "-m", "pip", "--version"] },
+      { "label": "venv", "command": ["python", "-m", "venv", "--help"] }
+    ],
+    "notes": null
+  },
+  {
+    "id": "pip",
+    "category": "package_manager",
+    "display": "Pip",
+    "description": "Менеджер пакетов Python (поставляется вместе с Python)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["pip", "--version"], ["python", "-m", "pip", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "23", "recommended": "25" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": "python",
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "rust",
+    "category": "language",
+    "display": "Rust (rustup)",
+    "description": "Установщик тулчейна Rust: rustup, rustc и cargo",
+    "icon": null,
+    "detection": {
+      "version_probes": [["rustup", "--version"]],
+      "known_paths": ["%USERPROFILE%/.cargo/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "1.75", "recommended": "1.85" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Rustlang.Rustup", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Script", "id": "rustup-init", "url": "https://win.rustup.rs/x86_64", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "Script", "id": "rustup-init", "url": "https://sh.rustup.rs", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "Script", "id": "rustup-init", "url": "https://sh.rustup.rs", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 250,
+    "needs_admin": false,
+    "path_entries": ["%USERPROFILE%\\.cargo\\bin"],
+    "bundled_with": null,
+    "health_checks": [
+      { "label": "rustc", "command": ["rustc", "--version"] },
+      { "label": "cargo", "command": ["cargo", "--version"] }
+    ],
+    "notes": "Для stable-тулчейна на Windows нужен MSVC Build Tools — он будет установлен автоматически."
+  },
+  {
+    "id": "rustc",
+    "category": "compiler",
+    "display": "Rustc",
+    "description": "Компилятор Rust (поставляется вместе с rustup)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["rustc", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "1.75", "recommended": "1.85" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": "rust",
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "cargo",
+    "category": "package_manager",
+    "display": "Cargo",
+    "description": "Менеджер пакетов и сборки Rust (поставляется вместе с rustup)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["cargo", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "1.75", "recommended": "1.85" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": "rust",
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "go",
+    "category": "language",
+    "display": "Go",
+    "description": "Язык и тулчейн Go (go, gofmt, go mod)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["go", "version"]],
+      "known_paths": ["C:/Program Files/Go/bin"],
+      "registry_keys": ["HKLM\\SOFTWARE\\Golang"]
+    },
+    "versions": { "min": "1.22", "recommended": "1.24" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "GoLang.Go", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "go-msi", "url": "https://go.dev/dl/go1.24.0.windows-amd64.msi", "args": ["/quiet", "/norestart"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "golang", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "go", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 150,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\Go\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "java",
+    "category": "language",
+    "display": "Java (Temurin JDK)",
+    "description": "JDK от Eclipse Adoptium — нужен Maven, Gradle, Spring Boot и Android",
+    "icon": null,
+    "detection": {
+      "version_probes": [["java", "-version"]],
+      "known_paths": ["C:/Program Files/Eclipse Adoptium"],
+      "registry_keys": ["HKLM\\SOFTWARE\\JavaSoft\\JDK"]
+    },
+    "versions": { "min": "17", "recommended": "21" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "EclipseAdoptium.Temurin.21.JDK", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "temurin-msi", "url": "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse", "args": ["/quiet"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "openjdk-21-jdk", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "temurin", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 200,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.1.12-hotspot\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Версия печатается в stderr — парсер учтёт это на этапе 2."
+  },
+  {
+    "id": "dotnet",
+    "category": "language",
+    "display": ".NET SDK",
+    "description": "SDK для C#: dotnet new, build, run (ASP.NET Core, MAUI, Unity-инструменты)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["dotnet", "--version"]],
+      "known_paths": ["C:/Program Files/dotnet"],
+      "registry_keys": ["HKLM\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64"]
+    },
+    "versions": { "min": "8.0", "recommended": "10.0" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Microsoft.DotNet.SDK.8", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Script", "id": "dotnet-install", "url": "https://dot.net/v1/dotnet-install.ps1", "args": ["-Channel", "10.0"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "dotnet-sdk-8.0", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "dotnet", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 200,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\dotnet", "%LOCALAPPDATA%\\Microsoft\\dotnet"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "msvc-build-tools",
+    "category": "compiler",
+    "display": "MSVC Build Tools (C++)",
+    "description": "Компилятор MSVC и Windows SDK — обязательны для Rust на Windows и C++",
+    "icon": null,
+    "detection": {
+      "version_probes": [
+        ["C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe", "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationVersion"],
+        ["vswhere.exe", "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationVersion"]
+      ],
+      "known_paths": ["C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"],
+      "registry_keys": ["HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio\\17.0"]
+    },
+    "versions": { "min": "14.40", "recommended": "14.44" },
+    "sources": {
+      "windows": [
+        {
+          "kind": "PkgManager",
+          "id": "Microsoft.VisualStudio.2022.BuildTools",
+          "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"],
+          "extra_args": ["--override", "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended"],
+          "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "vs-buildtools",
+          "url": "https://aka.ms/vs/17/release/vs_BuildTools.exe",
+          "args": ["--quiet", "--wait", "--norestart", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [],
+      "macos": []
+    },
+    "size_mb": 4000,
+    "needs_admin": true,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Самый тяжёлый компонент (~4 ГБ). Установка долгая, но полностью тихая. Требует прав администратора."
+  },
+  {
+    "id": "zig",
+    "category": "language",
+    "display": "Zig",
+    "description": "Язык и компилятор Zig (zig init-exe)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["zig", "version"]],
+      "known_paths": ["%USERPROFILE%/zig"],
+      "registry_keys": []
+    },
+    "versions": { "min": "0.11", "recommended": "0.14" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Zig.Zig", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "zig-zip", "url": "https://ziglang.org/download/0.14.1/zig-x86_64-pc-windows-msvc.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "zig", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "zig", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 60,
+    "needs_admin": false,
+    "path_entries": ["%USERPROFILE%\\zig"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "dart",
+    "category": "language",
+    "display": "Dart SDK",
+    "description": "SDK для Dart: dart create, pub (нужен Flutter)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["dart", "--version"]],
+      "known_paths": ["C:/Program Files/Dart", "%LOCALAPPDATA%/dart-sdk"],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.0", "recommended": "3.7" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Dart.Dart", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "dart-zip", "url": "https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-windows-x64-release.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "dart", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "dart", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 200,
+    "needs_admin": false,
+    "path_entries": ["C:\\Program Files\\Dart\\bin", "%LOCALAPPDATA%\\dart-sdk\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "php",
+    "category": "language",
+    "display": "PHP",
+    "description": "Интерпретатор PHP (Laravel, Symfony)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["php", "--version"]],
+      "known_paths": ["C:/Program Files/php"],
+      "registry_keys": []
+    },
+    "versions": { "min": "8.1", "recommended": "8.3" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "PHP.PHP.8.3", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "php-zip", "url": "https://windows.php.net/downloads/releases/php-8.3.14-nts-Win32-vs16-x64.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "php", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "php", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 60,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\php"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "composer",
+    "category": "package_manager",
+    "display": "Composer",
+    "description": "Менеджер пакетов PHP",
+    "icon": null,
+    "detection": {
+      "version_probes": [["composer", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "2.5", "recommended": "2.8" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Composer.Composer", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Script", "id": "composer-installer", "url": "https://getcomposer.org/installer", "args": ["--quiet"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "composer", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "composer", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 5,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Требует PHP."
+  },
+  {
+    "id": "swift",
+    "category": "language",
+    "display": "Swift",
+    "description": "Тулчейн Swift (SwiftUI, Vapor)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["swift", "--version"]],
+      "known_paths": ["C:/Library/Swift"],
+      "registry_keys": []
+    },
+    "versions": { "min": "5.9", "recommended": "6.1" },
+    "sources": {
+      "windows": [
+        { "kind": "Official", "id": "swift-installer", "url": "https://download.swift.org/swift-6.1-release/windows10/swift-6.1-RELEASE/swift-6.1-RELEASE-windows10.exe", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "swiftlang", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "swift", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 500,
+    "needs_admin": true,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Swift на Windows — экспериментальная поддержка, установщик с официального сайта."
+  },
+  {
+    "id": "erlang",
+    "category": "language",
+    "display": "Erlang/OTP",
+    "description": "Рантайм Erlang — обязательная зависимость Elixir и Phoenix",
+    "icon": null,
+    "detection": {
+      "version_probes": [["erl", "-noshell", "-eval", "io:format(\"~s\",[erlang:system_info(otp_release)]),halt()."]],
+      "known_paths": ["C:/Program Files/erl-27.2"],
+      "registry_keys": []
+    },
+    "versions": { "min": "25", "recommended": "27" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Erlang.Erlang", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "erlang-exe", "url": "https://github.com/erlang/otp/releases/download/OTP-27.2/otp_win64_27.2.exe", "args": ["/S"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "erlang", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "erlang", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 150,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\erl-27.2\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "elixir",
+    "category": "language",
+    "display": "Elixir",
+    "description": "Язык Elixir (mix new, Phoenix)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["elixir", "--version"]],
+      "known_paths": ["C:/Program Files/Elixir"],
+      "registry_keys": []
+    },
+    "versions": { "min": "1.14", "recommended": "1.18" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Elixir.Elixir", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "elixir-zip", "url": "https://github.com/elixir-lang/elixir/releases/download/v1.18.2/elixir-otp-27.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "elixir", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "elixir", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 30,
+    "needs_admin": false,
+    "path_entries": ["C:\\Program Files\\Elixir\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Требует Erlang/OTP."
+  },
+  {
+    "id": "gleam",
+    "category": "language",
+    "display": "Gleam",
+    "description": "Язык Gleam (gleam new)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["gleam", "--version"]],
+      "known_paths": ["%USERPROFILE%/.local/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "0.34", "recommended": "1.6" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Gleam.Gleam", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "gleam-zip", "url": "https://github.com/gleam-lang/gleam/releases/latest/download/gleam-x86_64-pc-windows-msvc.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "gleam", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "gleam", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 15,
+    "needs_admin": false,
+    "path_entries": ["%USERPROFILE%\\.local\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "flutter",
+    "category": "language",
+    "display": "Flutter SDK",
+    "description": "SDK Flutter (flutter create) — включает собственный Dart SDK",
+    "icon": null,
+    "detection": {
+      "version_probes": [["flutter", "--version"]],
+      "known_paths": ["%USERPROFILE%/flutter"],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.19", "recommended": "3.35" },
+    "sources": {
+      "windows": [
+        { "kind": "Official", "id": "flutter-git", "url": "https://github.com/flutter/flutter.git", "args": ["clone", "--depth", "1", "-b", "stable"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "flutter", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "flutter", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 1000,
+    "needs_admin": false,
+    "path_entries": ["%USERPROFILE%\\flutter\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Flutter ставится git-клонированием стабильной ветки. Первый запуск flutter --version дольше обычного."
+  },
+  {
+    "id": "maven",
+    "category": "package_manager",
+    "display": "Maven",
+    "description": "Сборщик Java (mvn) — нужен Spring Boot",
+    "icon": null,
+    "detection": {
+      "version_probes": [["mvn", "--version"]],
+      "known_paths": ["C:/Program Files/apache-maven-3.9.9", "C:/Program Files/Maven"],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.8", "recommended": "3.9" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Apache.Maven", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "maven-zip", "url": "https://dlcdn.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "maven", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "maven", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 10,
+    "needs_admin": false,
+    "path_entries": ["C:\\Program Files\\apache-maven-3.9.9\\bin", "C:\\Program Files\\Maven\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Требует Java JDK."
+  },
+  {
+    "id": "gradle",
+    "category": "package_manager",
+    "display": "Gradle",
+    "description": "Сборщик Java/Kotlin — нужен Android, Spring Boot",
+    "icon": null,
+    "detection": {
+      "version_probes": [["gradle", "--version"]],
+      "known_paths": ["C:/Program Files/Gradle"],
+      "registry_keys": []
+    },
+    "versions": { "min": "8.5", "recommended": "9.1" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Gradle.Gradle", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "gradle-zip", "url": "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip", "args": [], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "gradle", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "gradle", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 140,
+    "needs_admin": false,
+    "path_entries": ["C:\\Program Files\\Gradle\\gradle-9.1.0\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Требует Java JDK."
+  },
+  {
+    "id": "postgresql",
+    "category": "database",
+    "display": "PostgreSQL",
+    "description": "Реляционная СУБД (psql, сервер)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["psql", "--version"]],
+      "known_paths": ["C:/Program Files/PostgreSQL/17/bin"],
+      "registry_keys": ["HKLM\\SOFTWARE\\PostgreSQL\\Installations"]
+    },
+    "versions": { "min": "15", "recommended": "17" },
+    "sources": {
+      "windows": [
+        {
+          "kind": "PkgManager",
+          "id": "PostgreSQL.PostgreSQL.17",
+          "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"],
+          "extra_args": [],
+          "dynamic_args": true
+        },
+        {
+          "kind": "Official",
+          "id": "postgres-edb",
+          "url": "https://get.enterprisedb.com/postgresql/postgresql-17.5-1-windows-x64.exe",
+          "args": ["--mode", "unattended", "--unattendedmodeui", "none", "--install_runtimes", "0"],
+          "extra_args": [],
+          "dynamic_args": true
+        }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "postgresql", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "postgresql@17", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 350,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\PostgreSQL\\17\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Пароль суперпользователя генерируется автоматически и показывается на экране результата (dynamic_args)."
+  },
+  {
+    "id": "redis",
+    "category": "database",
+    "display": "Redis (Memurai)",
+    "description": "In-memory кеш и брокер сообщений. Официальный Redis не поддерживает Windows — используем Memurai (совместимый) или Docker",
+    "icon": null,
+    "detection": {
+      "version_probes": [["redis-server", "--version"]],
+      "known_paths": ["C:/Program Files/Memurai"],
+      "registry_keys": []
+    },
+    "versions": { "min": "6", "recommended": "8" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Memurai.MemuraiDeveloper", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "redis-server", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "redis", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 60,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\Memurai\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Альтернатива: запустить Redis через docker-compose, который уже генерируется в каркасе проекта."
+  },
+  {
+    "id": "mongodb",
+    "category": "database",
+    "display": "MongoDB",
+    "description": "Документная NoSQL СУБД (mongod)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["mongod", "--version"]],
+      "known_paths": ["C:/Program Files/MongoDB/Server/8.0/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "6.0", "recommended": "8.0" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "MongoDB.Server", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "mongodb-msi", "url": "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-8.0.4.msi", "args": ["/quiet", "/norestart"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "mongodb-org", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "mongodb-community", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 700,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\MongoDB\\Server\\8.0\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "mysql",
+    "category": "database",
+    "display": "MySQL",
+    "description": "Реляционная СУБД (mysql)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["mysql", "--version"]],
+      "known_paths": ["C:/Program Files/MySQL/MySQL Server 8.0/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "8.0", "recommended": "8.4" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Oracle.MySQL", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "mysql-msi", "url": "https://dev.mysql.com/get/Downloads/MySQLInstaller/mysql-installer-community-8.4.5.1.msi", "args": ["/quiet"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "mysql-server", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "mysql", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 300,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; при сбое — используйте Docker-вариант из каркаса проекта."
+  },
+  {
+    "id": "sqlite",
+    "category": "database",
+    "display": "SQLite",
+    "description": "Встраиваемая СУБД (входит в состав Python/.NET/Node, отдельно не ставится)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["sqlite3", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.35", "recommended": "3.46" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Информационный тул: никогда не блокирует создание проекта."
+  },
+  {
+    "id": "docker",
+    "category": "container",
+    "display": "Docker Desktop",
+    "description": "Контейнеризация (docker, docker compose)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["docker", "--version"]],
+      "known_paths": ["C:/Program Files/Docker/Docker/resources/bin"],
+      "registry_keys": ["HKLM\\SOFTWARE\\Docker Inc.\\DockerDesktop"]
+    },
+    "versions": { "min": "24", "recommended": "28" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Docker.DockerDesktop", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "docker-desktop", "url": "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe", "args": ["install", "--quiet", "--accept-license"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "docker.io", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "docker", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 600,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\Docker\\Docker\\resources\\bin"],
+    "bundled_with": null,
+    "health_checks": [
+      { "label": "docker daemon", "command": ["docker", "version", "--format", "{{.Server.Version}}"] }
+    ],
+    "notes": "Требует WSL2. Если WSL2 не установлен — предложим установить Microsoft.WSL через winget. После установки нужно один раз запустить Docker Desktop."
+  },
+  {
+    "id": "git",
+    "category": "vcs",
+    "display": "Git",
+    "description": "Система контроля версий (git init, commit)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["git", "--version"]],
+      "known_paths": ["C:/Program Files/Git/cmd"],
+      "registry_keys": ["HKLM\\SOFTWARE\\GitForWindows"]
+    },
+    "versions": { "min": "2.40", "recommended": "2.48" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Git.Git", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "git-installer", "url": "https://github.com/git-for-windows/git/releases/download/v2.48.1.windows.1/Git-2.48.1-64-bit.exe", "args": ["/VERYSILENT", "/NORESTART", "/SP-"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "git", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "git", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 70,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\Git\\cmd"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "vscode",
+    "category": "editor",
+    "display": "VS Code",
+    "description": "Редактор кода (нужен для шага «VS Code Config» и кнопки «Open in VS Code»)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["code", "--version"]],
+      "known_paths": ["%LOCALAPPDATA%/Programs/Microsoft VS Code/bin"],
+      "registry_keys": ["HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{EA457B21-F73E-494c-ACAB-524DDEADCE5C}"]
+    },
+    "versions": { "min": "1.80", "recommended": "1.98" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Microsoft.VisualStudioCode", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "vscode-setup", "url": "https://update.code.visualstudio.com/latest/win32-x64-user/stable", "args": ["/VERYSILENT", "/MERGETASKS=!runcode"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "code", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "visual-studio-code", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 100,
+    "needs_admin": false,
+    "path_entries": ["%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "cmake",
+    "category": "utility",
+    "display": "CMake",
+    "description": "Кроссплатформенная система сборки (нужна C++ проектам)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["cmake", "--version"]],
+      "known_paths": ["C:/Program Files/CMake/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.16", "recommended": "3.31" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "Kitware.CMake", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "cmake-msi", "url": "https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5-windows-x86_64.msi", "args": ["/quiet", "/norestart"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "cmake", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "cmake", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 30,
+    "needs_admin": true,
+    "path_entries": ["C:\\Program Files\\CMake\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "make",
+    "category": "utility",
+    "display": "Make",
+    "description": "Классический make (для C/C++ и Zig-проектов с Makefile)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["make", "--version"]],
+      "known_paths": ["C:/Program Files/GnuWin32/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "4.0", "recommended": "4.4" },
+    "sources": {
+      "windows": [
+        { "kind": "PkgManager", "id": "GnuWin32.Make", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [{ "kind": "PkgManager", "id": "make", "args": [], "extra_args": [], "dynamic_args": false }],
+      "macos": [{ "kind": "PkgManager", "id": "make", "args": [], "extra_args": [], "dynamic_args": false }]
+    },
+    "size_mb": 5,
+    "needs_admin": false,
+    "path_entries": ["C:\\Program Files\\GnuWin32\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": null
+  },
+  {
+    "id": "curl",
+    "category": "utility",
+    "display": "Curl",
+    "description": "Загрузка файлов по URL (нужен Spring Boot скаффолду)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["curl", "--version"]],
+      "known_paths": ["C:/Windows/System32/curl.exe"],
+      "registry_keys": []
+    },
+    "versions": { "min": "7.70", "recommended": "8.10" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Встроен в Windows 10+ и большинство дистрибутивов Linux. Информационный тул."
+  },
+  {
+    "id": "tar",
+    "category": "utility",
+    "display": "Tar",
+    "description": "Архиватор (нужен для распаковки zip/spring-boot)",
+    "icon": null,
+    "detection": {
+      "version_probes": [["tar", "--version"]],
+      "known_paths": ["C:/Windows/System32/tar.exe"],
+      "registry_keys": []
+    },
+    "versions": { "min": "3.0", "recommended": "3.5" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Встроен в Windows 10+ (bsdtar). Информационный тул."
+  }
+]
