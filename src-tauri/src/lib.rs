@@ -66,7 +66,7 @@ pub fn run() {
             );
 
             // === ToolchainManager module ===
-            let toolchain_state = ToolchainState::new();
+            let toolchain_state = ToolchainState::new(data_dir.join("toolchain"));
             app.manage(toolchain_state);
 
             // Register all states
@@ -137,6 +137,12 @@ pub fn run() {
             modules::toolchain::commands::tc_get_tool_definitions,
             modules::toolchain::commands::tc_get_environment_info,
             modules::toolchain::commands::tc_check_environment,
+            modules::toolchain::commands::tc_build_install_plan,
+            modules::toolchain::commands::tc_run_install,
+            modules::toolchain::commands::tc_get_install_status,
+            modules::toolchain::commands::tc_abort_install,
+            modules::toolchain::commands::tc_get_metadata,
+            modules::toolchain::commands::tc_get_health_report,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

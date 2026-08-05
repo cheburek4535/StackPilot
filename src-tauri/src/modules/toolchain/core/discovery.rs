@@ -35,7 +35,10 @@ const PROBE_TIMEOUT_SECS: u64 = 5;
 /// Возвращает None, если: таймаут, не удалось запустить,
 /// или процесс завершился с ненулевым кодом (такое бывает,
 /// когда бинарник есть, но команда не для него).
-async fn run_capture(program: &str, args: &[String]) -> Option<String> {
+///
+/// pub(crate): используется и health.rs (этап 6) для прогона
+/// health-проверок из tools.json.
+pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String> {
     let output = timeout(
         Duration::from_secs(PROBE_TIMEOUT_SECS),
         TokioCommand::new(program).args(args).output(),
@@ -196,6 +199,18 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     }
 
     ToolStatus::Missing
+}
+
+/// Первый из known_paths, который реально существует на диске.
+/// Используется для записи в state.json после установки
+/// (путь установки сам инструмент не сообщает).
+pub(crate) fn installed_path(def: &ToolDefinition) -> Option<String> {
+    def.detection.known_paths.iter().find_map(|p| {
+        let expanded = expand_env(p);
+        expanded
+            .exists()
+            .then(|| expanded.to_string_lossy().into_owned())
+    })
 }
 
 // ============================================================

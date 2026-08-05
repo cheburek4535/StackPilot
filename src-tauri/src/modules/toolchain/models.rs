@@ -270,6 +270,20 @@ pub struct InstallPlan {
     pub os: String,
 }
 
+/// Живая сессия установки — состояние для tc_get_install_status.
+/// Хранится в ToolchainState, пока идёт/завершилась установка.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallSession {
+    pub started_at: String,
+    /// false = установка завершена (или ещё не начиналась)
+    pub running: bool,
+    pub plan: InstallPlan,
+    /// Сгенерированные при установке секреты (пароль PostgreSQL и т.п.).
+    /// Сохраняются в state.json на этапе 5, в проект не попадают.
+    #[serde(default)]
+    pub secrets: HashMap<String, String>,
+}
+
 /// Событие установки — стримится на фронтенд через tauri events
 /// (тот же механизм, что project_creator:step_event).
 #[derive(Debug, Clone, Serialize, Deserialize)]

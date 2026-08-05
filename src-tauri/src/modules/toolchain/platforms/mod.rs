@@ -14,10 +14,18 @@ pub mod windows;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(unix)]
+pub mod unix_rc;
 
+use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
+
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
 
 /// Единый интерфейс платформенного адаптера.
+#[async_trait::async_trait]
 pub trait PlatformAdapter: Send + Sync {
     /// Имя ОС для отчётов ("windows", "linux", "macos")
     fn os_name(&self) -> String;
@@ -25,6 +33,43 @@ pub trait PlatformAdapter: Send + Sync {
     /// Это список «известных» менеджеров платформы; реальное наличие
     /// каждого на конкретной машине проверяет DiscoveryService.
     fn package_managers(&self) -> Vec<String>;
+    /// Разделитель записей в PATH (";" на Windows, ":" на Unix).
+    fn path_separator(&self) -> String;
+    /// PATH пользователя (Windows: HKCU\Environment; Unix: rc-файл с
+    /// маркером StackPilot). Записи могут содержать %VAR% — их
+    /// раскрывает path_service::expand_env_vars.
+    async fn read_user_path(&self) -> Result<Vec<String>, String>;
+    /// Системный PATH (Windows: HKLM; Unix: неразличим — пустой список,
+    /// базовым считаем текущий PATH процесса).
+    async fn read_system_path(&self) -> Result<Vec<String>, String>;
+    /// Полностью перезаписывает PATH пользователя переданными записями.
+    async fn write_user_path(&self, dirs: &[String]) -> Result<(), String>;
+    /// Версия ОС для отчётов, например "Microsoft Windows 11 Pro (10.0.22631)".
+    async fn os_version(&self) -> String;
+    /// Свободное место на диске, содержащем путь, в МБ.
+    async fn free_space_mb(&self, path: &Path) -> Result<u64, String>;
+}
+
+/// Общий запуск команды с таймаутом (для быстрых проб платформы:
+/// PowerShell/df/uname). Возвращает stdout (trim) или понятную ошибку.
+/// Повторяет паттерн discovery::run_capture, но с именами аргументов
+/// String — так удобнее собирать PowerShell-скрипты.
+pub(crate) async fn run_command(program: &str, args: &[String]) -> Result<String, String> {
+    let output = timeout(
+        Duration::from_secs(30),
+        TokioCommand::new(program).args(args).output(),
+    )
+    .await
+    .map_err(|_| format!("Таймаут команды {program}"))?
+    .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "{program} завершился с кодом {}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Адаптер для неподдерживаемых ОС — ничего не умеет, но не падает.
@@ -32,12 +77,31 @@ pub trait PlatformAdapter: Send + Sync {
 pub struct UnsupportedAdapter;
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[async_trait::async_trait]
 impl PlatformAdapter for UnsupportedAdapter {
     fn os_name(&self) -> String {
         std::env::consts::OS.to_string()
     }
     fn package_managers(&self) -> Vec<String> {
         Vec::new()
+    }
+    fn path_separator(&self) -> String {
+        ".".to_string()
+    }
+    async fn read_user_path(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    async fn read_system_path(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    async fn write_user_path(&self, _dirs: &[String]) -> Result<(), String> {
+        Err("PATH не поддерживается на этой ОС".to_string())
+    }
+    async fn os_version(&self) -> String {
+        std::env::consts::OS.to_string()
+    }
+    async fn free_space_mb(&self, _path: &Path) -> Result<u64, String> {
+        Err("Проверка диска не поддерживается на этой ОС".to_string())
     }
 }
 

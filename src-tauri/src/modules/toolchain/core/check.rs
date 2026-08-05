@@ -16,6 +16,7 @@
 // free_space_mb на этапе 2 всегда 0 (проверка диска — этап 5):
 // 0 означает «свободное место не проверялось» → enough_space=true.
 
+use tokio::task::JoinSet;
 use crate::modules::toolchain::models::*;
 use crate::modules::toolchain::platforms;
 
@@ -31,17 +32,31 @@ pub async fn run_check(
 ) -> EnvironmentCheck {
     let os = platforms::current_platform().os_name();
 
-    let mut requirements: Vec<ToolRequirement> = Vec::new();
+    let mut set = JoinSet::new();
+
     let mut total_size_mb: u64 = 0;
     let mut needs_admin_any = false;
 
-    for id in requested {
+    for (index, id) in requested.iter().enumerate() {
         let Some(def) = definitions.iter().find(|d| &d.id == id) else {
             eprintln!("[toolchain] неизвестный инструмент: {id}");
             continue;
         };
+        let def_clone = def.clone();
 
-        let status = discovery::detect_tool(def).await;
+        set.spawn(async move {
+            let status = discovery::detect_tool(&def_clone).await;
+            (def_clone, status, index)
+        });
+    }
+    let mut temp_requirements: Vec<(usize, ToolRequirement)> = Vec::new();
+while let Some(res) = set.join_next().await {
+        // Задача прервалась или запаниковала — пропускаем этот тул,
+        // отчёт не должен рухнуть из-за one процеса.
+        let Ok((def, status, index)) = res else {
+            eprintln!("[toolchain] задача обнаружения прервана: {res:?}");
+            continue;
+        };
 
         // Тул не устанавливается на этой ОС — при отсутствии не требование.
         if matches!(status, ToolStatus::Missing) && !def.installable() {
@@ -60,17 +75,22 @@ pub async fn run_check(
             }
         }
 
-        requirements.push(ToolRequirement {
-            tool_id: def.id.clone(),
-            display: def.display.clone(),
-            category: def.category.clone(),
+        let desc = source_description(&def);
+        temp_requirements.push((index, ToolRequirement {
+            tool_id: def.id,
+            display: def.display,
+            category: def.category,
             status,
             size_mb: def.size_mb,
             needs_admin: def.needs_admin,
-            source_description: source_description(def),
-        });
+            source_description: desc,
+        }));
     }
 
+    temp_requirements.sort_by_key(|pair| pair.0);
+
+    
+    let requirements: Vec<ToolRequirement> = temp_requirements.into_iter().map(|pair| pair.1).collect();
     let all_ready = requirements.iter().all(|r| r.status.is_ok());
     let enough_space = free_space_mb == 0 || free_space_mb >= total_size_mb;
 

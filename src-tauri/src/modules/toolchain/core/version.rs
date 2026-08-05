@@ -29,6 +29,11 @@ pub fn compare(a: &[u32], b: &[u32]) -> Ordering {
     a_iter.cmp(b_iter)
 }
 
+/// true, если установленная версия не ниже минимальной.
+/// На этапе 2 min носит advisory-характер и проверку не блокирует;
+/// задействуется на этапе 6 (health-отчёты). Пока не зовётся — отсюда
+/// allow(dead_code), чтобы не мусорить предупреждениями.
+#[allow(dead_code)]
 pub fn meets_min(installed: &[u32], min: &[u32]) -> bool {
     compare(installed, min) != Ordering::Less
 }

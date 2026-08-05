@@ -27,6 +27,24 @@ import type {
   StepStatus,
   RecipePreview,
 } from "$lib/modules/project_creator/types";
+import {
+  checkEnvironment as tcCheckEnvironment,
+  buildInstallPlan as tcBuildPlan,
+  runInstall as tcRunInstall,
+  abortInstall as tcAbortInstall,
+  listenToolchainEvents,
+  listenInstallDone,
+} from "$lib/modules/toolchain/api";
+import type {
+  EnvironmentCheck,
+  InstallPlan,
+  ToolchainEvent,
+  TaskState,
+  TaskPhase,
+  ProjectRequirements,
+  ToolRequirement,
+} from "$lib/modules/toolchain/types";
+import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/modules/toolchain/types";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -41,7 +59,7 @@ let testing = $state(true);
 let git = $state(true);
 let vscode = $state(true);
 let step = $state(0);
-const STEP_NAMES = ["Type", "Backend", "Frontend", "Framework", "Tools", "Review", "Generate"];
+const STEP_NAMES = ["Type", "Backend", "Frontend", "Framework", "Tools", "Review", "Environment", "Generate"];
 
 let execPlan = $state<ExecutionPlan | null>(null);
 let execStatuses = $state<Map<number, { name: string; status: StepStatus; logs: string[] }>>(new Map());
@@ -50,6 +68,17 @@ let execResult = $state<{ duration: number; status: string } | null>(null);
 let execError = $state<string | null>(null);
 let execLogs = $state<string[]>([]);
 let unlisten: (() => void) | null = null;
+
+// ---- Toolchain Environment (Step 6) ----
+let envCheck = $state<EnvironmentCheck | null>(null);
+let envChecking = $state(false);
+let envError = $state<string | null>(null);
+let envPlan = $state<InstallPlan | null>(null);
+let envInstalling = $state(false);
+let envLogs = $state<string[]>([]);
+let envTaskStates = $state<Map<string, TaskState>>(new Map());
+let unlistenTc: (() => void) | null = null;
+let unlistenTcDone: (() => void) | null = null;
 
 let analysisMode = $state(false);
 let analysisResult = $state<AnalysisReport | null>(null);
@@ -204,6 +233,8 @@ onMount(async () => {
 
 onDestroy(() => {
   if (unlisten) unlisten();
+  if (unlistenTc) unlistenTc();
+  if (unlistenTcDone) unlistenTcDone();
 });
 
 function imgSrc(name: string | null): string {
@@ -403,7 +434,113 @@ async function confirmAll() {
   }
   folderCheckPending = false;
 
-  await doCreateProject(projectName);
+  await goToEnvironment();
+}
+
+// ---- Step 6: Environment check & install ----
+function buildRequirements(): ProjectRequirements {
+  return {
+    languages: allSelectedLangs(),
+    frameworks: selectedFrameworks,
+    tools: selectedTools,
+    git_init: git,
+    vscode_config: vscode,
+    docker: isDockerForced() || selectedTools.includes("docker"),
+  };
+}
+
+async function runEnvironmentCheck(silent = false) {
+  envChecking = !silent;
+  envError = null;
+  try {
+    const fresh = await tcCheckEnvironment(buildRequirements());
+    envCheck = fresh;
+  } catch (e) {
+    envError = String(e);
+  } finally {
+    envChecking = false;
+  }
+}
+
+async function goToEnvironment() {
+  step = 6;
+  envCheck = null;
+  envPlan = null;
+  envLogs = [];
+  envTaskStates = new Map();
+  envInstalling = false;
+  await runEnvironmentCheck();
+}
+
+function missingTools(): ToolRequirement[] {
+  return envCheck?.requirements.filter((r) => statusKind(r.status) !== "ok") ?? [];
+}
+
+async function startInstall() {
+  if (!envCheck) return;
+  envInstalling = true;
+  envError = null;
+  envLogs = [];
+  envTaskStates = new Map();
+  try {
+    envPlan = await tcBuildPlan(envCheck);
+  } catch (e) {
+    envError = String(e);
+    envInstalling = false;
+    return;
+  }
+  try {
+    if (unlistenTc) unlistenTc();
+    if (unlistenTcDone) unlistenTcDone();
+    unlistenTc = await listenToolchainEvents(handleToolchainEvent);
+    unlistenTcDone = await listenInstallDone(handleInstallDone);
+    await tcRunInstall(envPlan);
+  } catch (e) {
+    envError = String(e);
+    envInstalling = false;
+  }
+}
+
+function handleToolchainEvent(event: ToolchainEvent) {
+  const t = event.event_type;
+  if (!t || typeof t !== "object" || Array.isArray(t)) return;
+  if ("TaskStarted" in t) {
+    envTaskStates.set(event.task_id, { Running: { phase: { Downloading: null } } });
+    envTaskStates = new Map(envTaskStates);
+  }
+  if ("TaskPhaseChanged" in t) {
+    const phase = (t as Record<string, { phase: TaskPhase }>).TaskPhaseChanged?.phase;
+    envTaskStates.set(event.task_id, { Running: { phase: phase ?? { Downloading: null } } });
+    envTaskStates = new Map(envTaskStates);
+  }
+  if ("TaskProgress" in t) {
+    const line = (t as Record<string, { line: string }>).TaskProgress?.line;
+    if (line) envLogs = [...envLogs, line];
+  }
+  if ("TaskCompleted" in t) {
+    const state = (t as Record<string, { state: TaskState }>).TaskCompleted?.state;
+    if (state) {
+      envTaskStates.set(event.task_id, state);
+      envTaskStates = new Map(envTaskStates);
+    }
+  }
+}
+
+function handleInstallDone(plan: InstallPlan) {
+  for (const task of plan.tasks) {
+    envTaskStates.set(task.task_id, task.state);
+  }
+  envTaskStates = new Map(envTaskStates);
+  envInstalling = false;
+  runEnvironmentCheck(true);
+}
+
+async function cancelInstall() {
+  try {
+    await tcAbortInstall();
+  } catch {
+    // ignore
+  }
 }
 
 async function doCreateProject(useProjectName: string) {
@@ -438,7 +575,7 @@ async function doCreateProject(useProjectName: string) {
     answers: {},
   };
 
-  step = 6;
+  step = 7;
   execPlan = null;
   execStatuses = new Map();
   execLogs = [];
@@ -522,6 +659,12 @@ function resetAll() {
   git = true;
   vscode = true;
   tooltipData = null;
+  envCheck = null;
+  envPlan = null;
+  envLogs = [];
+  envTaskStates = new Map();
+  envInstalling = false;
+  envError = null;
   step = 0;
 }
 
@@ -983,9 +1126,99 @@ function hasTauriFramework(): boolean {
     {/if}
 
     <!-- ================================================================
-         Step 6: Execution
+         Step 6: Environment check & install
          ================================================================ -->
     {#if step === 6}
+      <p class="prompt">Environment check</p>
+      <p class="hint">We check your stack requirements before generating the project.</p>
+
+      {#if envChecking}
+        <p class="muted">Checking installed tools…</p>
+      {:else if envError && !envCheck}
+        <p class="error">{envError}</p>
+        <div class="btn-row">
+          <button class="btn-back" onclick={back}>← Back</button>
+          <button class="btn-primary" onclick={() => runEnvironmentCheck()}>Retry</button>
+        </div>
+      {:else if envCheck}
+        <div class="env-summary">
+          <span>Ready: {envCheck.requirements.filter((r) => statusKind(r.status) === "ok").length}/{envCheck.requirements.length}</span>
+          {#if missingTools().length > 0}
+            <span>To install: {missingTools().length}</span>
+          {/if}
+          <span>Download: {envCheck.total_size_mb} MB</span>
+          <span>Free space: {envCheck.free_space_mb} MB</span>
+          {#if !envCheck.enough_space}
+            <span class="env-warn">⚠ Not enough disk space</span>
+          {/if}
+          {#if envCheck.needs_admin_any}
+            <span class="env-warn">⚠ Admin rights may be required</span>
+          {/if}
+        </div>
+
+        <div class="env-list">
+          {#each envCheck.requirements as req}
+            {@const kind = statusKind(req.status)}
+            <div class="env-row" class:ok={kind === "ok"} class:update={kind === "update"} class:broken={kind === "broken"} class:missing={kind === "missing"}>
+              <span class="env-icon">{toolCategoryIcon(req.category)}</span>
+              <span class="env-name">{req.display}</span>
+              <span class="env-source">{req.source_description}</span>
+              <span class="env-status" class:ok={kind === "ok"} class:update={kind === "update"} class:broken={kind === "broken"} class:missing={kind === "missing"}>{statusLabel(req.status)}</span>
+            </div>
+          {/each}
+        </div>
+
+        {#if envPlan && envInstalling}
+          <div class="env-install">
+            <p class="group-label">Installing…</p>
+            {#each envPlan.tasks as task}
+              {@const st = envTaskStates.get(task.task_id) ?? task.state}
+              <div class="env-row">
+                <span class="env-icon">
+                  {#if taskStateKind(st) === "running"}⏳
+                  {:else if taskStateKind(st) === "success"}✅
+                  {:else if taskStateKind(st) === "failed"}❌
+                  {:else if taskStateKind(st) === "skipped"}⏭️
+                  {:else}•{/if}
+                </span>
+                <span class="env-name">{task.display}</span>
+                <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
+                <span class="env-status">{taskStateLabel(st)}</span>
+              </div>
+            {/each}
+            {#if envLogs.length > 0}
+              <details class="exec-full-log">
+                <summary>Log ({envLogs.length} lines)</summary>
+                <pre>{envLogs.join("\n")}</pre>
+              </details>
+            {/if}
+          </div>
+        {/if}
+
+        {#if envError}
+          <p class="error">{envError}</p>
+        {/if}
+
+        <div class="btn-row">
+          <button class="btn-back" onclick={back} disabled={envInstalling}>← Back</button>
+          {#if envInstalling}
+            <button class="btn-secondary" onclick={cancelInstall}>Abort</button>
+          {:else if missingTools().length > 0}
+            <button class="btn-primary" onclick={startInstall}>
+              Install {missingTools().length} tool{missingTools().length > 1 ? "s" : ""}
+            </button>
+            <button class="btn-secondary" onclick={() => doCreateProject(projectName)}>Continue anyway</button>
+          {:else}
+            <button class="btn-primary" onclick={() => doCreateProject(projectName)}>🚀 Create Project</button>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
+    <!-- ================================================================
+         Step 7: Execution
+         ================================================================ -->
+    {#if step === 7}
       <p class="prompt">Generating your project...</p>
 
       <div class="exec-steps">
@@ -1123,6 +1356,23 @@ function hasTauriFramework(): boolean {
 .exec-finished p { margin: 0.3rem 0; }
 .exec-finished.error { color: #e74c3c; }
 .exec-plan-path { font-size: 0.85rem; color: #888; }
+.env-summary { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; padding: 0.75rem 1rem; border: 1px solid #333; border-radius: 10px; background: #15152e; margin-bottom: 1rem; font-size: 0.85rem; color: #ccc; }
+.env-warn { color: #f39c12; font-weight: 600; }
+.env-list { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
+.env-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: #1a1a2e; border-left: 3px solid #555; }
+.env-row.ok { border-left-color: #00b894; }
+.env-row.update { border-left-color: #f39c12; }
+.env-row.broken { border-left-color: #e74c3c; }
+.env-row.missing { border-left-color: #e74c3c; opacity: 0.8; }
+.env-icon { min-width: 20px; font-size: 0.95rem; }
+.env-name { font-weight: 600; font-size: 0.9rem; flex: 0 0 auto; }
+.env-source { font-size: 0.75rem; color: #888; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-status { font-size: 0.8rem; font-weight: 600; flex: 0 0 auto; }
+.env-status.ok { color: #00b894; }
+.env-status.update { color: #f39c12; }
+.env-status.broken { color: #e74c3c; }
+.env-status.missing { color: #e74c3c; }
+.env-install { margin-top: 0.5rem; }
 .create-btn { font-size: 1.1rem; padding: 0.75rem 2rem; }
 .project-name-section { border: 1px solid #333; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; background: #15152e; }
 .pn-label { display: block; font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; color: #ddd; }
