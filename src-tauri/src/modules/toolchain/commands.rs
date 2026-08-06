@@ -45,17 +45,32 @@ pub async fn tc_get_environment_info(
 /// загрузки, нужны ли права администратора, всё ли готово к генерации.
 #[tauri::command]
 pub async fn tc_check_environment(
+    app: tauri::AppHandle,
     state: State<'_, ToolchainState>,
     requirements: ProjectRequirements,
 ) -> Result<EnvironmentCheck, String> {
     let requested = core::requirements::resolve(&requirements);
+    eprintln!("[toolchain] check_environment: требования = {requested:?}");
+
+    // Прогресс по каждому инструменту стримится на фронтенд —
+    // пользователь видит «проверяется X (2/N)» вместо тишины.
+    let progress: core::check::ProgressFn = Arc::new(move |ev| {
+        let _ = app.emit("toolchain:check_progress", &ev);
+    });
+
     // Свободное место на диске, куда ставятся инструменты
     // (корень диска exe). Ошибка проверки не фатальна: 0 → «не
     // проверялось», enough_space=true (поведение этапов 2–4).
     let free_space_mb = core::disk::free_space_mb(&core::disk::install_root())
         .await
         .unwrap_or(0);
-    let check = core::check::run_check(state.definitions(), &requested, free_space_mb).await;
+    let check = core::check::run_check(state.definitions(), &requested, free_space_mb, Some(progress)).await;
+    eprintln!(
+        "[toolchain] check_environment: готово — {} требований, {} МБ, all_ready={}",
+        check.requirements.len(),
+        check.total_size_mb,
+        check.all_ready
+    );
 
     // Отмечаем время последней проверки в state.json (для страницы
     // окружения). Ошибка сохранения не мешает ответу.
@@ -115,6 +130,7 @@ pub fn tc_run_install(
 
     let definitions = state.definitions().to_vec();
     let metadata_arc = state.metadata();
+    let pending_arc = state.pending_secrets();
     // Сбрасываем флаг отмены перед стартом (контракт: run = «сначала»).
     state.abort_flag().store(false, std::sync::atomic::Ordering::SeqCst);
     let abort = state.abort_flag();
@@ -158,15 +174,32 @@ pub fn tc_run_install(
             let mut guard = session_arc.lock().expect("install_session poisoned");
             if let Some(s) = guard.as_mut() {
                 s.plan = working_plan.clone();
-                s.secrets = secrets;
+                s.secrets = secrets.clone();
                 s.running = false;
             }
+        }
+
+        // Секреты (пароль PostgreSQL) — в «одноразовую витрину»
+        // для фронтенда: пользователь увидит их один раз после установки.
+        {
+            let mut pending = pending_arc.lock().expect("pending_secrets poisoned");
+            *pending = secrets.clone();
         }
 
         let _ = app.emit("toolchain:install_done", &working_plan);
     });
 
     Ok(())
+}
+
+/// Секреты, сгенерированные ПОСЛЕДНЕЙ установкой (пароль PostgreSQL).
+/// Забираются «одноразово»: после вызова витрина очищается, чтобы
+/// старые пароли не всплывали на следующей странице окружения.
+#[tauri::command]
+pub fn tc_take_new_secrets(state: State<'_, ToolchainState>) -> std::collections::HashMap<String, String> {
+    let pending = state.pending_secrets();
+    let mut guard = pending.lock().expect("pending_secrets poisoned");
+    std::mem::take(&mut *guard)
 }
 
 /// Текущий статус установки: план с состояниями задач и секреты.

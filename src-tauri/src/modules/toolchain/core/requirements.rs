@@ -58,7 +58,9 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
 /// языки не фигурируют). tauri собран на rust, flutter — свой SDK.
 fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
     match framework {
-        "tauri" => &["rust", "node"],
+        // tauri-cli: генерация проекта запускает `cargo tauri`,
+        // а без CLI это падает «no such command: tauri».
+        "tauri" => &["rust", "node", "tauri-cli"],
         "flutter" => &["flutter"],
         "android" | "jetpack-compose" => &["java"],
         _ => &[],
@@ -216,8 +218,8 @@ mod tests {
         let mut r = req();
         r.frameworks = vec!["tauri".into()];
         let ids = resolve(&r);
-        // рантаймы из статичной таблицы
-        for expected in ["rust", "node"] {
+        // рантаймы из статичной таблицы + tauri-cli для `cargo tauri`
+        for expected in ["rust", "node", "tauri-cli"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
         // тулы из wizard_tree.json (framework_tool_map: tauri → docker, npm)

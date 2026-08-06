@@ -24,6 +24,8 @@
 
 use crate::modules::toolchain::platforms;
 
+use super::discovery;
+
 /// Чистое объединение: существующие записи в прежнем порядке,
 /// затем недостающие добавления. Пустые отбрасываются, дубли
 /// (точное совпадение строк) не заносятся.
@@ -63,6 +65,34 @@ pub fn expand_env_vars(raw: &str) -> String {
     out
 }
 
+/// Раскрывает %VAR% и glob (`*`) в записи пути: `PostgreSQL/*/bin`
+/// → первый реально существующий каталог (17, 18...). Запись без
+/// совпадения возвращается как есть — она просто не попадёт в PATH
+/// как существующий каталог.
+fn resolve_path_entry(raw: &str) -> String {
+    let expanded = expand_env_vars(raw);
+    if expanded.contains('*') {
+        if let Some(found) = discovery::glob_first(&std::path::PathBuf::from(&expanded)) {
+            return found.to_string_lossy().into_owned();
+        }
+    }
+    expanded
+}
+
+/// Добавляет каталоги в пользовательский PATH (постоянно).
+/// Идемпотентно: уже присутствующие записи не дублируются.
+/// glob-записи (`PostgreSQL/*/bin`) резолвятся в конкретный каталог.
+pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
+    let platform = platforms::current_platform();
+    let existing = platform.read_user_path().await.unwrap_or_default();
+    let resolved: Vec<String> = dirs.iter().map(|d| resolve_path_entry(d)).collect();
+    let merged = merge_dirs(&existing, &resolved);
+    if merged == existing {
+        return Ok(()); // менять нечего — не трогаем реестр/rc-файл
+    }
+    platform.write_user_path(&merged).await
+}
+
 /// Записи PATH текущего процесса (уже раскрытые ОС).
 pub fn process_path_entries() -> Vec<String> {
     let sep = platforms::current_platform().path_separator();
@@ -74,18 +104,6 @@ pub fn process_path_entries() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Добавляет каталоги в пользовательский PATH (постоянно).
-/// Идемпотентно: уже присутствующие записи не дублируются.
-pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
-    let platform = platforms::current_platform();
-    let existing = platform.read_user_path().await.unwrap_or_default();
-    let merged = merge_dirs(&existing, dirs);
-    if merged == existing {
-        return Ok(()); // менять нечего — не трогаем реестр/rc-файл
-    }
-    platform.write_user_path(&merged).await
 }
 
 /// Обновляет PATH текущего процесса свежими значениями системы.

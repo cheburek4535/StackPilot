@@ -90,7 +90,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["python", "--version"], ["python3", "--version"]],
-      "known_paths": ["C:/Program Files/Python313", "%LOCALAPPDATA%/Programs/Python/Python313"],
+      "known_paths": ["C:/Program Files/Python3*", "%LOCALAPPDATA%/Programs/Python/Python3*"],
       "registry_keys": ["HKLM\\SOFTWARE\\Python\\PythonCore"]
     },
     "versions": { "min": "3.11", "recommended": "3.13" },
@@ -201,6 +201,37 @@
     "bundled_with": "rust",
     "health_checks": [],
     "notes": null
+  },
+  {
+    "id": "tauri-cli",
+    "category": "tooling",
+    "display": "Tauri CLI",
+    "description": "CLI для сборки Tauri-приложений (cargo tauri / tauri dev). Ставится через npm (глобальный @tauri-apps/cli) или cargo",
+    "icon": null,
+    "detection": {
+      "version_probes": [["tauri", "--version"]],
+      "known_paths": ["%APPDATA%/npm", "%USERPROFILE%/.cargo/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": "2.0", "recommended": "2.9" },
+    "sources": {
+      "windows": [
+        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "@tauri-apps/cli"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "cargo-global", "url": "cargo", "args": ["install", "tauri-cli", "--locked"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [
+        { "kind": "Official", "id": "cargo-global", "url": "cargo", "args": ["install", "tauri-cli", "--locked"], "extra_args": [], "dynamic_args": false }
+      ],
+      "macos": [
+        { "kind": "Official", "id": "cargo-global", "url": "cargo", "args": ["install", "tauri-cli", "--locked"], "extra_args": [], "dynamic_args": false }
+      ]
+    },
+    "size_mb": 120,
+    "needs_admin": false,
+    "path_entries": ["%APPDATA%\\npm", "%USERPROFILE%\\.cargo\\bin"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "url: \"npm\"/\"cargo\" — это команда запуска (паттерн «локальный путь без http»). Источники пробуются по порядку: npm быстрее (prebuilt), cargo — запасной."
   },
   {
     "id": "go",
@@ -468,7 +499,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["erl", "-noshell", "-eval", "io:format(\"~s\",[erlang:system_info(otp_release)]),halt()."]],
-      "known_paths": ["C:/Program Files/erl-27.2"],
+      "known_paths": ["C:/Program Files/erl-*"],
       "registry_keys": []
     },
     "versions": { "min": "25", "recommended": "27" },
@@ -482,7 +513,7 @@
     },
     "size_mb": 150,
     "needs_admin": true,
-    "path_entries": ["C:\\Program Files\\erl-27.2\\bin"],
+    "path_entries": ["C:\\Program Files\\erl-*\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": null
@@ -575,7 +606,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["mvn", "--version"]],
-      "known_paths": ["C:/Program Files/apache-maven-3.9.9", "C:/Program Files/Maven"],
+      "known_paths": ["C:/Program Files/apache-maven-*", "C:/Program Files/Maven"],
       "registry_keys": []
     },
     "versions": { "min": "3.8", "recommended": "3.9" },
@@ -589,7 +620,7 @@
     },
     "size_mb": 10,
     "needs_admin": false,
-    "path_entries": ["C:\\Program Files\\apache-maven-3.9.9\\bin", "C:\\Program Files\\Maven\\bin"],
+    "path_entries": ["C:\\Program Files\\apache-maven-*\\bin", "C:\\Program Files\\Maven\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": "Требует Java JDK."
@@ -602,7 +633,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["gradle", "--version"]],
-      "known_paths": ["C:/Program Files/Gradle"],
+      "known_paths": ["C:/Program Files/Gradle/*"],
       "registry_keys": []
     },
     "versions": { "min": "8.5", "recommended": "9.1" },
@@ -616,7 +647,7 @@
     },
     "size_mb": 140,
     "needs_admin": false,
-    "path_entries": ["C:\\Program Files\\Gradle\\gradle-9.1.0\\bin"],
+    "path_entries": ["C:\\Program Files\\Gradle\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": "Требует Java JDK."
@@ -629,7 +660,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["psql", "--version"]],
-      "known_paths": ["C:/Program Files/PostgreSQL/17/bin"],
+      "known_paths": ["C:/Program Files/PostgreSQL/*/bin"],
       "registry_keys": ["HKLM\\SOFTWARE\\PostgreSQL\\Installations"]
     },
     "versions": { "min": "15", "recommended": "17" },
@@ -656,7 +687,7 @@
     },
     "size_mb": 350,
     "needs_admin": true,
-    "path_entries": ["C:\\Program Files\\PostgreSQL\\17\\bin"],
+    "path_entries": ["C:\\Program Files\\PostgreSQL\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": "Пароль суперпользователя генерируется автоматически и показывается на экране результата (dynamic_args)."
@@ -695,7 +726,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["mongod", "--version"]],
-      "known_paths": ["C:/Program Files/MongoDB/Server/8.0/bin"],
+      "known_paths": ["C:/Program Files/MongoDB/Server/*/bin"],
       "registry_keys": []
     },
     "versions": { "min": "6.0", "recommended": "8.0" },
@@ -709,7 +740,7 @@
     },
     "size_mb": 700,
     "needs_admin": true,
-    "path_entries": ["C:\\Program Files\\MongoDB\\Server\\8.0\\bin"],
+    "path_entries": ["C:\\Program Files\\MongoDB\\Server\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": null
@@ -722,7 +753,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["mysql", "--version"]],
-      "known_paths": ["C:/Program Files/MySQL/MySQL Server 8.0/bin"],
+      "known_paths": ["C:/Program Files/MySQL/*/bin"],
       "registry_keys": []
     },
     "versions": { "min": "8.0", "recommended": "8.4" },
@@ -736,7 +767,7 @@
     },
     "size_mb": 300,
     "needs_admin": true,
-    "path_entries": ["C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin"],
+    "path_entries": ["C:\\Program Files\\MySQL\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
     "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; при сбое — используйте Docker-вариант из каркаса проекта."

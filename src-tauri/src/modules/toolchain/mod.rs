@@ -17,6 +17,7 @@ pub mod defs;
 pub mod models;
 pub mod platforms;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -37,6 +38,10 @@ pub struct ToolchainState {
     /// Постоянное состояние (state.json): установленные инструменты,
     /// секреты, настройки. Меняется по завершении установки.
     metadata: Arc<Mutex<MetadataStore>>,
+    /// Секреты ПОСЛЕДНЕЙ установки (пароль PostgreSQL и т.п.) —
+    /// «одноразовая витрина» для фронтенда: tc_take_new_secrets
+    /// забирает и очищает, чтобы старые пароли не висели в UI.
+    pending_secrets: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ToolchainState {
@@ -59,6 +64,7 @@ impl ToolchainState {
             install_session: Arc::new(Mutex::new(None)),
             abort_install: Arc::new(AtomicBool::new(false)),
             metadata: Arc::new(Mutex::new(MetadataStore::load(&dir))),
+            pending_secrets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -85,6 +91,11 @@ impl ToolchainState {
     /// Общий доступ к хранилищу state.json (для команд и фоновой задачи).
     pub fn metadata(&self) -> Arc<Mutex<MetadataStore>> {
         Arc::clone(&self.metadata)
+    }
+
+    /// «Одноразовые» секреты последней установки (см. поле pending_secrets).
+    pub fn pending_secrets(&self) -> Arc<Mutex<HashMap<String, String>>> {
+        Arc::clone(&self.pending_secrets)
     }
 
     /// Информация об ОС и количестве известных инструментов.

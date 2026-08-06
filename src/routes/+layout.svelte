@@ -11,6 +11,7 @@
     <a href="/create" class:active={$page.url.pathname.startsWith("/create")}>Create</a>
     <a href="/profiles" class:active={$page.url.pathname.startsWith("/profiles")}>Profiles</a>
     <a href="/processes" class:active={$page.url.pathname.startsWith("/processes")}>Processes</a>
+    <a href="/environment" class:active={$page.url.pathname.startsWith("/environment")}>Environment</a>
     <a href="/workspace" class:active={$page.url.pathname.startsWith("/workspace")}>Workspace</a>
     <a href="/settings" class:active={$page.url.pathname === "/settings"}>Settings</a>
   </div>

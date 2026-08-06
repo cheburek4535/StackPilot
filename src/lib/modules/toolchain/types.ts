@@ -3,9 +3,15 @@
 // ============================================================
 // Все поля snake_case: так сериализует serde (см. project_creator/types.ts).
 // Top-level аргументы invoke() при этом camelCase (соглашение Tauri v2).
+//
+// ВАЖНО про дискриминаторы (serde, формат по умолчанию):
+//   - unit-вариант (без данных)  -> строка:   "Missing", "Pending"
+//   - вариант с данными          -> объект:   { "Installed": { "version": "..." } }
+// Поэтому проверки вида `"X" in status` допустимы ТОЛЬКО после
+// исключения строкового варианта (status !== "Missing").
 
 export type ToolStatus =
-  | { Missing: null }
+  | "Missing"
   | { Installed: { version: string } }
   | { UpdateAvailable: { installed: string; recommended: string } }
   | { PathBroken: { reason: string } };
@@ -88,10 +94,10 @@ export type EnvironmentInfo = {
 // План установки
 // ============================================================
 
-export type TaskPhase = { Downloading: null } | { Installing: null } | { Verifying: null } | { UpdatingPath: null };
+export type TaskPhase = "Downloading" | "Installing" | "Verifying" | "UpdatingPath";
 
 export type TaskState =
-  | { Pending: null }
+  | "Pending"
   | { Running: { phase: TaskPhase } }
   | { Success: { version: string } }
   | { Failed: { error: string } }
@@ -126,7 +132,7 @@ export type InstallSession = {
 
 export type ToolchainEvent = {
   event_type:
-    | { TaskStarted: null }
+    | "TaskStarted"
     | { TaskPhaseChanged: { phase: TaskPhase } }
     | { TaskProgress: { line: string } }
     | { TaskCompleted: { state: TaskState } }
@@ -164,30 +170,39 @@ export type HealthCheckResult = { label: string; ok: boolean; detail: string };
 export type ToolHealth = { tool_id: string; display: string; checks: HealthCheckResult[]; ok: boolean };
 export type HealthReport = { tools: ToolHealth[]; score: number; scanned_at: string };
 
+// Событие toolchain:check_progress — по одному на проверенный инструмент
+export type CheckProgressEvent = {
+  done: number;
+  total: number;
+  tool_id: string;
+  display: string;
+  status: ToolStatus;
+};
+
 // ============================================================
 // Хелперы для работы с дискриминаторами
 // ============================================================
 
 export function statusIsOk(status: ToolStatus | undefined): boolean {
-  return !!status && "Installed" in status;
+  return !!status && status !== "Missing" && "Installed" in status;
 }
 
 export function statusLabel(status: ToolStatus): string {
+  if (status === "Missing") return "Не установлен";
   if ("Installed" in status) return `✓ ${status.Installed.version}`;
   if ("UpdateAvailable" in status) return `Обновить до ${status.UpdateAvailable.recommended}`;
-  if ("PathBroken" in status) return `⚠ ${status.PathBroken.reason}`;
-  return "Не установлен";
+  return `⚠ ${status.PathBroken.reason}`;
 }
 
 export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" {
+  if (status === "Missing") return "missing";
   if ("Installed" in status) return "ok";
   if ("UpdateAvailable" in status) return "update";
-  if ("PathBroken" in status) return "broken";
-  return "missing";
+  return "broken";
 }
 
 export function taskStateKind(state: TaskState): "pending" | "running" | "success" | "failed" | "skipped" {
-  if ("Pending" in state) return "pending";
+  if (state === "Pending") return "pending";
   if ("Running" in state) return "running";
   if ("Success" in state) return "success";
   if ("Failed" in state) return "failed";
@@ -195,12 +210,13 @@ export function taskStateKind(state: TaskState): "pending" | "running" | "succes
 }
 
 export function taskStateLabel(state: TaskState): string {
+  if (state === "Pending") return "В очереди";
   if ("Running" in state) {
     const phase = state.Running.phase;
-    if ("Downloading" in phase) return "Скачивание…";
-    if ("Installing" in phase) return "Установка…";
-    if ("Verifying" in phase) return "Проверка…";
-    if ("UpdatingPath" in phase) return "Обновление PATH…";
+    if (phase === "Downloading") return "Скачивание…";
+    if (phase === "Installing") return "Установка…";
+    if (phase === "Verifying") return "Проверка…";
+    if (phase === "UpdatingPath") return "Обновление PATH…";
   }
   if ("Success" in state) return `Готово (${state.Success.version})`;
   if ("Failed" in state) return `Ошибка: ${state.Failed.error}`;

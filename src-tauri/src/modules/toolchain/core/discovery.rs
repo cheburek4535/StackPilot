@@ -14,18 +14,20 @@
 // медленный или зависший бинарник не заморозил UI — у каждой
 // пробы есть таймаут (PROBE_TIMEOUT_SECS).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::modules::toolchain::models::{ToolDefinition, ToolStatus};
+use crate::modules::toolchain::platforms;
 
 use super::version;
 
 /// Максимальное время одной пробы/запроса к реестру.
-const PROBE_TIMEOUT_SECS: u64 = 5;
+/// 10с: первый холодный запуск npm.cmd/code.cmd бывает медленным.
+const PROBE_TIMEOUT_SECS: u64 = 10;
 
 // ------------------------------------------------------------
 // Запуск процессов
@@ -36,9 +38,14 @@ const PROBE_TIMEOUT_SECS: u64 = 5;
 /// или процесс завершился с ненулевым кодом (такое бывает,
 /// когда бинарник есть, но команда не для него).
 ///
+/// Windows: проги вида *.cmd/*.bat (npm, code, npx) через
+/// platforms::resolve_command оборачиваются в cmd /c — иначе
+/// CreateProcess их не видит, хотя в PATH они есть.
+///
 /// pub(crate): используется и health.rs (этап 6) для прогона
 /// health-проверок из tools.json.
 pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String> {
+    let (program, args) = platforms::resolve_command(program, args);
     let output = timeout(
         Duration::from_secs(PROBE_TIMEOUT_SECS),
         TokioCommand::new(program).args(args).output(),
@@ -96,12 +103,63 @@ fn expand_env(raw: &str) -> PathBuf {
     PathBuf::from(expanded)
 }
 
-/// Есть ли на диске хотя бы один из известных путей установки.
+/// Простейший glob-поиск пути: поддерживает `*` внутри компонентов,
+/// например `C:/Program Files/PostgreSQL/*/bin` → первый существующий
+/// вариант (17, 18, ...). Вложенность строго по компонентам шаблона.
+/// Возвращает None, если ни один вариант не существует.
+pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
+    let mut current = PathBuf::new();
+    for component in pattern.components() {
+        let comp = component.as_os_str().to_string_lossy();
+        if comp.contains('*') {
+            let prefix: String = comp.split('*').next().unwrap_or_default().to_string();
+            let suffix: String = comp.rsplit('*').next().unwrap_or_default().to_string();
+            let parent = current.clone();
+            current = std::fs::read_dir(&parent)
+                .ok()?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .find(|p| {
+                    let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                    name.starts_with(&prefix) && name.ends_with(&suffix) && p.is_dir()
+                })?;
+        } else {
+            current.push(comp.as_ref());
+        }
+    }
+    current.exists().then_some(current)
+}
+
+/// Есть ли на диске хотя бы один из известных путей установки
+/// (с учётом glob-шаблонов вида `PostgreSQL/*/bin`).
 fn known_path_found(def: &ToolDefinition) -> bool {
     def.detection
         .known_paths
         .iter()
-        .any(|p| expand_env(p).exists())
+        .any(|p| glob_first(&expand_env(p)).is_some())
+}
+
+/// Пробует запустить пробы версии прямо из каталогов known_paths:
+/// типичная ситуация — PostgreSQL установлен, но `bin` не добавлен
+/// в PATH (инсталлятор не спросил). Тогда `psql --version` через PATH
+/// молчит, а `C:/Program Files/PostgreSQL/17/bin/psql --version` отвечает.
+async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
+    for known in &def.detection.known_paths {
+        let Some(dir) = glob_first(&expand_env(known)) else {
+            continue;
+        };
+        for probe in &def.detection.version_probes {
+            if probe.is_empty() {
+                continue;
+            }
+            let bin = dir.join(&probe[0]);
+            if bin.is_file() {
+                if let Some(out) = run_capture(&bin.to_string_lossy(), &probe[1..]).await {
+                    return Some(out);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Отвечает ли reg.exe, что ключ реестра существует.
@@ -160,12 +218,20 @@ pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> To
 /// Полное обнаружение одного инструмента по его определению.
 ///
 /// Логика:
-///   1. ответила проба версии        → Installed / UpdateAvailable;
-///   2. бинарник есть в PATH, но молчит → PathBroken (сломана установка);
-///   3. нашёлся известный путь/реестр  → PathBroken (не в PATH);
-///   4. ничего                         → Missing.
+///   1. ответила проба версии (PATH)      → Installed / UpdateAvailable;
+///   2. ответила проба из known_paths     → Installed / UpdateAvailable
+///      (инсталляция есть, но бинарь не в PATH — postgres и т.п.);
+///   3. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
+///   4. нашёлся известный путь/реестр     → PathBroken (не в PATH);
+///   5. ничего                            → Missing.
 pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     if let Some(raw) = probe_version(def).await {
+        return apply_version_rules(def, &raw);
+    }
+
+    // Установка найдена по известному пути, но бинарь не в PATH —
+    // пробуем запустить его напрямую оттуда.
+    if let Some(raw) = probe_version_at_known_paths(def).await {
         return apply_version_rules(def, &raw);
     }
 
@@ -183,8 +249,7 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
         }
     }
 
-    // Установка есть, но не в PATH — типично для node/python
-    // из инсталлятора, когда забыли галочку «Add to PATH».
+    // Установка есть, но не в PATH — и проба оттуда не сработала.
     if known_path_found(def) || any_registry_found(def).await {
         let footprint = def
             .detection
@@ -194,22 +259,19 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
             .cloned()
             .unwrap_or_default();
         return ToolStatus::PathBroken {
-            reason: format!("Установка найдена ({}), но бинарник не в PATH", footprint),
+            reason: format!("Установка найдена ({}), но бинарник не отвечает", footprint),
         };
     }
 
     ToolStatus::Missing
 }
 
-/// Первый из known_paths, который реально существует на диске.
-/// Используется для записи в state.json после установки
-/// (путь установки сам инструмент не сообщает).
+/// Первый из known_paths, который реально существует на диске
+/// (с учётом glob). Используется для записи в state.json после
+/// установки (путь установки сам инструмент не сообщает).
 pub(crate) fn installed_path(def: &ToolDefinition) -> Option<String> {
     def.detection.known_paths.iter().find_map(|p| {
-        let expanded = expand_env(p);
-        expanded
-            .exists()
-            .then(|| expanded.to_string_lossy().into_owned())
+        glob_first(&expand_env(p)).map(|p| p.to_string_lossy().into_owned())
     })
 }
 
@@ -298,6 +360,40 @@ mod tests {
             expand_env("C:/Program Files/nodejs"),
             PathBuf::from("C:/Program Files/nodejs")
         );
+    }
+
+    #[test]
+    fn glob_first_matches_versions_dir() {
+        // Создаём временный каталог-имитацию PostgreSQL/17/bin
+        let root = std::env::temp_dir().join(format!("tc-glob-test-{}", std::process::id()));
+        let bin = root.join("PostgreSQL").join("17").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+
+        let pattern = root.join("PostgreSQL").join("*").join("bin");
+        let found = glob_first(&pattern);
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(found, Some(bin), "glob должен найти версионный каталог");
+    }
+
+    #[test]
+    fn glob_first_returns_none_when_missing() {
+        let pattern = PathBuf::from("C:/Program Files/PostgreSQL/*/bin");
+        // На машине без PostgreSQL каталога нет; с PostgreSQL glob всё
+        // равно должен вернуть существующий путь или None — но не панику.
+        let result = glob_first(&pattern);
+        if let Some(p) = &result {
+            assert!(p.exists(), "glob-результат должен существовать: {p:?}");
+        }
+    }
+
+    #[test]
+    fn glob_first_plain_path_without_star() {
+        let root = std::env::temp_dir().join(format!("tc-glob-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let found = glob_first(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, Some(root));
     }
 
     #[tokio::test]

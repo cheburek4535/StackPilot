@@ -141,6 +141,7 @@ pub fn run() {
             modules::toolchain::commands::tc_run_install,
             modules::toolchain::commands::tc_get_install_status,
             modules::toolchain::commands::tc_abort_install,
+            modules::toolchain::commands::tc_take_new_secrets,
             modules::toolchain::commands::tc_get_metadata,
             modules::toolchain::commands::tc_get_health_report,
             // Core commands

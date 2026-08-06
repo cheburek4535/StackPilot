@@ -28,6 +28,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::modules::toolchain::models::*;
+use crate::modules::toolchain::platforms;
 
 // ------------------------------------------------------------
 // События (общий слой)
@@ -128,6 +129,9 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
 /// Запускает процесс, стримит его вывод построчно, ждёт завершения.
 /// stdout и stderr читаются параллельно (отдельные задачи), чтобы
 /// полный stderr-буфер не заблокировал установщик (deadlock-риск).
+///
+/// Windows: .cmd/.bat-бинари (npm, code...) разрешаются через
+/// platforms::resolve_command (обёртка cmd /c).
 pub async fn piped_run(
     program: &str,
     args: &[String],
@@ -138,8 +142,9 @@ pub async fn piped_run(
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
-    let mut child = match TokioCommand::new(program)
-        .args(args)
+    let (program, args) = platforms::resolve_command(program, args);
+    let mut child = match TokioCommand::new(program.as_str())
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -300,12 +305,27 @@ $wc.DownloadProgressChanged += {{
     Write-Output "tc:dl $($e.BytesReceived) -1"
   }}
 }}
-$wc.DownloadFile({}, {})
-Write-Output "tc:dl done"
+try {{
+    $wc.DownloadFile({0}, {1})
+    Write-Output "tc:dl done"
+}} catch [System.Net.WebException] {{
+    $resp = $_.Exception.Response
+    if ($resp -and $resp.StatusCode -eq "NotFound") {{
+        Write-Output "tc:error 404"
+        Exit 404
+    }} else {{
+        Write-Output "tc:error $($_.Exception.Message)"
+        Exit 1
+    }}
+}} catch {{
+    Write-Output "tc:error $($_.Exception.Message)"
+    Exit 1
+}}
 "#,
         ps_quote(url),
         ps_quote(&dest.to_string_lossy())
     );
+
 
     let result = timeout(
         DOWNLOAD_TIMEOUT,
@@ -318,6 +338,8 @@ run_tool_script(tool_id, &script, Some(task_id), index,
     let res = result?;
     if res.success {
         Ok(())
+    } else if res.code == 404 {
+        Err(format!("Ошибка 404 Not Found для {url}"))
     } else {
         Err(format!("Скачивание {url} завершилось с кодом {}", res.code))
     }
@@ -357,6 +379,7 @@ pub async fn run_elevated(
         return Err("Запуск с правами администратора поддерживается только на Windows".to_string());
     }
 
+    let (program, args) = platforms::resolve_command(program, args);
     let (out, err) = elevated_logs(tool_id);
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&err);
@@ -380,7 +403,7 @@ Write-Output "tc:uac exit $($p.ExitCode)"
         ps_quote(&out.to_string_lossy()),
         ps_quote(&err.to_string_lossy()),
         ps_quote(&arg_shell),
-        ps_quote(program),
+        ps_quote(&program),
     );
 
     let res = run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await?;

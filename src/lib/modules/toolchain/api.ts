@@ -10,6 +10,7 @@ import type {
   ToolchainEvent,
   ToolchainMetadata,
   HealthReport,
+  CheckProgressEvent,
 } from "./types";
 
 export function pingToolchain(): Promise<string> {
@@ -46,6 +47,10 @@ export function abortInstall(): Promise<boolean> {
   return invoke("tc_abort_install");
 }
 
+export function getNewSecrets(): Promise<Record<string, string>> {
+  return invoke("tc_take_new_secrets");
+}
+
 export function getToolchainMetadata(): Promise<ToolchainMetadata> {
   return invoke("tc_get_metadata");
 }
@@ -64,4 +69,10 @@ export function listenInstallDone(
   handler: (event: InstallPlan) => void,
 ): Promise<UnlistenFn> {
   return listen<InstallPlan>("toolchain:install_done", (e) => handler(e.payload));
+}
+
+export function listenCheckProgress(
+  handler: (event: CheckProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<CheckProgressEvent>("toolchain:check_progress", (e) => handler(e.payload));
 }

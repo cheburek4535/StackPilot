@@ -307,6 +307,20 @@ pub enum ToolchainEventType {
     Error { message: String },
 }
 
+/// Промежуточный прогресс проверки окружения. Стримится на фронтенд
+/// событием `toolchain:check_progress` после каждого проверенного
+/// инструмента — пользователь видит, что проверка идёт, а не висит.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckProgressEvent {
+    /// Сколько инструментов уже проверено (включая этот)
+    pub done: usize,
+    /// Сколько всего проверяется
+    pub total: usize,
+    pub tool_id: String,
+    pub display: String,
+    pub status: ToolStatus,
+}
+
 // ------------------------------------------------------------
 // Health
 // ------------------------------------------------------------

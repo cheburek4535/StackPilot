@@ -43,18 +43,6 @@ struct InstallCommand {
     args: Vec<String>,
 }
 
-/// Первый (приоритетный) источник установки для текущей ОС.
-fn best_source(def: &ToolDefinition) -> Option<&InstallSource> {
-    let os = platforms::current_platform().os_name();
-    let list: &[InstallSource] = match os.as_str() {
-        "windows" => &def.sources.windows,
-        "linux" => &def.sources.linux,
-        "macos" => &def.sources.macos,
-        _ => &[],
-    };
-    list.first()
-}
-
 /// Генерирует пароль для БД (PostgreSQL). 16 hex-символов от
 /// наносекунд системного времени — достаточно для локальной
 /// dev-базы; настоящая генерация/хранение — этап 5 (metadata).
@@ -272,6 +260,10 @@ pub async fn execute_plan(
 /// Одна задача установки. Возвращает финальное состояние;
 /// TaskCompleted сверху эмитит execute_plan, здесь — только
 /// Start/Phase/Progress.
+///
+/// Источники установки (tools.json) пробуются ПО ПОРЯДКУ: если
+/// первый не сработал (npm-глобал упал), переходим ко второму
+/// (cargo install). Успех — первого же удачного источника.
 async fn run_task(
     def: &ToolDefinition,
     task: &InstallTask,
@@ -298,12 +290,58 @@ async fn run_task(
         };
     }
 
-    let Some(source) = best_source(def).cloned() else {
+    let os_sources: &[InstallSource] = match platforms::current_platform().os_name().as_str() {
+        "windows" => &def.sources.windows,
+        "linux" => &def.sources.linux,
+        "macos" => &def.sources.macos,
+        _ => &[],
+    };
+    if os_sources.is_empty() {
         return TaskState::Skipped {
             reason: "Нет источника установки для этой ОС".to_string(),
         };
-    };
+    }
 
+    let mut last_error: Option<String> = None;
+    for source in os_sources {
+        match try_install_source(def, source, index, total, &task_id, &tool_id, sink, abort).await
+        {
+            Ok((version, secret)) => {
+                if let Some(pw) = secret {
+                    secrets.insert(tool_id.clone(), pw);
+                }
+                return TaskState::Success { version };
+            }
+            Err(e) => {
+                eprintln!("[toolchain] источник `{}` для {tool_id} не сработал: {e}", source.id);
+                last_error = Some(e);
+            }
+        }
+        if abort.load(Ordering::SeqCst) {
+            return TaskState::Skipped {
+                reason: "Отменено пользователем".to_string(),
+            };
+        }
+    }
+
+    TaskState::Failed {
+        error: last_error.unwrap_or_else(|| "Ни один источник установки не сработал".to_string()),
+    }
+}
+
+/// Пытается установить инструмент ОДНИМ источником.
+/// Возвращает Ok((версия, пароль)) при подтверждённой установке
+/// или Err(описание) — источник не сработал, пробуем следующий.
+async fn try_install_source(
+    def: &ToolDefinition,
+    source: &InstallSource,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: &Arc<AtomicBool>,
+) -> Result<(String, Option<String>), String> {
     // dynamic_args (PostgreSQL): пароль нужен ещё до запуска установщика.
     let password = source.dynamic_args.then(generate_db_password);
     let mut offline_path: Option<std::path::PathBuf> = None;
@@ -316,65 +354,61 @@ async fn run_task(
                     ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Downloading },
                     index,
                     total,
-                    &task_id,
-                    &tool_id,
+                    task_id,
+                    tool_id,
                 ));
-                let dest = download_dest(&tool_id, url);
-                if let Err(e) = console::download(url, &dest, index, total, &task_id, &tool_id, sink, Arc::clone(abort)).await
+                let dest = download_dest(tool_id, url);
+                if let Err(e) = console::download(url, &dest, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
                 {
-                    return TaskState::Failed { error: e };
+                    return Err(e);
                 }
                 offline_path = Some(dest);
             }
         }
     }
 
-    let cmd = match build_install_command(&source, offline_path.as_deref(), password.as_deref()) {
-        Ok(c) => c,
-        Err(e) => return TaskState::Failed { error: e },
-    };
+    let cmd = build_install_command(source, offline_path.as_deref(), password.as_deref())?;
 
     sink.emit(console::event(
         ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Installing },
         index,
         total,
-        &task_id,
-        &tool_id,
+        task_id,
+        tool_id,
     ));
 
     // needs_admin → UAC-элевация; остальные запускаются как есть.
-    let run = if task.needs_admin {
-        console::run_elevated(&cmd.program, &cmd.args, index, total, &task_id, &tool_id, sink, Arc::clone(abort)).await
+    // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
+    let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
+    let run = if def.needs_admin {
+        console::run_elevated(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
     } else {
-        console::piped_run(&cmd.program, &cmd.args, index, total, &task_id, &tool_id, sink, Arc::clone(abort)).await
+        console::piped_run(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
     };
 
     let res = match run {
         Ok(r) => r,
-        Err(e) => return TaskState::Failed { error: e },
+        Err(e) => return Err(e),
     };
     if res.aborted {
-        return TaskState::Skipped {
-            reason: "Отменено пользователем".to_string(),
-        };
+        return Err("Отменено пользователем".to_string());
     }
     if !res.success {
-        return TaskState::Failed {
-            error: format!("Установщик завершился с кодом {}", res.code),
-        };
+        return Err(format!("Установщик завершился с кодом {}", res.code));
     }
 
     // PATH: установщик (winget/msi/exe) написал свои каталоги в реестр,
     // но текущий процесс об этом не знает. Добавляем явные path_entries
-    // из tools.json и обновляем PATH процесса — иначе verify не найдёт
+    // из tools.json (glob `PostgreSQL/*/bin` резолвится в конкретный
+    // каталог) и обновляем PATH процесса — иначе verify не найдёт
     // свежеустановленный бинарник, хотя он стоит.
     if !def.path_entries.is_empty() {
         sink.emit(console::event(
             ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::UpdatingPath },
             index,
             total,
-            &task_id,
-            &tool_id,
+            task_id,
+            tool_id,
         ));
         if let Err(e) = path_service::add_to_user_path(&def.path_entries).await {
             // PATH не критичен для установки — логируем и продолжаем.
@@ -385,25 +419,18 @@ async fn run_task(
         eprintln!("[toolchain] не удалось обновить PATH процесса: {e}");
     }
 
-    // Проверка: пересканируем инструмент тем же discovery.
+    // Проверка: пересканируем инструмент тем же discovery. Проба
+    // known_paths умеет находить бинарь и без PATH (postgres).
     sink.emit(console::event(
         ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Verifying },
         index,
         total,
-        &task_id,
-        &tool_id,
+        task_id,
+        tool_id,
     ));
     match discovery::detect_tool(def).await {
-        ToolStatus::Installed { version } => {
-            // Установка удалась — сохраняем пароль, если генерировали.
-            if let Some(pw) = password {
-                secrets.insert(tool_id.clone(), pw);
-            }
-            TaskState::Success { version }
-        }
-        _ => TaskState::Failed {
-            error: "Установка не подтвердилась (инструмент не найден)".to_string(),
-        },
+        ToolStatus::Installed { version } => Ok((version, password)),
+        _ => Err("Установка не подтвердилась (инструмент не найден)".to_string()),
     }
 }
 
@@ -621,6 +648,35 @@ mod tests {
         execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn failed_source_falls_back_to_next() {
+        // Первый источник падает (exit 1), второй — локальный cmd echo.
+        let mut def = echo_def("fallback-tool");
+        def.sources.windows = vec![
+            InstallSource {
+                kind: InstallSourceKind::Official,
+                id: "bad-source".to_string(),
+                url: Some("cmd.exe".to_string()),
+                args: vec!["/c".to_string(), "exit".to_string(), "1".to_string()],
+                extra_args: vec![],
+                dynamic_args: false,
+            },
+            def.sources.windows[0].clone(),
+        ];
+
+        let mut plan = one_task_plan("fallback-tool");
+        let sink = Arc::new(TestSink::default());
+        let trait_sink: Arc<dyn EventSink> = sink.clone();
+
+        execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+
+        match &plan.tasks[0].state {
+            TaskState::Success { version } => assert_eq!(version, "1.2.3"),
+            other => panic!("ожидали Success после fallback, получили {other:?}"),
+        }
     }
 
     #[tokio::test]

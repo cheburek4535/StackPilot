@@ -16,11 +16,27 @@
 // free_space_mb на этапе 2 всегда 0 (проверка диска — этап 5):
 // 0 означает «свободное место не проверялось» → enough_space=true.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::task::JoinSet;
+use tokio::time::timeout;
 use crate::modules::toolchain::models::*;
 use crate::modules::toolchain::platforms;
 
 use super::discovery;
+
+/// Предельное время всей проверки окружения. Каждая проба внутри
+/// detect_tool уже ограничена (PROBE_TIMEOUT_SECS), но страховка на
+/// случай экзотики (антивирус, сетевые диски, зависшие процессы):
+/// после дедлайна незавершённые проверки отменяются, отчёт отдаётся
+/// по уже собранным данным — проверка НИКОГДА не висит бесконечно.
+const CHECK_DEADLINE: Duration = Duration::from_secs(90);
+
+/// Callback прогресса: вызывается после проверки каждого инструмента
+/// (см. CheckProgressEvent). Ядро не знает про Tauri — команда оборачивает
+/// callback в app.emit, тесты собирают события в вектор.
+pub type ProgressFn = Arc<dyn Fn(CheckProgressEvent) + Send + Sync>;
 
 /// Полная проверка окружения под требования проекта.
 /// `requested` — упорядоченный список id (из requirements::resolve),
@@ -29,6 +45,7 @@ pub async fn run_check(
     definitions: &[ToolDefinition],
     requested: &[String],
     free_space_mb: u64,
+    on_progress: Option<ProgressFn>,
 ) -> EnvironmentCheck {
     let os = platforms::current_platform().os_name();
 
@@ -49,42 +66,67 @@ pub async fn run_check(
             (def_clone, status, index)
         });
     }
+
+    let total = requested.len();
     let mut temp_requirements: Vec<(usize, ToolRequirement)> = Vec::new();
-while let Some(res) = set.join_next().await {
-        // Задача прервалась или запаниковала — пропускаем этот тул,
-        // отчёт не должен рухнуть из-за one процеса.
-        let Ok((def, status, index)) = res else {
-            eprintln!("[toolchain] задача обнаружения прервана: {res:?}");
-            continue;
-        };
+    let mut done = 0usize;
 
-        // Тул не устанавливается на этой ОС — при отсутствии не требование.
-        if matches!(status, ToolStatus::Missing) && !def.installable() {
-            continue;
-        }
-        // Тул входит в комплект другого (npm приходит с node) — не требование.
-        if matches!(status, ToolStatus::Missing) && def.bundled_with.is_some() {
-            continue;
-        }
-
-        // Скачивать нужно только то, чего нет или что устарело.
-        if !status.is_ok() {
-            total_size_mb += def.size_mb as u64;
-            if def.needs_admin {
-                needs_admin_any = true;
+    // Вся сборка ограничена дедлайном: зависшие пробы не могут
+    // заморозить шаг Environment в мастере.
+    let collect = async {
+        while let Some(res) = set.join_next().await {
+            let Ok((def, status, index)) = res else {
+                eprintln!("[toolchain] задача обнаружения прервана: {res:?}");
+                continue;
+            };
+            done += 1;
+            if let Some(cb) = &on_progress {
+                cb(CheckProgressEvent {
+                    done,
+                    total,
+                    tool_id: def.id.clone(),
+                    display: def.display.clone(),
+                    status: status.clone(),
+                });
             }
-        }
 
-        let desc = source_description(&def);
-        temp_requirements.push((index, ToolRequirement {
-            tool_id: def.id,
-            display: def.display,
-            category: def.category,
-            status,
-            size_mb: def.size_mb,
-            needs_admin: def.needs_admin,
-            source_description: desc,
-        }));
+            // Тул не устанавливается на этой ОС — при отсутствии не требование.
+            if matches!(status, ToolStatus::Missing) && !def.installable() {
+                continue;
+            }
+            // Тул входит в комплект другого (npm приходит с node) — не требование.
+            if matches!(status, ToolStatus::Missing) && def.bundled_with.is_some() {
+                continue;
+            }
+
+            // Скачивать нужно только то, чего нет или что устарело.
+            if !status.is_ok() {
+                total_size_mb += def.size_mb as u64;
+                if def.needs_admin {
+                    needs_admin_any = true;
+                }
+            }
+
+            let desc = source_description(&def);
+            temp_requirements.push((index, ToolRequirement {
+                tool_id: def.id,
+                display: def.display,
+                category: def.category,
+                status,
+                size_mb: def.size_mb,
+                needs_admin: def.needs_admin,
+                source_description: desc,
+            }));
+        }
+    };
+
+    if let Err(_) = timeout(CHECK_DEADLINE, collect).await {
+        eprintln!(
+            "[toolchain] проверка окружения превысила лимит {}с, отдаю частичный отчёт ({done}/{} инструментов)",
+            CHECK_DEADLINE.as_secs(),
+            total
+        );
+        set.abort_all();
     }
 
     temp_requirements.sort_by_key(|pair| pair.0);
@@ -178,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tool_id_is_ignored() {
-        let check = run_check(&[], &["no-such-tool".to_string()], 0).await;
+        let check = run_check(&[], &["no-such-tool".to_string()], 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -186,7 +228,7 @@ mod tests {
     #[tokio::test]
     async fn missing_installable_tool_becomes_requirement() {
         let defs = vec![fake_def("fake-tool")];
-        let check = run_check(&defs, &["fake-tool".to_string()], 0).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], 0, None).await;
 
         assert_eq!(check.requirements.len(), 1);
         let req = &check.requirements[0];
@@ -208,7 +250,7 @@ mod tests {
         let mut def = fake_def("fake-info");
         def.sources = InstallSources::default();
 
-        let check = run_check(&[def], &["fake-info".to_string()], 0).await;
+        let check = run_check(&[def], &["fake-info".to_string()], 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -218,7 +260,7 @@ mod tests {
         let mut def = fake_def("fake-bundled");
         def.bundled_with = Some("fake-host".to_string());
 
-        let check = run_check(&[def], &["fake-bundled".to_string()], 0).await;
+        let check = run_check(&[def], &["fake-bundled".to_string()], 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -227,12 +269,36 @@ mod tests {
     async fn free_space_is_compared_when_known() {
         let defs = vec![fake_def("fake-tool")];
         // 5 МБ свободно, нужно 10 → мало места
-        let check = run_check(&defs, &["fake-tool".to_string()], 5).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], 5, None).await;
         assert!(!check.enough_space);
         assert_eq!(check.free_space_mb, 5);
 
         // 20 МБ свободно, нужно 10 → хватает
-        let check = run_check(&defs, &["fake-tool".to_string()], 20).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], 20, None).await;
         assert!(check.enough_space);
+    }
+
+    #[tokio::test]
+    async fn progress_events_reported_per_tool() {
+        let defs = vec![fake_def("fake-tool"), fake_def("fake-tool-2")];
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_cb = Arc::clone(&events);
+        let cb: ProgressFn = Arc::new(move |ev| {
+            events_cb.lock().unwrap().push((ev.tool_id, ev.done, ev.total));
+        });
+
+        let check = run_check(
+            &defs,
+            &["fake-tool".to_string(), "fake-tool-2".to_string()],
+            0,
+            Some(cb),
+        )
+        .await;
+        let evs = events.lock().unwrap();
+        assert_eq!(evs.len(), 2, "по одному событию на инструмент: {evs:?}");
+        assert_eq!(evs[0], ("fake-tool".to_string(), 1, 2));
+        assert_eq!(evs[1], ("fake-tool-2".to_string(), 2, 2));
+        // финальный отчёт совпадает с последним прогрессом
+        assert_eq!(check.requirements.len(), 2);
     }
 }

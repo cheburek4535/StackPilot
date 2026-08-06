@@ -72,6 +72,43 @@ pub(crate) async fn run_command(program: &str, args: &[String]) -> Result<String
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Приводит (program, args) к виду, который реально запустится на
+/// текущей ОС. На Windows бинарники вида *.cmd/*.bat (npm, npx, code,
+/// pnpm...) нельзя запустить напрямую — CreateProcess понимает только
+/// .exe, а `npm` в PATH на деле npm.cmd. Решение: находим полный путь
+/// (which умеет PATHEXT) и оборачиваем запуск в `cmd /d /c`.
+///
+/// На Linux/macOS команда возвращается без изменений (POSIX-шеллы
+/// разрешают скрипты через shebang).
+pub fn resolve_command(program: &str, args: &[String]) -> (String, Vec<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(path) = which::which(program) {
+            let full = path.to_string_lossy();
+            if full.to_ascii_lowercase().ends_with(".cmd")
+                || full.to_ascii_lowercase().ends_with(".bat")
+            {
+                // Вся командная строка — одним аргументом cmd.exe:
+                // cmd /c снимает внешние кавычки и парсит остаток
+                // (стандартное поведение для «"путь" аргументы»).
+                let mut cmd_line = format!("\"{full}\"");
+                for a in args {
+                    if a.contains(' ') || a.contains('\t') || a.contains('"') {
+                        cmd_line.push_str(&format!(" \"{}\"", a.replace('"', "\\\"")));
+                    } else {
+                        cmd_line.push_str(&format!(" {a}"));
+                    }
+                }
+                return (
+                    "cmd".to_string(),
+                    vec!["/d".to_string(), "/c".to_string(), cmd_line],
+                );
+            }
+        }
+    }
+    (program.to_string(), args.to_vec())
+}
+
 /// Адаптер для неподдерживаемых ОС — ничего не умеет, но не падает.
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub struct UnsupportedAdapter;
@@ -128,4 +165,62 @@ pub fn current_platform() -> &'static dyn PlatformAdapter {
             &UnsupportedAdapter
         }
     })
+}
+
+// ============================================================
+// Тесты
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PATH — глобальное состояние процесса: тесты, которые его меняют,
+    /// сериализуются этим локом (иначе параллельный прогон флейкает).
+    static PATH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn resolve_command_keeps_exe_programs() {
+        // cmd.exe — настоящий бинарь: никакой обёртки не нужно.
+        let (program, args) = resolve_command("cmd", &["/c".to_string(), "echo".to_string()]);
+        assert_eq!(program, "cmd");
+        assert_eq!(args, vec!["/c".to_string(), "echo".to_string()]);
+    }
+
+    #[test]
+    fn resolve_command_keeps_missing_programs() {
+        // Неизвестная программа не резолвится — команда как была, так и есть.
+        let (program, args) = resolve_command(
+            "definitely-no-such-tool-xyz",
+            &["--version".to_string()],
+        );
+        assert_eq!(program, "definitely-no-such-tool-xyz");
+        assert_eq!(args, vec!["--version".to_string()]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolve_command_wraps_cmd_shims_in_cmd() {
+        // Генерируем временный *.cmd-«шим» в PATH и проверяем обёртку.
+        // Всё под PATH_TEST_LOCK: мутация PATH видна всему процессу.
+        let _guard = PATH_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("tc-shim-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("tc-fake-tool.cmd");
+        std::fs::write(&shim, "@echo 1.2.3\r\n").unwrap();
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{};{old_path}", dir.to_string_lossy()));
+
+        let (program, args) = resolve_command("tc-fake-tool", &["--version".to_string()]);
+        assert_eq!(program, "cmd");
+        assert!(args.first().map(|a| a.as_str()) == Some("/d"));
+        assert_eq!(
+            args[2].split_whitespace().next().unwrap().trim_matches('"'),
+            shim.to_string_lossy()
+        );
+
+        std::env::set_var("PATH", old_path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
