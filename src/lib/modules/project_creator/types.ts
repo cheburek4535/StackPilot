@@ -37,6 +37,8 @@ export type FrameworkDef = {
   conflicts?: string[];
   /** Как фреймворк участвует в создании каркаса: "root", "subdir" или undefined (inplace) */
   scaffold?: "root" | "subdir";
+  /** Куда фреймворк создаёт файлы при сегментации: "backend" | "frontend" или undefined (корень) */
+  output_subdir?: "backend" | "frontend";
 };
 
 export type StackSeverity = "Error" | "Warning";

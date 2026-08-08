@@ -267,12 +267,35 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         condition: None,
         on_error: ErrorMode::Abort,
     });
-    
+
+    // При моно-репозитории (backend + frontend) заранее создаём подпапки
+    let layout = SegLayout::compute(context);
+    if let Some(dir) = &layout.backend {
+        steps.push(Step::CreateDirectory {
+            id: "create_backend_dir".into(),
+            label: format!("Create {}/", dir),
+            description: format!("Create {} directory for backend frameworks", dir),
+            path: dir.clone(),
+            condition: None,
+            on_error: ErrorMode::Abort,
+        });
+    }
+    if let Some(dir) = &layout.frontend {
+        steps.push(Step::CreateDirectory {
+            id: "create_frontend_dir".into(),
+            label: format!("Create {}/", dir),
+            description: format!("Create {} directory for frontend frameworks", dir),
+            path: dir.clone(),
+            condition: None,
+            on_error: ErrorMode::Abort,
+        });
+    }
+
     for lang in &context.languages {
         steps.extend(steps_for_language(lang, project_name, project_path));
     }
     for fw in &context.frameworks {
-        steps.extend(steps_for_framework(fw, project_path, project_name, context));
+        steps.extend(steps_for_framework(fw, project_path, project_name, context, layout.for_framework(fw).as_deref()));
     }
     steps.extend(steps_for_tools(&context.tools, project_path));
     steps.extend(steps_for_docker(context, project_path, project_name));
@@ -658,7 +681,158 @@ fn _is_backend_lang(l: &str) -> bool {
     matches!(l, "rust" | "python" | "go" | "java" | "csharp" | "php" | "elixir" | "zig" | "gleam" | "cpp" | "c")
 }
 
-fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
+// ============================================================================
+// Сегментация проекта: backend/ + frontend/ (моно-репозиторий)
+//
+// Если пользователь выбрал и клиентский, и серверный фреймворк (например
+// nextjs + fastapi), то во избежание конфликтов (перезапись package.json,
+// смешивание src/) каждый фреймворк получает собственный каталог:
+//   backend/  — серверные фреймворки (fastapi, express, django, axum...)
+//   frontend/ — клиентские (nextjs, sveltekit, flutter, electron...)
+// Если выбран только один сегмент, сегментация не применяется и всё
+// создаётся в корне проекта, как раньше.
+//
+// Списки должны совпадать с полем output_subdir в wizard_tree.json.
+// ============================================================================
+
+const FRONTEND_FRAMEWORKS: &[&str] = &[
+    "nextjs", "sveltekit", "nuxt", "electron", "android", "aiogram", "telegraf",
+    "unity", "maui", "unreal", "qt", "godot", "flutter", "jetpack-compose",
+    "swiftui", "react-native", "plasmo", "expo", "solidjs",
+];
+const BACKEND_FRAMEWORKS: &[&str] = &[
+    "fastapi", "django", "flask", "axum", "clap", "gin", "cobra", "express",
+    "spring-boot", "aspnetcore", "laravel", "symfony", "ktor", "vapor",
+    "zig-cli", "nest", "fastify", "phoenix",
+];
+
+/// К какой стороне проекта относится фреймворк: "frontend" | "backend" | None
+fn segment_of_framework(id: &str) -> Option<&'static str> {
+    if FRONTEND_FRAMEWORKS.contains(&id) {
+        Some("frontend")
+    } else if BACKEND_FRAMEWORKS.contains(&id) {
+        Some("backend")
+    } else {
+        None
+    }
+}
+
+struct SegLayout {
+    frontend: Option<String>,
+    backend: Option<String>,
+}
+
+impl SegLayout {
+    /// Если выбраны фреймворки обеих сторон — выделяем под них подпапки.
+    fn compute(context: &WizardContext) -> SegLayout {
+        let has_frontend = context.frameworks.iter().any(|f| segment_of_framework(f) == Some("frontend"));
+        let has_backend = context.frameworks.iter().any(|f| segment_of_framework(f) == Some("backend"));
+        if has_frontend && has_backend {
+            SegLayout {
+                frontend: Some("frontend".into()),
+                backend: Some("backend".into()),
+            }
+        } else {
+            SegLayout { frontend: None, backend: None }
+        }
+    }
+
+    /// Каталог сегмента для фреймворка (None = корень проекта)
+    fn for_framework(&self, id: &str) -> Option<String> {
+        match segment_of_framework(id) {
+            Some("frontend") => self.frontend.clone(),
+            Some("backend") => self.backend.clone(),
+            _ => None,
+        }
+    }
+}
+
+/// Шаги CLI-генераторов, которые сами создают подпапку с именем проекта
+/// (create-next-app <name>, flutter create <name> и т.п.).
+/// При сегментации в такой команде подменяется имя создаваемой подпапки
+/// (индекс в args), а рабочая директория остаётся корнем проекта;
+/// остальные шаги (write_file, остальные команды) переносятся в сегмент.
+const FOLDER_MAKER_STEPS: &[(&str, usize)] = &[
+    ("nextjs_create", 1),   // npx create-next-app@latest <имя>
+    ("sveltekit_create", 2),// npx sv create <имя>
+    ("nuxt_create", 3),     // npx --yes nuxi@latest init <имя>
+    ("solid_init", 1),      // npx create-solid <имя>
+    ("flutter_create", 1),  // flutter create <имя>
+    ("electron_init", 1),   // npx create-electron-app <имя>
+    ("rn_init", 2),         // npx @react-native-community/cli init <имя>
+    ("expo_init", 1),       // npx create-expo-app <имя>
+    ("plasmo_init", 2),     // npx plasmo init <имя>
+    ("laravel_new", 3),     // npx --yes @laravel/installer new <имя>
+    ("symfony_new", 1),     // symfony new <имя>
+    ("phoenix_new", 1),     // mix phx.new <имя>
+    ("vapor_new", 1),       // vapor new <имя>
+];
+
+fn join_seg(wd: &str, seg: &str) -> String {
+    if wd.is_empty() || wd == "." {
+        seg.to_string()
+    } else {
+        format!("{}/{}", wd.trim_end_matches(['/', '\\']), seg)
+    }
+}
+
+/// Заворачивает шаги фреймворка в каталог сегмента (backend/ или frontend/):
+/// пути WriteFile/CreateDirectory и рабочие директории команд получают
+/// префикс, а у генераторов подпапок (create-next-app и т.п.) меняется имя
+/// архивного каталога.
+fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
+    steps.into_iter().map(|step| {
+        let replaces = matches!(&step, Step::Command { id, .. } if
+            FOLDER_MAKER_STEPS.iter().any(|(sid, _)| *sid == id.as_str()));
+        let name_index = FOLDER_MAKER_STEPS.iter()
+            .find(|(sid, _)| matches!(&step, Step::Command { id, .. } if *sid == id.as_str()))
+            .map(|(_, idx)| *idx);
+        match step {
+            Step::Command { id, label, description, command, mut args, working_dir, env, timeout_secs, condition, on_error, interactive } => {
+                if replaces {
+                    if let Some(idx) = name_index {
+                        if let Some(arg) = args.get_mut(idx) {
+                            *arg = dir.to_string();
+                        }
+                    }
+                    // генератор сам создаст подпапку — рабочая директория остаётся корневой
+                    Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
+                } else {
+                    Step::Command {
+                        id, label, description, command, args,
+                        working_dir: working_dir.map(|wd| join_seg(&wd, dir)),
+                        env, timeout_secs, condition, on_error, interactive,
+                    }
+                }
+            }
+            Step::WriteFile { id, label, description, path, content, overwrite, condition, on_error } => {
+                Step::WriteFile {
+                    id, label, description,
+                    path: format!("{}/{}", dir, path),
+                    content, overwrite, condition, on_error,
+                }
+            }
+            Step::CreateDirectory { id, label, description, path, condition, on_error } => {
+                Step::CreateDirectory {
+                    id, label, description,
+                    path: format!("{}/{}", dir, path),
+                    condition, on_error,
+                }
+            }
+            other => other,
+        }
+    }).collect()
+}
+
+fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
+    let steps = steps_for_framework_impl(fw, project_path, project_name, context);
+    match seg {
+        Some(dir) => into_segment(steps, dir),
+        None => steps,
+    }
+}
+
+fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
     // Определяем язык фронтенда (для Tauri, Expo и др.)
     let frontend_lang = context.languages.iter().find(|l| is_frontend_lang(l));
     let has_typescript = context.languages.iter().any(|l| l == "typescript");
@@ -1954,7 +2128,7 @@ mod tests {
         // Фронтенды создают проект в подпапке <project_name>, а не в корне:
         // иначе они перезапишут package.json бэкенда (express+nextjs и т.п.).
         for fw_id in ["nextjs", "nuxt", "sveltekit", "solidjs"] {
-            let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context());
+            let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context(), None);
             assert_eq!(steps.len(), 1, "{fw_id}");
             let args = cmd_args(&steps[0]);
             assert!(
@@ -1962,5 +2136,55 @@ mod tests {
                 "{fw_id} не создаёт проект в подпапке: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn split_layout_puts_frameworks_into_segments() {
+        // nextjs + fastapi: фронтенд — в frontend/, сервер — в backend/
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into(), "python".into()];
+        ctx.frameworks = vec!["nextjs".into(), "fastapi".into()];
+
+        let next_steps = steps_for_framework("nextjs", "C:\\dev\\myapp", "myapp", &ctx, Some("frontend"));
+        let args = cmd_args(&next_steps[0]);
+        assert!(args.contains(&"frontend".to_string()), "nextjs должен создаваться в frontend/: {args:?}");
+
+        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, Some("backend"));
+        assert!(
+            api_steps.iter().any(|s| matches!(s, Step::WriteFile { path, .. } if path == "backend/src/main.py")),
+            "fastapi должен писать в backend/src/main.py"
+        );
+    }
+
+    #[test]
+    fn solo_backend_framework_stays_in_root() {
+        // Только fastapi (без фронтенда) — сегментации нет, файлы в корне
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+
+        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, None);
+        assert!(
+            api_steps.iter().any(|s| matches!(s, Step::WriteFile { path, .. } if path == "src/main.py")),
+            "fastapi без фронтенда пишет в корень"
+        );
+    }
+
+    #[test]
+    fn compose_recipe_creates_segment_dirs_for_split_stack() {
+        // Полный план для nextjs + fastapi: создаются папки backend/ и frontend/
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into(), "python".into()];
+        ctx.frameworks = vec!["nextjs".into(), "fastapi".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"frontend".to_string()), "backend/ и frontend/ должны создаваться: {mkdirs:?}");
+        assert!(mkdirs.contains(&"backend".to_string()), "backend/ и frontend/ должны создаваться: {mkdirs:?}");
     }
 }

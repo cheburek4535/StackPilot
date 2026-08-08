@@ -74,6 +74,13 @@ pub struct FrameworkDef {
     /// два таких фреймворка перезапишут/создадут одну и ту же структуру.
     #[serde(default)]
     pub scaffold: Option<String>,
+    /// Куда фреймворк создаёт файлы при сегментации проекта:
+    ///   - "backend" — в папку backend/
+    ///   - "frontend" — в папку frontend/
+    ///   - None — корень проекта (по умолчанию)
+    /// Применяется к фреймворкам с scaffold="subdir" или inplace-фреймворкам.
+    #[serde(default)]
+    pub output_subdir: Option<String>,
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим
