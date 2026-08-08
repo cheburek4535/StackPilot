@@ -86,9 +86,14 @@ pub async fn tc_check_environment(
 
 /// Строит план установки из отчёта проверки — показывает пользователю,
 /// что именно будет установлено и сколько займёт, ДО запуска (этап 3).
+/// `selected_tool_ids` ограничивает план выбранными инструментами
+/// (кастомизация установки); None или пустой список — все «не готовые».
 #[tauri::command]
-pub fn tc_build_install_plan(check: EnvironmentCheck) -> InstallPlan {
-    core::planner::build_plan(&check)
+pub fn tc_build_install_plan(
+    check: EnvironmentCheck,
+    selected_tool_ids: Option<Vec<String>>,
+) -> InstallPlan {
+    core::planner::build_plan(&check, selected_tool_ids.as_deref())
 }
 
 /// Запускает установку по утверждённому плану.
@@ -98,8 +103,12 @@ pub fn tc_build_install_plan(check: EnvironmentCheck) -> InstallPlan {
 /// `toolchain:install_done` с финальным InstallPlan. Генерируемые
 /// при установке секреты (пароль PostgreSQL) доступны через
 /// tc_get_install_status.
+///
+/// Команда объявлена async: tokio::spawn требует активного токио-
+/// контекста, а он есть только у async-команд Tauri (синхронные
+/// исполняются на главном потоке вне рантайма).
 #[tauri::command]
-pub fn tc_run_install(
+pub async fn tc_run_install(
     app: tauri::AppHandle,
     state: State<'_, ToolchainState>,
     plan: InstallPlan,

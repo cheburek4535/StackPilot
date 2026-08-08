@@ -205,6 +205,8 @@ mod tests {
                     args: vec![],
                     extra_args: vec![],
                     dynamic_args: false,
+                    install_dir: None,
+                    needs_admin: None,
                 }],
                 linux: vec![],
                 macos: vec![],

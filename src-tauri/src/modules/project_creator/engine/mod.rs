@@ -1181,22 +1181,42 @@ func main() {{
         ],
 
         // ==================== Java ====================
-        "spring-boot" => vec![
-            // Spring Boot обычно создаётся через Spring Initializr — curl + unzip
-            // Это сложная команда, оставляем как есть
-            cmd("spring_init", "Generate Spring Boot project",
-                "Download Spring Boot starter from Initializr",
-                "curl", vec![
-                    "-s", &format!("https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies=web", project_name, project_name),
-                    "-o", "project.zip",
-                ]),
-            cmd("unzip_spring", "Extract Spring Boot", "Unzip the generated project",
-                if cfg!(target_os = "windows") { "tar" } else { "unzip" },
-                vec!["project.zip"]),
-            cmd("cleanup_zip", "Clean up zip", "Remove project.zip",
-                if cfg!(target_os = "windows") { "del" } else { "rm" },
-                vec!["project.zip"]),
-        ],
+        "spring-boot" => {
+            // Spring Boot создаётся через Spring Initializr: скачиваем
+            // starter.zip и распаковываем. Зависимости собираем из
+            // выбранных БД/инструментов (web всегда).
+            let mut deps: Vec<&str> = vec!["web"];
+            for tool in &context.tools {
+                match tool.as_str() {
+                    "mongodb" => deps.push("data-mongodb"),
+                    "postgresql" => {
+                        deps.push("data-jpa");
+                        deps.push("postgresql");
+                    }
+                    "mysql" => {
+                        deps.push("data-jpa");
+                        deps.push("mysql");
+                    }
+                    "redis" => deps.push("data-redis"),
+                    _ => {}
+                }
+            }
+            let deps_str = deps.join(",");
+            vec![
+                cmd("spring_init", "Generate Spring Boot project",
+                    "Download Spring Boot starter from Initializr",
+                    "curl", vec![
+                        "-sL", &format!("https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies={}", project_name, project_name, deps_str),
+                        "-o", "project.zip",
+                    ]),
+                cmd("unzip_spring", "Extract Spring Boot", "Unzip the generated project",
+                    if cfg!(target_os = "windows") { "tar" } else { "unzip" },
+                    if cfg!(target_os = "windows") { vec!["-xf", "project.zip"] } else { vec!["-o", "project.zip"] }),
+                cmd("cleanup_zip", "Clean up zip", "Remove project.zip",
+                    if cfg!(target_os = "windows") { "del" } else { "rm" },
+                    vec!["project.zip"]),
+            ]
+        }
 
         "android" => vec![
             // Android Studio — это GUI, CLI создать сложно

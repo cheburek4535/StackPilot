@@ -38,7 +38,7 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
         "csharp" => &["dotnet"],
         "cpp" => &["msvc-build-tools"],
         "dart" => &["dart"],
-        "kotlin" => &["java"],
+        "kotlin" => &["java", "kotlin"],
         "php" => &["php"],
         "swift" => &["swift"],
         "zig" => &["zig"],
@@ -63,6 +63,10 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         "tauri" => &["rust", "node", "tauri-cli"],
         "flutter" => &["flutter"],
         "android" | "jetpack-compose" => &["java"],
+        // JVM-фреймворки: spring boot и ktor требуют JDK, даже если
+        // язык java не выбран в мастере явно (проект не соберётся без
+        // javac — а Initializr-шаблоны его подразумевают).
+        "spring-boot" | "ktor" => &["java"],
         _ => &[],
     }
 }
@@ -102,9 +106,12 @@ fn framework_tool_map() -> &'static HashMap<String, Vec<String>> {
 // ------------------------------------------------------------
 
 /// id тула из wizard_tree.json → id в tools.json.
-/// Многие совпадают (postgresql, docker, ...). Те, которых нет
-/// в каталоге toolchain (pytest, sqlalchemy, prisma, firebase...),
-/// не проверяются: это библиотеки/сервисы, а не системное ПО.
+/// Большинство совпадает (postgresql, docker, ...). Тех, кого нет
+/// в каталоге toolchain (pytest, sqlalchemy, alembic, ruff, prisma,
+/// drizzle, dbt), нет по дизайну: это pip/npm-пакеты или docker-образы
+/// (clickhouse, airflow, opentelemetry), а не системное ПО — их
+/// доставит менеджер пакетов языка или docker. docker-инструменты
+/// идут вместе с самим docker (requires_docker в wizard_tree).
 pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
     // id, совпадающие с каталогом toolchain, возвращаются строковыми
     // литералами, а не заимствованным входным &str: это даёт
@@ -117,6 +124,10 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
         "sqlite" => Some("sqlite"),
         "maven" => Some("maven"),
         "gradle" => Some("gradle"),
+        "kafka" => Some("kafka"),
+        "grafana" => Some("grafana"),
+        "terra" => Some("terraform"),
+        "firebase" => Some("firebase"),
         _ => None,
     }
 }
@@ -126,8 +137,11 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
 // ------------------------------------------------------------
 
 /// Полный список id инструментов для проверки окружения.
-/// Порядок: языки → фреймворки → выбранные тулы → флаги.
+/// Порядок: winget → языки → фреймворки → выбранные тулы → флаги.
 /// Дубликаты убираются (HashSet-страж), первый порядок сохраняется.
+///
+/// winget идёт ВСЕГДА первым: это основной источник установки на
+/// Windows (planner выносит его в начало плана, если он отсутствует).
 pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -137,6 +151,8 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
             ids.push(id.to_string());
         }
     };
+
+    push("winget");
 
     for lang in &requirements.languages {
         for id in language_tools(lang) {
@@ -192,25 +208,25 @@ mod tests {
     fn language_python_resolves_to_python() {
         let mut r = req();
         r.languages = vec!["python".into()];
-        assert_eq!(resolve(&r), vec!["python"]);
+        assert_eq!(resolve(&r), vec!["winget", "python"]);
     }
 
     #[test]
     fn typescript_and_javascript_use_node() {
         let mut r = req();
         r.languages = vec!["typescript".into()];
-        assert_eq!(resolve(&r), vec!["node"]);
+        assert_eq!(resolve(&r), vec!["winget", "node"]);
 
         let mut r = req();
         r.languages = vec!["javascript".into()];
-        assert_eq!(resolve(&r), vec!["node"]);
+        assert_eq!(resolve(&r), vec!["winget", "node"]);
     }
 
     #[test]
     fn elixir_brings_erlang_runtime() {
         let mut r = req();
         r.languages = vec!["elixir".into()];
-        assert_eq!(resolve(&r), vec!["elixir", "erlang"]);
+        assert_eq!(resolve(&r), vec!["winget", "elixir", "erlang"]);
     }
 
     #[test]
@@ -224,6 +240,46 @@ mod tests {
         }
         // тулы из wizard_tree.json (framework_tool_map: tauri → docker, npm)
         for expected in ["docker", "npm"] {
+            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+        }
+    }
+
+    #[test]
+    fn spring_boot_brings_jdk_without_language() {
+        let mut r = req();
+        r.frameworks = vec!["spring-boot".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "java"), "spring boot без JDK: {ids:?}");
+        // тулы из wizard_tree.json (framework_tool_map: spring-boot → maven, gradle, ...)
+        for expected in ["maven", "gradle", "postgresql", "redis", "docker", "kafka", "mongodb"] {
+            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+        }
+    }
+
+    #[test]
+    fn ktor_brings_jdk() {
+        let mut r = req();
+        r.frameworks = vec!["ktor".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "java"), "ktor без JDK: {ids:?}");
+        assert!(ids.iter().any(|i| i == "kafka"), "ktor без kafka: {ids:?}");
+    }
+
+    #[test]
+    fn kotlin_language_brings_kotlinc_and_jdk() {
+        let mut r = req();
+        r.languages = vec!["kotlin".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "kotlin"), "kotlin без kotlinc: {ids:?}");
+        assert!(ids.iter().any(|i| i == "java"), "kotlin без JDK: {ids:?}");
+    }
+
+    #[test]
+    fn airflow_grafana_and_terraform_tools_resolve() {
+        let mut r = req();
+        r.tools = vec!["grafana".into(), "terra".into(), "firebase".into()];
+        let ids = resolve(&r);
+        for expected in ["grafana", "terraform", "firebase"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
     }
@@ -252,8 +308,9 @@ mod tests {
         for id in &ids {
             assert!(seen.insert(id), "дубликат {id} в {ids:?}");
         }
-        // языки идут раньше тулов фреймворка
-        assert_eq!(ids[0], "rust");
+        // winget идёт первым, языки — раньше тулов фреймворка
+        assert_eq!(ids[0], "winget");
+        assert_eq!(ids[1], "rust");
     }
 
     #[test]
@@ -266,7 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_requirements_resolve_to_empty() {
-        assert!(resolve(&req()).is_empty());
+    fn empty_requirements_resolve_to_winget_only() {
+        // winget — обязательный базовый инструмент даже при пустом запросе
+        assert_eq!(resolve(&req()), vec!["winget"]);
     }
 }

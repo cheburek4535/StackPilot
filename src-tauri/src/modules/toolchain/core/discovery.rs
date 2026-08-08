@@ -141,8 +141,17 @@ fn known_path_found(def: &ToolDefinition) -> bool {
 /// Пробует запустить пробы версии прямо из каталогов known_paths:
 /// типичная ситуация — PostgreSQL установлен, но `bin` не добавлен
 /// в PATH (инсталлятор не спросил). Тогда `psql --version` через PATH
-/// молчит, а `C:/Program Files/PostgreSQL/17/bin/psql --version` отвечает.
+/// молчит, а `C:/Program Files/PostgreSQL/17/bin/psql.exe --version`
+/// отвечает.
+///
+/// Windows: бинарники имеют расширения (.exe, .cmd, .bat) — пробы
+/// из tools.json их не содержат, поэтому перебираем возможные.
 async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
+    let exts: &[&str] = if cfg!(target_os = "windows") {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
     for known in &def.detection.known_paths {
         let Some(dir) = glob_first(&expand_env(known)) else {
             continue;
@@ -151,8 +160,14 @@ async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
             if probe.is_empty() {
                 continue;
             }
-            let bin = dir.join(&probe[0]);
-            if bin.is_file() {
+            for ext in exts {
+                let bin = dir.join(format!("{}{}", probe[0], ext));
+                if !bin.is_file() {
+                    continue;
+                }
+                // Полный путь без cmd-обёртки: std::process на Windows
+                // сам оборачивает .cmd/.bat в cmd /c, а пути с пробелами
+                // («Program Files») при этом не ломаются.
                 if let Some(out) = run_capture(&bin.to_string_lossy(), &probe[1..]).await {
                     return Some(out);
                 }
@@ -191,7 +206,9 @@ async fn any_registry_found(def: &ToolDefinition) -> bool {
 /// Если версию не удалось разобрать, но команда ответила —
 /// считаем инструмент установленным (запас в пользу пользователя).
 pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> ToolStatus {
-    let version = raw_version.trim().to_string();
+    // Многострочный вывод (например `code --version` печатает версию,
+    // commit и архитектуру) сокращаем до первой строки.
+    let version = raw_version.lines().next().unwrap_or("").trim().to_string();
 
     let Ok(parsed) = version::parse_version(raw_version) else {
         return ToolStatus::Installed { version };
@@ -405,6 +422,31 @@ mod tests {
         assert!(
             matches!(status, ToolStatus::Missing | ToolStatus::Installed { .. }),
             "неожиданный статус: {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn kafka_jar_probe_parses_version() {
+        // probe читает версию из имени jar без JVM — валидный вызов
+        // powershell должен вернуть «3.9.0» при установленной kafka,
+        // либо пустоту/ошибку если кафки нет. Ни в коем случае нельзя
+        // полагаться на kafka-topics.bat (classpath > 8191 у cmd).
+        let def = def("kafka").clone();
+        let probes = &def.detection.version_probes;
+        assert!(
+            probes.iter().any(|p| p.first().map(String::as_str) == Some("powershell")),
+            "kafka должна определяться через powershell-пробу"
+        );
+        let status = detect_tool(&def).await;
+        assert!(
+            matches!(
+                status,
+                ToolStatus::Missing
+                    | ToolStatus::Installed { .. }
+                    | ToolStatus::UpdateAvailable { .. }
+                    | ToolStatus::PathBroken { .. }
+            ),
+            "неожиданный статус kafka: {status:?}"
         );
     }
 }

@@ -127,6 +127,14 @@ pub struct InstallSource {
     /// (пароль PostgreSQL генерируется в рантайме, его нельзя хранить в JSON)
     #[serde(default)]
     pub dynamic_args: bool,
+    /// Куда распаковывать zip-архив (gradle, maven). Без этого поля
+    /// zip-источник считается некорректным и не запускается.
+    #[serde(default)]
+    pub install_dir: Option<String>,
+    /// Переопределение needs_admin для конкретного источника (zip-распаковка
+    /// не требует UAC, даже если у инструмента в целом needs_admin=true).
+    #[serde(default)]
+    pub needs_admin: Option<bool>,
 }
 
 /// Чем ставим: менеджером пакетов ОС, официальным установщиком или скриптом.

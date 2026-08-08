@@ -29,7 +29,7 @@ use std::sync::Arc;
 use crate::modules::toolchain::models::*;
 use crate::modules::toolchain::platforms;
 
-use super::console::{self, EventSink};
+use super::console::{self, ps_quote, EventSink};
 use super::discovery;
 use super::path_service;
 
@@ -38,6 +38,7 @@ use super::path_service;
 // ------------------------------------------------------------
 
 /// Готовая к запуску команда: бинарь + аргументы.
+#[derive(Debug)]
 struct InstallCommand {
     program: String,
     args: Vec<String>,
@@ -127,9 +128,171 @@ fn build_install_command(
                     let mut args = vec!["/i".to_string(), path.to_string_lossy().into_owned()];
                     args.extend(source.args.iter().cloned());
                     args.extend(dynamic);
+                    // Подробный MSI-лог: при сбое тихой установки это
+                    // единственный способ узнать настоящую причину.
+                    let log = std::env::temp_dir().join(format!("tc-{}-msi.log", source.id));
+                    args.push("/l*v".to_string());
+                    args.push(log.to_string_lossy().into_owned());
                     Ok(InstallCommand {
                         program: "msiexec".to_string(),
                         args,
+                    })
+                }
+                // zip-архивы (gradle, maven): распаковка без прав — в каталог
+                // из install_dir (обычно %LOCALAPPDATA%/Programs/<tool>).
+                // %VAR% раскрываем здесь: PowerShell (в отличие от cmd)
+                // синтаксис %LOCALAPPDATA% не понимает.
+                //
+                // Fallback на tar: Expand-Archive падает на zip MongoDB
+                // (741МБ, битые записи PDB) — встроенный tar (Windows 10+)
+                // такие архивы распаковывает.
+                Some(ext) if ext.eq_ignore_ascii_case("zip") => {
+                    let Some(dir) = source.install_dir.as_ref() else {
+                        return Err(format!(
+                            "{}: zip-источник требует install_dir в tools.json",
+                            source.id
+                        ));
+                    };
+                    let dir = path_service::expand_env_vars(dir);
+                    let script = format!(
+                        r#"$ErrorActionPreference = 'Stop'
+try {{
+    Expand-Archive -Path {} -DestinationPath {} -Force
+}} catch {{
+    Write-Output "tc:warn Expand-Archive не сработал ($($_.Exception.Message)) — пробуем tar"
+    tar -xf {} -C {}
+    if ($LASTEXITCODE -ne 0) {{
+        Write-Output "tc:error tar -xf не смог распаковать архив"
+        exit 1
+    }}
+}}
+"#,
+                        ps_quote(&path.to_string_lossy()),
+                        ps_quote(&dir),
+                        ps_quote(&path.to_string_lossy()),
+                        ps_quote(&dir)
+                    );
+                    Ok(InstallCommand {
+                        program: "powershell".to_string(),
+                        args: vec![
+                            "-NoProfile".to_string(),
+                            "-ExecutionPolicy".to_string(),
+                            "Bypass".to_string(),
+                            "-Command".to_string(),
+                            script,
+                        ],
+                    })
+                }
+                // tgz/tar.gz (kafka): распаковка через встроенный tar —
+                // Expand-Archive такие архивы не понимает.
+                Some(ext) if ext.eq_ignore_ascii_case("tgz")
+                    || ext.eq_ignore_ascii_case("gz")
+                    || ext.eq_ignore_ascii_case("tar.gz") => {
+                    let Some(dir) = source.install_dir.as_ref() else {
+                        return Err(format!(
+                            "{}: tar-источник требует install_dir в tools.json",
+                            source.id
+                        ));
+                    };
+                    let dir = path_service::expand_env_vars(dir);
+                    let script = format!(
+                        r#"$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force -Path {1} | Out-Null
+tar -xf {0} -C {1}
+if ($LASTEXITCODE -ne 0) {{
+    Write-Output "tc:error tar -xf не смог распаковать архив (код $LASTEXITCODE)"
+    exit 1
+}}
+# архивы из Unix-мира содержат bat с LF-only переносами, cmd их не понимает —
+# нормализуем в CRLF
+Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
+    $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $t = ($t -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($_.FullName, $t, (New-Object System.Text.UTF8Encoding $false))
+}}
+"#,
+                        ps_quote(&path.to_string_lossy()),
+                        ps_quote(&dir)
+                    );
+                    Ok(InstallCommand {
+                        program: "powershell".to_string(),
+                        args: vec![
+                            "-NoProfile".to_string(),
+                            "-ExecutionPolicy".to_string(),
+                            "Bypass".to_string(),
+                            "-Command".to_string(),
+                            script,
+                        ],
+                    })
+                }
+                // MSIX/msixbundle (winget): установка через App Installer,
+                // без прав администратора, per-user. Бандл DesktopAppInstaller
+                // требует VCLibs и WindowsAppRuntime 1.8 — их официальный
+                // набор лежит в DesktopAppInstaller_Dependencies.zip того же
+                // релиза winget-cli; ставим их первыми (мимо Windows Store,
+                // skip уже установленных — иначе 0x80073D06).
+                Some(ext) if ext.eq_ignore_ascii_case("msix")
+                    || ext.eq_ignore_ascii_case("msixbundle") => {
+                    let bundle = path.to_string_lossy();
+                    let script = format!(
+                        r#"$ErrorActionPreference = 'Stop'
+try {{
+  if (Get-AppxPackage -Name Microsoft.DesktopAppInstaller) {{
+    Write-Output 'winget уже установлен'
+    exit 0
+  }}
+  Write-Output 'Скачивание зависимостей winget (DesktopAppInstaller_Dependencies.zip)...'
+  $deps = Join-Path $env:TEMP 'tc-winget-deps'
+  $archZip = Join-Path $deps 'deps.zip'
+  $archDir = Join-Path $deps 'extracted'
+  New-Item -ItemType Directory -Force -Path $deps | Out-Null
+  if (-not (Test-Path $archZip)) {{
+    Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/microsoft/winget-cli/releases/download/v1.29.280/DesktopAppInstaller_Dependencies.zip' -OutFile $archZip
+  }}
+  if (-not (Test-Path $archDir)) {{
+    Expand-Archive -Path $archZip -DestinationPath $archDir -Force
+  }}
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {{ 'arm64' }} elseif ($env:PROCESSOR_ARCHITECTURE -eq 'x86') {{ 'x86' }} else {{ 'x64' }}
+  $pkgDir = Join-Path $archDir $arch
+  if (-not (Test-Path $pkgDir)) {{
+    Write-Output "tc:error в архиве зависимостей нет папки для архитектуры $arch"
+    exit 1
+  }}
+  Get-ChildItem $pkgDir -Filter *.appx | ForEach-Object {{
+    try {{
+      Add-AppxPackage $_.FullName
+      Write-Output "зависимость установлена: $($_.Name)"
+    }} catch {{
+      if ($_.Exception.Message -match '0x80073D06') {{
+        Write-Output "зависимость уже установлена (пропускаем): $($_.Name)"
+      }} else {{
+        Write-Output "tc:warn зависимость $($_.Name): $($_.Exception.Message)"
+      }}
+    }}
+  }}
+  Add-AppxPackage {}
+  if (Get-AppxPackage -Name Microsoft.DesktopAppInstaller) {{
+    Write-Output 'winget установлен'
+    exit 0
+  }}
+  Write-Output 'tc:error Add-AppxPackage не зарегистрировал App Installer'
+  exit 1
+}} catch {{
+  Write-Output "tc:error $($_.Exception.Message)"
+  exit 1
+}}
+"#,
+                        ps_quote(&bundle)
+                    );
+                    Ok(InstallCommand {
+                        program: "powershell".to_string(),
+                        args: vec![
+                            "-NoProfile".to_string(),
+                            "-ExecutionPolicy".to_string(),
+                            "Bypass".to_string(),
+                            "-Command".to_string(),
+                            script,
+                        ],
                     })
                 }
                 _ => {
@@ -303,13 +466,36 @@ async fn run_task(
     }
 
     let mut last_error: Option<String> = None;
-    for source in os_sources {
+    for (si, source) in os_sources.iter().enumerate() {
+        // Прозрачность для пользователя: почему переключились на запасной
+        // источник — раньше это видели только в терминале разработчика.
+        if si > 0 {
+            let reason = last_error.as_deref().unwrap_or("неизвестная причина");
+            sink.emit(console::event(
+                ToolchainEventType::TaskProgress {
+                    line: format!("tc:info Источник «{}» не сработал: {reason} — пробуем «{}»", os_sources[si - 1].id, source.id),
+                },
+                index,
+                total,
+                &task_id,
+                &tool_id,
+            ));
+        }
         match try_install_source(def, source, index, total, &task_id, &tool_id, sink, abort).await
         {
             Ok((version, secret)) => {
                 if let Some(pw) = secret {
                     secrets.insert(tool_id.clone(), pw);
                 }
+                sink.emit(console::event(
+                    ToolchainEventType::TaskProgress {
+                        line: format!("tc:ok Установлено через источник «{}» (версия {version})", source.id),
+                    },
+                    index,
+                    total,
+                    &task_id,
+                    &tool_id,
+                ));
                 return TaskState::Success { version };
             }
             Err(e) => {
@@ -378,9 +564,12 @@ async fn try_install_source(
     ));
 
     // needs_admin → UAC-элевация; остальные запускаются как есть.
+    // У источника может быть своё значение (zip-распаковка не требует UAC,
+    // даже если у инструмента в целом needs_admin=true).
     // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
+    let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
     let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
-    let run = if def.needs_admin {
+    let run = if needs_admin {
         console::run_elevated(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
     } else {
         console::piped_run(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
@@ -394,7 +583,12 @@ async fn try_install_source(
         return Err("Отменено пользователем".to_string());
     }
     if !res.success {
-        return Err(format!("Установщик завершился с кодом {}", res.code));
+        // tc:error-строка из скрипта (download/run_elevated) — настоящая
+        // причина сбоя; код процесса — лишь дополнение к ней.
+        return match res.error_line {
+            Some(line) => Err(format!("{line} (код {})", res.code)),
+            None => Err(format!("Установщик завершился с кодом {}", res.code)),
+        };
     }
 
     // PATH: установщик (winget/msi/exe) написал свои каталоги в реестр,
@@ -494,6 +688,8 @@ mod tests {
                     ],
                     extra_args: vec![],
                     dynamic_args: false,
+                    install_dir: None,
+                    needs_admin: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -573,10 +769,40 @@ mod tests {
             args: vec!["--quiet".to_string()],
             extra_args: vec![],
             dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
         };
         let cmd = build_install_command(&source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
         assert_eq!(cmd.args, vec!["--quiet".to_string()]);
+    }
+
+    #[test]
+    fn official_tgz_expands_via_tar() {
+        // kafka: tgz распаковывается через tar (Expand-Archive не умеет)
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "kafka-tgz".to_string(),
+            url: Some("https://example.com/kafka.tgz".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: Some("%LOCALAPPDATA%/Programs/kafka".to_string()),
+            needs_admin: None,
+        };
+        let tgz = std::env::temp_dir().join("tc-tool-kafka.tgz");
+        let cmd = build_install_command(&source, Some(&tgz), None).unwrap();
+        assert_eq!(cmd.program, "powershell");
+        let script = cmd.args.last().unwrap();
+        assert!(script.contains("tar -xf"), "нет tar -xf: {script}");
+        assert!(
+            script.contains("`r`n"),
+            "нет CRLF-нормализации bat: {script}"
+        );
+        // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
+        let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/kafka");
+        assert!(script.contains(&expected), "раскрытый install_dir в скрипте: {script}");
+        assert!(!script.contains("%LOCALAPPDATA%"), "сырой %VAR% в скрипте: {script}");
     }
 
     #[test]
@@ -589,11 +815,91 @@ mod tests {
             args: vec!["/quiet".to_string()],
             extra_args: vec![],
             dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
         };
         let cmd = build_install_command(&source, None, None).unwrap();
         assert_eq!(cmd.program, "msiexec");
         assert_eq!(cmd.args[0], "/i");
         assert_eq!(cmd.args[1], "node.msi");
+        // диагностический MSI-лог должен быть добавлен автоматически
+        assert!(cmd.args.iter().any(|a| a == "/l*v"), "нет /l*v: {:?}", cmd.args);
+        assert!(
+            cmd.args.iter().any(|a| a.ends_with("tc-node-msi-msi.log")),
+            "нет пути к MSI-логу: {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn official_zip_expands_via_powershell() {
+        // gradle/maven: zip распаковывается в install_dir, а не запускается
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "gradle-zip".to_string(),
+            url: Some("https://example.com/gradle-9.1.0-bin.zip".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: Some("%LOCALAPPDATA%/Programs/gradle".to_string()),
+            needs_admin: None,
+        };
+        let zip = std::env::temp_dir().join("tc-tool-foo.zip");
+        let cmd = build_install_command(&source, Some(&zip), None).unwrap();
+        assert_eq!(cmd.program, "powershell");
+        let script = cmd.args.last().unwrap();
+        assert!(script.contains("Expand-Archive"), "скрипт: {script}");
+        // Fallback на tar для «тяжёлых» архивов (mongodb zip)
+        assert!(script.contains("tar -xf"), "нет tar-fallback: {script}");
+        // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
+        // и не должен попасть в скрипт как есть
+        let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/gradle");
+        assert!(script.contains(&expected), "раскрытый install_dir в скрипте: {script}");
+        assert!(!script.contains("%LOCALAPPDATA%"), "сырой %VAR% в скрипте: {script}");
+        assert!(script.contains("foo.zip"), "путь к архиву в скрипте: {script}");
+    }
+
+    #[test]
+    fn official_zip_without_install_dir_is_rejected() {
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "bad-zip".to_string(),
+            url: Some("https://example.com/x.zip".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+        };
+        let zip = std::env::temp_dir().join("tc-tool-bad.zip");
+        let err = build_install_command(&source, Some(&zip), None).unwrap_err();
+        assert!(err.contains("install_dir"), "ошибка: {err}");
+    }
+
+    #[test]
+    fn official_msixbundle_installs_via_appx() {
+        // winget (MSIX) ставится через App Installer, не «запуском»
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "winget-msix".to_string(),
+            url: Some("https://example.com/App.msixbundle".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+        };
+        let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
+        let cmd = build_install_command(&source, Some(&bundle), None).unwrap();
+        assert_eq!(cmd.program, "powershell");
+        let script = cmd.args.last().unwrap();
+        assert!(script.contains("Add-AppxPackage"));
+        // зависимости winget (VCLibs/WindowsAppRuntime 1.8) ставятся из
+        // официального DesktopAppInstaller_Dependencies.zip до самого бандла
+        assert!(script.contains("DesktopAppInstaller_Dependencies.zip"));
+        assert!(script.contains("PROCESSOR_ARCHITECTURE"));
+        assert!(script.contains("0x80073D06"));
+        assert!(script.contains("Get-AppxPackage -Name Microsoft.DesktopAppInstaller"));
     }
 
     #[cfg(target_os = "windows")]
@@ -663,6 +969,8 @@ mod tests {
                 args: vec!["/c".to_string(), "exit".to_string(), "1".to_string()],
                 extra_args: vec![],
                 dynamic_args: false,
+                install_dir: None,
+                needs_admin: None,
             },
             def.sources.windows[0].clone(),
         ];
@@ -677,6 +985,29 @@ mod tests {
             TaskState::Success { version } => assert_eq!(version, "1.2.3"),
             other => panic!("ожидали Success после fallback, получили {other:?}"),
         }
+
+        // Пользователь должен видеть причину переключения на запасной источник
+        let events: Vec<ToolchainEventType> = sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.event_type.clone())
+            .collect();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:info Источник «bad-source» не сработал")
+            )),
+            "нет tc:info о смене источника: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:ok Установлено через источник «local-cmd»")
+            )),
+            "нет tc:ok с источником успеха: {events:?}"
+        );
     }
 
     #[tokio::test]

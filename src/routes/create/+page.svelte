@@ -81,12 +81,34 @@ let envInstalling = $state(false);
 let envLogs = $state<string[]>([]);
 let envTaskStates = $state<Map<string, TaskState>>(new Map());
 let envRestartHint = $state(false);
+let envInstallDone = $state(false);
+let envDownload = $state<Map<string, { received: number; total: number }>>(new Map());
+let envErrors = $state<string[]>([]);
+// Секундомер фазы задачи (чтобы установка не выглядела зависшей)
+let envPhaseStart = $state<Map<string, number>>(new Map());
+let envTick = $state(0);
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+
+function startTick() {
+  if (tickTimer) return;
+  tickTimer = setInterval(() => {
+    envTick += 1;
+  }, 1000);
+}
+
+function stopTick() {
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
+}
 let newSecrets = $state<Record<string, string> | null>(null);
 let secretCopied = $state<string | null>(null);
 let unlistenTc: (() => void) | null = null;
 let unlistenTcDone: (() => void) | null = null;
 let unlistenTcCheck: (() => void) | null = null;
 let envCheckProgress = $state<CheckProgressEvent[]>([]);
+let envSelectedIds = $state<Set<string>>(new Set());
 
 let analysisMode = $state(false);
 let analysisResult = $state<AnalysisReport | null>(null);
@@ -465,6 +487,11 @@ async function runEnvironmentCheck(silent = false) {
   try {
     const fresh = await tcCheckEnvironment(buildRequirements());
     envCheck = fresh;
+    envSelectedIds = new Set(
+      (fresh?.requirements ?? [])
+        .filter((r) => statusKind(r.status) !== "ok")
+        .map((r) => r.tool_id),
+    );
     console.log("[env] проверка завершена:", fresh?.requirements?.length, "требований");
   } catch (e) {
     console.error("[env] ОШИБКА проверки:", e);
@@ -481,6 +508,7 @@ async function goToEnvironment() {
   envLogs = [];
   envTaskStates = new Map();
   envInstalling = false;
+  stopTick();
   envCheckProgress = [];
   if (unlistenTcCheck) unlistenTcCheck();
   unlistenTcCheck = await listenCheckProgress(handleCheckProgress);
@@ -491,8 +519,23 @@ function handleCheckProgress(event: CheckProgressEvent) {
   envCheckProgress = [...envCheckProgress, event];
 }
 
-function missingTools(): ToolRequirement[] {
+function allMissingTools(): ToolRequirement[] {
   return envCheck?.requirements.filter((r) => statusKind(r.status) !== "ok") ?? [];
+}
+
+function selectedMissingTools(): ToolRequirement[] {
+  return allMissingTools().filter((r) => envSelectedIds.has(r.tool_id));
+}
+
+function toggleEnvTool(toolId: string) {
+  const next = new Set(envSelectedIds);
+  if (next.has(toolId)) next.delete(toolId);
+  else next.add(toolId);
+  envSelectedIds = next;
+}
+
+function selectAllEnvTools() {
+  envSelectedIds = new Set(allMissingTools().map((r) => r.tool_id));
 }
 
 async function startInstall() {
@@ -501,8 +544,9 @@ async function startInstall() {
   envError = null;
   envLogs = [];
   envTaskStates = new Map();
+  startTick();
   try {
-    envPlan = await tcBuildPlan(envCheck);
+    envPlan = await tcBuildPlan(envCheck, [...envSelectedIds]);
   } catch (e) {
     envError = String(e);
     envInstalling = false;
@@ -517,6 +561,7 @@ async function startInstall() {
   } catch (e) {
     envError = String(e);
     envInstalling = false;
+    stopTick();
   }
 }
 
@@ -525,14 +570,28 @@ function handleToolchainEvent(event: ToolchainEvent) {
   if (t === "TaskStarted") {
     envTaskStates.set(event.task_id, { Running: { phase: "Downloading" } });
     envTaskStates = new Map(envTaskStates);
+    envPhaseStart.set(event.task_id, Date.now());
+    envPhaseStart = new Map(envPhaseStart);
   }
   if (typeof t !== "object" || !t || Array.isArray(t)) return;
   if ("TaskPhaseChanged" in t) {
     envTaskStates.set(event.task_id, { Running: { phase: t.TaskPhaseChanged.phase } });
     envTaskStates = new Map(envTaskStates);
+    envPhaseStart.set(event.task_id, Date.now());
+    envPhaseStart = new Map(envPhaseStart);
   }
   if ("TaskProgress" in t) {
-    if (t.TaskProgress.line) envLogs = [...envLogs, t.TaskProgress.line];
+    const line = t.TaskProgress.line;
+    const dl = line.match(/^tc:dl (\d+) (-?\d+)$/);
+    if (dl) {
+      envDownload.set(event.task_id, { received: Number(dl[1]), total: Number(dl[2]) });
+      envDownload = new Map(envDownload);
+    } else if (line.startsWith("tc:error ")) {
+      envErrors = [...envErrors, `${event.tool_id}: ${line.slice("tc:error ".length)}`];
+      envLogs = [...envLogs, line];
+    } else {
+      envLogs = [...envLogs, line];
+    }
   }
   if ("TaskCompleted" in t) {
     envTaskStates.set(event.task_id, t.TaskCompleted.state);
@@ -546,10 +605,44 @@ function handleInstallDone(plan: InstallPlan) {
   }
   envTaskStates = new Map(envTaskStates);
   envInstalling = false;
+  envInstallDone = true;
+  stopTick();
   const installedCount = plan.tasks.filter((t) => taskStateKind(t.state) === "success").length;
   if (installedCount > 0) envRestartHint = true;
   fetchNewSecrets();
-  runEnvironmentCheck(true);
+}
+
+function formatMb(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb} MB`;
+}
+
+function downloadStatus(taskId: string): string {
+  const dl = envDownload.get(taskId);
+  if (!dl || dl.total <= 0) return "";
+  const percent = Math.min(100, Math.round((dl.received / dl.total) * 100));
+  return `${percent}% (${formatMb(Math.floor(dl.received / 1024 / 1024))} / ${formatMb(Math.floor(dl.total / 1024 / 1024))})`;
+}
+
+function dlPercent(taskId: string): number | null {
+  const dl = envDownload.get(taskId);
+  if (!dl || dl.total <= 0) return null;
+  return Math.min(100, Math.round((dl.received / dl.total) * 100));
+}
+
+function phaseElapsed(taskId: string, tick: number): string {
+  const started = envPhaseStart.get(taskId);
+  if (!started) return "…";
+  const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  if (secs < 60) return `${secs} с`;
+  return `${Math.floor(secs / 60)} мин ${secs % 60} с`;
+}
+
+async function recheckEnvironment() {
+  envInstallDone = false;
+  envPlan = null;
+  envErrors = [];
+  await runEnvironmentCheck(true);
 }
 
 async function fetchNewSecrets() {
@@ -1195,12 +1288,65 @@ function hasTauriFramework(): boolean {
           </div>
         {/if}
       {:else if envCheck}
+        {@const missingAll = allMissingTools()}
+        {@const missingSelected = selectedMissingTools()}
+        {#if envInstallDone && envPlan}
+          <div class="env-summary">
+            <span>Установлено: {envPlan.tasks.filter((t) => taskStateKind(t.state) === "success").length}/{envPlan.tasks.length}</span>
+            <span>Failed: {envPlan.tasks.filter((t) => taskStateKind(t.state) === "failed").length}</span>
+            {#if envErrors.length > 0}
+              <span class="env-warn">⚠ {envErrors.length} error{envErrors.length > 1 ? "s" : ""}</span>
+            {/if}
+          </div>
+          <div class="env-install">
+            <p class="group-label">Installation finished</p>
+            {#each envPlan.tasks as task}
+              {@const st = envTaskStates.get(task.task_id) ?? task.state}
+              <div class="env-row">
+                <span class="env-icon">
+                  {#if taskStateKind(st) === "success"}✅
+                  {:else if taskStateKind(st) === "failed"}❌
+                  {:else if taskStateKind(st) === "skipped"}⏭️
+                  {:else}•{/if}
+                </span>
+                <span class="env-name">{task.display}</span>
+                <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
+                <span
+                  class="env-status"
+                  class:ok={taskStateKind(st) === "success"}
+                  class:broken={taskStateKind(st) === "failed"}
+                  class:missing={taskStateKind(st) === "skipped"}
+                >{taskStateLabel(st)}</span>
+              </div>
+            {/each}
+            {#if envErrors.length > 0}
+              <details class="exec-full-log">
+                <summary>Errors ({envErrors.length})</summary>
+                <pre>{envErrors.join("\n")}</pre>
+              </details>
+            {/if}
+            {#if envLogs.length > 0}
+              <details class="exec-full-log">
+                <summary>Log ({envLogs.length} lines)</summary>
+                <pre>{envLogs.join("\n")}</pre>
+              </details>
+            {/if}
+          </div>
+          <div class="btn-row">
+            <button class="btn-back" onclick={back}>← Back</button>
+            <button class="btn-secondary" onclick={recheckEnvironment}>Перепроверить окружение</button>
+            <button class="btn-primary" onclick={() => doCreateProject(projectName)}>Продолжить</button>
+          </div>
+          {#if envRestartHint}
+            <p class="env-warn">💡 New tools were installed. Restart your open terminals and editors to pick up the updated PATH.</p>
+          {/if}
+        {:else}
         <div class="env-summary">
           <span>Ready: {envCheck.requirements.filter((r) => statusKind(r.status) === "ok").length}/{envCheck.requirements.length}</span>
-          {#if missingTools().length > 0}
-            <span>To install: {missingTools().length}</span>
+          {#if missingAll.length > 0}
+            <span>To install: {missingSelected.length}/{missingAll.length}</span>
           {/if}
-          <span>Download: {envCheck.total_size_mb} MB</span>
+          <span>Download: {missingSelected.reduce((sum, r) => sum + r.size_mb, 0)} MB</span>
           <span>Free space: {envCheck.free_space_mb} MB</span>
           {#if !envCheck.enough_space}
             <span class="env-warn">⚠ Not enough disk space</span>
@@ -1214,6 +1360,17 @@ function hasTauriFramework(): boolean {
           {#each envCheck.requirements as req}
             {@const kind = statusKind(req.status)}
             <div class="env-row" class:ok={kind === "ok"} class:update={kind === "update"} class:broken={kind === "broken"} class:missing={kind === "missing"}>
+              {#if kind === "ok"}
+                <span class="env-select">✅</span>
+              {:else}
+                <label class="env-select">
+                  <input
+                    type="checkbox"
+                    checked={envSelectedIds.has(req.tool_id)}
+                    onchange={() => toggleEnvTool(req.tool_id)}
+                  />
+                </label>
+              {/if}
               <span class="env-icon">{toolCategoryIcon(req.category)}</span>
               <span class="env-name">{req.display}</span>
               <span class="env-source">{req.source_description}</span>
@@ -1227,17 +1384,39 @@ function hasTauriFramework(): boolean {
             <p class="group-label">Installing…</p>
             {#each envPlan.tasks as task}
               {@const st = envTaskStates.get(task.task_id) ?? task.state}
-              <div class="env-row">
-                <span class="env-icon">
-                  {#if taskStateKind(st) === "running"}⏳
-                  {:else if taskStateKind(st) === "success"}✅
-                  {:else if taskStateKind(st) === "failed"}❌
-                  {:else if taskStateKind(st) === "skipped"}⏭️
-                  {:else}•{/if}
-                </span>
-                <span class="env-name">{task.display}</span>
-                <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
-                <span class="env-status">{taskStateLabel(st)}</span>
+              {@const kind = taskStateKind(st)}
+              {@const running = kind === "running" && "Running" in st}
+              {@const downloading = running && st.Running.phase === "Downloading"}
+              {@const pct = downloading ? dlPercent(task.task_id) : null}
+              {@const dl = envDownload.get(task.task_id)}
+              <div class="env-task">
+                <div class="env-row">
+                  <span class="env-icon">
+                    {#if kind === "running"}⏳
+                    {:else if kind === "success"}✅
+                    {:else if kind === "failed"}❌
+                    {:else if kind === "skipped"}⏭️
+                    {:else}•{/if}
+                  </span>
+                  <span class="env-name">{task.display}</span>
+                  <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
+                  <span class="env-status">
+                    {#if running}
+                      {#if downloading && pct !== null && dl}
+                        Скачивание… {pct}% ({formatMb(Math.floor(dl.received / 1024 / 1024))} / {formatMb(Math.floor(dl.total / 1024 / 1024))})
+                      {:else}
+                        <span class="spin" aria-hidden="true"></span> {taskStateLabel(st)} · {phaseElapsed(task.task_id, envTick)}
+                      {/if}
+                    {:else}
+                      {taskStateLabel(st)}
+                    {/if}
+                  </span>
+                </div>
+                {#if downloading && pct !== null}
+                  <div class="dl-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                    <div class="dl-fill" style="width: {pct}%"></div>
+                  </div>
+                {/if}
               </div>
             {/each}
             {#if envLogs.length > 0}
@@ -1257,10 +1436,13 @@ function hasTauriFramework(): boolean {
           <button class="btn-back" onclick={back} disabled={envInstalling}>← Back</button>
           {#if envInstalling}
             <button class="btn-secondary" onclick={cancelInstall}>Abort</button>
-          {:else if missingTools().length > 0}
-            <button class="btn-primary" onclick={startInstall}>
-              Install {missingTools().length} tool{missingTools().length > 1 ? "s" : ""}
+          {:else if missingAll.length > 0}
+            <button class="btn-primary" onclick={startInstall} disabled={missingSelected.length === 0}>
+              Install selected ({missingSelected.length})
             </button>
+            {#if missingSelected.length < missingAll.length}
+              <button class="btn-secondary" onclick={selectAllEnvTools}>Select all ({missingAll.length})</button>
+            {/if}
             <button class="btn-secondary" onclick={() => doCreateProject(projectName)}>Continue anyway</button>
           {:else}
             <button class="btn-primary" onclick={() => doCreateProject(projectName)}>🚀 Create Project</button>
@@ -1271,6 +1453,7 @@ function hasTauriFramework(): boolean {
           <p class="env-warn">
             💡 New tools were installed. Restart your open terminals and editors to pick up the updated PATH.
           </p>
+        {/if}
         {/if}
       {:else}
         <p class="error">
@@ -1454,6 +1637,8 @@ function hasTauriFramework(): boolean {
 .env-row.update { border-left-color: #f39c12; }
 .env-row.broken { border-left-color: #e74c3c; }
 .env-row.missing { border-left-color: #e74c3c; opacity: 0.8; }
+.env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.env-select input { accent-color: #6c5ce7; cursor: pointer; width: 15px; height: 15px; }
 .env-icon { min-width: 20px; font-size: 0.95rem; }
 .env-name { font-weight: 600; font-size: 0.9rem; flex: 0 0 auto; }
 .env-source { font-size: 0.75rem; color: #888; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1492,6 +1677,11 @@ function hasTauriFramework(): boolean {
 .env-progress-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.75rem; }
 .env-progress-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
 .env-progress-row .env-status { margin-left: auto; }
+.env-task { display: flex; flex-direction: column; gap: 0.2rem; }
+.dl-bar { height: 6px; border-radius: 3px; background: #2a2f3a; overflow: hidden; margin-left: 1.9rem; margin-right: 0.4rem; }
+.dl-fill { height: 100%; background: linear-gradient(90deg, #4f8cff, #7c5cff); border-radius: 3px; transition: width 0.3s ease; }
+.spin { display: inline-block; width: 0.8rem; height: 0.8rem; border: 2px solid #444; border-top-color: #4f8cff; border-radius: 50%; animation: tc-spin 0.8s linear infinite; vertical-align: -2px; margin-right: 0.3rem; }
+@keyframes tc-spin { to { transform: rotate(360deg); } }
 .analysis-panel { margin-bottom: 2rem; }
 .analysis-summary { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
 .analysis-section { margin: 0.75rem 0; }

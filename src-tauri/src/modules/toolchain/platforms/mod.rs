@@ -74,9 +74,11 @@ pub(crate) async fn run_command(program: &str, args: &[String]) -> Result<String
 
 /// Приводит (program, args) к виду, который реально запустится на
 /// текущей ОС. На Windows бинарники вида *.cmd/*.bat (npm, npx, code,
-/// pnpm...) нельзя запустить напрямую — CreateProcess понимает только
-/// .exe, а `npm` в PATH на деле npm.cmd. Решение: находим полный путь
-/// (which умеет PATHEXT) и оборачиваем запуск в `cmd /d /c`.
+/// pnpm...) нельзя запустить по короткому имени через CreateProcess —
+/// он резолвит PATH только по расширению .exe. Решение: находим
+/// полный путь (which умеет PATHEXT) и передаём его как есть —
+/// std::process на Windows сам оборачивает .cmd/.bat в cmd.exe /c,
+/// и путь с пробелами при этом не ломается.
 ///
 /// На Linux/macOS команда возвращается без изменений (POSIX-шеллы
 /// разрешают скрипты через shebang).
@@ -84,26 +86,7 @@ pub fn resolve_command(program: &str, args: &[String]) -> (String, Vec<String>) 
     #[cfg(target_os = "windows")]
     {
         if let Ok(path) = which::which(program) {
-            let full = path.to_string_lossy();
-            if full.to_ascii_lowercase().ends_with(".cmd")
-                || full.to_ascii_lowercase().ends_with(".bat")
-            {
-                // Вся командная строка — одним аргументом cmd.exe:
-                // cmd /c снимает внешние кавычки и парсит остаток
-                // (стандартное поведение для «"путь" аргументы»).
-                let mut cmd_line = format!("\"{full}\"");
-                for a in args {
-                    if a.contains(' ') || a.contains('\t') || a.contains('"') {
-                        cmd_line.push_str(&format!(" \"{}\"", a.replace('"', "\\\"")));
-                    } else {
-                        cmd_line.push_str(&format!(" {a}"));
-                    }
-                }
-                return (
-                    "cmd".to_string(),
-                    vec!["/d".to_string(), "/c".to_string(), cmd_line],
-                );
-            }
+            return (path.to_string_lossy().into_owned(), args.to_vec());
         }
     }
     (program.to_string(), args.to_vec())
@@ -181,10 +164,9 @@ mod tests {
 
     #[test]
     fn resolve_command_keeps_exe_programs() {
-        // cmd.exe — настоящий бинарь: никакой обёртки не нужно.
-        let (program, args) = resolve_command("cmd", &["/c".to_string(), "echo".to_string()]);
-        assert_eq!(program, "cmd");
-        assert_eq!(args, vec!["/c".to_string(), "echo".to_string()]);
+        // cmd.exe — настоящий бинарь: which вернёт полный путь, и это ок.
+        let (program, _args) = resolve_command("cmd", &["/c".to_string(), "echo".to_string()]);
+        assert!(program.to_ascii_lowercase().ends_with("cmd.exe"), "{program}");
     }
 
     #[test]
@@ -200,8 +182,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn resolve_command_wraps_cmd_shims_in_cmd() {
-        // Генерируем временный *.cmd-«шим» в PATH и проверяем обёртку.
+    fn resolve_command_returns_full_path_of_cmd_shims() {
+        // Генерируем временный *.cmd-«шим» в PATH и проверяем, что
+        // resolve_command вернёт его полный путь (std::process сам
+        // оборачивает .cmd в cmd /c при запуске).
         // Всё под PATH_TEST_LOCK: мутация PATH видна всему процессу.
         let _guard = PATH_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("tc-shim-test-{}", std::process::id()));
@@ -213,12 +197,8 @@ mod tests {
         std::env::set_var("PATH", format!("{};{old_path}", dir.to_string_lossy()));
 
         let (program, args) = resolve_command("tc-fake-tool", &["--version".to_string()]);
-        assert_eq!(program, "cmd");
-        assert!(args.first().map(|a| a.as_str()) == Some("/d"));
-        assert_eq!(
-            args[2].split_whitespace().next().unwrap().trim_matches('"'),
-            shim.to_string_lossy()
-        );
+        assert_eq!(program, shim.to_string_lossy());
+        assert_eq!(args, vec!["--version".to_string()]);
 
         std::env::set_var("PATH", old_path);
         let _ = std::fs::remove_dir_all(&dir);

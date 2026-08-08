@@ -31,8 +31,11 @@ export function checkEnvironment(
   return invoke("tc_check_environment", { requirements });
 }
 
-export function buildInstallPlan(check: EnvironmentCheck): Promise<InstallPlan> {
-  return invoke("tc_build_install_plan", { check });
+export function buildInstallPlan(
+  check: EnvironmentCheck,
+  selectedToolIds?: string[],
+): Promise<InstallPlan> {
+  return invoke("tc_build_install_plan", { check, selectedToolIds });
 }
 
 export function runInstall(plan: InstallPlan): Promise<void> {

@@ -73,14 +73,19 @@ pub struct PipedResult {
     /// true — процесс убит из-за запрошенной отмены
     pub aborted: bool,
     pub code: i32,
+    /// Последняя строка вывода с префиксом `tc:error ` — причина
+    /// сбоя, написанная самим скриптом (например «404 Not Found»
+    /// или «не найден: winget»).
+    pub error_line: Option<String>,
 }
 
 impl PipedResult {
-    fn from_status(status: std::process::ExitStatus, aborted: bool) -> Self {
+    fn from_status(status: std::process::ExitStatus, aborted: bool, error_line: Option<String>) -> Self {
         PipedResult {
             success: !aborted && status.success(),
             aborted,
             code: status.code().unwrap_or(-1),
+            error_line,
         }
     }
 }
@@ -91,6 +96,7 @@ impl PipedResult {
 
 /// Читает поток построчно и шлёт каждую непустую строку как
 /// TaskProgress. Прерывается по флагу отмены (aborted = true).
+/// Возвращает (aborted, последняя строка с префиксом `tc:error`).
 async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
     reader: BufReader<R>,
     sink: Arc<dyn EventSink>,
@@ -99,13 +105,17 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
     task_id: String,
     tool_id: String,
     abort: Arc<AtomicBool>,
-) -> bool {
+) -> (bool, Option<String>) {
     let mut aborted = false;
+    let mut error_line: Option<String> = None;
     let mut lines = reader.lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
+        }
+        if let Some(msg) = line.strip_prefix("tc:error ") {
+            error_line = Some(msg.to_string());
         }
         sink.emit(event(
             ToolchainEventType::TaskProgress { line },
@@ -119,7 +129,7 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
             break;
         }
     }
-    aborted
+    (aborted, error_line)
 }
 
 // ------------------------------------------------------------
@@ -156,32 +166,25 @@ pub async fn piped_run(
         }
     };
 
-    let mut readers = tokio::task::JoinSet::new();
-    // stdout и stderr читаются параллельно (разные типы потоков, поэтому
-    // два отдельных блока и одна общая функция stream_lines).
-    let mut stream = |reader: BufReader<tokio::process::ChildStdout>| {
-        let sink = Arc::clone(sink);
-        let task_id = task_id.to_string();
-        let tool_id = tool_id.to_string();
-        let abort = Arc::clone(&abort);
-        readers.spawn(async move {
-            stream_lines(reader, sink, index, total, task_id, tool_id, abort).await
-        });
-    };
+    let mut readers: tokio::task::JoinSet<(bool, Option<String>)> = tokio::task::JoinSet::new();
+    // stdout и stderr читаются параллельно (разные типы потоков).
     if let Some(out) = child.stdout.take() {
-        stream(BufReader::new(out));
-    }
-    let mut stream_err = |reader: BufReader<tokio::process::ChildStderr>| {
         let sink = Arc::clone(sink);
         let task_id = task_id.to_string();
         let tool_id = tool_id.to_string();
         let abort = Arc::clone(&abort);
         readers.spawn(async move {
-            stream_lines(reader, sink, index, total, task_id, tool_id, abort).await
+            stream_lines(BufReader::new(out), sink, index, total, task_id, tool_id, abort).await
         });
-    };
+    }
     if let Some(err) = child.stderr.take() {
-        stream_err(BufReader::new(err));
+        let sink = Arc::clone(sink);
+        let task_id = task_id.to_string();
+        let tool_id = tool_id.to_string();
+        let abort = Arc::clone(&abort);
+        readers.spawn(async move {
+            stream_lines(BufReader::new(err), sink, index, total, task_id, tool_id, abort).await
+        });
     }
 
     // Флаг отмены опрашивается второстепенной задачей: сам piped_run
@@ -201,6 +204,7 @@ pub async fn piped_run(
     });
 
     let mut aborted = false;
+    let mut error_line: Option<String> = None;
     loop {
         tokio::select! {
             _ = abort_rx.recv() => {
@@ -209,9 +213,12 @@ pub async fn piped_run(
                 break;
             }
             joined = readers.join_next() => {
-                if joined.is_none() {
+                match joined {
+                    // Читатель завершился: забираем его tc:error-строку.
+                    Some(Ok((_, Some(line)))) => error_line = Some(line),
+                    Some(_) => {}
                     // все читатели закрылись — процесс завершился
-                    break;
+                    None => break,
                 }
             }
         }
@@ -226,7 +233,7 @@ pub async fn piped_run(
         Ok(s) => s,
         Err(e) => return Err(format!("Ошибка ожидания процесса: {e}")),
     };
-    Ok(PipedResult::from_status(status, aborted))
+    Ok(PipedResult::from_status(status, aborted, error_line))
 }
 
 // ------------------------------------------------------------
@@ -285,6 +292,12 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Скачивает URL во временный файл. Прогресс уходит как строки
 /// `tc:dl <получено> <всего байт>` (всего может быть -1, если не
 /// известно) — фронтенд парсит их из TaskProgress.
+///
+/// Не используем WebClient.DownloadFile: его событие
+/// DownloadProgressChanged в PowerShell 5.1 доставляется только
+/// ПОСЛЕ завершения синхронного вызова — юзер видел бы «мнимую
+/// скачку» без прогресса. Вместо этого читаем поток чанками
+/// через HttpClient и выводим tc:dl на каждый чанк.
 pub async fn download(
     url: &str,
     dest: &Path,
@@ -296,41 +309,59 @@ pub async fn download(
     abort: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let script = format!(
-        r#"$wc = New-Object System.Net.WebClient
-$wc.DownloadProgressChanged += {{
-  param($s, $e)
-  if ($e.TotalBytesToReceive -gt 0) {{
-    Write-Output "tc:dl $($e.BytesReceived) $($e.TotalBytesToReceive)"
-  }} else {{
-    Write-Output "tc:dl $($e.BytesReceived) -1"
-  }}
-}}
+        r#"$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Net.Http
+$client = New-Object System.Net.Http.HttpClient
+$client.Timeout = [TimeSpan]::FromMinutes(30)
+$client.DefaultRequestHeaders.Add('User-Agent', 'StackPilot/0.1 (toolchain installer)')
 try {{
-    $wc.DownloadFile({0}, {1})
-    Write-Output "tc:dl done"
-}} catch [System.Net.WebException] {{
-    $resp = $_.Exception.Response
-    if ($resp -and $resp.StatusCode -eq "NotFound") {{
-        Write-Output "tc:error 404"
-        Exit 404
-    }} else {{
-        Write-Output "tc:error $($_.Exception.Message)"
-        Exit 1
+    $resp = $client.GetAsync({0}, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+    if (-not $resp.IsSuccessStatusCode) {{
+        Write-Output "tc:error HTTP $([int]$resp.StatusCode) для {0}"
+        exit $([int]$resp.StatusCode)
     }}
+    $stream = $resp.Content.ReadAsStreamAsync().Result
+    $file = [System.IO.File]::Create({1})
+    $buffer = New-Object byte[] 262144
+    $received = [long]0
+    $totalBytes = [long]0
+    if ($resp.Content.Headers.ContentLength) {{
+        $totalBytes = [long]$resp.Content.Headers.ContentLength
+    }}
+    $lastPct = -1
+    try {{
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
+            $file.Write($buffer, 0, $read)
+            $received += $read
+            if ($totalBytes -gt 0) {{
+                $pct = [int]($received * 100 / $totalBytes)
+                if ($pct -ne $lastPct) {{
+                    Write-Output "tc:dl $received $totalBytes"
+                    $lastPct = $pct
+                }}
+            }} else {{
+                Write-Output "tc:dl $received -1"
+            }}
+        }}
+        Write-Output "tc:dl $received $totalBytes"
+    }} finally {{
+        $file.Close()
+        $stream.Dispose()
+        $resp.Dispose()
+    }}
+    Write-Output "tc:dl done"
 }} catch {{
-    Write-Output "tc:error $($_.Exception.Message)"
-    Exit 1
+    Write-Output "tc:error $($_.Exception.InnerException.Message)"
+    exit 1
 }}
 "#,
         ps_quote(url),
         ps_quote(&dest.to_string_lossy())
     );
 
-
     let result = timeout(
         DOWNLOAD_TIMEOUT,
-run_tool_script(tool_id, &script, Some(task_id), index,
- total, sink, abort),
+        run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort),
     )
     .await
     .map_err(|_| format!("Скачивание {url} превысило лимит времени"))?;
@@ -338,8 +369,12 @@ run_tool_script(tool_id, &script, Some(task_id), index,
     let res = result?;
     if res.success {
         Ok(())
-    } else if res.code == 404 {
-        Err(format!("Ошибка 404 Not Found для {url}"))
+    } else if let Some(line) = res.error_line {
+        if line.starts_with("HTTP 404") {
+            Err(format!("Ошибка 404 Not Found для {url}"))
+        } else {
+            Err(format!("Скачивание {url}: {line}"))
+        }
     } else {
         Err(format!("Скачивание {url} завершилось с кодом {}", res.code))
     }
@@ -397,23 +432,38 @@ pub async fn run_elevated(
         r#"$out = {}
 $err = {}
 $args = {}
-$p = Start-Process -FilePath {} -ArgumentList $args -Verb RunAs -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+if (-not (Test-Path -LiteralPath {})) {{
+  Write-Output "tc:error не найден: {}"
+  Exit 2
+}}
+try {{
+  $p = Start-Process -FilePath {} -ArgumentList $args -Verb RunAs -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+}} catch {{
+  Write-Output "tc:error $($_.Exception.Message)"
+  Exit 1
+}}
 Write-Output "tc:uac exit $($p.ExitCode)"
 "#,
         ps_quote(&out.to_string_lossy()),
         ps_quote(&err.to_string_lossy()),
         ps_quote(&arg_shell),
         ps_quote(&program),
+        ps_quote(&program),
+        ps_quote(&program),
     );
 
     let res = run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await?;
 
-    // Стримим перехваченный вывод установщика.
+    // Стримим перехваченный вывод установщика; заодно ловим tc:error.
+    let mut error_line: Option<String> = None;
     for (path, label) in [(out, "stdout"), (err, "stderr")] {
         if let Ok(content) = std::fs::read_to_string(&path) {
             for line in content.lines() {
                 let line = line.trim();
                 if !line.is_empty() {
+                    if let Some(msg) = line.strip_prefix("tc:error ") {
+                        error_line = Some(msg.to_string());
+                    }
                     sink.emit(event(
                         ToolchainEventType::TaskProgress {
                             line: format!("[{label}] {line}"),
@@ -429,6 +479,10 @@ Write-Output "tc:uac exit $($p.ExitCode)"
         let _ = std::fs::remove_file(&path);
     }
 
+    let mut res = res;
+    if res.error_line.is_none() {
+        res.error_line = error_line;
+    }
     Ok(res)
 }
 
@@ -501,6 +555,28 @@ mod tests {
             .expect("отмена должна завершить piped_run быстро");
         let res = res.unwrap();
         assert!(res.aborted, "процесс должен быть помечен как отменённый");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn piped_run_captures_error_line() {
+        // Скрипт печатает tc:error и выходит с ненулевым кодом —
+        // причина сбоя должна попасть в PipedResult.error_line.
+        // PowerShell (как в проде): Write-Output не добавляет кавычек.
+        let sink = Arc::new(TestSink::default());
+        let trait_sink: Arc<dyn EventSink> = sink.clone();
+        let args = vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            "Write-Output 'tc:error test-boom'; exit 3".to_string(),
+        ];
+        let res = piped_run("powershell", &args, 0, 1, "t", "tool", &trait_sink, no_abort())
+            .await
+            .unwrap();
+
+        assert!(!res.success);
+        assert_eq!(res.code, 3);
+        assert_eq!(res.error_line.as_deref(), Some("test-boom"));
     }
 
     #[test]

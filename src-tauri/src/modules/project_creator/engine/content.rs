@@ -72,17 +72,9 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                 depends_on: Vec::new(),
             }),
 
-            "mongodb" => services.push(DockerService {
-                name: "mongodb".into(),
-                image: "mongo:7".into(),
-                ports: vec!["27017:27017".into()],
-                environment: vec![
-                    ("MONGO_INITDB_ROOT_USERNAME".into(), "root".into()),
-                    ("MONGO_INITDB_ROOT_PASSWORD".into(), "example".into()),
-                ],
-                volumes: Vec::new(),
-                depends_on: Vec::new(),
-            }),
+            // "mongodb" не добавляем в docker: toolchain ставит mongod локально,
+            // и docker-контейнер на порту 27017 будет конфликтовать с ним,
+            // а MONGODB_URI в .env.example указывает на localhost.
 
             "mysql" => services.push(DockerService {
                 name: "mysql".into(),
@@ -603,7 +595,6 @@ pub fn generate_docker_compose(services: &[DockerService], project_name: &str, a
             match service.name.as_str() {
                 "postgres" => result.push_str("      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname\n"),
                 "redis" => result.push_str("      - REDIS_URL=redis://redis:6379/0\n"),
-                "mongodb" => result.push_str("      - MONGODB_URI=mongodb://mongodb:27017\n"),
                 _ => {}
             }
         }
