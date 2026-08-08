@@ -700,6 +700,7 @@ mod tests {
             bundled_with: None,
             health_checks: vec![],
             notes: None,
+            manual_install: None,
         }
     }
 

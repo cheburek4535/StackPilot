@@ -11,6 +11,8 @@ import {
   previewProjectRecipe,
   startProjectExecution,
   checkFolderExists,
+  getHostPlatform,
+  validateProjectStack,
 } from "$lib/modules/project_creator/api";
 import type {
   WizardTreeData,
@@ -26,6 +28,7 @@ import type {
   ExecutionEventType,
   StepStatus,
   RecipePreview,
+  StackIssue,
 } from "$lib/modules/project_creator/types";
 import {
   checkEnvironment as tcCheckEnvironment,
@@ -52,6 +55,7 @@ import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/mod
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
 let session = $state<WizardSession | null>(null);
+let hostOs = $state<string>("windows");
 
 let selectedType = $state<ProjectTypeDef | null>(null);
 let backendLang = $state<string | null>(null);
@@ -123,6 +127,7 @@ let folderExists = $state(false);
 let folderCheckPending = $state(false);
 let showConflictDialog = $state(false);
 let conflictResolvedFolder = $state<string | null>(null);
+let stackIssues = $state<StackIssue[]>([]);
 
 /** Full path inside which project will be created */
 function effectiveProjectPath(): string | null {
@@ -259,6 +264,11 @@ onMount(async () => {
     status = "error";
     console.error(e);
   }
+  try {
+    hostOs = await getHostPlatform();
+  } catch (e) {
+    console.error("cannot detect host OS:", e);
+  }
 });
 
 onDestroy(() => {
@@ -338,31 +348,57 @@ function frameworksForSelection(): FrameworkDef[] {
   return tree.frameworks.filter((f) => ids.has(f.id));
 }
 
-/** Frameworks that are blocked because a conflicting framework is already selected */
-function conflictedFrameworkIds(): Set<string> {
-  const conflicted = new Set<string>();
-  for (const fwId of selectedFrameworks) {
-    const fw = tree?.frameworks.find((f) => f.id === fwId);
-    if (fw?.conflicts) {
-      for (const c of fw.conflicts) conflicted.add(c);
+/** Язык недоступен на этой ОС? Возвращает причину блокировки или null */
+function languageBlockReason(lang: LanguageDef): string | null {
+  if (lang.platforms?.length && !lang.platforms.includes(hostOs)) {
+    return `Available only on ${lang.platforms.join(", ")}`;
+  }
+  return null;
+}
+
+/**
+ * Причина, по которой фреймворк нельзя выбрать (или null):
+ * платформа, конфликт или превышение лимита стека.
+ * Лимиты: максимум 1 backend-фреймворк + максимум 1 прикладной.
+ */
+function frameworkBlockReason(fwId: string): string | null {
+  const fw = tree?.frameworks.find((f) => f.id === fwId);
+  if (!fw) return null;
+  if (fw.platforms?.length && !fw.platforms.includes(hostOs)) {
+    return `Available only on ${fw.platforms.join(", ")}`;
+  }
+  if (selectedFrameworks.includes(fwId)) return null;
+
+  // Конфликты — обе стороны
+  for (const selId of selectedFrameworks) {
+    const sel = tree?.frameworks.find((f) => f.id === selId);
+    if (sel?.conflicts?.includes(fwId)) return `Incompatible with ${sel.label}`;
+  }
+  for (const c of fw.conflicts ?? []) {
+    if (selectedFrameworks.includes(c)) {
+      const cFw = tree?.frameworks.find((f) => f.id === c);
+      return `Incompatible with ${cFw?.label ?? c}`;
     }
   }
-  // Also check reverse: if a not-selected framework conflicts with a selected one
-  for (const fw of tree?.frameworks ?? []) {
-    if (selectedFrameworks.includes(fw.id)) continue;
-    for (const c of (fw.conflicts ?? [])) {
-      if (selectedFrameworks.includes(c)) {
-        conflicted.add(fw.id);
-      }
-    }
+
+  // Лимиты стека
+  const selectedKinds = selectedFrameworks
+    .map((id) => tree?.frameworks.find((f) => f.id === id)?.kind)
+    .filter((k): k is string => !!k);
+  if (fw.kind === "backend" && selectedKinds.includes("backend")) {
+    return "Only one backend framework is allowed";
   }
-  return conflicted;
+  if (fw.kind !== "backend" && selectedKinds.some((k) => k !== "backend")) {
+    return "Only one app framework is allowed (frontend/mobile/desktop/extension/bot/game)";
+  }
+  return null;
 }
 
 function toggleFramework(id: string) {
   if (selectedFrameworks.includes(id)) {
     selectedFrameworks = selectedFrameworks.filter((f) => f !== id);
   } else {
+    if (frameworkBlockReason(id)) return;
     // When selecting a conflicting framework, deselect current conflicts first
     const fw = tree?.frameworks.find((f) => f.id === id);
     if (fw?.conflicts) {
@@ -450,6 +486,15 @@ async function confirmAll() {
   const path = effectiveProjectPath();
   if (!path) return;
 
+  // Валидация стека на бэкенде (лимиты, платформы, конфликты, языки)
+  try {
+    const issues = await validateProjectStack(allSelectedLangs(), selectedFrameworks);
+    stackIssues = issues;
+    if (issues.some((i) => i.severity === "Error")) return;
+  } catch {
+    // если валидация недоступна — генерацию заблокирует бэкенд
+  }
+
   // Check if folder exists and show conflict dialog if needed
   folderCheckPending = true;
   try {
@@ -489,7 +534,7 @@ async function runEnvironmentCheck(silent = false) {
     envCheck = fresh;
     envSelectedIds = new Set(
       (fresh?.requirements ?? [])
-        .filter((r) => statusKind(r.status) !== "ok")
+        .filter((r) => statusKind(r.status) !== "ok" && statusKind(r.status) !== "manual")
         .map((r) => r.tool_id),
     );
     console.log("[env] проверка завершена:", fresh?.requirements?.length, "требований");
@@ -520,7 +565,13 @@ function handleCheckProgress(event: CheckProgressEvent) {
 }
 
 function allMissingTools(): ToolRequirement[] {
-  return envCheck?.requirements.filter((r) => statusKind(r.status) !== "ok") ?? [];
+  // Manual-тулы (движки, SDK) не «не хватает» — они ставятся вручную,
+  // в список установки не попадают.
+  return (
+    envCheck?.requirements.filter(
+      (r) => statusKind(r.status) !== "ok" && statusKind(r.status) !== "manual",
+    ) ?? []
+  );
 }
 
 function selectedMissingTools(): ToolRequirement[] {
@@ -789,6 +840,7 @@ function resetAll() {
   frontendLang = null;
   selectedFrameworks = [];
   selectedTools = [];
+  stackIssues = [];
   testing = true;
   git = true;
   vscode = true;
@@ -949,9 +1001,12 @@ function hasTauriFramework(): boolean {
       </p>
       <div class="card-grid lang-grid">
         {#each backendLangs() as lang}
+          {@const blockedReason = languageBlockReason(lang)}
           <button
             class="card"
             class:selected={backendLang === lang.id}
+            class:blocked={blockedReason !== null}
+            disabled={blockedReason !== null}
             onclick={() => pickBackendLang(lang.id)}
           >
             {#if lang.icon}
@@ -960,6 +1015,9 @@ function hasTauriFramework(): boolean {
               <span class="card-img-placeholder-sm">▣</span>
             {/if}
             <h3>{lang.label}</h3>
+            {#if blockedReason}
+              <span class="conflict-badge">{blockedReason}</span>
+            {/if}
           </button>
         {/each}
         <!-- Skip option -->
@@ -988,9 +1046,12 @@ function hasTauriFramework(): boolean {
       </p>
       <div class="card-grid lang-grid">
         {#each frontendLangs() as lang}
+          {@const blockedReason = languageBlockReason(lang)}
           <button
             class="card"
             class:selected={frontendLang === lang.id}
+            class:blocked={blockedReason !== null}
+            disabled={blockedReason !== null}
             onclick={() => pickFrontendLang(lang.id)}
           >
             {#if lang.icon}
@@ -1001,6 +1062,9 @@ function hasTauriFramework(): boolean {
             <h3>{lang.label}</h3>
             {#if lang.category === "static"}
               <p>Plain HTML, CSS & JS — no framework</p>
+            {/if}
+            {#if blockedReason}
+              <span class="conflict-badge">{blockedReason}</span>
             {/if}
           </button>
         {/each}
@@ -1023,7 +1087,7 @@ function hasTauriFramework(): boolean {
          ================================================================ -->
     {#if step === 3}
       {@const availFrameworks = frameworksForSelection()}
-      {@const conflicted = conflictedFrameworkIds()}
+      {@const fwReasons = Object.fromEntries(availFrameworks.map((f) => [f.id, frameworkBlockReason(f.id) ?? ""]))}
       <p class="prompt">Select frameworks</p>
       <p class="hint">
         {#if backendLang && frontendLang}
@@ -1039,7 +1103,7 @@ function hasTauriFramework(): boolean {
       </p>
       <div class="card-grid fw-grid">
         {#each availFrameworks as fw}
-          {@const blocked = conflicted.has(fw.id)}
+          {@const blocked = fwReasons[fw.id] !== ""}
           <button
             class="card"
             class:selected={selectedFrameworks.includes(fw.id)}
@@ -1055,7 +1119,7 @@ function hasTauriFramework(): boolean {
             <h3>{fw.label}</h3>
             <p>{fw.description}</p>
             {#if blocked}
-              <span class="conflict-badge">Incompatible with current selection</span>
+              <span class="conflict-badge">{fwReasons[fw.id]}</span>
             {/if}
           </button>
         {/each}
@@ -1251,6 +1315,16 @@ function hasTauriFramework(): boolean {
         </div>
       </div>
 
+      {#if stackIssues.length > 0}
+        <div class="stack-issues">
+          {#each stackIssues as issue}
+            <p class={issue.severity === "Error" ? "error" : "env-warn"}>
+              {issue.severity === "Error" ? "⛔" : "⚠️"} {issue.message}
+            </p>
+          {/each}
+        </div>
+      {/if}
+
       <div class="btn-row">
         <button class="btn-back" onclick={back}>← Back</button>
         <button
@@ -1342,7 +1416,7 @@ function hasTauriFramework(): boolean {
           {/if}
         {:else}
         <div class="env-summary">
-          <span>Ready: {envCheck.requirements.filter((r) => statusKind(r.status) === "ok").length}/{envCheck.requirements.length}</span>
+          <span>Ready: {envCheck.requirements.filter((r) => statusKind(r.status) === "ok" || statusKind(r.status) === "manual").length}/{envCheck.requirements.length}</span>
           {#if missingAll.length > 0}
             <span>To install: {missingSelected.length}/{missingAll.length}</span>
           {/if}
@@ -1359,9 +1433,18 @@ function hasTauriFramework(): boolean {
         <div class="env-list">
           {#each envCheck.requirements as req}
             {@const kind = statusKind(req.status)}
-            <div class="env-row" class:ok={kind === "ok"} class:update={kind === "update"} class:broken={kind === "broken"} class:missing={kind === "missing"}>
+            <div
+              class="env-row"
+              class:ok={kind === "ok"}
+              class:update={kind === "update"}
+              class:broken={kind === "broken"}
+              class:missing={kind === "missing"}
+              class:manual={kind === "manual"}
+            >
               {#if kind === "ok"}
                 <span class="env-select">✅</span>
+              {:else if kind === "manual"}
+                <span class="env-select manual-badge" title="Устанавливается вручную, автоматической установки нет">⚙️</span>
               {:else}
                 <label class="env-select">
                   <input
@@ -1374,7 +1457,14 @@ function hasTauriFramework(): boolean {
               <span class="env-icon">{toolCategoryIcon(req.category)}</span>
               <span class="env-name">{req.display}</span>
               <span class="env-source">{req.source_description}</span>
-              <span class="env-status" class:ok={kind === "ok"} class:update={kind === "update"} class:broken={kind === "broken"} class:missing={kind === "missing"}>{statusLabel(req.status)}</span>
+              <span
+                class="env-status"
+                class:ok={kind === "ok"}
+                class:update={kind === "update"}
+                class:broken={kind === "broken"}
+                class:missing={kind === "missing"}
+                class:manual={kind === "manual"}
+              >{statusLabel(req.status)}</span>
             </div>
           {/each}
         </div>
@@ -1385,7 +1475,7 @@ function hasTauriFramework(): boolean {
             {#each envPlan.tasks as task}
               {@const st = envTaskStates.get(task.task_id) ?? task.state}
               {@const kind = taskStateKind(st)}
-              {@const running = kind === "running" && "Running" in st}
+              {@const running = kind === "running" && typeof st === "object" && "Running" in st}
               {@const downloading = running && st.Running.phase === "Downloading"}
               {@const pct = downloading ? dlPercent(task.task_id) : null}
               {@const dl = envDownload.get(task.task_id)}
@@ -1577,6 +1667,8 @@ function hasTauriFramework(): boolean {
 .card:hover { border-color: #6c5ce7; background: #22224a; }
 .card.selected { border-color: #6c5ce7; background: #2d2d5e; box-shadow: 0 0 0 2px #6c5ce7; }
 .card.blocked { opacity: 0.35; cursor: not-allowed; border-color: #333; background: #15152e; }
+.stack-issues { border: 1px solid rgba(231, 76, 60, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 1rem; background: #2a1220; }
+.stack-issues p { margin: 0.3rem 0; font-size: 0.85rem; }
 .card.card-skip { border-style: dashed; border-color: #555; }
 .card-img { width: 56px; height: 56px; object-fit: contain; }
 .card-img-sm { width: 40px; height: 40px; object-fit: contain; }
@@ -1637,8 +1729,10 @@ function hasTauriFramework(): boolean {
 .env-row.update { border-left-color: #f39c12; }
 .env-row.broken { border-left-color: #e74c3c; }
 .env-row.missing { border-left-color: #e74c3c; opacity: 0.8; }
+.env-row.manual { border-left-color: #f39c12; }
 .env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .env-select input { accent-color: #6c5ce7; cursor: pointer; width: 15px; height: 15px; }
+.manual-badge { cursor: help; font-size: 0.95rem; }
 .env-icon { min-width: 20px; font-size: 0.95rem; }
 .env-name { font-weight: 600; font-size: 0.9rem; flex: 0 0 auto; }
 .env-source { font-size: 0.75rem; color: #888; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1647,6 +1741,7 @@ function hasTauriFramework(): boolean {
 .env-status.update { color: #f39c12; }
 .env-status.broken { color: #e74c3c; }
 .env-status.missing { color: #e74c3c; }
+.env-status.manual { color: #f39c12; }
 .env-install { margin-top: 0.5rem; }
 .create-btn { font-size: 1.1rem; padding: 0.75rem 2rem; }
 .project-name-section { border: 1px solid #333; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; background: #15152e; }

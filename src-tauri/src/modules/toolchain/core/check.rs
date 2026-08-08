@@ -11,6 +11,10 @@
 //     (msvc-build-tools на Linux) — не требование;
 //   - Missing у тула, который идёт в комплекте с другим
 //     (npm bundled_with node) — не требование;
+//   - движки и SDK (manual_install) на ОС без источников — статус
+//     ManualInstall: честное предупреждение «установите вручную».
+//     Не блокирует проект, не учитывается в размере загрузки
+//     и администраторе (UpdateAvailable → Installed, PathBroken → warning);
 //   - всё остальное — требование со статусом.
 //
 // free_space_mb на этапе 2 всегда 0 (проверка диска — этап 5):
@@ -90,8 +94,34 @@ pub async fn run_check(
                 });
             }
 
+            // Движки и SDK (manual_install) ставятся только вручную.
+            // На ОС без источников нормализуем статус: Missing →
+            // честное предупреждение (не блокирует), UpdateAvailable →
+            // Installed (обновляется вручную, advisory-версии не важны),
+            // PathBroken → предупреждение (проба бинаря движка, который
+            // обычно не в PATH, — ложная тревога, а не поломка).
+            let os_sources = sources_for_os(&def, &os);
+            let status = if os_sources.is_empty() {
+                if let Some(reason) = &def.manual_install {
+                    match status {
+                        ToolStatus::Missing => ToolStatus::ManualInstall { reason: reason.clone() },
+                        ToolStatus::UpdateAvailable { installed, .. } => {
+                            ToolStatus::Installed { version: installed }
+                        }
+                        ToolStatus::PathBroken { reason } => ToolStatus::ManualInstall {
+                            reason: format!("Установка не подтвердилась: {reason}"),
+                        },
+                        other => other,
+                    }
+                } else {
+                    status
+                }
+            } else {
+                status
+            };
+
             // Тул не устанавливается на этой ОС — при отсутствии не требование.
-            if matches!(status, ToolStatus::Missing) && !def.installable() {
+            if matches!(status, ToolStatus::Missing) && os_sources.is_empty() {
                 continue;
             }
             // Тул входит в комплект другого (npm приходит с node) — не требование.
@@ -100,21 +130,24 @@ pub async fn run_check(
             }
 
             // Скачивать нужно только то, чего нет или что устарело.
-            if !status.is_ok() {
+            // ManualInstall ни откуда не скачивается — предупреждение.
+            if !status.is_ok() && !matches!(status, ToolStatus::ManualInstall { .. }) {
                 total_size_mb += def.size_mb as u64;
                 if def.needs_admin {
                     needs_admin_any = true;
                 }
             }
 
+            let is_manual = matches!(status, ToolStatus::ManualInstall { .. });
             let desc = source_description(&def);
             temp_requirements.push((index, ToolRequirement {
                 tool_id: def.id,
                 display: def.display,
                 category: def.category,
                 status,
-                size_mb: def.size_mb,
-                needs_admin: def.needs_admin,
+                // ManualInstall ни откуда не скачивается — размер 0.
+                size_mb: if is_manual { 0 } else { def.size_mb },
+                needs_admin: def.needs_admin && !is_manual,
                 source_description: desc,
             }));
         }
@@ -133,7 +166,10 @@ pub async fn run_check(
 
     
     let requirements: Vec<ToolRequirement> = temp_requirements.into_iter().map(|pair| pair.1).collect();
-    let all_ready = requirements.iter().all(|r| r.status.is_ok());
+    // ManualInstall — предупреждение, а не блокировка: проект можно создавать.
+    let all_ready = requirements.iter().all(|r| {
+        r.status.is_ok() || matches!(r.status, ToolStatus::ManualInstall { .. })
+    });
     let enough_space = free_space_mb == 0 || free_space_mb >= total_size_mb;
 
     EnvironmentCheck {
@@ -147,20 +183,28 @@ pub async fn run_check(
     }
 }
 
+/// Источники установки для конкретной ОС (порядок = приоритет).
+fn sources_for_os<'a>(def: &'a ToolDefinition, os: &str) -> &'a [InstallSource] {
+    match os {
+        "windows" => &def.sources.windows,
+        "linux" => &def.sources.linux,
+        "macos" => &def.sources.macos,
+        _ => &[],
+    }
+}
+
 /// Человекочитаемое описание способа установки на текущей ОС
 /// (берётся первый источник в порядке приоритета из tools.json).
 fn source_description(def: &ToolDefinition) -> String {
+    if def.manual_install.is_some() {
+        return "Устанавливается вручную".to_string();
+    }
     if !def.installable() {
         return "Отдельная установка не требуется".to_string();
     }
 
     let os = platforms::current_platform().os_name();
-    let sources: &[InstallSource] = match os.as_str() {
-        "windows" => &def.sources.windows,
-        "linux" => &def.sources.linux,
-        "macos" => &def.sources.macos,
-        _ => &[],
-    };
+    let sources = sources_for_os(def, &os);
 
     let Some(first) = sources.first() else {
         return "Установка на этой ОС не предусмотрена".to_string();
@@ -217,6 +261,7 @@ mod tests {
             bundled_with: None,
             health_checks: vec![],
             notes: None,
+            manual_install: None,
         }
     }
 
@@ -265,6 +310,33 @@ mod tests {
         let check = run_check(&[def], &["fake-bundled".to_string()], 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
+    }
+
+    #[tokio::test]
+    async fn missing_manual_install_tool_warns_without_blocking() {
+        // Движок вроде Unity: автоматической установки нет,
+        // но отчёт должен честно предупредить пользователя.
+        let mut def = fake_def("fake-engine");
+        def.sources = InstallSources::default();
+        def.manual_install = Some("Установите движок вручную с сайта".to_string());
+        def.needs_admin = true; // не должно влиять на needs_admin_any
+        def.size_mb = 5000; // не должно влиять на total_size_mb
+
+        let check = run_check(&[def], &["fake-engine".to_string()], 0, None).await;
+
+        assert_eq!(check.requirements.len(), 1);
+        let req = &check.requirements[0];
+        assert!(matches!(
+            &req.status,
+            ToolStatus::ManualInstall { reason } if reason == "Установите движок вручную с сайта"
+        ));
+        assert_eq!(req.size_mb, 0);
+        assert!(!req.needs_admin);
+
+        // Предупреждение не блокирует проект и не влияет на загрузку.
+        assert!(check.all_ready);
+        assert_eq!(check.total_size_mb, 0);
+        assert!(!check.needs_admin_any);
     }
 
     #[tokio::test]

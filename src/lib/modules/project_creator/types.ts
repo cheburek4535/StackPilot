@@ -18,6 +18,7 @@ export type LanguageDef = {
   color: string | null;
   category?: string | null;
   knowledge_key: string | null;
+  platforms?: string[];
 };
 
 export type FrameworkDef = {
@@ -26,8 +27,21 @@ export type FrameworkDef = {
   description: string;
   icon: string | null;
   category?: string | null;
+  /** Роль: backend / frontend / mobile / desktop / extension / bot / game */
+  kind?: string | null;
+  /** Языки (хотя бы один из) — требуется вместе с фреймворком */
+  requires_language?: string[];
+  /** ОС, на которых доступен (пусто = все) */
+  platforms?: string[];
   knowledge_key: string | null;
   conflicts?: string[];
+};
+
+export type StackSeverity = "Error" | "Warning";
+
+export type StackIssue = {
+  severity: StackSeverity;
+  message: string;
 };
 
 export type ToolDef = {

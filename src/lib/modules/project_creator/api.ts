@@ -8,6 +8,7 @@ import type {
   ExecutionPlan,
   RecipePreview,
   WizardContext,
+  StackIssue,
 } from "./types";
 
 export function pingProjectCreator(): Promise<string> {
@@ -61,4 +62,17 @@ export function startProjectExecution(
 
 export function checkFolderExists(path: string): Promise<boolean> {
   return invoke("check_project_folder_exists", { path });
+}
+
+/** ОС, на которой работает приложение ("windows", "macos", "linux") */
+export function getHostPlatform(): Promise<string> {
+  return invoke("get_host_platform");
+}
+
+/** Проверка стека на ограничения (лимиты, конфликты, платформы, языки) */
+export function validateProjectStack(
+  languages: string[],
+  frameworks: string[],
+): Promise<StackIssue[]> {
+  return invoke("validate_project_stack", { languages, frameworks });
 }

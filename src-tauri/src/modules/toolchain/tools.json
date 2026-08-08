@@ -406,17 +406,24 @@
     "versions": { "min": "12", "recommended": "13" },
     "sources": {
       "windows": [
-        { "kind": "PkgManager", "id": "Google.FirebaseCLI", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false }
+        { "kind": "PkgManager", "id": "Google.FirebaseCLI", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "firebase-tools"], "extra_args": [], "dynamic_args": false }
       ],
-      "linux": [{ "kind": "PkgManager", "id": "firebase-tools", "args": [], "extra_args": [], "dynamic_args": false }],
-      "macos": [{ "kind": "PkgManager", "id": "firebase-tools", "args": [], "extra_args": [], "dynamic_args": false }]
+      "linux": [
+        { "kind": "PkgManager", "id": "firebase-tools", "args": [], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "firebase-tools"], "extra_args": [], "dynamic_args": false }
+      ],
+      "macos": [
+        { "kind": "PkgManager", "id": "firebase-tools", "args": [], "extra_args": [], "dynamic_args": false },
+        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "firebase-tools"], "extra_args": [], "dynamic_args": false }
+      ]
     },
     "size_mb": 60,
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "winget ставит npm-порт в пользовательский каталог."
+    "notes": "winget-порт Firebase CLI устарел — fallback: npm install -g firebase-tools."
   },
   {
     "id": "dotnet",
@@ -444,6 +451,36 @@
     "bundled_with": null,
     "health_checks": [],
     "notes": null
+  },
+  {
+    "id": "csharprepl",
+    "category": "tooling",
+    "display": "C# REPL (CSharpRepl)",
+    "description": "Интерактивная консоль C# (REPL), ставится глобально через dotnet tool",
+    "icon": null,
+    "detection": {
+      "version_probes": [["csharprepl", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": {
+      "windows": [
+        { "kind": "Official", "id": "dotnet-global", "url": "dotnet", "args": ["tool", "install", "-g", "CSharpRepl"], "extra_args": [], "dynamic_args": false }
+      ],
+      "linux": [
+        { "kind": "Official", "id": "dotnet-global", "url": "dotnet", "args": ["tool", "install", "-g", "CSharpRepl"], "extra_args": [], "dynamic_args": false }
+      ],
+      "macos": [
+        { "kind": "Official", "id": "dotnet-global", "url": "dotnet", "args": ["tool", "install", "-g", "CSharpRepl"], "extra_args": [], "dynamic_args": false }
+      ]
+    },
+    "size_mb": 20,
+    "needs_admin": false,
+    "path_entries": ["%USERPROFILE%\\.dotnet\\tools"],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Ставится глобально через dotnet tool (NuGet CSharpRepl), требует .NET SDK."
   },
   {
     "id": "msvc-build-tools",
@@ -608,9 +645,7 @@
     },
     "versions": { "min": "5.9", "recommended": "6.1" },
     "sources": {
-      "windows": [
-        { "kind": "Official", "id": "swift-installer", "url": "https://download.swift.org/swift-6.1-release/windows10/swift-6.1-RELEASE/swift-6.1-RELEASE-windows10.exe", "args": [], "extra_args": [], "dynamic_args": false }
-      ],
+      "windows": [],
       "linux": [{ "kind": "PkgManager", "id": "swiftlang", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "swift", "args": [], "extra_args": [], "dynamic_args": false }]
     },
@@ -619,7 +654,8 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Swift РЅР° Windows вЂ” СЌРєСЃРїРµСЂРёРјРµРЅС‚Р°Р»СЊРЅР°СЏ РїРѕРґРґРµСЂР¶РєР°, СѓСЃС‚Р°РЅРѕРІС‰РёРє СЃ РѕС„РёС†РёР°Р»СЊРЅРѕРіРѕ СЃР°Р№С‚Р°."
+    "notes": "На Windows официальный установщик Swift ставится плохо — инструмент помечен как ручная установка (ставится вручную, в отчёте — честное предупреждение).",
+    "manual_install": "Swift на Windows ставится вручную: официальный установщик с download.swift.org (сборка для Windows 10+)."
   },
   {
     "id": "erlang",
@@ -1095,5 +1131,137 @@
     "bundled_with": null,
     "health_checks": [],
     "notes": "Р’СЃС‚СЂРѕРµРЅ РІ Windows 10+ (bsdtar). РРЅС„РѕСЂРјР°С†РёРѕРЅРЅС‹Р№ С‚СѓР»."
+  },
+  {
+    "id": "unity",
+    "category": "engine",
+    "display": "Unity Editor",
+    "description": "Игровой движок с C#-скриптами — проект генерируется, движок ставится вручную",
+    "icon": null,
+    "detection": {
+      "version_probes": [],
+      "known_paths": [
+        "C:/Program Files/Unity/Hub/Editor/*/Editor",
+        "/Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS"
+      ],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Unity нельзя поставить автоматически: только Unity Hub (unityhub://) или unity.com/download.",
+    "manual_install": "Установите Unity Editor вручную через Unity Hub (unity.com/download) — желательно LTS-версию."
+  },
+  {
+    "id": "unreal",
+    "category": "engine",
+    "display": "Unreal Engine",
+    "description": "Игровой движок на C++ — проект генерируется, движок ставится вручную",
+    "icon": null,
+    "detection": {
+      "version_probes": [],
+      "known_paths": ["C:/Program Files/Epic Games/UE_*"],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Unreal Engine ставится только через Epic Games Launcher.",
+    "manual_install": "Установите Unreal Engine вручную через Epic Games Launcher (store.epicgames.com) — любой актуальный релиз."
+  },
+  {
+    "id": "godot",
+    "category": "engine",
+    "display": "Godot",
+    "description": "Open-source игровой движок (C++, C#) — проект генерируется, движок ставится вручную",
+    "icon": null,
+    "detection": {
+      "version_probes": [["godot", "--version"]],
+      "known_paths": ["C:/Program Files/Godot*"],
+      "registry_keys": []
+    },
+    "versions": { "min": "4.2", "recommended": "4.4" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Godot распространяется как портативный бинарник с godotengine.org.",
+    "manual_install": "Скачайте Godot с godotengine.org (Standard-версию) и распакуйте в удобное место."
+  },
+  {
+    "id": "android",
+    "category": "mobile",
+    "display": "Android SDK",
+    "description": "Android SDK / Android Studio для Java и Kotlin — ставится вручную",
+    "icon": null,
+    "detection": {
+      "version_probes": [["adb", "--version"]],
+      "known_paths": [
+        "%LOCALAPPDATA%/Android/Sdk/platform-tools",
+        "C:/Program Files/Android/Android Studio"
+      ],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Android SDK поставляется с Android Studio (developer.android.com/studio).",
+    "manual_install": "Установите Android Studio с developer.android.com/studio — вместе с ней придёт Android SDK."
+  },
+  {
+    "id": "qt",
+    "category": "framework",
+    "display": "Qt",
+    "description": "C++-фреймворк для десктопа и встраиваемых систем — ставится вручную",
+    "icon": null,
+    "detection": {
+      "version_probes": [["qmake", "--version"]],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": { "min": "6.2", "recommended": "6.8" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Qt ставится только через Qt Online Installer (qt.io/download-open-source).",
+    "manual_install": "Установите Qt вручную через Qt Online Installer (qt.io/download-open-source): выберите версию Qt 6 и вашу ОС."
+  },
+  {
+    "id": "xcodebuild",
+    "category": "compiler",
+    "display": "Xcode (xcodebuild)",
+    "description": "Инструменты командной строки Apple — SwiftUI/Vapor требуют Xcode на macOS",
+    "icon": null,
+    "detection": {
+      "version_probes": [["xcodebuild", "-version"]],
+      "known_paths": ["/Applications/Xcode.app/Contents/Developer/usr/bin"],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Xcode устанавливается только из Mac App Store (macOS).",
+    "manual_install": "Установите Xcode вручную из Mac App Store (только macOS) — xcodebuild приходит вместе с ним."
   }
 ]

@@ -9,6 +9,8 @@
 //   - задача создаётся только для «не готовых» требований
 //     (Missing или UpdateAvailable — устаревшие идут на апгрейд);
 //   - Installed тулы в план не попадают (работать уже можно);
+//   - ManualInstall (движки, SDK) в план не попадают НИКОГДА —
+//     их установка выполняется вручную;
 //   - winget ставится ПЕРВЫМ: пока его нет, все остальные пакеты
 //     на Windows поставить нечем.
 
@@ -27,6 +29,11 @@ pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> Inst
 
     for req in &check.requirements {
         if req.status.is_ok() {
+            continue;
+        }
+        // ManualInstall — ручная установка, автозадачу не создаём,
+        // даже если фронт случайно передал id в selected.
+        if matches!(req.status, ToolStatus::ManualInstall { .. }) {
             continue;
         }
         if let Some(list) = selected {
@@ -180,5 +187,21 @@ mod tests {
         let plan = build_plan(&check, None);
         assert_eq!(plan.tasks[0].tool_id, "winget");
         assert_eq!(plan.tasks.len(), 2);
+    }
+
+    #[test]
+    fn manual_install_tools_never_scheduled() {
+        let check = check_with(vec![
+            requirement("git", ToolStatus::Missing),
+            requirement("unity", ToolStatus::ManualInstall {
+                reason: "вручную".to_string(),
+            }),
+        ]);
+
+        // даже если фронт попросил — manual-тул не ставится автоматически
+        let plan = build_plan(&check, Some(&["unity".to_string(), "git".to_string()]));
+        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
+        assert_eq!(ids, vec!["git"]);
+        assert_eq!(plan.total_size_mb, 10);
     }
 }

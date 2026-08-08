@@ -132,6 +132,9 @@ pub fn run() {
             modules::project_creator::commands::preview_project_recipe,
             modules::project_creator::commands::start_project_execution,
             modules::project_creator::commands::check_project_folder_exists,
+            modules::project_creator::commands::get_host_platform,
+            modules::project_creator::commands::validate_project_stack,
+            modules::project_creator::commands::validate_project_stack_error,
             // ToolchainManager commands
             modules::toolchain::commands::ping_toolchain,
             modules::toolchain::commands::tc_get_tool_definitions,

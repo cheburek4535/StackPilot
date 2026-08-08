@@ -39,6 +39,9 @@ pub struct LanguageDef {
     #[serde(default)]
     pub category: Option<String>, // "backend", "frontend", "static", или null/None
     pub knowledge_key: Option<String>,
+    /// ОС, на которых язык доступен. Пустой список = все ОС.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 /// Фреймворк / библиотека
@@ -50,6 +53,17 @@ pub struct FrameworkDef {
     pub icon: Option<String>,
     #[serde(default)]
     pub category: Option<String>, // "backend", "frontend", "none"
+    /// Роль фреймворка в стэке: "backend" / "frontend" / "mobile" /
+    /// "desktop" / "extension" / "bot" / "game". Лимиты выбора
+    /// (максимум 1 backend + максимум 1 остальной) опираются на него.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Языки, которые должны быть выбраны вместе с фреймворком.
+    #[serde(default)]
+    pub requires_language: Vec<String>,
+    /// ОС, на которых фреймворк доступен. Пустой список = все ОС.
+    #[serde(default)]
+    pub platforms: Vec<String>,
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим

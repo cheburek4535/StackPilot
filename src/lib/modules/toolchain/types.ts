@@ -14,7 +14,8 @@ export type ToolStatus =
   | "Missing"
   | { Installed: { version: string } }
   | { UpdateAvailable: { installed: string; recommended: string } }
-  | { PathBroken: { reason: string } };
+  | { PathBroken: { reason: string } }
+  | { ManualInstall: { reason: string } };
 
 export type ToolDefinition = {
   id: string;
@@ -191,13 +192,15 @@ export function statusLabel(status: ToolStatus): string {
   if (status === "Missing") return "Не установлен";
   if ("Installed" in status) return `✓ ${status.Installed.version}`;
   if ("UpdateAvailable" in status) return `Обновить до ${status.UpdateAvailable.recommended}`;
+  if ("ManualInstall" in status) return `⚠ Вручную: ${status.ManualInstall.reason}`;
   return `⚠ ${status.PathBroken.reason}`;
 }
 
-export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" {
+export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" | "manual" {
   if (status === "Missing") return "missing";
   if ("Installed" in status) return "ok";
   if ("UpdateAvailable" in status) return "update";
+  if ("ManualInstall" in status) return "manual";
   return "broken";
 }
 

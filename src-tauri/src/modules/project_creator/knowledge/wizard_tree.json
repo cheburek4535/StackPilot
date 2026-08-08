@@ -201,7 +201,8 @@
       "icon": "swift.svg",
       "color": "#F05138",
       "category": "both",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "platforms": ["macos"]
     },
     {
       "id": "zig",
@@ -244,7 +245,9 @@
       "icon": "fastapi.svg",
       "category": "backend",
       "conflicts": ["flask", "django"],
-      "knowledge_key": "fastapi"
+      "knowledge_key": "fastapi",
+      "kind": "backend",
+      "requires_language": ["python"]
     },
     {
       "id": "django",
@@ -253,7 +256,9 @@
       "icon": "django.svg",
       "category": "backend",
       "conflicts": ["fastapi", "flask"],
-      "knowledge_key": "django"
+      "knowledge_key": "django",
+      "kind": "backend",
+      "requires_language": ["python"]
     },
     {
       "id": "flask",
@@ -262,7 +267,9 @@
       "icon": "flask.svg",
       "category": "backend",
       "conflicts": ["fastapi", "django"],
-      "knowledge_key": "flask"
+      "knowledge_key": "flask",
+      "kind": "backend",
+      "requires_language": ["python"]
     },
     {
       "id": "axum",
@@ -271,7 +278,9 @@
       "icon": null,
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "axum"
+      "knowledge_key": "axum",
+      "kind": "backend",
+      "requires_language": ["rust"]
     },
     {
       "id": "tauri",
@@ -280,7 +289,9 @@
       "icon": "tauri.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "tauri"
+      "knowledge_key": "tauri",
+      "kind": "desktop",
+      "requires_language": ["rust"]
     },
     {
       "id": "clap",
@@ -289,7 +300,9 @@
       "icon": "clap.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "clap"
+      "knowledge_key": "clap",
+      "kind": "backend",
+      "requires_language": ["rust"]
     },
     {
       "id": "gin",
@@ -298,7 +311,9 @@
       "icon": "gin.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "gin"
+      "knowledge_key": "gin",
+      "kind": "backend",
+      "requires_language": ["go"]
     },
     {
       "id": "cobra",
@@ -307,7 +322,9 @@
       "icon": null,
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "cobra"
+      "knowledge_key": "cobra",
+      "kind": "backend",
+      "requires_language": ["go"]
     },
     {
       "id": "nextjs",
@@ -316,7 +333,9 @@
       "icon": "nextjs.svg",
       "category": "frontend",
       "conflicts": ["sveltekit", "nuxt", "solidjs"],
-      "knowledge_key": "nextjs"
+      "knowledge_key": "nextjs",
+      "kind": "frontend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "sveltekit",
@@ -325,7 +344,9 @@
       "icon": "svelte.svg",
       "category": "frontend",
       "conflicts": ["nextjs", "nuxt", "solidjs"],
-      "knowledge_key": "sveltekit"
+      "knowledge_key": "sveltekit",
+      "kind": "frontend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "nuxt",
@@ -334,7 +355,9 @@
       "icon": "nuxt.png",
       "category": "frontend",
       "conflicts": ["nextjs", "sveltekit", "solidjs"],
-      "knowledge_key": "nuxt"
+      "knowledge_key": "nuxt",
+      "kind": "frontend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "express",
@@ -343,7 +366,9 @@
       "icon": "express.png",
       "category": "backend",
       "conflicts": ["nest", "fastify"],
-      "knowledge_key": null
+      "knowledge_key": null,
+      "kind": "backend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "electron",
@@ -352,7 +377,9 @@
       "icon": "electron.webp",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "electron"
+      "knowledge_key": "electron",
+      "kind": "desktop",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "aiogram",
@@ -361,7 +388,9 @@
       "icon": null,
       "category": "none",
       "conflicts": [],
-      "knowledge_key": "aiogram"
+      "knowledge_key": "aiogram",
+      "kind": "bot",
+      "requires_language": ["python"]
     },
     {
       "id": "telegraf",
@@ -370,7 +399,9 @@
       "icon": "telegraf.png",
       "category": "none",
       "conflicts": [],
-      "knowledge_key": "telegraf"
+      "knowledge_key": "telegraf",
+      "kind": "bot",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "spring-boot",
@@ -379,7 +410,9 @@
       "icon": "spring-boot.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "spring-boot"
+      "knowledge_key": "spring-boot",
+      "kind": "backend",
+      "requires_language": ["java"]
     },
     {
       "id": "android",
@@ -388,7 +421,9 @@
       "icon": "android.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "android"
+      "knowledge_key": "android",
+      "kind": "mobile",
+      "requires_language": ["java", "kotlin"]
     },
     {
       "id": "aspnetcore",
@@ -397,7 +432,9 @@
       "icon": "aspnetcore.png",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "aspnetcore"
+      "knowledge_key": "aspnetcore",
+      "kind": "backend",
+      "requires_language": ["csharp"]
     },
     {
       "id": "unity",
@@ -406,7 +443,9 @@
       "icon": "unity.svg",
       "category": "frontend",
       "conflicts": ["godot"],
-      "knowledge_key": "unity"
+      "knowledge_key": "unity",
+      "kind": "game",
+      "requires_language": ["csharp"]
     },
     {
       "id": "maui",
@@ -415,7 +454,9 @@
       "icon": "maui.png",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "maui"
+      "knowledge_key": "maui",
+      "kind": "desktop",
+      "requires_language": ["csharp"]
     },
     {
       "id": "unreal",
@@ -424,7 +465,9 @@
       "icon": "unreal-engine.svg",
       "category": "frontend",
       "conflicts": ["godot"],
-      "knowledge_key": "unreal"
+      "knowledge_key": "unreal",
+      "kind": "game",
+      "requires_language": ["cpp"]
     },
     {
       "id": "qt",
@@ -433,7 +476,9 @@
       "icon": "qt.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "qt"
+      "knowledge_key": "qt",
+      "kind": "desktop",
+      "requires_language": ["cpp"]
     },
     {
       "id": "godot",
@@ -442,7 +487,9 @@
       "icon": "godot.svg",
       "category": "frontend",
       "conflicts": ["unity", "unreal"],
-      "knowledge_key": "godot"
+      "knowledge_key": "godot",
+      "kind": "game",
+      "requires_language": ["csharp", "cpp"]
     },
     {
       "id": "flutter",
@@ -451,7 +498,9 @@
       "icon": "flutter.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "flutter"
+      "knowledge_key": "flutter",
+      "kind": "mobile",
+      "requires_language": ["dart"]
     },
     {
       "id": "laravel",
@@ -460,7 +509,9 @@
       "icon": "laravel.svg",
       "category": "backend",
       "conflicts": ["symfony"],
-      "knowledge_key": "laravel"
+      "knowledge_key": "laravel",
+      "kind": "backend",
+      "requires_language": ["php"]
     },
     {
       "id": "symfony",
@@ -469,7 +520,9 @@
       "icon": "symfony.svg",
       "category": "backend",
       "conflicts": ["laravel"],
-      "knowledge_key": "symfony"
+      "knowledge_key": "symfony",
+      "kind": "backend",
+      "requires_language": ["php"]
     },
     {
       "id": "jetpack-compose",
@@ -478,7 +531,9 @@
       "icon": "jetpack-compose.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "jetpack-compose"
+      "knowledge_key": "jetpack-compose",
+      "kind": "mobile",
+      "requires_language": ["kotlin"]
     },
     {
       "id": "ktor",
@@ -487,7 +542,9 @@
       "icon": "ktor.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "ktor"
+      "knowledge_key": "ktor",
+      "kind": "backend",
+      "requires_language": ["kotlin"]
     },
     {
       "id": "swiftui",
@@ -496,7 +553,10 @@
       "icon": "swift.svg",
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "swiftui"
+      "knowledge_key": "swiftui",
+      "kind": "mobile",
+      "requires_language": ["swift"],
+      "platforms": ["macos"]
     },
     {
       "id": "vapor",
@@ -505,7 +565,10 @@
       "icon": "vapor.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "vapor"
+      "knowledge_key": "vapor",
+      "kind": "backend",
+      "requires_language": ["swift"],
+      "platforms": ["macos"]
     },
     {
       "id": "react-native",
@@ -514,7 +577,9 @@
       "icon": "reactnative.svg",
       "category": "frontend",
       "conflicts": ["expo"],
-      "knowledge_key": "react-native"
+      "knowledge_key": "react-native",
+      "kind": "mobile",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "plasmo",
@@ -523,7 +588,9 @@
       "icon": null,
       "category": "frontend",
       "conflicts": [],
-      "knowledge_key": "plasmo"
+      "knowledge_key": "plasmo",
+      "kind": "extension",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "zig-cli",
@@ -532,7 +599,9 @@
       "icon": "zig.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": null
+      "knowledge_key": null,
+      "kind": "backend",
+      "requires_language": ["zig"]
     },
     {
       "id": "expo",
@@ -541,7 +610,9 @@
       "icon": "expo.svg",
       "category": "frontend",
       "conflicts": ["react-native"],
-      "knowledge_key": "expo"
+      "knowledge_key": "expo",
+      "kind": "mobile",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "phoenix",
@@ -550,7 +621,9 @@
       "icon": "phoenix-framework.svg",
       "category": "backend",
       "conflicts": [],
-      "knowledge_key": "phoenix"
+      "knowledge_key": "phoenix",
+      "kind": "backend",
+      "requires_language": ["elixir"]
     },
     {
       "id": "nest",
@@ -559,7 +632,9 @@
       "icon": "nestjs.svg",
       "category": "backend",
       "conflicts": ["express", "fastify"],
-      "knowledge_key": "nestjs"
+      "knowledge_key": "nestjs",
+      "kind": "backend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "fastify",
@@ -568,7 +643,9 @@
       "icon": "fastify.svg",
       "category": "backend",
       "conflicts": ["express", "nest"],
-      "knowledge_key": null
+      "knowledge_key": null,
+      "kind": "backend",
+      "requires_language": ["typescript", "javascript"]
     },
     {
       "id": "solidjs",
@@ -577,7 +654,9 @@
       "icon": "solidjs.svg",
       "category": "frontend",
       "conflicts": ["nextjs", "sveltekit", "nuxt"],
-      "knowledge_key": null
+      "knowledge_key": null,
+      "kind": "frontend",
+      "requires_language": ["typescript", "javascript"]
     }
 ],
   "tools": [
@@ -741,7 +820,7 @@
     "conflicts": []
   },
   {
-    "id": "terra",
+    "id": "terraform",
     "label": "Terraform",
     "description": "Infrastructure as code",
     "icon": "terra.svg",

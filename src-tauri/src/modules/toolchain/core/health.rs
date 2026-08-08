@@ -155,6 +155,7 @@ mod tests {
             needs_admin: false,
             path_entries: vec![],
             bundled_with: None,
+            manual_install: None,
             health_checks: checks
                 .into_iter()
                 .map(|command| HealthCheck {

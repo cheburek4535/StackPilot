@@ -5,6 +5,7 @@ pub mod generators;
 pub mod knowledge;
 pub mod models;
 pub mod packs;
+pub mod validate;
 pub mod wizard;
 
 use std::sync::Arc;

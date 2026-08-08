@@ -44,6 +44,45 @@ pub fn check_project_folder_exists(path: String) -> Result<bool, String> {
     Ok(std::path::Path::new(&path).exists())
 }
 
+/// ОС, на которой работает приложение ("windows", "macos", "linux").
+/// Фронтенд использует для блокировки платформозависимых опций.
+#[tauri::command]
+pub fn get_host_platform() -> String {
+    super::validate::current_os().to_string()
+}
+
+/// Проверяет выбранный стек на ограничения (лимиты, конфликты,
+/// платформы, требуемые языки). Возвращает все найденные проблемы.
+#[tauri::command]
+pub fn validate_project_stack(
+    state: State<'_, ProjectCreatorState>,
+    languages: Vec<String>,
+    frameworks: Vec<String>,
+) -> Vec<super::validate::StackIssue> {
+    super::validate::validate_stack(
+        state.wizard.get_wizard_tree(),
+        &languages,
+        &frameworks,
+        super::validate::current_os(),
+    )
+}
+
+/// Первая блокирующая ошибка стека, если она есть (иначе None).
+#[tauri::command]
+pub fn validate_project_stack_error(
+    state: State<'_, ProjectCreatorState>,
+    languages: Vec<String>,
+    frameworks: Vec<String>,
+) -> Option<String> {
+    let issues = super::validate::validate_stack(
+        state.wizard.get_wizard_tree(),
+        &languages,
+        &frameworks,
+        super::validate::current_os(),
+    );
+    super::validate::first_error(&issues)
+}
+
 #[tauri::command]
 pub fn analyze_project_technologies(
     state: State<'_, ProjectCreatorState>,
@@ -59,6 +98,14 @@ pub fn preview_project_recipe(
     context: WizardContext,
     project_path: String,
 ) -> Result<RecipePreview, String> {
+    if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
+        state.wizard.get_wizard_tree(),
+        &context.languages,
+        &context.frameworks,
+        super::validate::current_os(),
+    )) {
+        return Err(err);
+    }
     let path = PathBuf::from(&project_path);
     let plan = state.engine.plan(&context, &path)?;
     Ok(state.engine.preview(&plan))
@@ -71,6 +118,14 @@ pub async fn start_project_execution(
     context: WizardContext,
     project_path: String,
 ) -> Result<ExecutionPlan, String> {
+    if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
+        state.wizard.get_wizard_tree(),
+        &context.languages,
+        &context.frameworks,
+        super::validate::current_os(),
+    )) {
+        return Err(err);
+    }
     let path = PathBuf::from(&project_path);
     let plan = state.engine.plan(&context, &path)?;
     let plan_clone = plan.clone();

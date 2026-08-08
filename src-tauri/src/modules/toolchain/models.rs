@@ -58,6 +58,11 @@ pub struct ToolDefinition {
     /// Заметки пользователю (WSL2 для Docker, лицензии и т.п.)
     #[serde(default)]
     pub notes: Option<String>,
+    /// Если задано — инструмент НЕ устанавливается автоматически
+    /// (движки, SDK и т.п.), а в отчёте показывается честное предупреждение
+    /// о ручной установке. Значение — текст предупреждения пользователю.
+    #[serde(default)]
+    pub manual_install: Option<String>,
 }
 
 impl ToolDefinition {
@@ -167,6 +172,10 @@ pub enum ToolStatus {
     UpdateAvailable { installed: String, recommended: String },
     /// Найден, но не работает (бинарь не в PATH, сломанная установка)
     PathBroken { reason: String },
+    /// Инструмент не установлен и ставится ТОЛЬКО вручную (движки, SDK).
+    /// Честное предупреждение в отчёте: не блокирует создание проекта,
+    /// не участвует в установке. Причина — текст для пользователя.
+    ManualInstall { reason: String },
 }
 
 impl ToolStatus {

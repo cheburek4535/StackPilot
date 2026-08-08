@@ -56,17 +56,31 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
 /// Рантаймы, которые фреймворк требует, но которых нет в его
 /// framework_tool_map из wizard_tree.json (там только «тулы»,
 /// языки не фигурируют). tauri собран на rust, flutter — свой SDK.
+///
+/// Движки и SDK (unity, unreal, godot, android, qt, xcodebuild)
+/// попадают сюда как manual-инструменты: проект генерируется,
+/// а в отчёте проверки окружения пользователь получает честное
+/// предупреждение «установите вручную» (см. manual_install в tools.json).
 fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
     match framework {
         // tauri-cli: генерация проекта запускает `cargo tauri`,
         // а без CLI это падает «no such command: tauri».
         "tauri" => &["rust", "node", "tauri-cli"],
         "flutter" => &["flutter"],
-        "android" | "jetpack-compose" => &["java"],
+        // Android SDK нужен и для android, и для jetpack-compose.
+        "android" | "jetpack-compose" => &["java", "android"],
         // JVM-фреймворки: spring boot и ktor требуют JDK, даже если
         // язык java не выбран в мастере явно (проект не соберётся без
         // javac — а Initializr-шаблоны его подразумевают).
         "spring-boot" | "ktor" => &["java"],
+        // Игровые движки и десктоп-фреймворки: файлы проекта
+        // генерируются, движок/SDK пользователь ставит сам.
+        "unity" => &["unity"],
+        "unreal" => &["unreal"],
+        "godot" => &["godot"],
+        "qt" => &["qt"],
+        // SwiftUI/Vapor — только macOS: нужен Xcode (xcodebuild).
+        "swiftui" | "vapor" => &["xcodebuild"],
         _ => &[],
     }
 }
@@ -101,6 +115,39 @@ fn framework_tool_map() -> &'static HashMap<String, Vec<String>> {
     })
 }
 
+/// Таблица «фреймворк → требуемые языки» из wizard_tree.json.
+/// Если язык фреймворка не выбран в мастере явно, его рантайм
+/// всё равно попадает в требования (django без выбранного python
+/// никогда не должен молча теряться из проверки окружения).
+fn framework_requires_language() -> &'static HashMap<String, Vec<String>> {
+    static MAP: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
+        let tree: serde_json::Value = serde_json::from_str(raw)
+            .expect("wizard_tree.json должен быть корректным JSON");
+        tree.get("frameworks")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|fw| {
+                        let id = fw.get("id")?.as_str()?.to_string();
+                        let langs = fw
+                            .get("requires_language")
+                            .and_then(|l| l.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|l| l.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some((id, langs))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
 // ------------------------------------------------------------
 // 3. Тулы мастера → тулы toolchain
 // ------------------------------------------------------------
@@ -126,8 +173,14 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
         "gradle" => Some("gradle"),
         "kafka" => Some("kafka"),
         "grafana" => Some("grafana"),
-        "terra" => Some("terraform"),
+        // "terra" — старый id из мастера, оставлен для обратной
+        // совместимости с сохранёнными сессиями.
+        "terra" | "terraform" => Some("terraform"),
         "firebase" => Some("firebase"),
+        // C# REPL: npm-пакета dotnet-cmd не существует (registry 404),
+        // реальный REPL — CSharpRepl (dotnet tool install -g CSharpRepl).
+        // «dotnet-cmd» замаплен на него для совместимости с мастером.
+        "dotnet-cmd" | "csharprepl" => Some("csharprepl"),
         _ => None,
     }
 }
@@ -163,6 +216,20 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
     for fw in &requirements.frameworks {
         for id in framework_extra_tools(fw) {
             push(id);
+        }
+        // Языки, которые фреймворк требует, но которые не выбраны
+        // в мастере: их рантайм всё равно должен попасть в проверку
+        // окружения (например nextjs без выбранного typescript).
+        // requires_language — «хотя бы один из»: рантаймы добавляем
+        // только когда не выбран ни один из требуемых языков.
+        if let Some(langs) = framework_requires_language().get(fw) {
+            if !langs.is_empty() && !langs.iter().any(|l| requirements.languages.contains(l)) {
+                for lang in langs {
+                    for id in language_tools(lang) {
+                        push(id);
+                    }
+                }
+            }
         }
         if let Some(tools) = framework_tool_map().get(fw) {
             for wizard_tool in tools {
@@ -277,7 +344,7 @@ mod tests {
     #[test]
     fn airflow_grafana_and_terraform_tools_resolve() {
         let mut r = req();
-        r.tools = vec!["grafana".into(), "terra".into(), "firebase".into()];
+        r.tools = vec!["grafana".into(), "terraform".into(), "firebase".into()];
         let ids = resolve(&r);
         for expected in ["grafana", "terraform", "firebase"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
@@ -320,11 +387,194 @@ mod tests {
         assert_eq!(wizard_tool_to_toolchain("prisma"), None);
         assert_eq!(wizard_tool_to_toolchain("npm"), Some("npm"));
         assert_eq!(wizard_tool_to_toolchain("postgresql"), Some("postgresql"));
+        // npm-пакета dotnet-cmd нет — реальный REPL ставится через dotnet tool
+        assert_eq!(wizard_tool_to_toolchain("dotnet-cmd"), Some("csharprepl"));
+        assert_eq!(wizard_tool_to_toolchain("csharprepl"), Some("csharprepl"));
+    }
+
+    #[test]
+    fn engines_are_manual_install_tools() {
+        // Unity/Unreal/Godot/Qt: проект генерируется, движок — вручную.
+        // Требования обязаны содержать движок (для честного отчёта),
+        // а не молча его терять.
+        for (framework, engine) in [
+            ("unity", "unity"),
+            ("unreal", "unreal"),
+            ("godot", "godot"),
+            ("qt", "qt"),
+        ] {
+            let mut r = req();
+            r.frameworks = vec![framework.into()];
+            let ids = resolve(&r);
+            assert!(
+                ids.iter().any(|i| i == engine),
+                "{framework} без {engine}: {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn android_and_jetpack_require_android_sdk() {
+        for framework in ["android", "jetpack-compose"] {
+            let mut r = req();
+            r.frameworks = vec![framework.into()];
+            let ids = resolve(&r);
+            assert!(
+                ids.iter().any(|i| i == "android"),
+                "{framework} без android SDK: {ids:?}"
+            );
+            assert!(
+                ids.iter().any(|i| i == "java"),
+                "{framework} без java: {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn swift_ui_frameworks_require_xcode() {
+        for framework in ["swiftui", "vapor"] {
+            let mut r = req();
+            r.frameworks = vec![framework.into()];
+            let ids = resolve(&r);
+            assert!(
+                ids.iter().any(|i| i == "xcodebuild"),
+                "{framework} без xcodebuild: {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn framework_brings_required_language_runtime() {
+        // nextjs требует typescript/javascript — даже без выбранного
+        // языка его рантайм (node) обязан попасть в требования.
+        let mut r = req();
+        r.frameworks = vec!["nextjs".into()];
+        let ids = resolve(&r);
+        assert!(
+            ids.iter().any(|i| i == "node"),
+            "nextjs без node: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn django_brings_python_runtime() {
+        let mut r = req();
+        r.frameworks = vec!["django".into()];
+        let ids = resolve(&r);
+        assert!(
+            ids.iter().any(|i| i == "python"),
+            "django без python: {ids:?}"
+        );
     }
 
     #[test]
     fn empty_requirements_resolve_to_winget_only() {
         // winget — обязательный базовый инструмент даже при пустом запросе
         assert_eq!(resolve(&req()), vec!["winget"]);
+    }
+
+    /// Гарантия отсутствия молчаливых дыр: каждый id, который resolve()
+    /// может вернуть для ЛЮБОГО языка/фреймворка/тула/флага из мастера,
+    /// обязан существовать в tools.json. Иначе check.rs просто молча
+    /// пропустит неизвестный id, и требование потеряется из отчёта.
+    #[test]
+    fn every_resolved_id_exists_in_tools_json() {
+        let raw = include_str!("../tools.json");
+        let defs: serde_json::Value = serde_json::from_str(raw).expect("tools.json");
+        let tool_ids: HashSet<String> = defs
+            .as_array()
+            .expect("tools.json — массив")
+            .iter()
+            .filter_map(|d| d.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect();
+
+        let tree_raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
+        let tree: serde_json::Value =
+            serde_json::from_str(tree_raw).expect("wizard_tree.json должен быть корректным JSON");
+
+        let collect = |arr: Option<&serde_json::Value>| -> Vec<String> {
+            arr.and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let languages = collect(tree.get("languages"));
+        let frameworks = collect(tree.get("frameworks"));
+        let wizard_tools = collect(tree.get("tools"));
+
+        let mut checked = 0usize;
+        let mut missing: Vec<String> = Vec::new();
+
+        let mut check_ids = |r: &ProjectRequirements, origin: &str, out: &mut Vec<String>| {
+            for id in resolve(r) {
+                if !tool_ids.contains(&id) {
+                    out.push(format!("{origin} → {id}"));
+                }
+            }
+        };
+
+        for lang in &languages {
+            let mut r = req();
+            r.languages = vec![lang.clone()];
+            check_ids(&r, &format!("язык {lang}"), &mut missing);
+            checked += 1;
+        }
+        for fw in &frameworks {
+            let mut r = req();
+            r.frameworks = vec![fw.clone()];
+            check_ids(&r, &format!("фреймворк {fw}"), &mut missing);
+            checked += 1;
+        }
+        for tool in &wizard_tools {
+            let mut r = req();
+            r.tools = vec![tool.clone()];
+            check_ids(&r, &format!("тул {tool}"), &mut missing);
+            checked += 1;
+        }
+        {
+            let mut r = req();
+            r.git_init = true;
+            r.vscode_config = true;
+            r.docker = true;
+            check_ids(&r, "флаги", &mut missing);
+        }
+
+        assert!(
+            missing.is_empty(),
+            "resolve() вернул id, которых нет в tools.json ({missing:?}); проверено {checked} сценариев"
+        );
+    }
+
+    /// Обратная гарантия: каждый фреймворк мастера обязан дать хоть одно
+    /// требование (плюс всегда winget) — иначе фреймворк молча выпадает
+    /// из проверки окружения, как было с unity/unreal/godot/qt до фикса.
+    #[test]
+    fn every_framework_produces_at_least_one_requirement() {
+        let tree_raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
+        let tree: serde_json::Value =
+            serde_json::from_str(tree_raw).expect("wizard_tree.json должен быть корректным JSON");
+        let frameworks: Vec<String> = tree
+            .get("frameworks")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for fw in &frameworks {
+            let mut r = req();
+            r.frameworks = vec![fw.clone()];
+            let ids = resolve(&r);
+            assert!(
+                ids.len() > 1,
+                "фреймворк {fw} не даёт ни одного требования (только winget): {ids:?}"
+            );
+        }
     }
 }
