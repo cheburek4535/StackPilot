@@ -43,7 +43,8 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
         "swift" => &["swift"],
         "zig" => &["zig"],
         "elixir" => &["elixir", "erlang"],
-        "gleam" => &["gleam"],
+        // gleam компилируется в Erlang и требует erlc/erlang для сборки
+        "gleam" => &["gleam", "erlang"],
         // html — статика, отдельного рантайма нет
         _ => &[],
     }
@@ -243,6 +244,14 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
     for tool in &requirements.tools {
         if let Some(id) = wizard_tool_to_toolchain(tool) {
             push(id);
+            // Инструменты, которые не могут установиться без своего рантайма:
+            // firebase-tools ставится через npm, CSharpRepl — через dotnet tool.
+            // Рантайм обязан попасть в требования, даже если язык не выбран.
+            match id {
+                "firebase" => push("node"),
+                "csharprepl" => push("dotnet"),
+                _ => {}
+            }
         }
     }
 
@@ -349,6 +358,31 @@ mod tests {
         for expected in ["grafana", "terraform", "firebase"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
+    }
+
+    #[test]
+    fn gleam_brings_erlang_runtime() {
+        let mut r = req();
+        r.languages = vec!["gleam".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "gleam"), "нет gleam: {ids:?}");
+        assert!(ids.iter().any(|i| i == "erlang"), "gleam без erlang: {ids:?}");
+    }
+
+    #[test]
+    fn firebase_brings_node_runtime() {
+        let mut r = req();
+        r.tools = vec!["firebase".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "node"), "firebase без node: {ids:?}");
+    }
+
+    #[test]
+    fn csharprepl_brings_dotnet_runtime() {
+        let mut r = req();
+        r.tools = vec!["csharprepl".into()];
+        let ids = resolve(&r);
+        assert!(ids.iter().any(|i| i == "dotnet"), "csharprepl без dotnet: {ids:?}");
     }
 
     #[test]

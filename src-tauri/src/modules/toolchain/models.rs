@@ -122,6 +122,12 @@ pub struct InstallSource {
     /// Прямая ссылка для Official/Script источников
     #[serde(default)]
     pub url: Option<String>,
+    /// Имя файла, под которым сохраняется скачанный установщик.
+    /// Нужно для программ, которые определяют своё поведение по имени
+    /// файла: rustup-init.exe должен остаться rustup-init.exe, иначе он
+    /// решит, что его вызвали как «прокси» (unknown proxy name).
+    #[serde(default)]
+    pub file_name: Option<String>,
     /// Статичные аргументы тихой установки (winget: --silent; MSI: /quiet)
     #[serde(default)]
     pub args: Vec<String>,

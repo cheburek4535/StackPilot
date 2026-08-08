@@ -139,7 +139,7 @@
     "description": "РЈСЃС‚Р°РЅРѕРІС‰РёРє С‚СѓР»С‡РµР№РЅР° Rust: rustup, rustc Рё cargo",
     "icon": null,
     "detection": {
-      "version_probes": [["rustup", "--version"]],
+      "version_probes": [["rustc", "--version"], ["rustup", "--version"]],
       "known_paths": ["%USERPROFILE%/.cargo/bin"],
       "registry_keys": []
     },
@@ -147,7 +147,7 @@
     "sources": {
       "windows": [
         { "kind": "PkgManager", "id": "Rustlang.Rustup", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
-        { "kind": "Script", "id": "rustup-init", "url": "https://win.rustup.rs/x86_64", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }
+        { "kind": "Script", "id": "rustup-init", "url": "https://win.rustup.rs/x86_64", "file_name": "rustup-init.exe", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }
       ],
       "linux": [{ "kind": "Script", "id": "rustup-init", "url": "https://sh.rustup.rs", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "Script", "id": "rustup-init", "url": "https://sh.rustup.rs", "args": ["-y", "--default-toolchain", "stable"], "extra_args": [], "dynamic_args": false }]
@@ -400,7 +400,7 @@
     "icon": null,
     "detection": {
       "version_probes": [["firebase", "--version"]],
-      "known_paths": [],
+      "known_paths": ["%APPDATA%/npm"],
       "registry_keys": []
     },
     "versions": { "min": "12", "recommended": "13" },
@@ -420,7 +420,7 @@
     },
     "size_mb": 60,
     "needs_admin": false,
-    "path_entries": [],
+    "path_entries": ["%APPDATA%\\npm"],
     "bundled_with": null,
     "health_checks": [],
     "notes": "winget-порт Firebase CLI устарел — fallback: npm install -g firebase-tools."

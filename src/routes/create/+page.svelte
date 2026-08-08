@@ -171,7 +171,7 @@ async function resolveFolderConflict(action: 'overwrite' | 'auto-rename' | 'canc
 
   if (action === 'overwrite') {
     conflictResolvedFolder = null; // use original projectName as folder
-    await doCreateProject(projectName);
+    await goToEnvironment();
     return;
   }
 
@@ -358,8 +358,10 @@ function languageBlockReason(lang: LanguageDef): string | null {
 
 /**
  * Причина, по которой фреймворк нельзя выбрать (или null):
- * платформа, конфликт или превышение лимита стека.
- * Лимиты: максимум 1 backend-фреймворк + максимум 1 прикладной.
+ * платформа или явный конфликт из wizard_tree.json.
+ * Взаимоисключений «только 1 backend / 1 frontend» НЕТ: свобода
+ * выбора ограничена только тем, что физически не сможет
+ * существовать вместе (конфликты файлов/ролей в wizard_tree).
  */
 function frameworkBlockReason(fwId: string): string | null {
   const fw = tree?.frameworks.find((f) => f.id === fwId);
@@ -379,17 +381,6 @@ function frameworkBlockReason(fwId: string): string | null {
       const cFw = tree?.frameworks.find((f) => f.id === c);
       return `Incompatible with ${cFw?.label ?? c}`;
     }
-  }
-
-  // Лимиты стека
-  const selectedKinds = selectedFrameworks
-    .map((id) => tree?.frameworks.find((f) => f.id === id)?.kind)
-    .filter((k): k is string => !!k);
-  if (fw.kind === "backend" && selectedKinds.includes("backend")) {
-    return "Only one backend framework is allowed";
-  }
-  if (fw.kind !== "backend" && selectedKinds.some((k) => k !== "backend")) {
-    return "Only one app framework is allowed (frontend/mobile/desktop/extension/bot/game)";
   }
   return null;
 }
@@ -553,6 +544,11 @@ async function goToEnvironment() {
   envLogs = [];
   envTaskStates = new Map();
   envInstalling = false;
+  envInstallDone = false;
+  envErrors = [];
+  envRestartHint = false;
+  envDownload = new Map();
+  envPhaseStart = new Map();
   stopTick();
   envCheckProgress = [];
   if (unlistenTcCheck) unlistenTcCheck();
@@ -592,6 +588,7 @@ function selectAllEnvTools() {
 async function startInstall() {
   if (!envCheck) return;
   envInstalling = true;
+  envInstallDone = false;
   envError = null;
   envLogs = [];
   envTaskStates = new Map();
@@ -726,6 +723,8 @@ async function cancelInstall() {
   } catch {
     // ignore
   }
+  envInstalling = false;
+  stopTick();
 }
 
 async function doCreateProject(useProjectName: string) {
@@ -853,6 +852,11 @@ function resetAll() {
   envError = null;
   envRestartHint = false;
   envCheckProgress = [];
+  envInstallDone = false;
+  envErrors = [];
+  envDownload = new Map();
+  envPhaseStart = new Map();
+  envSelectedIds = new Set();
   newSecrets = null;
   secretCopied = null;
   step = 0;

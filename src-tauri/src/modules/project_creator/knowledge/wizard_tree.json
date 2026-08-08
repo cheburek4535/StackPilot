@@ -266,7 +266,7 @@
       "description": "Lightweight Python web framework",
       "icon": "flask.svg",
       "category": "backend",
-      "conflicts": ["fastapi", "django"],
+      "conflicts": ["fastapi", "django","aiogram"],
       "knowledge_key": "flask",
       "kind": "backend",
       "requires_language": ["python"]
@@ -277,7 +277,7 @@
       "description": "Ergonomic Rust web framework built on Tokio",
       "icon": null,
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["clap"],
       "knowledge_key": "axum",
       "kind": "backend",
       "requires_language": ["rust"]
@@ -288,7 +288,7 @@
       "description": "Lightweight desktop app with web frontend",
       "icon": "tauri.svg",
       "category": "frontend",
-      "conflicts": [],
+      "conflicts": ["electron"],
       "knowledge_key": "tauri",
       "kind": "desktop",
       "requires_language": ["rust"]
@@ -299,7 +299,7 @@
       "description": "Rust CLI argument parser with derive macros",
       "icon": "clap.svg",
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["axum"],
       "knowledge_key": "clap",
       "kind": "backend",
       "requires_language": ["rust"]
@@ -310,7 +310,7 @@
       "description": "Fast Go HTTP framework",
       "icon": "gin.svg",
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["cobra"],
       "knowledge_key": "gin",
       "kind": "backend",
       "requires_language": ["go"]
@@ -321,7 +321,7 @@
       "description": "Powerful Go CLI framework",
       "icon": null,
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["gin"],
       "knowledge_key": "cobra",
       "kind": "backend",
       "requires_language": ["go"]
@@ -365,7 +365,7 @@
       "description": "Minimal Node.js web framework",
       "icon": "express.png",
       "category": "backend",
-      "conflicts": ["nest", "fastify"],
+      "conflicts": ["nest", "fastify","telegraf"],
       "knowledge_key": null,
       "kind": "backend",
       "requires_language": ["typescript", "javascript"]
@@ -376,7 +376,7 @@
       "description": "Cross-platform desktop app with Node.js",
       "icon": "electron.webp",
       "category": "frontend",
-      "conflicts": [],
+      "conflicts": ["tauri"],
       "knowledge_key": "electron",
       "kind": "desktop",
       "requires_language": ["typescript", "javascript"]
@@ -387,7 +387,7 @@
       "description": "Async Python Telegram bot framework",
       "icon": null,
       "category": "none",
-      "conflicts": [],
+      "conflicts": ["flask"],
       "knowledge_key": "aiogram",
       "kind": "bot",
       "requires_language": ["python"]
@@ -398,7 +398,7 @@
       "description": "Modern Node.js Telegram bot framework",
       "icon": "telegraf.png",
       "category": "none",
-      "conflicts": [],
+      "conflicts": ["express","fastify"],
       "knowledge_key": "telegraf",
       "kind": "bot",
       "requires_language": ["typescript", "javascript"]
@@ -409,7 +409,7 @@
       "description": "Production-grade Java web/REST framework",
       "icon": "spring-boot.svg",
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["ktor"],
       "knowledge_key": "spring-boot",
       "kind": "backend",
       "requires_language": ["java"]
@@ -442,7 +442,7 @@
       "description": "Game engine with C# scripting",
       "icon": "unity.svg",
       "category": "frontend",
-      "conflicts": ["godot"],
+      "conflicts": ["godot","unreal"],
       "knowledge_key": "unity",
       "kind": "game",
       "requires_language": ["csharp"]
@@ -464,7 +464,7 @@
       "description": "C++ game engine",
       "icon": "unreal-engine.svg",
       "category": "frontend",
-      "conflicts": ["godot"],
+      "conflicts": ["godot","unity"],
       "knowledge_key": "unreal",
       "kind": "game",
       "requires_language": ["cpp"]
@@ -497,7 +497,7 @@
       "description": "Dart cross-platform mobile/web/desktop",
       "icon": "flutter.svg",
       "category": "frontend",
-      "conflicts": [],
+      "conflicts": ["expo","react-native"],
       "knowledge_key": "flutter",
       "kind": "mobile",
       "requires_language": ["dart"]
@@ -541,7 +541,7 @@
       "description": "Async Kotlin web/REST framework",
       "icon": "ktor.svg",
       "category": "backend",
-      "conflicts": [],
+      "conflicts": ["spring-boot"],
       "knowledge_key": "ktor",
       "kind": "backend",
       "requires_language": ["kotlin"]
@@ -576,7 +576,7 @@
       "description": "JS/TS mobile app framework",
       "icon": "reactnative.svg",
       "category": "frontend",
-      "conflicts": ["expo"],
+      "conflicts": ["expo","flutter"],
       "knowledge_key": "react-native",
       "kind": "mobile",
       "requires_language": ["typescript", "javascript"]
@@ -609,7 +609,7 @@
       "description": "Managed React Native development",
       "icon": "expo.svg",
       "category": "frontend",
-      "conflicts": ["react-native"],
+      "conflicts": ["react-native","flutter"],
       "knowledge_key": "expo",
       "kind": "mobile",
       "requires_language": ["typescript", "javascript"]
@@ -642,7 +642,7 @@
       "description": "Fast, low-overhead Node.js web server",
       "icon": "fastify.svg",
       "category": "backend",
-      "conflicts": ["express", "nest"],
+      "conflicts": ["express", "nest","telegraf"],
       "knowledge_key": null,
       "kind": "backend",
       "requires_language": ["typescript", "javascript"]

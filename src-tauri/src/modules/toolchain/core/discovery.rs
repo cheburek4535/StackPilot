@@ -255,7 +255,10 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     // Бинарь в PATH есть, но ни одна проба не ответила:
     // установка сломана (dll потерялись, версия не поддерживается...)
     for probe in &def.detection.version_probes {
-        if !probe.is_empty() && which::which(&probe[0]).is_ok() {
+        if probe.is_empty() || is_shell_probe(&probe[0]) {
+            continue;
+        }
+        if which::which(&probe[0]).is_ok() {
             return ToolStatus::PathBroken {
                 reason: format!(
                     "{} найден в PATH, но не отвечает на `{}`",
@@ -276,11 +279,22 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
             .cloned()
             .unwrap_or_default();
         return ToolStatus::PathBroken {
-            reason: format!("Установка найдена ({}), но бинарник не отвечает", footprint),
+            reason: format!("Установка найдена ({}), но бинарник не отвечает на пробу", footprint),
         };
     }
 
     ToolStatus::Missing
+}
+
+/// Пробы, которые запускают оболочку, а не сам инструмент
+/// (kafka читает версию через powershell). Наличие оболочки в PATH
+/// ничего не говорит об инструменте — это не признак «сломана
+/// установка».
+fn is_shell_probe(program: &str) -> bool {
+    matches!(
+        program.to_ascii_lowercase().as_str(),
+        "powershell" | "pwsh" | "cmd" | "sh" | "bash" | "shell"
+    )
 }
 
 /// Первый из known_paths, который реально существует на диске

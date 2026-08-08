@@ -573,11 +573,15 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
                 "zig init-exe"),
         ],
 
-        "dart" => vec![
-            cmd("dart_create", "Create Dart project",
-                &format!("Create new Dart project '{}'", project_name),
-                &format!("dart create {}", project_name)),
-        ],
+        "dart" => {
+            // Dart-пакеты не принимают дефис в имени — приводим к подчёркиванию
+            let safe_name = project_name.replace('-', "_");
+            vec![
+                cmd("dart_create", "Create Dart project",
+                    &format!("Create new Dart project '{}'", project_name),
+                    &format!("dart create {}", safe_name)),
+            ]
+        }
 
         "kotlin" => vec![
             // Gradle init — интерактивный, поэтому просто создаём структуру
@@ -815,10 +819,15 @@ if __name__ == "__main__":
             },
         ],
 
-        "django" => vec![
-            cmd("django_start", "Start Django project", "Create Django project structure",
-                "django-admin", vec!["startproject", project_name, "."]),
-        ],
+        "django" => {
+            // django-admin startproject требует валидный Python-идентификатор:
+            // «my-project» (дефис) не подходит — заменяем на подчёркивание.
+            let safe_name = project_name.replace('-', "_");
+            vec![
+                cmd("django_start", "Start Django project", "Create Django project structure",
+                    "django-admin", vec!["startproject", &safe_name, "."]),
+            ]
+        }
 
         "flask" => vec![
             write_file("flask_app", "Create Flask app", "src/app.py",
@@ -863,7 +872,7 @@ if __name__ == "__main__":
         // ==================== JavaScript / TypeScript ====================
         "nextjs" => vec![
             cmd_i("nextjs_create", "Create Next.js app", "Scaffold Next.js project",
-                "npx", vec!["create-next-app@latest", ".", "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm"],
+                "npx", vec!["create-next-app@latest", project_name, "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm"],
                 vec![
                     InteractiveEntry {
                         trigger: "Would you like to use TypeScript?".into(),
@@ -901,7 +910,7 @@ if __name__ == "__main__":
             };
             vec![
                 cmd_i("sveltekit_create", "Create SvelteKit app", "Scaffold SvelteKit project",
-                    "npx", vec!["sv", "create", "."],
+                    "npx", vec!["sv", "create", project_name],
                     vec![
                         InteractiveEntry {
                             trigger: "Which Svelte app template?".into(),
@@ -921,7 +930,7 @@ if __name__ == "__main__":
 
         "nuxt" => vec![
             cmd_i("nuxt_create", "Create Nuxt app", "Scaffold Nuxt project",
-                "npx", vec!["nuxi", "init", "."],
+                "npx", vec!["--yes", "nuxi@latest", "init", project_name],
                 vec![
                     InteractiveEntry {
                         trigger: "Which package manager would you like to use?".into(),
@@ -930,6 +939,10 @@ if __name__ == "__main__":
                     InteractiveEntry {
                         trigger: "Initialize a new git repository?".into(),
                         response_type: ResponseType::Confirm(false),
+                    },
+                    InteractiveEntry {
+                        trigger: "Directory not empty".into(),
+                        response_type: ResponseType::Confirm(true),
                     },
                 ]),
         ],
@@ -1121,7 +1134,7 @@ start();
 
         "solidjs" => vec![
             cmd_i("solid_init", "Create SolidStart app", "Scaffold SolidStart project",
-                "npx", vec!["create-solid", "."],
+                "npx", vec!["create-solid", project_name],
                 vec![
                     InteractiveEntry {
                         trigger: "Is this a server-side rendered app".into(),
@@ -1206,7 +1219,7 @@ func main() {{
                 cmd("spring_init", "Generate Spring Boot project",
                     "Download Spring Boot starter from Initializr",
                     "curl", vec![
-                        "-sL", &format!("https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies={}", project_name, project_name, deps_str),
+                        "-fsL", &format!("https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies={}", project_name, project_name, deps_str),
                         "-o", "project.zip",
                     ]),
                 cmd("unzip_spring", "Extract Spring Boot", "Unzip the generated project",
@@ -1288,10 +1301,14 @@ target_link_libraries({} Qt6::Widgets)
         ],
 
         // ==================== Dart ====================
-        "flutter" => vec![
-            cmd("flutter_create", "Create Flutter project", "Scaffold Flutter app",
-                "flutter", vec!["create", project_name]),
-        ],
+        "flutter" => {
+            // flutter create требует имя без дефиса (валидный Dart-пакет)
+            let safe_name = project_name.replace('-', "_");
+            vec![
+                cmd("flutter_create", "Create Flutter project", "Scaffold Flutter app",
+                    "flutter", vec!["create", &safe_name]),
+            ]
+        }
 
         // ==================== Kotlin ====================
         "jetpack-compose" => vec![
@@ -1322,9 +1339,11 @@ fun main() {{
 
         // ==================== PHP ====================
         "laravel" => vec![
+            // Пакет «laravel» на npm не имеет bin («could not determine
+            // executable to run») — официальный путь через @laravel/installer.
             cmd_i("laravel_new", "Create Laravel project",
                 "Scaffold Laravel application",
-                "npx", vec!["laravel", "new", project_name],
+                "npx", vec!["--yes", "@laravel/installer", "new", project_name],
                 vec![
                     InteractiveEntry {
                         trigger: "Would you like to install a starter kit?".into(),
@@ -1435,6 +1454,7 @@ pub fn main() !void {{
 
 fn steps_for_tools(tools: &[String], project_path: &str) -> Vec<Step> {
     let mut steps = Vec::new();
+    let mut infra_envs: Vec<String> = Vec::new();
 
     let write_file = |id: &str, label: &str, path: &str, content: &str| -> Step {
         Step::WriteFile {
@@ -1551,14 +1571,11 @@ quote-style = "double"
 indent-style = "space"
 "#));
             }
-            // Infra tools — просто маркеры, compose соберёт steps_for_docker
+            // Infra tools — сервисы docker-compose; переменные окружения
+            // собираем в один .env.example в конце (иначе каждый следующий
+            // инструмент видел бы существующий файл и шаг скипался).
             "postgresql" | "redis" | "mongodb" | "mysql" | "kafka" | "clickhouse" | "rabbitmq" | "minio" | "mailpit" => {
-                // Эти инструменты будут добавлены как сервисы в docker-compose
-                // Здесь можно создать .env.example с переменными окружения
-                steps.push(write_file(&format!("env_{}", tool_id), 
-                    &format!("Environment for {}", tool_id),
-                    ".env.example",
-                    &content::get_env_example(tool_id)));
+                infra_envs.push(content::get_env_example(tool_id));
             }
             "grafana" | "opentelemetry" => {
                 steps.push(write_file(&format!("config_{}", tool_id),
@@ -1582,6 +1599,22 @@ indent-style = "space"
                 });
             }
         }
+    }
+
+    // Один .env.example на все инфра-сервисы (пишется один раз — в цикле
+    // выше шаги для каждого инструмента по отдельности скипались бы).
+    if !infra_envs.is_empty() {
+        let mut combined = String::new();
+        for env in &infra_envs {
+            combined.push_str(env);
+            combined.push('\n');
+        }
+        steps.push(write_file(
+            "env_example",
+            "Create .env.example",
+            ".env.example",
+            &combined,
+        ));
     }
 
     steps
@@ -1663,6 +1696,28 @@ fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str
         on_error: ErrorMode::Skip,
     });
     
+    // Генераторы (create-electron-app, flutter create и т.п.) часто сами
+    // инициализируют git во вложенных каталогах — `git add .` потом падает
+    // с «'dir' does not have a commit checked out». Убираем вложенные .git,
+    // корневой (созданный ранее пользователем или нами) не трогаем.
+    steps.push(Step::Command {
+        id: "git_cleanup_nested".into(),
+        label: "Remove nested Git repositories".into(),
+        description: "Remove nested .git directories left by generators".into(),
+        command: format!(
+            r#"Get-ChildItem -LiteralPath '{}' -Recurse -Force -Directory -Filter '.git' | Where-Object {{ $_.FullName -ne '{}' }} | Remove-Item -Recurse -Force"#,
+            project_path,
+            format!("{}\\.git", project_path)
+        ),
+        args: vec![],
+        working_dir: Some(project_path.to_string()),
+        env: None,
+        timeout_secs: Some(30),
+        condition: None,
+        on_error: ErrorMode::Skip,
+        interactive: vec![],
+    });
+
     // git init
     steps.push(Step::Command {
         id: "git_init".into(),
@@ -1869,6 +1924,43 @@ impl Step {
             Step::CreateDirectory { condition, .. } => condition.as_ref(),
             Step::Generate { condition, .. } => condition.as_ref(),
             Step::Parallel { condition: _, .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> WizardContext {
+        WizardContext {
+            project_name: Some("myapp".into()),
+            project_path: Some("C:\\dev\\myapp".into()),
+            languages: vec!["typescript".into()],
+            frameworks: vec!["nextjs".into()],
+            ..Default::default()
+        }
+    }
+
+    fn cmd_args(step: &Step) -> Vec<String> {
+        match step {
+            Step::Command { args, .. } => args.clone(),
+            other => panic!("ожидался Command, получили {:?}", other.id()),
+        }
+    }
+
+    #[test]
+    fn frontend_frameworks_use_project_subfolder() {
+        // Фронтенды создают проект в подпапке <project_name>, а не в корне:
+        // иначе они перезапишут package.json бэкенда (express+nextjs и т.п.).
+        for fw_id in ["nextjs", "nuxt", "sveltekit", "solidjs"] {
+            let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context());
+            assert_eq!(steps.len(), 1, "{fw_id}");
+            let args = cmd_args(&steps[0]);
+            assert!(
+                args.contains(&"myapp".to_string()),
+                "{fw_id} не создаёт проект в подпапке: {args:?}"
+            );
         }
     }
 }

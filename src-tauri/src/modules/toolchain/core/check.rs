@@ -109,7 +109,10 @@ pub async fn run_check(
                             ToolStatus::Installed { version: installed }
                         }
                         ToolStatus::PathBroken { reason } => ToolStatus::ManualInstall {
-                            reason: format!("Установка не подтвердилась: {reason}"),
+                            reason: format!(
+                                "Установка найдена, но бинарник не отвечает на пробу — его каталог, скорее всего, не в PATH приложения ({reason}). {}",
+                                reason_suffix(&def)
+                            ),
                         },
                         other => other,
                     }
@@ -193,6 +196,14 @@ fn sources_for_os<'a>(def: &'a ToolDefinition, os: &str) -> &'a [InstallSource] 
     }
 }
 
+/// Дополнение к причинам ManualInstall: инструкция из tools.json.
+fn reason_suffix(def: &ToolDefinition) -> String {
+    match &def.manual_install {
+        Some(instruction) => format!("Дальше: {instruction}"),
+        None => String::new(),
+    }
+}
+
 /// Человекочитаемое описание способа установки на текущей ОС
 /// (берётся первый источник в порядке приоритета из tools.json).
 fn source_description(def: &ToolDefinition) -> String {
@@ -251,6 +262,7 @@ mod tests {
                     dynamic_args: false,
                     install_dir: None,
                     needs_admin: None,
+                    file_name: None,
                 }],
                 linux: vec![],
                 macos: vec![],

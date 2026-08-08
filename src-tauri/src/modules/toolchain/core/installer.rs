@@ -543,7 +543,10 @@ async fn try_install_source(
                     task_id,
                     tool_id,
                 ));
-                let dest = download_dest(tool_id, url);
+                let dest = match &source.file_name {
+                    Some(name) => std::env::temp_dir().join(name),
+                    None => download_dest(tool_id, url),
+                };
                 if let Err(e) = console::download(url, &dest, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
                 {
                     return Err(e);
@@ -583,12 +586,37 @@ async fn try_install_source(
         return Err("Отменено пользователем".to_string());
     }
     if !res.success {
-        // tc:error-строка из скрипта (download/run_elevated) — настоящая
-        // причина сбоя; код процесса — лишь дополнение к ней.
-        return match res.error_line {
-            Some(line) => Err(format!("{line} (код {})", res.code)),
-            None => Err(format!("Установщик завершился с кодом {}", res.code)),
-        };
+        // winget: пакет уже установлен, доступных обновлений нет —
+        // НЕ сбой установки, а подтверждение, что цель достигнута
+        // (0x8A150011 = -1978335189 «уже установлен», 0x8A150015 =
+        // -1978335193 «обновление недоступно»). Текста «Найден
+        // существующий установленный пакет...» достаточно, чтобы
+        // не тратить время на fallback-источники (dart, firebase).
+        // Итоговый вердикт выносит verify ниже.
+        const WINGET_ALREADY_INSTALLED: i32 = -1978335189;
+        const WINGET_UPGRADE_NOT_AVAILABLE: i32 = -1978335193;
+        let winget_already_installed = matches!(source.kind, InstallSourceKind::PkgManager)
+            && matches!(res.code, WINGET_ALREADY_INSTALLED | WINGET_UPGRADE_NOT_AVAILABLE);
+        if !winget_already_installed {
+            // tc:error-строка из скрипта (download/run_elevated) — настоящая
+            // причина сбоя; код процесса — лишь дополнение к ней.
+            return match res.error_line {
+                Some(line) => Err(format!("{line} (код {})", res.code)),
+                None => Err(format!("Установщик завершился с кодом {}", res.code)),
+            };
+        }
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!(
+                    "tc:info Источник «{}»: пакет уже установлен, обновлений нет — проверяю",
+                    source.id
+                ),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
     }
 
     // PATH: установщик (winget/msi/exe) написал свои каталоги в реестр,
@@ -690,6 +718,7 @@ mod tests {
                     dynamic_args: false,
                     install_dir: None,
                     needs_admin: None,
+                    file_name: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -772,6 +801,7 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
+                    file_name: None,
         };
         let cmd = build_install_command(&source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
@@ -790,6 +820,7 @@ mod tests {
             dynamic_args: false,
             install_dir: Some("%LOCALAPPDATA%/Programs/kafka".to_string()),
             needs_admin: None,
+                    file_name: None,
         };
         let tgz = std::env::temp_dir().join("tc-tool-kafka.tgz");
         let cmd = build_install_command(&source, Some(&tgz), None).unwrap();
@@ -818,6 +849,7 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
+                    file_name: None,
         };
         let cmd = build_install_command(&source, None, None).unwrap();
         assert_eq!(cmd.program, "msiexec");
@@ -844,6 +876,7 @@ mod tests {
             dynamic_args: false,
             install_dir: Some("%LOCALAPPDATA%/Programs/gradle".to_string()),
             needs_admin: None,
+                    file_name: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-foo.zip");
         let cmd = build_install_command(&source, Some(&zip), None).unwrap();
@@ -871,6 +904,7 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
+                    file_name: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-bad.zip");
         let err = build_install_command(&source, Some(&zip), None).unwrap_err();
@@ -889,6 +923,7 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
+                    file_name: None,
         };
         let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
         let cmd = build_install_command(&source, Some(&bundle), None).unwrap();
@@ -972,6 +1007,7 @@ mod tests {
                 dynamic_args: false,
                 install_dir: None,
                 needs_admin: None,
+                    file_name: None,
             },
             def.sources.windows[0].clone(),
         ];

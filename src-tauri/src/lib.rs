@@ -69,6 +69,14 @@ pub fn run() {
             let toolchain_state = ToolchainState::new(data_dir.join("toolchain"));
             app.manage(toolchain_state);
 
+            // Приложение стартует с PATH момента запуска — инструменты,
+            // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
+            // winget, SDK), могут остаться вне него. Подтягиваем свежий
+            // пользовательский PATH из системы, пока UI ещё инициализируется.
+            tauri::async_runtime::spawn(async move {
+                let _ = modules::toolchain::core::path_service::sync_process_path().await;
+            });
+
             // Register all states
             app.manage(devlauncher_state);
             app.manage(workspace_state);

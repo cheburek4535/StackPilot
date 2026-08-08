@@ -3,10 +3,12 @@
 // ============================================================
 // Проверяет выбранный пользователем стек до начала генерации:
 //   - фреймворк доступен на текущей ОС (platforms);
-//   - лимиты выбора: максимум 1 backend-фреймворк и максимум 1
-//     прикладной (frontend/mobile/desktop/extension/bot/game);
 //   - взаимные конфликты из wizard_tree (conflicts);
 //   - у фреймворка выбран требуемый язык (requires_language).
+//
+// Жёстких лимитов «1 backend / 1 frontend» нет: выбор ограничен
+// только явной таблицей conflicts (что физически не сможет
+// существовать вместе) — остальное на усмотрение пользователя.
 //
 // Фронтенд отражает эти же правила для UX, но источник истины —
 // эта функция: start_project_execution отказывается выполнять
@@ -63,36 +65,6 @@ pub fn validate_stack(
                 ),
             });
         }
-    }
-
-    let backend: Vec<&str> = selected
-        .iter()
-        .filter(|f| f.kind.as_deref() == Some("backend"))
-        .map(|f| f.label.as_str())
-        .collect();
-    if backend.len() > 1 {
-        issues.push(StackIssue {
-            severity: StackSeverity::Error,
-            message: format!(
-                "Можно выбрать не более одного backend-фреймворка, выбрано: {}.",
-                backend.join(", ")
-            ),
-        });
-    }
-
-    let app: Vec<&str> = selected
-        .iter()
-        .filter(|f| f.kind.as_deref() != Some("backend"))
-        .map(|f| f.label.as_str())
-        .collect();
-    if app.len() > 1 {
-        issues.push(StackIssue {
-            severity: StackSeverity::Error,
-            message: format!(
-                "Можно выбрать не более одного прикладного фреймворка (frontend/mobile/desktop/extension/bot/game), выбрано: {}.",
-                app.join(", ")
-            ),
-        });
     }
 
     for a in &selected {
@@ -179,32 +151,102 @@ mod tests {
     }
 
     #[test]
-    fn two_backend_frameworks_blocked() {
+    fn cross_language_backends_allowed() {
         let t = tree();
+        // express (JS) + fastapi (Python): файлы генерации не пересекаются,
+        // свобода выбора не ограничивается — это осознанный выбор пользователя.
+        let issues = validate_stack(
+            &t,
+            &["typescript".into(), "python".into()],
+            &["express".into(), "fastapi".into()],
+            "windows",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn bot_plus_frontend_allowed() {
+        let t = tree();
+        // aiogram (бот) + nuxt (фронтенд): веб-панель для бота — адекватный сценарий.
         let issues = validate_stack(
             &t,
             &["python".into(), "typescript".into()],
-            &["fastapi".into(), "nest".into()],
+            &["aiogram".into(), "nuxt".into()],
+            "windows",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn two_frontends_blocked_by_conflicts() {
+        let t = tree();
+        let issues = validate_stack(
+            &t,
+            &["typescript".into()],
+            &["nextjs".into(), "sveltekit".into()],
             "windows",
         );
         assert!(
-            issues.iter().any(|i| i.message.contains("не более одного backend")),
+            issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
         );
     }
 
     #[test]
-    fn next_plus_expo_plus_unity_blocked() {
+    fn game_engines_block_each_other() {
         let t = tree();
-        // nextjs (frontend) + expo (mobile) + unity (game) — 3 прикладных
+        // unity + unreal: оба — игровые движки, в одной папке не сосуществуют.
         let issues = validate_stack(
             &t,
-            &["typescript".into(), "csharp".into()],
-            &["nextjs".into(), "expo".into(), "unity".into()],
+            &["csharp".into(), "cpp".into()],
+            &["unity".into(), "unreal".into()],
             "windows",
         );
         assert!(
-            issues.iter().any(|i| i.message.contains("не более одного прикладного")),
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn mobile_frameworks_block_each_other() {
+        let t = tree();
+        let issues = validate_stack(
+            &t,
+            &["dart".into(), "typescript".into()],
+            &["flutter".into(), "expo".into()],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn same_root_manifest_files_blocked() {
+        let t = tree();
+        // telegraf и express оба пишут package.json в корень — второй шаг
+        // скипнется и проект выйдет сломанным, поэтому пара заблокирована.
+        let issues = validate_stack(
+            &t,
+            &["typescript".into()],
+            &["telegraf".into(), "express".into()],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+        // flask и aiogram оба пишут requirements.txt в корень — та же механика.
+        let issues = validate_stack(
+            &t,
+            &["python".into()],
+            &["flask".into(), "aiogram".into()],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
         );
     }
