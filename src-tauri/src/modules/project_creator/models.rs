@@ -64,6 +64,16 @@ pub struct FrameworkDef {
     /// ОС, на которых фреймворк доступен. Пустой список = все ОС.
     #[serde(default)]
     pub platforms: Vec<String>,
+    /// Как фреймворк участвует в создании каркаса проекта:
+    ///   - "root"  — сам создаёт проект в корне (tauri, spring-boot, django);
+    ///   - "subdir" — сам создаёт полный проект в подпапке <project_name>
+    ///     (nextjs, flutter, electron...);
+    ///   - None — «микро»: только дописывает файлы в существующий проект
+    ///     (fastapi, express, axum...).
+    /// На проект может быть не более одного "root" и не более одного "subdir":
+    /// два таких фреймворка перезапишут/создадут одну и ту же структуру.
+    #[serde(default)]
+    pub scaffold: Option<String>,
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим

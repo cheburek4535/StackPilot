@@ -101,6 +101,23 @@ pub fn validate_stack(
         }
     }
 
+    // Правило: не более одного root-скаффолдера и не более одного subdir-скаффолдера
+    // (иначе два фреймворка создадут одну и ту же структуру проекта).
+    let root_count = selected.iter().filter(|f| f.scaffold.as_deref() == Some("root")).count();
+    if root_count > 1 {
+        issues.push(StackIssue {
+            severity: StackSeverity::Error,
+            message: "Выбрано более одного фреймворка, создающего проект в корне (tauri, spring-boot, django). Выберите только один.".into(),
+        });
+    }
+    let subdir_count = selected.iter().filter(|f| f.scaffold.as_deref() == Some("subdir")).count();
+    if subdir_count > 1 {
+        issues.push(StackIssue {
+            severity: StackSeverity::Error,
+            message: "Выбрано более одного фреймворка, создающего проект в подпапке (nextjs, flutter, electron...). Выберите только один.".into(),
+        });
+    }
+
     issues
 }
 

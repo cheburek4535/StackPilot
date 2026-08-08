@@ -1088,7 +1088,7 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
         "nest" => vec![
             cmd_i("nest_new", "Create NestJS project", "Scaffold NestJS application",
-                "npx", vec!["@nestjs/cli", "new", project_name, "--package-manager", "npm"],
+                "npx", vec!["@nestjs/cli", "new", ".", "--package-manager", "npm"],
                 vec![
                     InteractiveEntry {
                         trigger: "Which package manager would you love to use".into(),

@@ -35,6 +35,8 @@ export type FrameworkDef = {
   platforms?: string[];
   knowledge_key: string | null;
   conflicts?: string[];
+  /** Как фреймворк участвует в создании каркаса: "root", "subdir" или undefined (inplace) */
+  scaffold?: "root" | "subdir";
 };
 
 export type StackSeverity = "Error" | "Warning";

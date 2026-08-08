@@ -382,6 +382,15 @@ function frameworkBlockReason(fwId: string): string | null {
       return `Incompatible with ${cFw?.label ?? c}`;
     }
   }
+
+  // Правило: не более одного root- и одного subdir-скаффолдера
+  const isRoot = fw.scaffold === "root";
+  const isSubdir = fw.scaffold === "subdir";
+  const rootSelected = selectedFrameworks.some((id) => tree?.frameworks.find((f) => f.id === id)?.scaffold === "root");
+  const subdirSelected = selectedFrameworks.some((id) => tree?.frameworks.find((f) => f.id === id)?.scaffold === "subdir");
+  if (isRoot && rootSelected) return "Only one framework can create project in root (tauri, spring-boot, django)";
+  if (isSubdir && subdirSelected) return "Only one framework can create project in a subfolder (nextjs, flutter, electron...)";
+
   return null;
 }
 
