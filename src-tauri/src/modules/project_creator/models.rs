@@ -13,9 +13,20 @@ pub struct WizardTreeData {
     pub languages: Vec<LanguageDef>,
     pub frameworks: Vec<FrameworkDef>,
     pub tools: Vec<ToolDef>,
+    /// Готовые рецепты для вкладки «Шаблоны» — каждая комбинация проходит
+    /// каноническую валидацию (см. validate.rs: every_preset_valid).
+    #[serde(default)]
+    pub presets: Vec<ProjectPreset>,
     pub project_language_map: std::collections::HashMap<String, Vec<String>>,
     pub language_framework_map: std::collections::HashMap<String, Vec<String>>,
     pub framework_tool_map: std::collections::HashMap<String, Vec<String>>,
+    /// Инструменты, рекомендованные для типа проекта (data-pipeline → airflow,
+    /// kafka, clickhouse...). Используется рекомендациями конструктора.
+    #[serde(default)]
+    pub project_tool_map: std::collections::HashMap<String, Vec<String>>,
+    /// Инструменты, рекомендованные для языка (python → pytest, ruff...).
+    #[serde(default)]
+    pub language_tool_map: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Тип проекта (REST API, Desktop App, CLI Tool...)
@@ -51,16 +62,45 @@ pub struct FrameworkDef {
     pub label: String,
     pub description: String,
     pub icon: Option<String>,
+    /// Роль фреймворка в конструкторе:
+    ///   - "standalone" — сам создаёт полное приложение (nextjs, django,
+    ///     flutter, tauri...). На каждую сторону проекта — не более одного.
+    ///   - "inplace" — мини-каркас, дописывающий файлы в проект языка
+    ///     (fastapi, express, gin, clap...). На каждую сторону — не более
+    ///     одного inplace-фреймворка.
     #[serde(default)]
-    pub category: Option<String>, // "backend", "frontend", "none"
-    /// Роль фреймворка в стэке: "backend" / "frontend" / "mobile" /
-    /// "desktop" / "extension" / "bot" / "game". Лимиты выбора
-    /// (максимум 1 backend + максимум 1 остальной) опираются на него.
+    pub class: String,
+    /// Уровень фреймворка в иерархии конструктора:
+    ///   - "app"  — главный: создаёт каркас приложения/сервера/клиента
+    ///     (django, nest, nextjs, tauri...). На одну сторону — не более
+    ///     одного app-фреймворка (кроме side="either" — универсальные).
+    ///   - "side" — побочный: дописывается к главному и не конфликтует
+    ///     (aiogram, telegraf). Можно несколько, ограничения только из
+    ///     conflicts.
     #[serde(default)]
-    pub kind: Option<String>,
-    /// Языки, которые должны быть выбраны вместе с фреймворком.
+    pub kind: String,
+    /// Фреймворки, которые мастер подсветит как рекомендованные, когда
+    /// выбран этот (например nest → react). Чисто рекомендации — никак
+    /// не ограничивают выбор.
     #[serde(default)]
-    pub requires_language: Vec<String>,
+    pub recommends: Vec<FrameworkRecommendation>,
+    /// На какой стороне живёт фреймворк:
+    ///   - "backend" — требует язык именно бэкенд-стороны;
+    ///   - "frontend" — требует язык фронтенд-стороны;
+    ///   - "either" — язык может находиться на любой стороне.
+    #[serde(default)]
+    pub side: String,
+    /// Языки, совместимые с фреймворком (эквивалент старого requires_language,
+    /// но привязан к стороне через `side`).
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// Язык, который конструктор подставит автоматически (ровно один,
+    /// обязательно из `languages`; проверяется тестами).
+    #[serde(default)]
+    pub recommended_language: String,
+    /// Типы проектов, для которых фреймворк доступен. Пустой список = везде.
+    #[serde(default)]
+    pub project_types: Vec<String>,
     /// ОС, на которых фреймворк доступен. Пустой список = все ОС.
     #[serde(default)]
     pub platforms: Vec<String>,
@@ -88,13 +128,22 @@ pub struct FrameworkDef {
     #[serde(default)]
     pub required_tools: Vec<String>,
     /// Фреймворк сам создаёт полный каркас проекта для своих
-    /// requires_language языков (dotnet new webapi, create-next-app и т.п.) —
+    /// languages языков (dotnet new webapi, create-next-app и т.п.) —
     /// generic-скаффолд языка не нужен и конфликтует с ним.
     #[serde(default)]
     pub suppresses_language_scaffold: bool,
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим
+}
+
+/// Рекомендуемый «компаньон»: фреймворк, который стоит подсветить,
+/// когда выбран родительский. Поле `note` — объяснение «зачем» для UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameworkRecommendation {
+    pub framework: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 /// Инструмент (БД, кеш, CI, тесты...)
@@ -112,6 +161,53 @@ pub struct ToolDef {
     pub requires: Vec<String>,
     #[serde(default)]
     pub conflicts: Vec<String>,
+    /// ОС, на которых инструмент доступен. Пусто = все.
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// Языки, с которыми инструмент сочетается (npm — только JS-стек).
+    /// Пусто = для любых языков.
+    #[serde(default)]
+    pub for_languages: Vec<String>,
+    /// Типы проектов, для которых инструмент уместен. Пусто = везде.
+    #[serde(default)]
+    pub for_project_types: Vec<String>,
+}
+
+/// Готовый рецепт для вкладки «Шаблоны». Обязан проходить каноническую
+/// валидацию (validate.rs), иначе не попадёт в UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectPreset {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub stack: PresetStack,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetStack {
+    pub project_type: String,
+    pub backend_lang: Option<String>,
+    pub frontend_lang: Option<String>,
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    pub features: PresetFeatures,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetFeatures {
+    #[serde(default)]
+    pub testing: bool,
+    #[serde(default)]
+    pub git: bool,
+    #[serde(default)]
+    pub vscode: bool,
+    #[serde(default)]
+    pub docker: bool,
 }
 
 // Устаревшие типы — будут удалены после миграции

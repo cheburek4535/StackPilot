@@ -52,16 +52,20 @@ pub fn get_host_platform() -> String {
 }
 
 /// Проверяет выбранный стек на ограничения (лимиты, конфликты,
-/// платформы, требуемые языки). Возвращает все найденные проблемы.
+/// платформы, типы проектов, языки по сторонам). Возвращает все проблемы.
 #[tauri::command]
 pub fn validate_project_stack(
     state: State<'_, ProjectCreatorState>,
-    languages: Vec<String>,
+    project_type: Option<String>,
+    backend_languages: Vec<String>,
+    frontend_languages: Vec<String>,
     frameworks: Vec<String>,
 ) -> Vec<super::validate::StackIssue> {
     super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
-        &languages,
+        project_type.as_deref(),
+        backend_languages.first().map(String::as_str),
+        frontend_languages.first().map(String::as_str),
         &frameworks,
         super::validate::current_os(),
     )
@@ -71,12 +75,16 @@ pub fn validate_project_stack(
 #[tauri::command]
 pub fn validate_project_stack_error(
     state: State<'_, ProjectCreatorState>,
-    languages: Vec<String>,
+    project_type: Option<String>,
+    backend_languages: Vec<String>,
+    frontend_languages: Vec<String>,
     frameworks: Vec<String>,
 ) -> Option<String> {
     let issues = super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
-        &languages,
+        project_type.as_deref(),
+        backend_languages.first().map(String::as_str),
+        frontend_languages.first().map(String::as_str),
         &frameworks,
         super::validate::current_os(),
     );
@@ -92,6 +100,25 @@ pub fn analyze_project_technologies(
     state.analyzer.analyze(&p)
 }
 
+/// Рекомендации для текущего выбора стека: парные фреймворки,
+/// побочные фреймворки и инструменты (см. recommend.rs).
+#[tauri::command]
+pub fn get_stack_recommendations(
+    state: State<'_, ProjectCreatorState>,
+    project_type: Option<String>,
+    backend_languages: Vec<String>,
+    frontend_languages: Vec<String>,
+    frameworks: Vec<String>,
+) -> super::recommend::StackRecommendations {
+    super::recommend::recommend_stack(
+        state.wizard.get_wizard_tree(),
+        project_type.as_deref(),
+        &backend_languages,
+        &frontend_languages,
+        &frameworks,
+    )
+}
+
 #[tauri::command]
 pub fn preview_project_recipe(
     state: State<'_, ProjectCreatorState>,
@@ -100,7 +127,9 @@ pub fn preview_project_recipe(
 ) -> Result<RecipePreview, String> {
     if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
-        &context.languages,
+        context.project_type.as_deref(),
+        context.backend_languages.first().map(String::as_str),
+        context.frontend_languages.first().map(String::as_str),
         &context.frameworks,
         super::validate::current_os(),
     )) {
@@ -120,7 +149,9 @@ pub async fn start_project_execution(
 ) -> Result<ExecutionPlan, String> {
     if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
-        &context.languages,
+        context.project_type.as_deref(),
+        context.backend_languages.first().map(String::as_str),
+        context.frontend_languages.first().map(String::as_str),
         &context.frameworks,
         super::validate::current_os(),
     )) {

@@ -143,6 +143,7 @@ pub fn run() {
             modules::project_creator::commands::get_host_platform,
             modules::project_creator::commands::validate_project_stack,
             modules::project_creator::commands::validate_project_stack_error,
+            modules::project_creator::commands::get_stack_recommendations,
             // ToolchainManager commands
             modules::toolchain::commands::ping_toolchain,
             modules::toolchain::commands::tc_get_tool_definitions,

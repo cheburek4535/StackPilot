@@ -734,7 +734,7 @@ fn language_side_infer(lang: &str) -> Option<&'static str> {
 fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
     context.frameworks.iter().any(|fw| {
         framework_def(fw).is_some_and(|def| {
-            def.suppresses_language_scaffold && def.requires_language.iter().any(|l| l == lang)
+            def.suppresses_language_scaffold && def.languages.iter().any(|l| l == lang)
         })
     })
 }
@@ -806,26 +806,30 @@ impl SegLayout {
     }
 
     /// Каталог сегмента для фреймворка (None = корень проекта).
-    /// Сначала — сторона языка, который фреймворк требует (пользователь
-    /// назначил этот язык стороне в мастере); запасной вариант — kind
-    /// фреймворка из wizard_tree.json.
+    /// Приоритет — явная сторона фреймворка (side в wizard_tree.json):
+    /// nest (backend) должен попасть в backend/ даже если TypeScript стоит
+    /// и на фронтенд-стороне. Для side="either" сторона берётся из языка,
+    /// который фреймворк требует (qt + cpp на бэкенде → backend/).
     fn for_framework(&self, id: &str) -> Option<String> {
         if let Some(fw) = framework_def(id) {
-            for lang in &fw.requires_language {
-                if let Some(side) = self.lang_side.get(lang).copied() {
-                    return match side {
-                        "backend" => self.backend.clone(),
-                        "frontend" => self.frontend.clone(),
-                        _ => None,
-                    };
+            match fw.side.as_str() {
+                "backend" => return self.backend.clone(),
+                "frontend" => return self.frontend.clone(),
+                _ => {}
+            }
+            if fw.side == "either" {
+                for lang in &fw.languages {
+                    if let Some(side) = self.lang_side.get(lang).copied() {
+                        return match side {
+                            "backend" => self.backend.clone(),
+                            "frontend" => self.frontend.clone(),
+                            _ => None,
+                        };
+                    }
                 }
             }
         }
-        match framework_def(id).and_then(|f| f.kind.as_deref()) {
-            Some("backend") => self.backend.clone(),
-            Some("frontend") => self.frontend.clone(),
-            _ => None,
-        }
+        None
     }
 }
 
@@ -848,6 +852,15 @@ const FOLDER_MAKER_STEPS: &[(&str, usize)] = &[
     ("symfony_new", 1),     // symfony new <имя>
     ("phoenix_new", 1),     // mix phx.new <имя>
     ("vapor_new", 1),       // vapor new <имя>
+    ("vite_create", 1),     // npx create-vite@latest <имя>
+];
+
+/// Шаги-«хвосты» генераторов подпапок, которые должны выполняться ВНУТРИ
+/// созданной подпапки (npm install после create-vite и т.п.). При
+/// сегментации их working_dir переносится на имя сегмента, а в корневом
+/// режиме остаётся именем созданной папки.
+const FOLDER_WORKDIR_STEPS: &[&str] = &[
+    "vite_install",
 ];
 
 fn join_seg(wd: &str, seg: &str) -> String {
@@ -879,6 +892,11 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     }
                     // генератор сам создаст подпапку — рабочая директория остаётся корневой
                     Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
+                } else if FOLDER_WORKDIR_STEPS.contains(&id.as_str()) {
+                    // «хвост» генератора подпапки (npm install после create-vite):
+                    // при сегментации созданная папка уже переименована в сегмент —
+                    // рабочая директория становится самим сегментом
+                    Step::Command { id, label, description, command, args, working_dir: Some(dir.to_string()), env, timeout_secs, condition, on_error, interactive }
                 } else {
                     Step::Command {
                         id, label, description, command, args,
@@ -1142,6 +1160,38 @@ if __name__ == "__main__":
             write_file("aiogram_requirements", "Aiogram dependencies", "requirements.txt",
                 "aiogram\n"),
         ],
+
+        // ==================== Vite: React / Vue / Svelte ====================
+        // create-vite с --template работает без интерактива; npm install
+        // выполняется внутри созданной подпапки (рабочая директория —
+        // <project_path>/<project_name>, при сегментации переносится движком)
+        "react" | "vue" | "svelte" => {
+            let template = match (fw.to_lowercase().as_str(), has_typescript) {
+                ("react", true) => "react-ts",
+                ("react", false) => "react",
+                ("vue", true) => "vue-ts",
+                ("vue", false) => "vue",
+                ("svelte", true) => "svelte-ts",
+                _ => "svelte",
+            };
+            vec![
+                cmd("vite_create", &format!("Create {fw} app"), "Scaffold Vite project",
+                    "npx", vec!["create-vite@latest", project_name, "--template", template]),
+                Step::Command {
+                    id: "vite_install".into(),
+                    label: "Install npm dependencies".into(),
+                    description: "npm install inside the created app".into(),
+                    command: "npm".into(),
+                    args: vec!["install".into()],
+                    working_dir: Some(format!("{}/{}", project_path, project_name)),
+                    env: None,
+                    timeout_secs: Some(600),
+                    condition: None,
+                    on_error: ErrorMode::Skip,
+                    interactive: vec![],
+                },
+            ]
+        }
 
         // ==================== JavaScript / TypeScript ====================
         "nextjs" => vec![
@@ -1519,28 +1569,9 @@ func main() {{
                 "dotnet", vec!["new", "webapi", "-n", project_name, "--force"]),
         ],
 
-        "unity" => vec![
-            cmd("unity_hint", "Unity project hint",
-                "Unity projects are created through Unity Hub",
-                "echo", vec!["Create this project through Unity Hub with the same name"]),
-        ],
-
         "maui" => vec![
             cmd("maui_new", "Create MAUI app", "Scaffold .NET MAUI project",
                 "dotnet", vec!["new", "maui", "-n", project_name, "--force"]),
-        ],
-
-        "godot" => vec![
-            cmd("godot_hint", "Godot project hint",
-                "Godot projects are created through the Godot Editor",
-                "echo", vec!["Create this project through Godot Engine Editor"]),
-        ],
-
-        // ==================== C++ ====================
-        "unreal" => vec![
-            cmd("unreal_hint", "Unreal Engine hint",
-                "Unreal projects must be created through Epic Games Launcher",
-                "echo", vec!["Create this project through Unreal Engine Editor"]),
         ],
 
         "qt" => vec![
@@ -1847,6 +1878,42 @@ ignore = []
 [format]
 quote-style = "double"
 indent-style = "space"
+"#));
+            }
+            "airflow" => {
+                infra_envs.push(content::get_env_example("airflow"));
+                steps.push(Step::CreateDirectory {
+                    id: "create_dags_dir".into(),
+                    label: "Create dags/".into(),
+                    description: "Create Airflow DAGs directory".into(),
+                    path: "dags".into(),
+                    condition: None,
+                    on_error: ErrorMode::Skip,
+                });
+                steps.push(write_file("airflow_example_dag", "Example Airflow DAG",
+                    "dags/example_dag.py",
+                    r#"from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
+default_args = {"owner": "user", "retries": 1, "retry_delay": timedelta(minutes=5)}
+
+with DAG(
+    dag_id="example_dag",
+    default_args=default_args,
+    schedule="@daily",
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=["example"],
+) as dag:
+
+    def print_hello() -> None:
+        print("Hello from StackPilot Airflow!")
+
+    hello = PythonOperator(task_id="print_hello", python_callable=print_hello)
+
+    hello
 "#));
             }
             // Infra tools — сервисы docker-compose; переменные окружения
@@ -2293,16 +2360,50 @@ mod tests {
     }
 
     #[test]
-    fn reported_stack_aspnetcore_express_segments_by_language_side() {
-        // Регрессия из репорта: c# + aspnetcore (backend) и js + express —
-        // пользователь назначил javascript «фронтенд»-языком, поэтому даже
-        // серверный express попадает в frontend/, а не сталкивается с
-        // aspnetcore в корне. Скаффолды языков не конфликтуют с фреймворками.
+    fn inplace_framework_follows_its_own_side() {
+        // express — бэкенд-фреймворк (side=backend в wizard_tree). Даже если
+        // typescript назначен «фронтенд»-языком, express работает в backend/
+        // (в новой модели комбинация «express + бэкенд на другом языке»
+        // блокируется валидацией, а здесь проверяется размещение файлов).
         let mut ctx = context();
-        ctx.languages = vec!["csharp".into(), "javascript".into()];
+        ctx.languages = vec!["javascript".into(), "typescript".into()];
+        ctx.backend_languages = vec!["javascript".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["express".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
+
+        // express-файлы пишутся в backend/ (своя сторона), а не в frontend/
+        for (step_id, expected_path) in [("express_index", "backend/src/index.js"), ("express_package", "backend/package.json")] {
+            let step = recipe.steps.iter().find(|s| s.id() == step_id)
+                .unwrap_or_else(|| panic!("{step_id} должен быть в плане"));
+            match step {
+                Step::WriteFile { path, overwrite, .. } => {
+                    assert_eq!(path, expected_path, "{step_id} должен писать в {expected_path}");
+                    assert!(*overwrite, "{step_id} обязан перезаписать заглушку языка");
+                }
+                _ => panic!("{step_id} — WriteFile"),
+            }
+        }
+    }
+
+    #[test]
+    fn standalone_backend_plus_frontend_segments() {
+        // aspnetcore (standalone, backend) + nextjs (standalone, frontend) —
+        // валидный полный стек: каждый фреймворк создаётся в своём сегменте.
+        let mut ctx = context();
+        ctx.languages = vec!["csharp".into(), "typescript".into()];
         ctx.backend_languages = vec!["csharp".into()];
-        ctx.frontend_languages = vec!["javascript".into()];
-        ctx.frameworks = vec!["aspnetcore".into(), "express".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["aspnetcore".into(), "nextjs".into()];
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
         let mkdirs: Vec<String> = recipe.steps.iter()
@@ -2328,25 +2429,24 @@ mod tests {
             _ => panic!("aspnet_new — Command"),
         }
 
-        // express-файлы пишутся в frontend/ и не скипаются (overwrite=true)
-        for (step_id, expected_path) in [("express_index", "frontend/src/index.js"), ("express_package", "frontend/package.json")] {
-            let step = recipe.steps.iter().find(|s| s.id() == step_id)
-                .unwrap_or_else(|| panic!("{step_id} должен быть в плане"));
-            match step {
-                Step::WriteFile { path, overwrite, .. } => {
-                    assert_eq!(path, expected_path, "{step_id} должен писать в {expected_path}");
-                    assert!(*overwrite, "{step_id} обязан перезаписать заглушку языка");
-                }
-                _ => panic!("{step_id} — WriteFile"),
+        // nextjs (create-next-app) — folder-maker: рабочая директория остаётся
+        // корнем, но создаваемая подпапка переименовывается в сегмент frontend/
+        let next = recipe.steps.iter().find(|s| s.id() == "nextjs_create")
+            .expect("nextjs_create должен быть в плане");
+        match next {
+            Step::Command { args, .. } => {
+                assert_eq!(args.get(1).map(String::as_str), Some("frontend"),
+                    "nextjs должен создаваться в frontend/, а не в корне: {args:?}");
             }
+            _ => panic!("nextjs_create — Command"),
         }
 
         // Скаффолд csharp (dotnet new console) подавлен aspnetcore,
-        // js-скаффолд (package.json/src/index.js) подавлен express
+        // js-скаффолд подавлен nextjs
         for suppressed in ["dotnet_new", "package_json", "js_src_index"] {
             assert!(
                 !recipe.steps.iter().any(|s| s.id() == suppressed),
-                "шаг {suppressed} не должен выполняться: aspnetcore/express создают каркас сами"
+                "шаг {suppressed} не должен выполняться: aspnetcore/nextjs создают каркас сами"
             );
         }
     }
@@ -2407,6 +2507,94 @@ mod tests {
                     _ => panic!("{fw}: {id} — WriteFile"),
                 }
             }
+        }
+    }
+
+    #[test]
+    fn complex_monolith_builds_full_recipe() {
+        // Сложный монолит: python + typescript на одной стороне (без
+        // сегментов), fastapi (inplace) + react (vite-подпапка) + airflow
+        // + postgres. Всё создаётся в корне проекта.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into(), "typescript".into()];
+        ctx.frontend_languages = vec![];
+        ctx.frameworks = vec!["fastapi".into(), "react".into()];
+        ctx.tools = vec!["airflow".into(), "postgresql".into()];
+        ctx.docker = true;
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        // Монолит: без backend/ и frontend/ сегментов
+        assert!(
+            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
+                if path == "backend" || path == "frontend")),
+            "в монолите не должно быть сегментов"
+        );
+
+        // react: create-vite создаёт подпапку с именем проекта
+        let vite = recipe.steps.iter().find(|s| s.id() == "vite_create")
+            .expect("vite_create должен быть в плане");
+        match vite {
+            Step::Command { args, .. } => {
+                assert_eq!(args.get(0).map(String::as_str), Some("create-vite@latest"));
+                assert_eq!(args.get(1).map(String::as_str), Some("myapp"),
+                    "create-vite должен создавать папку с именем проекта: {args:?}");
+                assert_eq!(args.get(3).map(String::as_str), Some("react-ts"),
+                    "typescript → react-ts шаблон: {args:?}");
+            }
+            _ => panic!("vite_create — Command"),
+        }
+
+        // npm install выполняется ВНУТРИ созданной vite-папки
+        let install = recipe.steps.iter().find(|s| s.id() == "vite_install")
+            .expect("vite_install должен быть в плане");
+        match install {
+            Step::Command { working_dir, args, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/myapp"));
+                assert_eq!(args, &vec!["install".to_string()]);
+            }
+            _ => panic!("vite_install — Command"),
+        }
+
+        // fastapi (inplace): entry-файлы в корне проекта
+        let main = recipe.steps.iter().find(|s| s.id() == "fastapi_main")
+            .expect("fastapi_main должен быть в плане");
+        match main {
+            Step::WriteFile { path, .. } => assert_eq!(path, "src/main.py"),
+            _ => panic!("fastapi_main — WriteFile"),
+        }
+
+        // airflow: dags/ директория + пример DAG
+        assert!(
+            recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. } if path == "dags")),
+            "airflow должен создать dags/"
+        );
+        assert!(
+            recipe.steps.iter().any(|s| s.id() == "airflow_example_dag"),
+            "airflow должен создать example_dag.py"
+        );
+
+        // docker-compose: airflow + postgres
+        let compose = recipe.steps.iter().find(|s| s.id() == "docker_compose")
+            .expect("docker_compose должен быть в плане");
+        match compose {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("airflow"), "compose должен включать airflow");
+                assert!(content.contains("postgres"), "compose должен включать postgres");
+            }
+            _ => panic!("docker_compose — WriteFile"),
+        }
+
+        // .env.example: переменные airflow и postgres
+        let env = recipe.steps.iter().find(|s| s.id() == "env_example")
+            .expect("env_example должен быть в плане");
+        match env {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("AIRFLOW__CORE__EXECUTOR"));
+                assert!(content.contains("POSTGRES_USER"));
+            }
+            _ => panic!("env_example — WriteFile"),
         }
     }
 }

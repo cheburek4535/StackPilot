@@ -9,6 +9,7 @@ import type {
   RecipePreview,
   WizardContext,
   StackIssue,
+  StackRecommendations,
 } from "./types";
 
 export function pingProjectCreator(): Promise<string> {
@@ -71,8 +72,30 @@ export function getHostPlatform(): Promise<string> {
 
 /** Проверка стека на ограничения (лимиты, конфликты, платформы, языки) */
 export function validateProjectStack(
-  languages: string[],
+  projectType: string | null,
+  backendLanguages: string[],
+  frontendLanguages: string[],
   frameworks: string[],
 ): Promise<StackIssue[]> {
-  return invoke("validate_project_stack", { languages, frameworks });
+  return invoke("validate_project_stack", {
+    projectType,
+    backendLanguages,
+    frontendLanguages,
+    frameworks,
+  });
+}
+
+/** Рекомендации стека: парные фреймворки, side-фреймворки, инструменты, недостающие языки */
+export function getStackRecommendations(
+  projectType: string | null,
+  backendLanguages: string[],
+  frontendLanguages: string[],
+  frameworks: string[],
+): Promise<StackRecommendations> {
+  return invoke("get_stack_recommendations", {
+    projectType,
+    backendLanguages,
+    frontendLanguages,
+    frameworks,
+  });
 }

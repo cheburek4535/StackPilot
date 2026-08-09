@@ -26,11 +26,16 @@ export type FrameworkDef = {
   label: string;
   description: string;
   icon: string | null;
-  category?: string | null;
-  /** Роль: backend / frontend / mobile / desktop / extension / bot / game */
-  kind?: string | null;
-  /** Языки (хотя бы один из) — требуется вместе с фреймворком */
-  requires_language?: string[];
+  /** "standalone" — сам создаёт полное приложение; "inplace" — мини-каркас внутрь проекта языка */
+  class: string;
+  /** На какой стороне живёт: "backend" | "frontend" | "either" */
+  side: string;
+  /** Совместимые языки */
+  languages: string[];
+  /** Язык, который конструктор подставит автоматически (из languages) */
+  recommended_language: string;
+  /** Типы проектов, для которых доступен (пусто = везде) */
+  project_types?: string[];
   /** ОС, на которых доступен (пусто = все) */
   platforms?: string[];
   knowledge_key: string | null;
@@ -43,6 +48,23 @@ export type FrameworkDef = {
   required_tools?: string[];
   /** Фреймворк сам создаёт каркас для своих языков — generic-скаффолд языка подавляется */
   suppresses_language_scaffold?: boolean;
+};
+
+/** Готовый рецепт для вкладки «Шаблоны» */
+export type ProjectPreset = {
+  id: string;
+  label: string;
+  description: string;
+  icon: string | null;
+  tags: string[];
+  stack: {
+    project_type: string;
+    backend_lang: string | null;
+    frontend_lang: string | null;
+    frameworks: string[];
+    tools: string[];
+    features: { testing: boolean; git: boolean; vscode: boolean; docker: boolean };
+  };
 };
 
 export type StackSeverity = "Error" | "Warning";
@@ -69,9 +91,35 @@ export type WizardTreeData = {
   languages: LanguageDef[];
   frameworks: FrameworkDef[];
   tools: ToolDef[];
+  presets: ProjectPreset[];
   project_language_map: Record<string, string[]>;
   language_framework_map: Record<string, string[]>;
   framework_tool_map: Record<string, string[]>;
+};
+
+// ============================================================
+// Recommendations — подсказки стека (recommend.rs)
+// ============================================================
+
+export type FrameworkSuggestion = {
+  id: string;
+  note: string;
+};
+
+export type ToolSuggestion = {
+  id: string;
+  note: string;
+};
+
+export type StackRecommendations = {
+  /** Главные фреймворки, подсвечиваемые парными рекомендациями (nest → react) */
+  frameworks: FrameworkSuggestion[];
+  /** Побочные фреймворки (kind="side": aiogram, telegraf...) */
+  side_frameworks: FrameworkSuggestion[];
+  /** Инструменты из трёх карт: тип проекта, языки, фреймворки */
+  tools: ToolSuggestion[];
+  /** Языки, которые стоит подставить, чтобы стек стал валидным */
+  missing_languages: string[];
 };
 
 // ============================================================

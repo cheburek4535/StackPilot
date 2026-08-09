@@ -146,7 +146,7 @@ fn framework_requires_language() -> &'static HashMap<String, Vec<String>> {
                     .filter_map(|fw| {
                         let id = fw.get("id")?.as_str()?.to_string();
                         let langs = fw
-                            .get("requires_language")
+                            .get("languages")
                             .and_then(|l| l.as_array())
                             .map(|a| {
                                 a.iter()

@@ -24,6 +24,11 @@ MYSQL_USER=user
 MYSQL_PASSWORD=password
 MYSQL_PORT=3306
 "#.to_string(),
+        "airflow" => r#"AIRFLOW__CORE__EXECUTOR=LocalExecutor
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:12345@postgres:5432/postgres
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW_WEBSERVER_PORT=8080
+"#.to_string(),
         _ => format!("# Environment variables for {}\n", tool_id),
     }
 }
@@ -132,6 +137,23 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                 environment: Vec::new(),
                 volumes: Vec::new(),
                 depends_on: Vec::new(),
+            }),
+
+            "airflow" => services.push(DockerService {
+                name: "airflow".into(),
+                image: "apache/airflow:2.10.4".into(),
+                ports: vec!["8080:8080".into()],
+                environment: vec![
+                    ("AIRFLOW__CORE__EXECUTOR".into(), "LocalExecutor".into()),
+                    ("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN".into(), "postgresql+psycopg2://postgres:12345@postgres:5432/postgres".into()),
+                    ("AIRFLOW__CORE__LOAD_EXAMPLES".into(), "False".into()),
+                    ("AIRFLOW__WEBSERVER__SECRET_KEY".into(), "airflow-secret-key".into()),
+                ],
+                volumes: vec![
+                    "./dags:/opt/airflow/dags".into(),
+                    "./logs:/opt/airflow/logs".into(),
+                ],
+                depends_on: vec!["postgres".into()],
             }),
 
             _ => {}

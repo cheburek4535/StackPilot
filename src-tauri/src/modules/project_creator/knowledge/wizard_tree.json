@@ -82,18 +82,6 @@
       "allow_custom_stack": false
     },
     {
-      "id": "game",
-      "label": "Game",
-      "description": "2D/3D game development",
-      "icon": "game.png",
-      "tags": [
-        "game",
-        "3d",
-        "2d"
-      ],
-      "allow_custom_stack": false
-    },
-    {
       "id": "browser-extension",
       "label": "Browser Extension",
       "description": "Extension for Chrome, Firefox, etc.",
@@ -289,84 +277,134 @@
       "label": "FastAPI",
       "description": "Modern async Python web framework with automatic OpenAPI docs",
       "icon": "fastapi.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "python"
+      ],
+      "recommended_language": "python",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "telegram-bot",
+        "data-pipeline",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "flask",
         "django"
       ],
       "knowledge_key": "fastapi",
-      "kind": "backend",
-      "requires_language": [
-        "python"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "django",
       "label": "Django",
       "description": "Batteries-included Python web framework",
       "icon": "django.svg",
-      "category": "backend",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "python"
+      ],
+      "recommended_language": "python",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "fastapi",
         "flask"
       ],
       "knowledge_key": "django",
-      "kind": "backend",
-      "requires_language": [
-        "python"
-      ],
       "scaffold": "root",
       "output_subdir": null,
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "flask",
       "label": "Flask",
       "description": "Lightweight Python web framework",
       "icon": "flask.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "python"
+      ],
+      "recommended_language": "python",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "telegram-bot",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "fastapi",
         "django",
         "aiogram"
       ],
       "knowledge_key": "flask",
-      "kind": "backend",
-      "requires_language": [
-        "python"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "axum",
       "label": "Axum",
       "description": "Ergonomic Rust web framework built on Tokio",
       "icon": null,
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "rust"
+      ],
+      "recommended_language": "rust",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "clap"
       ],
       "knowledge_key": "axum",
-      "kind": "backend",
-      "requires_language": [
-        "rust"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "tauri",
       "label": "Tauri",
       "description": "Lightweight desktop app with web frontend",
       "icon": "tauri.svg",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "either",
+      "languages": [
+        "rust"
+      ],
+      "recommended_language": "rust",
+      "project_types": [
+        "desktop-app",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "electron",
         "nextjs",
@@ -375,678 +413,1091 @@
         "solidjs"
       ],
       "knowledge_key": "tauri",
-      "kind": "desktop",
-      "requires_language": [
-        "rust"
-      ],
       "scaffold": "root",
       "output_subdir": null,
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": [
+        {
+          "framework": "svelte",
+          "note": "Лёгкий и быстрый фронтенд — стандартный выбор для Tauri"
+        },
+        {
+          "framework": "react",
+          "note": "Самый популярный фронтенд для Tauri"
+        }
+      ]
     },
     {
       "id": "clap",
       "label": "Clap",
       "description": "Rust CLI argument parser with derive macros",
       "icon": "clap.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "rust"
+      ],
+      "recommended_language": "rust",
+      "project_types": [
+        "cli-tool",
+        "library",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "axum"
       ],
       "knowledge_key": "clap",
-      "kind": "backend",
-      "requires_language": [
-        "rust"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "gin",
       "label": "Gin",
       "description": "Fast Go HTTP framework",
       "icon": "gin.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "go"
+      ],
+      "recommended_language": "go",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "cobra"
       ],
       "knowledge_key": "gin",
-      "kind": "backend",
-      "requires_language": [
-        "go"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "cobra",
       "label": "Cobra",
       "description": "Powerful Go CLI framework",
       "icon": null,
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "go"
+      ],
+      "recommended_language": "go",
+      "project_types": [
+        "cli-tool",
+        "library",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "gin"
       ],
       "knowledge_key": "cobra",
-      "kind": "backend",
-      "requires_language": [
-        "go"
-      ],
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "nextjs",
       "label": "Next.js",
       "description": "React full-stack framework",
       "icon": "nextjs.svg",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "sveltekit",
         "nuxt",
         "solidjs",
-        "tauri"
+        "tauri",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
       ],
       "knowledge_key": "nextjs",
-      "kind": "frontend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "sveltekit",
       "label": "SvelteKit",
       "description": "Full-stack Svelte framework",
       "icon": "svelte.svg",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "nextjs",
         "nuxt",
         "solidjs",
-        "tauri"
+        "tauri",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
       ],
       "knowledge_key": "sveltekit",
-      "kind": "frontend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "nuxt",
       "label": "Nuxt",
       "description": "Full-stack Vue framework",
       "icon": "nuxt.png",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "nextjs",
         "sveltekit",
         "solidjs",
-        "tauri"
+        "tauri",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
       ],
       "knowledge_key": "nuxt",
-      "kind": "frontend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": [
+        {
+          "framework": "express",
+          "note": "Мини-API-сервер рядом с Nuxt-фронтендом"
+        }
+      ]
     },
     {
       "id": "express",
       "label": "Express",
       "description": "Minimal Node.js web framework",
       "icon": "express.png",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "nest",
         "fastify",
         "telegraf"
       ],
       "knowledge_key": null,
-      "kind": "backend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "output_subdir": "backend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "electron",
       "label": "Electron",
       "description": "Cross-platform desktop app with Node.js",
       "icon": "electron.webp",
-      "category": "frontend",
-      "conflicts": [
-        "tauri"
-      ],
-      "knowledge_key": "electron",
-      "kind": "desktop",
-      "requires_language": [
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
         "typescript",
         "javascript"
       ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "desktop-app",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "tauri",
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
+      ],
+      "knowledge_key": "electron",
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "aiogram",
       "label": "Aiogram",
       "description": "Async Python Telegram bot framework",
       "icon": null,
-      "category": "none",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "python"
+      ],
+      "recommended_language": "python",
+      "project_types": [
+        "telegram-bot",
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "flask"
       ],
       "knowledge_key": "aiogram",
-      "kind": "bot",
-      "requires_language": [
-        "python"
-      ],
-      "output_subdir": "frontend",
+      "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "side",
+      "recommends": []
     },
     {
       "id": "telegraf",
       "label": "Telegraf",
       "description": "Modern Node.js Telegram bot framework",
       "icon": "telegraf.png",
-      "category": "none",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "telegram-bot",
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "express",
         "fastify"
       ],
       "knowledge_key": "telegraf",
-      "kind": "bot",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
-      "output_subdir": "frontend",
+      "output_subdir": "backend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "side",
+      "recommends": []
     },
     {
       "id": "spring-boot",
       "label": "Spring Boot",
       "description": "Production-grade Java web/REST framework",
       "icon": "spring-boot.svg",
-      "category": "backend",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "java"
+      ],
+      "recommended_language": "java",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "ktor"
       ],
       "knowledge_key": "spring-boot",
-      "kind": "backend",
-      "requires_language": [
-        "java"
-      ],
       "scaffold": "root",
       "output_subdir": null,
       "required_tools": [
         "maven",
         "gradle"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "android",
       "label": "Android SDK",
       "description": "Native Android development (Java/Kotlin)",
       "icon": "android.svg",
-      "category": "frontend",
-      "conflicts": [],
-      "knowledge_key": "android",
-      "kind": "mobile",
-      "requires_language": [
+      "class": "inplace",
+      "side": "frontend",
+      "languages": [
         "java",
         "kotlin"
       ],
+      "recommended_language": "kotlin",
+      "project_types": [
+        "mobile-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "jetpack-compose"
+      ],
+      "knowledge_key": "android",
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "aspnetcore",
       "label": "ASP.NET Core",
       "description": ".NET web/REST framework",
       "icon": "aspnetcore.png",
-      "category": "backend",
-      "conflicts": [],
-      "knowledge_key": "aspnetcore",
-      "kind": "backend",
-      "requires_language": [
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
         "csharp"
       ],
+      "recommended_language": "csharp",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "aspnetcore",
       "scaffold": "subdir",
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
-    },
-    {
-      "id": "unity",
-      "label": "Unity",
-      "description": "Game engine with C# scripting",
-      "icon": "unity.svg",
-      "category": "frontend",
-      "conflicts": [
-        "godot",
-        "unreal"
-      ],
-      "knowledge_key": "unity",
-      "kind": "game",
-      "requires_language": [
-        "csharp"
-      ],
-      "output_subdir": "frontend",
-      "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "maui",
       "label": "MAUI",
       "description": ".NET cross-platform desktop/mobile UI",
       "icon": "maui.png",
-      "category": "frontend",
-      "conflicts": [],
-      "knowledge_key": "maui",
-      "kind": "desktop",
-      "requires_language": [
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
         "csharp"
       ],
+      "recommended_language": "csharp",
+      "project_types": [
+        "desktop-app",
+        "mobile-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "maui",
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
-    },
-    {
-      "id": "unreal",
-      "label": "Unreal Engine",
-      "description": "C++ game engine",
-      "icon": "unreal-engine.svg",
-      "category": "frontend",
-      "conflicts": [
-        "godot",
-        "unity"
-      ],
-      "knowledge_key": "unreal",
-      "kind": "game",
-      "requires_language": [
-        "cpp"
-      ],
-      "output_subdir": "frontend",
-      "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "qt",
       "label": "Qt",
       "description": "C++ cross-platform desktop/embedded framework",
       "icon": "qt.svg",
-      "category": "frontend",
+      "class": "inplace",
+      "side": "either",
+      "languages": [
+        "cpp"
+      ],
+      "recommended_language": "cpp",
+      "project_types": [
+        "desktop-app",
+        "embedded",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [],
       "knowledge_key": "qt",
-      "kind": "desktop",
-      "requires_language": [
-        "cpp"
-      ],
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
-    },
-    {
-      "id": "godot",
-      "label": "Godot",
-      "description": "Open-source game engine (C++, C#)",
-      "icon": "godot.svg",
-      "category": "frontend",
-      "conflicts": [
-        "unity",
-        "unreal"
-      ],
-      "knowledge_key": "godot",
-      "kind": "game",
-      "requires_language": [
-        "csharp",
-        "cpp"
-      ],
-      "output_subdir": "frontend",
-      "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "flutter",
       "label": "Flutter",
       "description": "Dart cross-platform mobile/web/desktop",
       "icon": "flutter.svg",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "dart"
+      ],
+      "recommended_language": "dart",
+      "project_types": [
+        "mobile-app",
+        "desktop-app",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "expo",
         "react-native"
       ],
       "knowledge_key": "flutter",
-      "kind": "mobile",
-      "requires_language": [
-        "dart"
-      ],
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "laravel",
       "label": "Laravel",
       "description": "PHP full-stack web framework",
       "icon": "laravel.svg",
-      "category": "backend",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "php"
+      ],
+      "recommended_language": "php",
+      "project_types": [
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "symfony"
       ],
       "knowledge_key": "laravel",
-      "kind": "backend",
-      "requires_language": [
-        "php"
-      ],
       "scaffold": "subdir",
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "symfony",
       "label": "Symfony",
       "description": "Modular PHP web framework",
       "icon": "symfony.svg",
-      "category": "backend",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "php"
+      ],
+      "recommended_language": "php",
+      "project_types": [
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "laravel"
       ],
       "knowledge_key": "symfony",
-      "kind": "backend",
-      "requires_language": [
-        "php"
-      ],
       "scaffold": "subdir",
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "jetpack-compose",
       "label": "Jetpack Compose",
       "description": "Modern Android UI toolkit (Kotlin)",
       "icon": "jetpack-compose.svg",
-      "category": "frontend",
-      "conflicts": [],
-      "knowledge_key": "jetpack-compose",
-      "kind": "mobile",
-      "requires_language": [
+      "class": "inplace",
+      "side": "frontend",
+      "languages": [
         "kotlin"
       ],
+      "recommended_language": "kotlin",
+      "project_types": [
+        "mobile-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "android"
+      ],
+      "knowledge_key": "jetpack-compose",
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "ktor",
       "label": "Ktor",
       "description": "Async Kotlin web/REST framework",
       "icon": "ktor.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "kotlin"
+      ],
+      "recommended_language": "kotlin",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "spring-boot"
       ],
       "knowledge_key": "ktor",
-      "kind": "backend",
-      "requires_language": [
-        "kotlin"
-      ],
       "output_subdir": "backend",
       "required_tools": [
         "gradle"
       ],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "swiftui",
       "label": "SwiftUI",
       "description": "Native iOS/macOS UI framework",
       "icon": "swift.svg",
-      "category": "frontend",
-      "conflicts": [],
-      "knowledge_key": "swiftui",
-      "kind": "mobile",
-      "requires_language": [
+      "class": "inplace",
+      "side": "frontend",
+      "languages": [
         "swift"
       ],
+      "recommended_language": "swift",
+      "project_types": [
+        "mobile-app",
+        "desktop-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "swiftui",
       "platforms": [
         "macos"
       ],
       "output_subdir": "frontend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "vapor",
       "label": "Vapor",
       "description": "Swift web framework",
       "icon": "vapor.svg",
-      "category": "backend",
-      "conflicts": [],
-      "knowledge_key": "vapor",
-      "kind": "backend",
-      "requires_language": [
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
         "swift"
       ],
+      "recommended_language": "swift",
+      "project_types": [
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "vapor",
       "platforms": [
         "macos"
       ],
       "scaffold": "subdir",
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "react-native",
       "label": "React Native",
       "description": "JS/TS mobile app framework",
       "icon": "reactnative.svg",
-      "category": "frontend",
-      "conflicts": [
-        "expo",
-        "flutter"
-      ],
-      "knowledge_key": "react-native",
-      "kind": "mobile",
-      "requires_language": [
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
         "typescript",
         "javascript"
       ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "mobile-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "expo",
+        "flutter",
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
+      ],
+      "knowledge_key": "react-native",
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "plasmo",
       "label": "Plasmo",
       "description": "Browser extension framework (JS/TS)",
       "icon": null,
-      "category": "frontend",
-      "conflicts": [],
-      "knowledge_key": "plasmo",
-      "kind": "extension",
-      "requires_language": [
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
         "typescript",
         "javascript"
       ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "browser-extension",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "expo",
+        "react-native",
+        "react",
+        "vue",
+        "svelte"
+      ],
+      "knowledge_key": "plasmo",
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "zig-cli",
       "label": "Zig CLI (std)",
       "description": "Native CLI with Zig standard library",
       "icon": "zig.svg",
-      "category": "backend",
-      "conflicts": [],
-      "knowledge_key": null,
-      "kind": "backend",
-      "requires_language": [
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
         "zig"
       ],
+      "recommended_language": "zig",
+      "project_types": [
+        "cli-tool",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": null,
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": false
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "expo",
       "label": "Expo",
       "description": "Managed React Native development",
       "icon": "expo.svg",
-      "category": "frontend",
-      "conflicts": [
-        "react-native",
-        "flutter"
-      ],
-      "knowledge_key": "expo",
-      "kind": "mobile",
-      "requires_language": [
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
         "typescript",
         "javascript"
       ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "mobile-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "react-native",
+        "flutter",
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
+      ],
+      "knowledge_key": "expo",
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "phoenix",
       "label": "Phoenix",
       "description": "Elixir web framework for real-time apps",
       "icon": "phoenix-framework.svg",
-      "category": "backend",
-      "conflicts": [],
-      "knowledge_key": "phoenix",
-      "kind": "backend",
-      "requires_language": [
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
         "elixir"
       ],
+      "recommended_language": "elixir",
+      "project_types": [
+        "web-app",
+        "rest-api",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "phoenix",
       "scaffold": "subdir",
       "output_subdir": "backend",
       "required_tools": [],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "nest",
       "label": "NestJS",
       "description": "Structured Node.js server framework",
       "icon": "nestjs.svg",
-      "category": "backend",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "express",
         "fastify"
       ],
       "knowledge_key": "nestjs",
-      "kind": "backend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "scaffold": "root",
       "output_subdir": null,
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": [
+        {
+          "framework": "react",
+          "note": "Классическая связка для full-stack приложения"
+        }
+      ]
     },
     {
       "id": "fastify",
       "label": "Fastify",
       "description": "Fast, low-overhead Node.js web server",
       "icon": "fastify.svg",
-      "category": "backend",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "express",
         "nest",
         "telegraf"
       ],
       "knowledge_key": null,
-      "kind": "backend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "output_subdir": "backend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
     },
     {
       "id": "solidjs",
       "label": "SolidStart",
       "description": "Full-stack Solid.js framework",
       "icon": "solidjs.svg",
-      "category": "frontend",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
       "conflicts": [
         "nextjs",
         "sveltekit",
         "nuxt",
-        "tauri"
+        "tauri",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue",
+        "svelte"
       ],
       "knowledge_key": null,
-      "kind": "frontend",
-      "requires_language": [
-        "typescript",
-        "javascript"
-      ],
       "scaffold": "subdir",
       "output_subdir": "frontend",
       "required_tools": [
         "npm"
       ],
-      "suppresses_language_scaffold": true
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "react",
+      "label": "React",
+      "description": "UI library with Vite — the most popular frontend ecosystem",
+      "icon": "react.svg",
+      "class": "standalone",
+      "kind": "app",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "desktop-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "vue",
+        "svelte"
+      ],
+      "knowledge_key": "react",
+      "output_subdir": "frontend",
+      "scaffold": "subdir",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "recommends": []
+    },
+    {
+      "id": "vue",
+      "label": "Vue",
+      "description": "Progressive UI framework with Vite — approachable and flexible",
+      "icon": "vue.svg",
+      "class": "standalone",
+      "kind": "app",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "desktop-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "svelte"
+      ],
+      "knowledge_key": "vue",
+      "output_subdir": "frontend",
+      "scaffold": "subdir",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "recommends": []
+    },
+    {
+      "id": "svelte",
+      "label": "Svelte",
+      "description": "Compiled UI framework with Vite — small bundles, great DX",
+      "icon": "svelte.svg",
+      "class": "standalone",
+      "kind": "app",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "desktop-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [
+        "nextjs",
+        "sveltekit",
+        "nuxt",
+        "solidjs",
+        "electron",
+        "expo",
+        "react-native",
+        "plasmo",
+        "react",
+        "vue"
+      ],
+      "knowledge_key": "svelte",
+      "output_subdir": "frontend",
+      "scaffold": "subdir",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "recommends": []
     }
   ],
   "tools": [
@@ -1056,7 +1507,13 @@
       "description": "Relational database",
       "icon": "postgresql.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "redis",
@@ -1064,7 +1521,13 @@
       "description": "In-memory cache and message broker",
       "icon": "redis.svg",
       "category": "cache",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "docker",
@@ -1072,7 +1535,13 @@
       "description": "Containerization platform",
       "icon": "docker.svg",
       "category": "container",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "pytest",
@@ -1080,7 +1549,15 @@
       "description": "Python testing framework",
       "icon": "pytest.svg",
       "category": "testing",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "python"
+      ],
+      "for_project_types": []
     },
     {
       "id": "sqlalchemy",
@@ -1088,7 +1565,15 @@
       "description": "Python SQL toolkit and ORM",
       "icon": "sqlalchemy.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "python"
+      ],
+      "for_project_types": []
     },
     {
       "id": "alembic",
@@ -1101,7 +1586,12 @@
       "requires": [
         "sqlalchemy"
       ],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "python"
+      ],
+      "for_project_types": []
     },
     {
       "id": "ruff",
@@ -1109,7 +1599,15 @@
       "description": "Fast Python linter",
       "icon": "ruff.svg",
       "category": "tooling",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "python"
+      ],
+      "for_project_types": []
     },
     {
       "id": "npm",
@@ -1117,7 +1615,16 @@
       "description": "Node.js package manager",
       "icon": "npm.svg",
       "category": "tooling",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": []
     },
     {
       "id": "gradle",
@@ -1125,7 +1632,16 @@
       "description": "Build tool for Java/Kotlin",
       "icon": "gradle.svg",
       "category": "tooling",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "java",
+        "kotlin"
+      ],
+      "for_project_types": []
     },
     {
       "id": "maven",
@@ -1133,7 +1649,15 @@
       "description": "Build tool for Java projects",
       "icon": "maven.svg",
       "category": "tooling",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "java"
+      ],
+      "for_project_types": []
     },
     {
       "id": "mongodb",
@@ -1141,7 +1665,13 @@
       "description": "NoSQL document database",
       "icon": "mongodb.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "sqlite",
@@ -1149,7 +1679,13 @@
       "description": "Embedded relational database",
       "icon": "sqlite.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "firebase",
@@ -1157,7 +1693,13 @@
       "description": "Mobile/backend platform (auth, DB, etc.)",
       "icon": "firebase.svg",
       "category": "baas",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
     },
     {
       "id": "kafka",
@@ -1168,7 +1710,14 @@
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "data-pipeline",
+        "rest-api",
+        "custom"
+      ]
     },
     {
       "id": "clickhouse",
@@ -1179,7 +1728,13 @@
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "data-pipeline",
+        "custom"
+      ]
     },
     {
       "id": "airflow",
@@ -1190,7 +1745,13 @@
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "data-pipeline",
+        "custom"
+      ]
     },
     {
       "id": "dbt",
@@ -1198,7 +1759,16 @@
       "description": "Data build tool for SQL transformations",
       "icon": "dbt.svg",
       "category": "etl",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "data-pipeline",
+        "custom"
+      ]
     },
     {
       "id": "grafana",
@@ -1209,7 +1779,15 @@
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "rest-api",
+        "web-app",
+        "data-pipeline",
+        "custom"
+      ]
     },
     {
       "id": "terraform",
@@ -1217,7 +1795,16 @@
       "description": "Infrastructure as code",
       "icon": "terra.svg",
       "category": "infra",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "custom",
+        "data-pipeline"
+      ]
     },
     {
       "id": "prisma",
@@ -1225,7 +1812,16 @@
       "description": "Modern ORM for Node.js/TypeScript",
       "icon": "prisma.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": []
     },
     {
       "id": "drizzle",
@@ -1233,7 +1829,16 @@
       "description": "Lightweight TypeScript ORM",
       "icon": "drizzle.svg",
       "category": "database",
-      "knowledge_key": null
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": []
     },
     {
       "id": "opentelemetry",
@@ -1242,9 +1847,458 @@
       "icon": "opentelemetry.svg",
       "category": "observability",
       "knowledge_key": null,
-      "requires_docker": true,
+      "requires_docker": false,
       "requires": [],
-      "conflicts": []
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "id": "fastapi-api",
+      "label": "FastAPI + PostgreSQL",
+      "description": "Modern Python REST API with PostgreSQL",
+      "icon": "fastapi.svg",
+      "tags": [
+        "python",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "fastapi"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "django-site",
+      "label": "Django + PostgreSQL",
+      "description": "Full-featured Python web application",
+      "icon": "django.svg",
+      "tags": [
+        "python",
+        "web"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "django"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "next-fullstack",
+      "label": "Next.js (Full-stack)",
+      "description": "React web app with TypeScript",
+      "icon": "nextjs.svg",
+      "tags": [
+        "react",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "nextjs"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "nest-api",
+      "label": "NestJS REST API",
+      "description": "Structured TypeScript backend",
+      "icon": "nestjs.svg",
+      "tags": [
+        "typescript",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "typescript",
+        "frontend_lang": null,
+        "frameworks": [
+          "nest"
+        ],
+        "tools": [],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "spring-api",
+      "label": "Spring Boot REST API",
+      "description": "Production-grade Java backend",
+      "icon": "spring-boot.svg",
+      "tags": [
+        "java",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "java",
+        "frontend_lang": null,
+        "frameworks": [
+          "spring-boot"
+        ],
+        "tools": [
+          "postgresql"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "aspnet-api",
+      "label": "ASP.NET Core Web API",
+      "description": "C# REST backend from dotnet CLI",
+      "icon": "aspnetcore.png",
+      "tags": [
+        "csharp",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "csharp",
+        "frontend_lang": null,
+        "frameworks": [
+          "aspnetcore"
+        ],
+        "tools": [
+          "postgresql"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "telegram-bot-py",
+      "label": "Telegram Bot (Python)",
+      "description": "Async bot with aiogram",
+      "icon": null,
+      "tags": [
+        "python",
+        "bot"
+      ],
+      "stack": {
+        "project_type": "telegram-bot",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "aiogram"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "telegram-bot-js",
+      "label": "Telegram Bot (Node.js)",
+      "description": "TypeScript bot with Telegraf",
+      "icon": "telegraf.png",
+      "tags": [
+        "typescript",
+        "bot"
+      ],
+      "stack": {
+        "project_type": "telegram-bot",
+        "backend_lang": "typescript",
+        "frontend_lang": null,
+        "frameworks": [
+          "telegraf"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "tauri-desktop",
+      "label": "Tauri Desktop App",
+      "description": "Lightweight native desktop with web UI",
+      "icon": "tauri.svg",
+      "tags": [
+        "rust",
+        "desktop"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "rust",
+        "frontend_lang": null,
+        "frameworks": [
+          "tauri"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "flutter-app",
+      "label": "Flutter Mobile App",
+      "description": "Cross-platform Dart mobile app",
+      "icon": "flutter.svg",
+      "tags": [
+        "dart",
+        "mobile"
+      ],
+      "stack": {
+        "project_type": "mobile-app",
+        "backend_lang": null,
+        "frontend_lang": "dart",
+        "frameworks": [
+          "flutter"
+        ],
+        "tools": [],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "cli-go",
+      "label": "CLI Tool (Go + Cobra)",
+      "description": "Command-line tool with Cobra",
+      "icon": null,
+      "tags": [
+        "go",
+        "cli"
+      ],
+      "stack": {
+        "project_type": "cli-tool",
+        "backend_lang": "go",
+        "frontend_lang": null,
+        "frameworks": [
+          "cobra"
+        ],
+        "tools": [],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "express-api",
+      "label": "Express REST API",
+      "description": "Minimal Node.js backend with Express",
+      "icon": "express.png",
+      "tags": [
+        "javascript",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "javascript",
+        "frontend_lang": null,
+        "frameworks": [
+          "express"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "static-html",
+      "label": "Static HTML Site",
+      "description": "Plain HTML, CSS and JS — no frameworks",
+      "icon": "html.svg",
+      "tags": [
+        "html",
+        "static"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "html",
+        "frameworks": [],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "empty-project",
+      "label": "Empty Project",
+      "description": "Start from scratch — no languages or frameworks",
+      "icon": "empty-project.png",
+      "tags": [
+        "empty"
+      ],
+      "stack": {
+        "project_type": "empty-project",
+        "backend_lang": null,
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "etl-pipeline",
+      "label": "ETL Pipeline",
+      "description": "Kafka → ClickHouse/PG с Airflow-оркестрацией",
+      "icon": "data-pipeline2.png",
+      "tags": [
+        "data",
+        "etl"
+      ],
+      "stack": {
+        "project_type": "data-pipeline",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [
+          "docker",
+          "airflow",
+          "kafka",
+          "clickhouse",
+          "postgresql"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": true
+        }
+      }
+    },
+    {
+      "id": "react-app",
+      "label": "React Web App",
+      "description": "Vite + React с TypeScript",
+      "icon": "react.svg",
+      "tags": [
+        "web",
+        "frontend"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "react"
+        ],
+        "tools": [
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "django-nuxt-fullstack",
+      "label": "Django + Nuxt",
+      "description": "Python API + Nuxt фронтенд с PostgreSQL",
+      "icon": "django.svg",
+      "tags": [
+        "web",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "python",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "django",
+          "nuxt"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
     }
   ],
   "project_language_map": {
@@ -1361,12 +2415,6 @@
       "typescript",
       "javascript"
     ],
-    "game": [
-      "csharp",
-      "cpp",
-      "java",
-      "rust"
-    ],
     "browser-extension": [
       "typescript",
       "javascript"
@@ -1412,7 +2460,10 @@
       "expo",
       "nest",
       "fastify",
-      "solidjs"
+      "solidjs",
+      "react",
+      "vue",
+      "svelte"
     ],
     "javascript": [
       "nextjs",
@@ -1424,7 +2475,10 @@
       "plasmo",
       "expo",
       "nest",
-      "fastify"
+      "fastify",
+      "react",
+      "vue",
+      "svelte"
     ],
     "java": [
       "spring-boot",
@@ -1432,14 +2486,10 @@
     ],
     "csharp": [
       "aspnetcore",
-      "unity",
-      "maui",
-      "godot"
+      "maui"
     ],
     "cpp": [
-      "unreal",
-      "qt",
-      "godot"
+      "qt"
     ],
     "dart": [
       "flutter"
@@ -1565,13 +2615,10 @@
       "sqlite",
       "mongodb"
     ],
-    "unity": [],
     "maui": [],
-    "unreal": [],
     "qt": [
       "docker"
     ],
-    "godot": [],
     "flutter": [
       "firebase",
       "docker",
@@ -1660,6 +2707,91 @@
     "dbt": [
       "clickhouse",
       "postgresql"
+    ],
+    "react": [
+      "docker",
+      "npm"
+    ],
+    "vue": [
+      "docker",
+      "npm"
+    ],
+    "svelte": [
+      "docker",
+      "npm"
     ]
+  },
+  "project_tool_map": {
+    "rest-api": [
+      "docker",
+      "postgresql"
+    ],
+    "web-app": [
+      "docker",
+      "postgresql"
+    ],
+    "data-pipeline": [
+      "docker",
+      "airflow",
+      "kafka",
+      "clickhouse",
+      "postgresql"
+    ],
+    "telegram-bot": [
+      "docker",
+      "redis"
+    ],
+    "desktop-app": [
+      "docker"
+    ],
+    "mobile-app": [
+      "docker"
+    ],
+    "cli-tool": [
+      "docker"
+    ],
+    "browser-extension": [],
+    "embedded": [
+      "docker"
+    ],
+    "library": [
+      "docker"
+    ],
+    "custom": [
+      "docker"
+    ],
+    "empty-project": [
+      "docker"
+    ]
+  },
+  "language_tool_map": {
+    "python": [
+      "pytest",
+      "ruff"
+    ],
+    "rust": [],
+    "go": [],
+    "typescript": [
+      "npm"
+    ],
+    "javascript": [
+      "npm"
+    ],
+    "java": [
+      "gradle",
+      "maven"
+    ],
+    "csharp": [],
+    "cpp": [],
+    "dart": [],
+    "kotlin": [
+      "gradle"
+    ],
+    "php": [],
+    "swift": [],
+    "zig": [],
+    "elixir": [],
+    "gleam": [],
+    "html": []
   }
 }
