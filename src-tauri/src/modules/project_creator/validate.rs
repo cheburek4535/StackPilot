@@ -6,15 +6,20 @@
 // для UX, но финальный барьер — эта функция: start_project_execution
 // отказывается выполнять невалидный стек.
 //
-// Правила (все — severity=Error):
+// Правила (все — severity=Error, кроме 6 — Warning):
 //   1. Фреймворк доступен на текущей ОС (platforms).
-//   2. Взаимные конфликты из wizard_tree (conflicts).
+//   2. Взаимные конфликты из wizard_tree (conflicts + conflict_notes).
 //   3. Тип проекта разрешает фреймворк (project_types).
 //   4. На каждую сторону — не более одного «главного» фреймворка
-//      (kind="app", side != "either"). Универсальные (tauri, qt) и
+//      (kind="app", side != "either"). Исключения — data-driven:
+//      allowed_main_pairs (легальные связки: gin+cobra, axum+clap,
+//      android+jetpack-compose, electron+react/vue/svelte) и
+//      main_limit_exempt (zig-cli). Универсальные (tauri, qt) и
 //      побочные (aiogram, telegraf) этим правилом не ограничены —
 //      только явными конфликтами.
 //   5. Язык стороны совместим с фреймворком (side + languages).
+//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA) —
+//      не блокируют генерацию, только поясняют и советуют альтернативу.
 
 use super::models::{FrameworkDef, WizardTreeData};
 
@@ -40,6 +45,28 @@ pub fn current_os() -> &'static str {
 /// Фреймворк доступен на текущей ОС?
 fn platform_ok(fw: &FrameworkDef, os: &str) -> bool {
     fw.platforms.is_empty() || fw.platforms.iter().any(|p| p == os)
+}
+
+/// Пара фреймворков объявлена легальной связкой в wizard_tree.json
+/// (allowed_main_pairs). Порядок пары не важен.
+fn is_allowed_pair(tree: &WizardTreeData, a: &str, b: &str) -> bool {
+    tree.allowed_main_pairs.iter().any(|p| {
+        p.len() == 2 && ((p[0] == a && p[1] == b) || (p[0] == b && p[1] == a))
+    })
+}
+
+/// Фреймворк не занимает лимит «одного главного на сторону»
+/// (main_limit_exempt: zig-cli — std-CLI, не каркас приложения).
+fn is_main_limit_exempt(tree: &WizardTreeData, id: &str) -> bool {
+    tree.main_limit_exempt.iter().any(|x| x == id)
+}
+
+/// Человеческое объяснение конфликта (conflict_notes) в обе стороны.
+fn conflict_note<'a>(fw: &'a FrameworkDef, other: &'a FrameworkDef) -> Option<&'a str> {
+    fw.conflict_notes
+        .get(&other.id)
+        .or_else(|| other.conflict_notes.get(&fw.id))
+        .map(String::as_str)
 }
 
 /// Проверяет стек и возвращает найденные проблемы (порядок значимый).
@@ -79,9 +106,13 @@ pub fn validate_stack(
                 continue;
             }
             if a.conflicts.contains(&b.id) {
+                let mut message = format!("«{}» несовместим с «{}».", a.label, b.label);
+                if let Some(note) = conflict_note(a, b) {
+                    message.push_str(&format!(" {}", note));
+                }
                 issues.push(StackIssue {
                     severity: StackSeverity::Error,
-                    message: format!("«{}» несовместим с «{}».", a.label, b.label),
+                    message,
                 });
             }
         }
@@ -103,18 +134,28 @@ pub fn validate_stack(
     }
 
     // 4. Не более одного «главного» (kind="app") фреймворка на сторону.
-    //    side="either" — универсальные (tauri, qt): в лимит сторон не входят,
-    //    ограничены только явными conflicts. Побочные (kind="side":
-    //    aiogram, telegraf) могут соседствовать с любым числом других.
+    //    Исключения: allowed_main_pairs (легальные связки — gin+cobra,
+    //    axum+clap, android+jetpack-compose, electron+react/vue/svelte) и
+    //    main_limit_exempt (zig-cli). side="either" — универсальные
+    //    (tauri, qt): в лимит сторон не входят, ограничены только явными
+    //    conflicts. Побочные (kind="side": aiogram, telegraf) могут
+    //    соседствовать с любым числом других.
     let mut by_side: Vec<(&str, &FrameworkDef)> = Vec::new();
     for fw in &selected {
-        if fw.kind == "app" && fw.side != "either" {
+        if fw.kind == "app"
+            && fw.side != "either"
+            && !is_main_limit_exempt(tree, &fw.id)
+        {
             by_side.push((fw.side.as_str(), fw));
         }
     }
     for (i, (side, a)) in by_side.iter().enumerate() {
         for (other_side, b) in by_side.iter().skip(i + 1) {
             if side == other_side {
+                let legal_pair = is_allowed_pair(tree, &a.id, &b.id);
+                if legal_pair {
+                    continue;
+                }
                 issues.push(StackIssue {
                     severity: StackSeverity::Error,
                     message: format!(
@@ -123,6 +164,36 @@ pub fn validate_stack(
                     ),
                 });
             }
+        }
+    }
+
+    // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA
+    //    и т.п.): не блокируют генерацию, но объясняют концептуальный
+    //    конфликт и советуют альтернативу.
+    for wp in &tree.warning_pairs {
+        let has_a = selected.iter().any(|f| f.id == wp.a);
+        let has_b = selected.iter().any(|f| f.id == wp.b);
+        if has_a && has_b {
+            let label = |id: &str| -> String {
+                selected
+                    .iter()
+                    .find(|f| f.id == id)
+                    .map(|f| f.label.clone())
+                    .unwrap_or_else(|| id.to_string())
+            };
+            let mut message = format!(
+                "«{}» и «{}» — спорная связка. {}",
+                label(&wp.a),
+                label(&wp.b),
+                wp.reason
+            );
+            if !wp.alternative.is_empty() {
+                message.push_str(&format!(" Альтернатива: {}.", wp.alternative));
+            }
+            issues.push(StackIssue {
+                severity: StackSeverity::Warning,
+                message,
+            });
         }
     }
 
@@ -269,15 +340,27 @@ mod tests {
         // Любые два app-фреймворка с одинаковой стороной, общим языком и
         // общим типом проекта обязаны быть в явном конфликте — иначе их
         // можно случайно совместить и сломать структуру проекта.
+        // Исключение — только пары из allowed_main_pairs (легальные связки,
+        // генерация которых гарантированно не пересекается) и фреймворки
+        // из main_limit_exempt (не занимают лимит стороны).
         for (i, a) in t.frameworks.iter().enumerate() {
             if a.kind != "app" || a.side == "either" {
+                continue;
+            }
+            if is_main_limit_exempt(&t, &a.id) {
                 continue;
             }
             for b in t.frameworks.iter().skip(i + 1) {
                 if b.kind != "app" || b.side == "either" {
                     continue;
                 }
+                if is_main_limit_exempt(&t, &b.id) {
+                    continue;
+                }
                 if a.side != b.side {
+                    continue;
+                }
+                if is_allowed_pair(&t, &a.id, &b.id) {
                     continue;
                 }
                 let share_lang = a.languages.iter().any(|l| b.languages.contains(l));
@@ -295,6 +378,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn allowed_main_pairs_are_consistent() {
+        let t = tree();
+        // Каждая легальная связка обязана:
+        //   1. существовать в дереве;
+        //   2. быть app-фреймворками одной стороны;
+        //   3. НЕ иметь взаимных conflicts (иначе конфликт победит связку);
+        //   4. не содержать фреймворки из main_limit_exempt (избыточно, но
+        //      допустимо как явное документирование связки — см. zig-cli+zap).
+        for p in &t.allowed_main_pairs {
+            assert_eq!(p.len(), 2, "пара должна содержать ровно два id: {p:?}");
+            let a = fw(&t, &p[0]);
+            let b = fw(&t, &p[1]);
+            assert_eq!(a.kind, "app", "«{}» из allowed_main_pairs не kind=app", a.id);
+            assert_eq!(b.kind, "app", "«{}» из allowed_main_pairs не kind=app", b.id);
+            assert_eq!(a.side, b.side, "«{}» и «{}» из allowed_main_pairs — разные стороны", a.id, b.id);
+            assert!(
+                !a.conflicts.contains(&b.id) && !b.conflicts.contains(&a.id),
+                "«{}» и «{}» — легальная связка, но объявляет conflicts",
+                a.id,
+                b.id
+            );
+        }
+        // Компаньоны (tauri/electron → UI) обязаны быть легальными связками
+        // и не конфликтовать с владельцем. Для side="either" владельцев
+        // (tauri) правило 4 не действует, поэтому пара не обязательна —
+        // компаньон просто добавляется к стек-выбору UI.
+        for f in &t.frameworks {
+            for c in &f.companions {
+                if f.side != "either" {
+                    assert!(
+                        is_allowed_pair(&t, &f.id, c),
+                        "«{}» объявляет компаньона «{}», но пары нет в allowed_main_pairs",
+                        f.id,
+                        c
+                    );
+                }
+                assert!(
+                    !f.conflicts.contains(c),
+                    "«{}» объявляет компаньона «{}», но конфликтует с ним",
+                    f.id,
+                    c
+                );
+                let cdef = fw(&t, c);
+                assert_eq!(cdef.side, "frontend", "компаньон «{}» должен быть frontend", c);
+            }
+        }
+        assert!(
+            !t.allowed_main_pairs.is_empty() && !t.warning_pairs.is_empty(),
+            "allowed_main_pairs и warning_pairs должны быть заполнены"
+        );
     }
 
     #[test]
@@ -489,6 +625,140 @@ mod tests {
         let t = tree();
         // nest (бэкенд) + nextjs (фронтенд) — легальный полный стек.
         let issues = validate(&t, Some("web-app"), Some("typescript"), Some("typescript"), &["nest", "nextjs"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    // ----------------------------------------------------------
+    // Правило: легальные связки (allowed_main_pairs / main_limit_exempt)
+    // ----------------------------------------------------------
+
+    #[test]
+    fn gin_and_cobra_allowed_together() {
+        let t = tree();
+        // Веб-сервер (gin) + CLI (cobra) делят обязанности — связка легальна.
+        let issues = validate(&t, Some("custom"), Some("go"), None, &["gin", "cobra"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn axum_and_clap_allowed_together() {
+        let t = tree();
+        let issues = validate(&t, Some("custom"), Some("rust"), None, &["axum", "clap"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn android_and_jetpack_compose_allowed_together() {
+        let t = tree();
+        // Нативный Kotlin-стек: Android SDK + Jetpack Compose (часть Android).
+        let issues = validate(&t, Some("mobile-app"), None, Some("kotlin"), &["android", "jetpack-compose"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn zig_cli_and_zap_allowed_together() {
+        let t = tree();
+        // zig-cli не занимает лимит «главного» — веб-фреймворк Zig рядом легален.
+        let issues = validate(&t, Some("custom"), Some("zig"), None, &["zig-cli", "zap"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn electron_with_ui_library_allowed() {
+        let t = tree();
+        // Electron + React/Vue/Svelte — классическая связка (UI-компаньон).
+        for ui in ["react", "vue", "svelte"] {
+            let issues = validate(&t, Some("desktop-app"), None, Some("typescript"), &["electron", ui], "windows");
+            assert!(issues.is_empty(), "electron+{ui}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn two_web_servers_still_blocked() {
+        let t = tree();
+        // Два одинаковых по типу инструмента — тотальная блокировка остаётся.
+        let issues = validate(&t, Some("web-app"), Some("python"), None, &["fastapi", "flask"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("оба главные фреймворки")),
+            "{issues:?}"
+        );
+        let issues = validate(&t, Some("rest-api"), Some("typescript"), None, &["express", "fastify"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn fullstack_blocks_pure_ui_still() {
+        let t = tree();
+        // Next.js + React — жёсткая блокировка (React встроен в Next.js).
+        let issues = validate(&t, Some("web-app"), None, Some("typescript"), &["nextjs", "react"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+        let issues = validate(&t, Some("web-app"), None, Some("typescript"), &["nuxt", "vue"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn qt_and_tauri_conflict() {
+        let t = tree();
+        // Два десктоп-каркаса в одном проекте — теперь явный конфликт.
+        let issues = validate(&t, Some("desktop-app"), Some("cpp"), Some("rust"), &["qt", "tauri"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn tauri_and_flutter_conflict() {
+        let t = tree();
+        let issues = validate(&t, Some("custom"), Some("rust"), Some("dart"), &["tauri", "flutter"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("несовместим")),
+            "{issues:?}"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // Правило: warning_pairs (Phoenix LiveView + SPA)
+    // ----------------------------------------------------------
+
+    #[test]
+    fn phoenix_with_nextjs_warns_but_does_not_block() {
+        let t = tree();
+        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "nextjs"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("LiveView")),
+            "{issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            "предупреждение не должно блокировать: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn phoenix_with_nuxt_warns() {
+        let t = tree();
+        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "nuxt"], "windows");
+        assert!(
+            issues.iter().any(|i| i.message.contains("LiveView")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn phoenix_with_react_is_clean() {
+        let t = tree();
+        // Чистый UI (React/Vue/Svelte) с Phoenix — обычная архитектура API+SPA.
+        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "react"], "windows");
         assert!(issues.is_empty(), "{issues:?}");
     }
 

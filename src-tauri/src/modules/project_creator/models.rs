@@ -9,6 +9,19 @@ use std::path::PathBuf;
 /// Полный набор данных для мастера (загружается из JSON)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WizardTreeData {
+    /// Легальные связки: пары «главных» фреймворков одной стороны, которым
+    /// разрешено сосуществовать (gin+cobra, axum+clap, android+jetpack-compose...).
+    /// Двигатель генерации гарантирует им непересекающиеся файлы.
+    #[serde(default)]
+    pub allowed_main_pairs: Vec<Vec<String>>,
+    /// Фреймворки, которые не занимают лимит «одного главного на сторону»
+    /// (zig-cli: std-CLI не является каркасом приложения).
+    #[serde(default)]
+    pub main_limit_exempt: Vec<String>,
+    /// Нежёсткие предупреждения для сочетаний, которые «не ломают», но
+    /// противоречат концепции (Phoenix LiveView + тяжёлый SPA). Warning.
+    #[serde(default)]
+    pub warning_pairs: Vec<WarningPair>,
     pub project_types: Vec<ProjectTypeDef>,
     pub languages: Vec<LanguageDef>,
     pub frameworks: Vec<FrameworkDef>,
@@ -38,6 +51,18 @@ pub struct ProjectTypeDef {
     pub icon: Option<String>,
     pub tags: Vec<String>,
     pub allow_custom_stack: bool,
+}
+
+/// Пара-предупреждение: совместный выбор `a` и `b` не блокируется, но
+/// помечается Warning с объяснением и рекомендацией альтернативы.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarningPair {
+    pub a: String,
+    pub b: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub alternative: String,
 }
 
 /// Язык программирования
@@ -135,6 +160,15 @@ pub struct FrameworkDef {
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим
+    /// Человеческое объяснение, почему фреймворк несовместим с конкретным
+    /// конфликтом (conflict_id → текст). Показывается в UI и валидации.
+    #[serde(default)]
+    pub conflict_notes: std::collections::HashMap<String, String>,
+    /// Фреймворки, которые можно выбрать как UI-компаньона (tauri → svelte/
+    /// vue/react, electron → react/vue/svelte). Связка обязана быть в
+    /// allowed_main_pairs и не иметь взаимных conflicts.
+    #[serde(default)]
+    pub companions: Vec<String>,
 }
 
 /// Рекомендуемый «компаньон»: фреймворк, который стоит подсветить,

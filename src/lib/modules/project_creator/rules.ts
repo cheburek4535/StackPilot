@@ -5,14 +5,18 @@
 // start_project_execution отказывается выполнять невалидный стек.
 // ПРАВИЛА ДОЛЖНЫ СОВПАДАТЬ С validate.rs — меняй обе стороны.
 //
-// Правила (все — severity=Error):
+// Правила (все — severity=Error, кроме 6 — Warning):
 //   1. Фреймворк доступен на текущей ОС (platforms).
-//   2. Взаимные конфликты из wizard_tree (conflicts).
+//   2. Взаимные конфликты из wizard_tree (conflicts + conflict_notes).
 //   3. Тип проекта разрешает фреймворк (project_types).
 //   4. На каждую сторону — не более одного «главного» фреймворка
-//      (kind="app", side != "either"). Побочные (aiogram, telegraf)
-//      и универсальные (tauri, qt) этим правилом не ограничены.
+//      (kind="app", side != "either"). Исключения — data-driven:
+//      allowed_main_pairs (gin+cobra, axum+clap, android+jetpack-compose,
+//      electron+react/vue/svelte) и main_limit_exempt (zig-cli).
+//      Побочные (aiogram, telegraf) и универсальные (tauri, qt) этим
+//      правилом не ограничены.
 //   5. Язык(и) стороны совместимы с фреймворком (side + languages).
+//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA).
 
 import type {
   WizardTreeData,
@@ -28,6 +32,25 @@ export type BlockedReason = {
   severity: Severity;
   message: string;
 };
+
+function isAllowedPair(tree: WizardTreeData, a: string, b: string): boolean {
+  return tree.allowed_main_pairs.some(
+    (p) => (p[0] === a && p[1] === b) || (p[0] === b && p[1] === a),
+  );
+}
+
+function isMainLimitExempt(tree: WizardTreeData, id: string): boolean {
+  return tree.main_limit_exempt.includes(id);
+}
+
+/** Объяснение конфликта (conflict_notes) в обе стороны */
+function conflictNote(
+  tree: WizardTreeData,
+  fw: FrameworkDef,
+  other: FrameworkDef,
+): string | undefined {
+  return fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+}
 
 function platformOk(fw: FrameworkDef, os: string): boolean {
   return !fw.platforms?.length || fw.platforms.some((p) => p === os);
@@ -62,9 +85,12 @@ export function validateStack(
     for (const b of selected) {
       if (a.id === b.id) continue;
       if (a.conflicts?.includes(b.id)) {
+        let message = `«${a.label}» несовместим с «${b.label}».`;
+        const note = conflictNote(tree, a, b);
+        if (note) message += ` ${note}`;
         issues.push({
           severity: "Error",
-          message: `«${a.label}» несовместим с «${b.label}».`,
+          message,
         });
       }
     }
@@ -83,11 +109,13 @@ export function validateStack(
   }
 
   // 4. Не более одного «главного» (kind="app", side != "either") фреймворка
-  //    на сторону. Универсальные (tauri, qt) и побочные (aiogram, telegraf)
-  //    в лимит сторон не входят — только явные conflicts.
+  //    на сторону. Исключения: allowed_main_pairs (легальные связки —
+  //    gin+cobra, axum+clap, android+jetpack-compose, electron+react/vue/svelte)
+  //    и main_limit_exempt (zig-cli). Универсальные (tauri, qt) и побочные
+  //    (aiogram, telegraf) в лимит сторон не входят — только явные conflicts.
   const bySide: { side: string; fw: FrameworkDef }[] = [];
   for (const fw of selected) {
-    if (fw.kind === "app" && fw.side !== "either") {
+    if (fw.kind === "app" && fw.side !== "either" && !isMainLimitExempt(tree, fw.id)) {
       bySide.push({ side: fw.side, fw });
     }
   }
@@ -96,11 +124,24 @@ export function validateStack(
       const a = bySide[i];
       const b = bySide[j];
       if (a.side === b.side) {
+        if (isAllowedPair(tree, a.fw.id, b.fw.id)) continue;
         issues.push({
           severity: "Error",
           message: `«${a.fw.label}» и «${b.fw.label}» — оба главные фреймворки ${a.side}. На сторону можно выбрать только один главный фреймворк.`,
         });
       }
+    }
+  }
+
+  // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA):
+  //    не блокируют, но объясняют концептуальный конфликт и советуют альтернативу.
+  for (const wp of tree.warning_pairs) {
+    const a = selected.find((f) => f.id === wp.a);
+    const b = selected.find((f) => f.id === wp.b);
+    if (a && b) {
+      let message = `«${a.label}» и «${b.label}» — спорная связка. ${wp.reason}`;
+      if (wp.alternative) message += ` Альтернатива: ${wp.alternative}.`;
+      issues.push({ severity: "Warning", message });
     }
   }
 

@@ -57,6 +57,8 @@ import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/mod
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
 let hostOs = $state<string>("windows");
+/** Краткое уведомление при авто-сбросе конфликтующих фреймворков */
+let dropNotice = $state<string | null>(null);
 
 // ---- Mode: Constructor | Templates | Analyze ----
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
@@ -472,24 +474,107 @@ function toggleLang(side: "backend" | "frontend", id: string) {
   recomputeSideLangs();
 }
 
+/** Пара фреймворков объявлена легальной связкой (wizard_tree.allowed_main_pairs) */
+function isAllowedPair(a: string, b: string): boolean {
+  return (
+    tree?.allowed_main_pairs.some(
+      (p) => (p[0] === a && p[1] === b) || (p[0] === b && p[1] === a),
+    ) ?? false
+  );
+}
+
+/** Фреймворк не занимает лимит «одного главного на сторону» (zig-cli) */
+function isMainLimitExempt(id: string): boolean {
+  return tree?.main_limit_exempt.includes(id) ?? false;
+}
+
+/** Объяснение конфликта (conflict_notes) в обе стороны */
+function conflictNoteOf(fw: FrameworkDef, other: FrameworkDef): string | undefined {
+  return fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+}
+
 /** Причина, по которой фреймворк нельзя выбрать (зеркало правил rules.ts) */
 function frameworkBlockReason(fwId: string): string | null {
+  return frameworkBlockInfo(fwId)?.message ?? null;
+}
+
+type BlockInfo = {
+  message: string;
+  /** Развёрнутое объяснение «почему» (строка под бейджем) */
+  detail: string;
+  /** Рекомендуемые альтернативы (id фреймворков той же стороны) */
+  alternatives: string[];
+};
+
+/** Совместимые альтернативы для заблокированного фреймворка */
+function frameworkAlternatives(fw: FrameworkDef): string[] {
+  const t = tree;
+  if (!t) return [];
+  const sideLangs = fw.side === "frontend" ? frontendLangs : backendLangs;
+  return t.frameworks
+    .filter((c) => {
+      if (c.id === fw.id || selectedFrameworks.includes(c.id)) return false;
+      if (c.side !== fw.side) return false;
+      // Язык совместим со стороной
+      const langOk =
+        c.side === "either"
+          ? [...backendLangs, ...frontendLangs].some((l) => c.languages.includes(l))
+          : sideLangs.some((l) => c.languages.includes(l)) ||
+            c.languages.includes(c.recommended_language);
+      if (!langOk) return false;
+      // Не конфликтует с текущим выбором и не «второй главный» на стороне
+      for (const sId of selectedFrameworks) {
+        const sel = t.frameworks.find((f) => f.id === sId);
+        if (!sel) continue;
+        if (sel.conflicts?.includes(c.id) || c.conflicts?.includes(sel.id)) return false;
+        if (
+          c.kind === "app" &&
+          c.side !== "either" &&
+          sel.kind === "app" &&
+          sel.side === c.side &&
+          !isAllowedPair(c.id, sel.id) &&
+          !isMainLimitExempt(c.id)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    })
+    .map((c) => c.id)
+    .slice(0, 4);
+}
+
+/** Структурированная причина блокировки: сообщение + объяснение + альтернативы */
+function frameworkBlockInfo(fwId: string): BlockInfo | null {
   const fw = tree?.frameworks.find((f) => f.id === fwId);
-  if (!fw) return null;
-  if (selectedFrameworks.includes(fwId)) return null;
+  if (!fw || selectedFrameworks.includes(fwId)) return null;
+
+  // 1. Платформа
   if (fw.platforms?.length && !fw.platforms.includes(hostOs)) {
-    return `Available only on ${fw.platforms.join(", ")}`;
+    return {
+      message: `Доступен только на ${fw.platforms.join(", ")}`,
+      detail: `«${fw.label}» не поддерживает вашу ОС (${hostOs}).`,
+      alternatives: frameworkAlternatives(fw),
+    };
   }
+
+  // 2. Взаимные конфликты (conflicts + conflict_notes)
   for (const selId of selectedFrameworks) {
     const sel = tree?.frameworks.find((f) => f.id === selId);
-    if (sel?.conflicts?.includes(fwId)) return `Incompatible with ${sel.label}`;
-  }
-  for (const c of fw.conflicts ?? []) {
-    if (selectedFrameworks.includes(c)) {
-      const cFw = tree?.frameworks.find((f) => f.id === c);
-      return `Incompatible with ${cFw?.label ?? c}`;
+    if (!sel) continue;
+    if (sel.conflicts?.includes(fwId) || fw.conflicts?.includes(selId)) {
+      const note = conflictNoteOf(fw, sel);
+      return {
+        message: `Несовместим с «${sel.label}»`,
+        detail: note
+          ? `«${fw.label}» и «${sel.label}»: ${note}`
+          : `«${fw.label}» и «${sel.label}» не могут работать вместе — снимите один из них.`,
+        alternatives: frameworkAlternatives(fw),
+      };
     }
   }
+
+  // 3. Универсальные (tauri/electron) против конкретной стороны
   const hasSpecific = selectedFrameworks.some((id) => {
     const f = tree?.frameworks.find((x) => x.id === id);
     return !!f && (f.side === "backend" || f.side === "frontend");
@@ -499,22 +584,63 @@ function frameworkBlockReason(fwId: string): string | null {
     return !!f && f.side === "either";
   });
   if (fw.side === "either" && hasSpecific) {
-    return "Unavailable with the selected backend/frontend stack";
+    return {
+      message: "Недоступен вместе с бэкенд/фронтенд стеком",
+      detail: `«${fw.label}» сам создаёт всё приложение и не сочетается с выбранной ${hasSpecific ? "бэкенд/фронтенд" : ""} стековой связкой.`,
+      alternatives: frameworkAlternatives(fw),
+    };
   }
   if (fw.side !== "either" && hasEither) {
-    return "Unavailable with the selected desktop framework";
+    const eitherFw = selectedFrameworks.find((id) => {
+      const f = tree?.frameworks.find((x) => x.id === id);
+      return !!f && f.side === "either";
+    });
+    const eitherLabel =
+      tree?.frameworks.find((x) => x.id === eitherFw)?.label ?? "desktop";
+    return {
+      message: `Недоступен вместе с «${eitherLabel}»`,
+      detail: `«${eitherLabel}» — самостоятельное приложение, отдельный UI-слой не нужен.`,
+      alternatives: frameworkAlternatives(fw),
+    };
   }
+
+  // 4. Один главный фреймворк на сторону (с исключениями allowed_main_pairs/main_limit_exempt)
   if (fw.side === "backend" || fw.side === "frontend") {
-    if (fw.kind === "app") {
-      const sameSide = selectedFrameworks.some((id) => {
+    if (fw.kind === "app" && !isMainLimitExempt(fw.id)) {
+      const sameSide = selectedFrameworks.find((id) => {
         const f = tree?.frameworks.find((x) => x.id === id);
-        return !!f && f.kind === "app" && f.side === fw.side;
+        return !!f && f.kind === "app" && f.side === fw.side && !isAllowedPair(fw.id, id);
       });
-      if (sameSide) return `Only one main ${fw.side} framework`;
+      if (sameSide) {
+        const selLabel =
+          tree?.frameworks.find((x) => x.id === sameSide)?.label ?? sameSide;
+        return {
+          message: `Только один главный ${fw.side === "backend" ? "бэкенд" : "фронтенд"}-фреймворк`,
+          detail: `«${selLabel}» и «${fw.label}» — оба главные фреймворки: два каркаса будут перезаписывать файлы друг друга. Снимите один или выберите другой.`,
+          alternatives: frameworkAlternatives(fw),
+        };
+      }
     }
+    // 5. Язык
     const langs = fw.side === "backend" ? backendLangs : frontendLangs;
     if (langs.length > 0 && !fw.languages.some((l) => langs.includes(l))) {
-      return `Needs ${fw.side} language: ${fw.languages.map((l) => langLabel(l)).join(", ")}`;
+      return {
+        message: `Нужен язык: ${fw.languages.map((l) => langLabel(l)).join(", ")}`,
+        detail: `На стороне «${fw.side === "backend" ? "бэкенд" : "фронтенд"}» нет языка ${fw.languages.map((l) => langLabel(l)).join(" или ")}, необходимого «${fw.label}».`,
+        alternatives: frameworkAlternatives(fw),
+      };
+    }
+  }
+  return null;
+}
+
+/** Предупреждение (не блокировка): Phoenix LiveView + тяжёлый SPA */
+function frameworkWarnReason(fwId: string): string | null {
+  const t = tree;
+  if (!t || !selectedFrameworks.includes(fwId)) return null;
+  for (const wp of t.warning_pairs ?? []) {
+    if ((wp.b === fwId && selectedFrameworks.includes(wp.a)) || (wp.a === fwId && selectedFrameworks.includes(wp.b))) {
+      return wp.reason;
     }
   }
   return null;
@@ -535,11 +661,24 @@ function clickFramework(id: string) {
     return;
   }
   if (frameworkBlockReason(id)) return;
-  if (fw.side === "either" && companionOptions(fw).length > 0 && !linkedCompanions[id]) {
+  const dropConflicts = fw.conflicts ?? [];
+  const dropped = selectedFrameworks.filter((f) => dropConflicts.includes(f));
+  if (dropped.length > 0) {
+    const note = dropped
+      .map((x) => {
+        const cfw = tree?.frameworks.find((f) => f.id === x);
+        if (!cfw) return x;
+        const cnote = conflictNoteOf(fw, cfw);
+        return cnote ? `${cfw.label} (${cnote})` : cfw.label;
+      })
+      .join(", ");
+    dropNotice = `Автоматически снято: ${note}.`;
+    window.setTimeout(() => (dropNotice = null), 6000);
+  }
+  if (companionOptions(fw).length > 0 && !linkedCompanions[id]) {
     const first = companionOptions(fw)[0];
     addCompanion(fw.id, first.id);
   }
-  const dropConflicts = fw.conflicts ?? [];
   selectedFrameworks = [...selectedFrameworks.filter((f) => !dropConflicts.includes(f)), id];
   fwLangs = { ...fwLangs, [id]: fwLangs[id] ?? fw.recommended_language };
   recomputeSideLangs();
@@ -574,12 +713,21 @@ let linkedCompanions = $state<Record<string, string>>({});
 const EITHER_COMPANIONS = new Set(["svelte", "vue", "react"]);
 
 function companionOptions(fw: FrameworkDef): FrameworkDef[] {
-  if (!tree || fw.side !== "either" || fw.kind !== "app") return [];
+  if (!tree) return [];
+  // Data-driven: fw.companions из wizard_tree (tauri → svelte/vue/react,
+  // electron → react/vue/svelte). Фолбэк для either-фреймворков — прежний
+  // фиксированный список.
+  const ids = fw.companions?.length
+    ? fw.companions
+    : fw.side === "either"
+      ? [...EITHER_COMPANIONS]
+      : [];
+  if (!ids.length) return [];
   const compat = tree.frameworks.filter(
     (c) =>
+      ids.includes(c.id) &&
       c.side === "frontend" &&
       c.kind === "app" &&
-      EITHER_COMPANIONS.has(c.id) &&
       !(fw.conflicts ?? []).includes(c.id) &&
       (!c.project_types?.length || !selectedType || c.project_types.includes(selectedType.id)),
   );
@@ -1809,13 +1957,15 @@ function resetAll() {
 
             {#snippet fwCard(fw: FrameworkDef)}
               {@const reason = frameworkBlockReason(fw.id)}
+              {@const altInfo = reason !== null ? frameworkBlockInfo(fw.id) : null}
+              {@const warnReason = frameworkWarnReason(fw.id)}
               {@const summary = fwLangSummary(fw)}
               <div class="fw-card-wrap">
                 <button
                   class="card"
                   class:selected={selectedFrameworks.includes(fw.id)}
                   class:blocked={reason !== null}
-                  disabled={reason !== null}
+                  title={altInfo?.detail}
                   onclick={() => clickFramework(fw.id)}
                 >
                   {#if fw.icon}
@@ -1833,8 +1983,42 @@ function resetAll() {
                   {#if fw.languages.length > 1}
                     <span class="fw-lang-multi">⚙ choose language</span>
                   {/if}
+                  {#if warnReason !== null}
+                    <span class="warn-badge" title={warnReason}>⚠ {warnReason}</span>
+                  {/if}
                   {#if reason}
                     <span class="conflict-badge">{reason}</span>
+                    {#if altInfo?.detail}
+                      <span class="conflict-detail">{altInfo.detail}</span>
+                    {/if}
+                    {#if altInfo?.alternatives?.length}
+                      <span class="conflict-alts">
+                        <span class="conflict-alts-label">Вместо этого:</span>
+                        {#each altInfo.alternatives as altId}
+                          {@const altFw = tree?.frameworks.find((f) => f.id === altId)}
+                          {#if altFw}
+                            <span
+                              role="button"
+                              tabindex="0"
+                              class="alt-chip"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                clickFramework(altId);
+                              }}
+                              onkeydown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  clickFramework(altId);
+                                }
+                              }}
+                            >
+                              {altFw.label}
+                            </span>
+                          {/if}
+                        {/each}
+                      </span>
+                    {/if}
                   {/if}
                 </button>
                 {#if fwPopup === fw.id}
@@ -1909,11 +2093,16 @@ function resetAll() {
             {/snippet}
 
             <p class="prompt">Stack & Tools</p>
+            {#if dropNotice}
+              <p class="notice-bar" role="status">{dropNotice}</p>
+            {/if}
             <p class="hint">
               Pick frameworks freely — languages are assigned automatically when you select one
               (multi-language frameworks open a language menu). Options marked
               <span class="star">⭐</span> are the recommended defaults and apply automatically.
               One main framework per side — side libraries (bots, plugins) can be added alongside.
+              Conflicting picks are removed automatically; on blocked cards you'll find the reason
+              and compatible alternatives.
             </p>
 
             {#snippet fwLevel(title: string, icon: string, items: FrameworkDef[], note: string)}
@@ -2414,7 +2603,8 @@ function resetAll() {
 .card { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; padding: 1rem; border: 1px solid #333; border-radius: 10px; background: #1a1a2e; cursor: pointer; transition: all 0.15s; text-align: center; color: #ddd; }
 .card:hover { border-color: #6c5ce7; background: #22224a; }
 .card.selected { border-color: #6c5ce7; background: #2d2d5e; box-shadow: 0 0 0 2px #6c5ce7; }
-.card.blocked { opacity: 0.35; cursor: not-allowed; border-color: #333; background: #15152e; }
+.card.blocked { opacity: 0.55; cursor: not-allowed; border-color: #333; background: #15152e; }
+.card.blocked:hover { border-color: #333; background: #15152e; }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: #888; }
 .card-img { width: 56px; height: 56px; object-fit: contain; }
@@ -2431,6 +2621,24 @@ function resetAll() {
 .fw-grid .card .fw-lang-multi,
 .fw-grid .card .conflict-badge { margin-top: 0.3rem; }
 .conflict-badge { display: block; font-size: 0.7rem; color: #e74c3c; margin-top: 0.25rem; }
+.conflict-detail { display: block; font-size: 0.68rem; color: #b08c8c; margin-top: 0.15rem; line-height: 1.25; }
+.warn-badge { display: block; font-size: 0.68rem; color: #e6a23c; background: #3a2f12; border: 1px solid #6b541a; border-radius: 6px; padding: 0.1rem 0.45rem; margin-top: 0.25rem; }
+.conflict-alts { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; margin-top: 0.35rem; }
+.conflict-alts-label { font-size: 0.68rem; color: #999; }
+.alt-chip {
+  display: inline-block;
+  font-size: 0.68rem;
+  color: #cdc3f0;
+  background: #2f2460;
+  border: 1px solid #4a3a85;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.alt-chip:hover { background: #4a3a85; color: #fff; }
+.alt-chip:focus-visible { outline: 2px solid #6c5ce7; }
+.notice-bar { display: block; font-size: 0.78rem; color: #ffd166; background: #332b12; border: 1px solid #6b541a; border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
 .fw-lang-chip { display: inline-block; font-size: 0.72rem; color: #cdc3f0; background: #2f2460; border: 1px solid #4a3a85; padding: 0.15rem 0.5rem; border-radius: 999px; margin-top: 0.3rem; }
 .fw-lang-chip.selected { color: #b8f5d4; background: #14402c; border-color: #1f7a4d; }
 .fw-lang-multi { display: block; font-size: 0.68rem; color: #7a6cf0; margin-top: 0.15rem; }

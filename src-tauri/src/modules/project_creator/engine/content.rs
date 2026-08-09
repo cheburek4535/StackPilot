@@ -481,13 +481,15 @@ ENTRYPOINT ["./{project_name}"]"#))
         }
     },
         "zig" => {
-Some(format!(r#"FROM ziglang/zig:0.13.0 AS build
+// --fetch подтягивает зависимости из build.zig.zon (нужно для zap).
+// Образ 0.14 — минимальная версия для zap v0.4 (minimum_zig_version).
+Some(format!(r#"FROM ziglang/zig:0.14.0 AS build
 WORKDIR /app
 
 COPY build.zig build.zig.zon ./
 COPY src/ ./src/
 
-RUN zig build -Doptimize=ReleaseFast
+RUN zig build --fetch -Doptimize=ReleaseFast
 
 FROM scratch
 WORKDIR /

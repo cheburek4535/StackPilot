@@ -5,6 +5,7 @@ use tauri::{Emitter, State};
 
 
 use super::models::*;
+use super::engine::duplicate_framework_write_paths;
 use super::{ProjectCreatorState, EXECUTION_SNAPSHOT_LIMIT};
 
 #[tauri::command]
@@ -62,14 +63,60 @@ pub fn validate_project_stack(
         frontend_languages: Vec<String>,
         frameworks: Vec<String>,
     ) -> Vec<super::validate::StackIssue> {
-    super::validate::validate_stack(
+    let mut issues = super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         project_type.as_deref(),
         &backend_languages,
         &frontend_languages,
         &frameworks,
         super::validate::current_os(),
-    )
+    );
+    // Guard движка: два фреймворка, пишущие один файл, сломают генерацию.
+    issues.extend(
+        duplicate_framework_write_paths(&guard_context(
+            project_type,
+            &backend_languages,
+            &frontend_languages,
+            &frameworks,
+        ))
+        .into_iter()
+        .map(|message| super::validate::StackIssue {
+            severity: super::validate::StackSeverity::Error,
+            message,
+        }),
+    );
+    issues
+}
+
+/// Контекст для guard-проверки движка (пути генерации считаются только по
+/// фреймворкам; языки/инструменты на результат не влияют).
+fn guard_context(
+    project_type: Option<String>,
+    backend_languages: &[String],
+    frontend_languages: &[String],
+    frameworks: &[String],
+) -> WizardContext {
+    let mut languages = backend_languages.to_vec();
+    languages.extend(frontend_languages.iter().cloned());
+    WizardContext {
+        project_path: None,
+        project_name: None,
+        project_type,
+        is_existing: false,
+        languages,
+        backend_languages: backend_languages.to_vec(),
+        frontend_languages: frontend_languages.to_vec(),
+        frameworks: frameworks.to_vec(),
+        tools: vec![],
+        features: vec![],
+        infrastructure: vec![],
+        docker: false,
+        testing: false,
+        ci: false,
+        git_init: false,
+        vscode_config: false,
+        answers: Default::default(),
+    }
 }
 
 /// Первая блокирующая ошибка стека, если она есть (иначе None).
@@ -81,13 +128,26 @@ pub fn validate_project_stack_error(
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
     ) -> Option<String> {
-    let issues = super::validate::validate_stack(
+    let mut issues = super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         project_type.as_deref(),
         &backend_languages,
         &frontend_languages,
         &frameworks,
         super::validate::current_os(),
+    );
+    issues.extend(
+        duplicate_framework_write_paths(&guard_context(
+            project_type,
+            &backend_languages,
+            &frontend_languages,
+            &frameworks,
+        ))
+        .into_iter()
+        .map(|message| super::validate::StackIssue {
+            severity: super::validate::StackSeverity::Error,
+            message,
+        }),
     );
     super::validate::first_error(&issues)
 }
@@ -136,6 +196,11 @@ pub fn preview_project_recipe(
     )) {
         return Err(err);
     }
+    // Легальные правила прошли, но фреймворки могут писать один файл —
+    // такой стек сломает генерацию, отсекаем до предпросмотра.
+    if let Some(err) = duplicate_framework_write_paths(&context).into_iter().next() {
+        return Err(err);
+    }
     let path = PathBuf::from(&project_path);
     let plan = state.engine.plan(&context, &path)?;
     Ok(state.engine.preview(&plan))
@@ -156,6 +221,10 @@ pub async fn start_project_execution(
         &context.frameworks,
         super::validate::current_os(),
     )) {
+        return Err(err);
+    }
+    // Финальная проверка целостности генерации (дублирование файлов).
+    if let Some(err) = duplicate_framework_write_paths(&context).into_iter().next() {
         return Err(err);
     }
     let path = PathBuf::from(&project_path);

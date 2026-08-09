@@ -950,6 +950,54 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
     }
 }
 
+/// Проверка целостности генерации: не пишут ли два разных фреймворка один
+/// и тот же файл (WriteFile). Пути считаются ТОЧНО как в compose_recipe —
+/// с учётом сегментации mono-репозитория (SegLayout), иначе легальные
+/// связки (tauri→backend/, react→frontend/) дали бы ложные срабатывания.
+///
+/// Даже при overwrite=false второй пишущий молча скипнется (executor не
+/// пишет поверх), и проект останется без своего файла — поэтому это
+/// проблема стека, а не «шум». Легальные связки (gin+cobra, axum+clap,
+/// zap+zig-cli, fastapi+aiogram) маршрутизируются в разные пути движком,
+/// любые новые комбинации отсекаются до генерации.
+pub fn duplicate_framework_write_paths(context: &WizardContext) -> Vec<String> {
+    let project_name = context
+        .project_name
+        .clone()
+        .unwrap_or_else(|| "app".to_string());
+    let layout = SegLayout::compute(context);
+    let mut by_path: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for fw in &context.frameworks {
+        let seg = layout.for_framework(fw);
+        let steps = steps_for_framework(fw, ".", &project_name, context, seg.as_deref());
+        for step in steps {
+            if let Step::WriteFile { path, .. } = step {
+                by_path.entry(path).or_default().push(fw.clone());
+            }
+        }
+    }
+    let mut issues: Vec<String> = by_path
+        .into_iter()
+        .filter(|(_, fws)| {
+            fws.len() > 1 && {
+                let mut unique = fws.clone();
+                unique.sort();
+                unique.dedup();
+                unique.len() > 1
+            }
+        })
+        .map(|(path, fws)| {
+            format!(
+                "Фреймворки «{}» создают один и тот же файл «{}» — такая связка сломает сгенерированный проект.",
+                fws.join("» и «"),
+                path
+            )
+        })
+        .collect();
+    issues.sort();
+    issues
+}
+
 fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
     // Определяем язык фронтенда (для Tauri, Expo и др.)
     let frontend_lang = context.languages.iter().find(|l| is_frontend_lang(l));
@@ -1063,11 +1111,22 @@ async fn main() {{
             ]
         },
 
-        "clap" => vec![
-            cmd("add_clap_deps", "Add Clap dependency", "Add clap with derive feature",
-                "cargo", vec!["add", "clap", "--features", "derive"]),
-            write_file("clap_main", "Create CLI entry point", "src/main.rs",
-                &format!(r#"use clap::Parser;
+        "clap" => {
+            // Легальная связка axum + clap: веб-сервер владеет src/main.rs,
+            // CLI становится отдельным бинарником Cargo (src/bin/cli.rs).
+            // Поодиночке clap занимает src/main.rs.
+            let cli_path = if context.frameworks.iter().any(|f| f == "axum") {
+                "src/bin/cli.rs"
+            } else {
+                "src/main.rs"
+            };
+            let cli_id = if cli_path == "src/main.rs" { "clap_main" } else { "clap_cli" };
+            let cli_label = if cli_path == "src/main.rs" { "Create CLI entry point" } else { "Create CLI binary (src/bin/cli.rs)" };
+            vec![
+                cmd("add_clap_deps", "Add Clap dependency", "Add clap with derive feature",
+                    "cargo", vec!["add", "clap", "--features", "derive"]),
+                write_file(cli_id, cli_label, cli_path,
+                    &format!(r#"use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "{}", version = "0.1.0", about = "A CLI tool")]
@@ -1081,7 +1140,8 @@ fn main() {{
     println!("Hello, {{}}!", cli.name.as_deref().unwrap_or("world"));
 }}
 "#, project_name)),
-        ],
+            ]
+        },
 
         // ==================== Python ====================
         "fastapi" => vec![
@@ -1138,9 +1198,14 @@ if __name__ == "__main__":
                 "flask\n"),
         ],
 
-        "aiogram" => vec![
-            write_file("aiogram_bot", "Create Telegram bot", "src/bot.py",
-                &format!(r#"import asyncio
+        "aiogram" => {
+            // Если рядом FastAPI — aiogram уже добавлен в requirements.txt
+            // fastapi-секцией, дублировать файл нельзя (последний пишущий
+            // затрёт зависимости первого).
+            let with_fastapi = context.frameworks.iter().any(|f| f == "fastapi");
+            let mut steps = vec![
+                write_file("aiogram_bot", "Create Telegram bot", "src/bot.py",
+                    &format!(r#"import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
@@ -1157,9 +1222,13 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 "#, project_name)),
-            write_file("aiogram_requirements", "Aiogram dependencies", "requirements.txt",
-                "aiogram\n"),
-        ],
+            ];
+            if !with_fastapi {
+                steps.push(write_file("aiogram_requirements", "Aiogram dependencies", "requirements.txt",
+                    "aiogram\n"));
+            }
+            steps
+        },
 
         // ==================== Vite: React / Vue / Svelte ====================
         // create-vite с --template работает без интерактива; npm install
@@ -1493,11 +1562,20 @@ func main() {{
                 "go", vec!["get", "github.com/gin-gonic/gin"]),
         ],
 
-        "cobra" => vec![
-            cmd("cobra_init", "Init Cobra CLI", "Initialize Cobra CLI project",
-                "go", vec!["get", "github.com/spf13/cobra/cobra"]),
-            write_file("cobra_main", "Create CLI entry", "cmd/main.go",
-                &format!(r#"package main
+        "cobra" => {
+            // Легальная связка gin + cobra: веб-сервер владеет cmd/main.go,
+            // CLI получает собственный пакет cmd/cli/main.go. Поодиночке
+            // cobra занимает cmd/main.go.
+            let (cli_path, cli_id, cli_label) = if context.frameworks.iter().any(|f| f == "gin") {
+                ("cmd/cli/main.go", "cobra_cli", "Create CLI entry (cmd/cli/main.go)")
+            } else {
+                ("cmd/main.go", "cobra_main", "Create CLI entry")
+            };
+            vec![
+                cmd("cobra_init", "Init Cobra CLI", "Initialize Cobra CLI project",
+                    "go", vec!["get", "github.com/spf13/cobra/cobra"]),
+                write_file(cli_id, cli_label, cli_path,
+                    &format!(r#"package main
 
 import (
     "fmt"
@@ -1515,7 +1593,8 @@ func main() {{
     rootCmd.Execute()
 }}
 "#, project_name, project_name)),
-        ],
+            ]
+        },
 
         // ==================== Java ====================
         "spring-boot" => {
@@ -1724,17 +1803,97 @@ fun main() {{
         ],
 
         // ==================== Zig ====================
-        "zig-cli" => vec![
-            // zig init-exe уже сделано в language step, здесь просто меняем main
-            write_file("zig_main", "Create Zig CLI entry", "src/main.zig",
-                &format!(r#"const std = @import("std");
+        "zig-cli" => {
+            // Легальная связка zap + zig-cli: сервер (zap) занимает
+            // src/main.zig, CLI становится модулем src/cli.zig — один
+            // бинарник, запуск CLI через «<app> cli».
+            if context.frameworks.iter().any(|f| f == "zap") {
+                vec![write_file(
+                    "zig_cli_module",
+                    "Create Zig CLI module",
+                    "src/cli.zig",
+                    &format!(r#"const std = @import("std");
+
+pub fn run() !void {{
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print("Hello from {{s}} CLI!\n", .{{"{}"}});
+}}
+"#, project_name)),
+                ]
+            } else {
+                vec![write_file("zig_main", "Create Zig CLI entry", "src/main.zig",
+                    &format!(r#"const std = @import("std");
 
 pub fn main() !void {{
     const stdout = std.io.getStdOut().writer();
     try stdout.print("Hello from {{s}}!\n", .{{"{}"}});
 }}
 "#, project_name)),
-        ],
+                ]
+            }
+        },
+
+        "zap" => {
+            // Zig-веб: zap через zig fetch (зависимость в build.zig.zon).
+            // В связке с zig-cli main.zig получает диспетчер «<app> cli».
+            let has_cli = context.frameworks.iter().any(|f| f == "zig-cli");
+            let main_zig = if has_cli {
+                format!(r#"const std = @import("std");
+const zap = @import("zap");
+const cli = @import("cli.zig");
+
+fn on_request(r: zap.Request) void {{
+    r.sendBody("Hello from {{s}}!", .{{"{}"}}) catch {{}};
+}}
+
+pub fn main() !void {{
+    var args = std.process.args();
+    _ = args.next();
+    if (args.next()) |arg| {{
+        if (std.mem.eq(u8, arg, "cli")) return cli.run();
+    }}
+    var listener = zap.HttpListener.init(.{{
+        .on_request = on_request,
+        .port = 3000,
+    }});
+    try listener.listen();
+    std.debug.print("Listening on http://localhost:3000\n", .{{}});
+    zap.start(.{{ .threads = 1, .workers = 1 }});
+}}
+"#, project_name)
+            } else {
+                format!(r#"const std = @import("std");
+const zap = @import("zap");
+
+fn on_request(r: zap.Request) void {{
+    r.sendBody("Hello from {{s}}!", .{{"{}"}}) catch {{}};
+}}
+
+pub fn main() !void {{
+    var listener = zap.HttpListener.init(.{{
+        .on_request = on_request,
+        .port = 3000,
+    }});
+    try listener.listen();
+    std.debug.print("Listening on http://localhost:3000\n", .{{}});
+    zap.start(.{{ .threads = 1, .workers = 1 }});
+}}
+"#, project_name)
+            };
+            vec![
+                write_file("zap_zon", "Create build.zig.zon", "build.zig.zon",
+                    r#".{
+    .name = .my_app,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{},
+}
+"#),
+                cmd("zap_fetch", "Add Zap dependency", "Fetch zap and save to build.zig.zon",
+                    "zig", vec!["fetch", "--save", "https://github.com/zigzap/zap/archive/refs/tags/v0.4.0.tar.gz"]),
+                write_file("zap_main", "Create Zap server entry", "src/main.zig", &main_zig),
+            ]
+        },
 
         // ==================== Elixir ====================
         "phoenix" => vec![
@@ -2596,5 +2755,53 @@ mod tests {
             }
             _ => panic!("env_example — WriteFile"),
         }
+    }
+
+    #[test]
+    fn guard_legal_pairs_produce_no_duplicates() {
+        // Легальные связки разводятся движком по разным путям — guard молчит.
+        let cases: Vec<(Vec<&str>, Vec<&str>)> = vec![
+            (vec!["gin", "cobra"], vec!["go"]),
+            (vec!["axum", "clap"], vec!["rust"]),
+            (vec!["zap", "zig-cli"], vec!["zig"]),
+            (vec!["fastapi", "aiogram"], vec!["python"]),
+            (vec!["electron", "react"], vec!["typescript"]),
+            (vec!["tauri", "svelte"], vec!["rust", "typescript"]),
+        ];
+        for (fws, langs) in cases {
+            let mut ctx = context();
+            ctx.frameworks = fws.into_iter().map(String::from).collect();
+            ctx.languages = langs.into_iter().map(String::from).collect();
+            let issues = duplicate_framework_write_paths(&ctx);
+            assert!(issues.is_empty(), "ошибки для легальной связки: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn guard_colliding_frameworks_are_reported() {
+        // express и fastify пишут src/index.js и package.json в один и тот
+        // же каталог (inplace, без сегментации): второй пишущий молча
+        // скипнется — сгенерированный проект сломается.
+        let mut ctx = context();
+        ctx.languages = vec!["javascript".into()];
+        ctx.frameworks = vec!["express".into(), "fastify".into()];
+        let issues = duplicate_framework_write_paths(&ctx);
+        assert!(
+            issues.iter().any(|i| i.contains("src/index.js")),
+            "ожидался конфликт по src/index.js: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn guard_split_stack_with_tauri_react_is_clean() {
+        // tauri (either, язык rust → backend/) + react (frontend/) в
+        // mono-репозитории не пересекаются по путям.
+        let mut ctx = context();
+        ctx.languages = vec!["rust".into(), "typescript".into()];
+        ctx.backend_languages = vec!["rust".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["tauri".into(), "react".into()];
+        let issues = duplicate_framework_write_paths(&ctx);
+        assert!(issues.is_empty(), "ложные срабатывания: {issues:?}");
     }
 }

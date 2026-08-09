@@ -1,4 +1,30 @@
 {
+  "allowed_main_pairs": [
+    ["gin", "cobra"],
+    ["axum", "clap"],
+    ["android", "jetpack-compose"],
+    ["zig-cli", "zap"],
+    ["electron", "react"],
+    ["electron", "vue"],
+    ["electron", "svelte"]
+  ],
+  "main_limit_exempt": [
+    "zig-cli"
+  ],
+  "warning_pairs": [
+    {
+      "a": "phoenix",
+      "b": "nextjs",
+      "reason": "Phoenix использует собственную технологию LiveView для интерфейса — «Next.js» дублирует UI-слой и ломает концепцию LiveView-приложения.",
+      "alternative": "используйте LiveView/HEEx для интерфейса, либо оставьте связку, если Phoenix нужен только как API"
+    },
+    {
+      "a": "phoenix",
+      "b": "nuxt",
+      "reason": "Phoenix использует собственную технологию LiveView для интерфейса — «Nuxt» дублирует UI-слой и ломает концепцию LiveView-приложения.",
+      "alternative": "используйте LiveView/HEEx для интерфейса, либо оставьте связку, если Phoenix нужен только как API"
+    }
+  ],
   "project_types": [
     {
       "id": "rest-api",
@@ -378,9 +404,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "clap"
-      ],
+      "conflicts": [],
       "knowledge_key": "axum",
       "output_subdir": "backend",
       "required_tools": [],
@@ -410,7 +434,9 @@
         "nextjs",
         "nuxt",
         "sveltekit",
-        "solidjs"
+        "solidjs",
+        "flutter",
+        "qt"
       ],
       "knowledge_key": "tauri",
       "scaffold": "root",
@@ -418,6 +444,11 @@
       "required_tools": [],
       "suppresses_language_scaffold": false,
       "kind": "app",
+      "companions": [
+        "svelte",
+        "vue",
+        "react"
+      ],
       "recommends": [
         {
           "framework": "svelte",
@@ -446,9 +477,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "axum"
-      ],
+      "conflicts": [],
       "knowledge_key": "clap",
       "output_subdir": "backend",
       "required_tools": [],
@@ -473,9 +502,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "cobra"
-      ],
+      "conflicts": [],
       "knowledge_key": "gin",
       "output_subdir": "backend",
       "required_tools": [],
@@ -500,9 +527,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "gin"
-      ],
+      "conflicts": [],
       "knowledge_key": "cobra",
       "output_subdir": "backend",
       "required_tools": [],
@@ -548,6 +573,11 @@
       ],
       "suppresses_language_scaffold": true,
       "kind": "app",
+      "conflict_notes": {
+        "react": "React встроен в Next.js — выбор обоих дублирует UI-слой",
+        "vue": "Next.js работает на React — Vue дублирует UI-слой",
+        "svelte": "Next.js работает на React — Svelte дублирует UI-слой"
+      },
       "recommends": []
     },
     {
@@ -588,6 +618,11 @@
       ],
       "suppresses_language_scaffold": true,
       "kind": "app",
+      "conflict_notes": {
+        "svelte": "Svelte встроен в SvelteKit — выбор обоих дублирует UI-слой",
+        "react": "SvelteKit работает на Svelte — React дублирует UI-слой",
+        "vue": "SvelteKit работает на Svelte — Vue дублирует UI-слой"
+      },
       "recommends": []
     },
     {
@@ -628,6 +663,11 @@
       ],
       "suppresses_language_scaffold": true,
       "kind": "app",
+      "conflict_notes": {
+        "vue": "Vue встроен в Nuxt — выбор обоих дублирует UI-слой",
+        "react": "Nuxt работает на Vue — React дублирует UI-слой",
+        "svelte": "Nuxt работает на Vue — Svelte дублирует UI-слой"
+      },
       "recommends": [
         {
           "framework": "express",
@@ -693,10 +733,7 @@
         "solidjs",
         "expo",
         "react-native",
-        "plasmo",
-        "react",
-        "vue",
-        "svelte"
+        "plasmo"
       ],
       "knowledge_key": "electron",
       "scaffold": "subdir",
@@ -706,6 +743,11 @@
       ],
       "suppresses_language_scaffold": true,
       "kind": "app",
+      "companions": [
+        "react",
+        "vue",
+        "svelte"
+      ],
       "recommends": []
     },
     {
@@ -816,9 +858,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "jetpack-compose"
-      ],
+      "conflicts": [],
       "knowledge_key": "android",
       "output_subdir": "frontend",
       "required_tools": [],
@@ -895,7 +935,9 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [],
+      "conflicts": [
+        "tauri"
+      ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
       "required_tools": [],
@@ -923,7 +965,8 @@
       ],
       "conflicts": [
         "expo",
-        "react-native"
+        "react-native",
+        "tauri"
       ],
       "knowledge_key": "flutter",
       "scaffold": "subdir",
@@ -1005,9 +1048,7 @@
         "custom",
         "empty-project"
       ],
-      "conflicts": [
-        "android"
-      ],
+      "conflicts": [],
       "knowledge_key": "jetpack-compose",
       "output_subdir": "frontend",
       "required_tools": [],
@@ -1197,7 +1238,32 @@
         "empty-project"
       ],
       "conflicts": [],
-      "knowledge_key": null,
+      "knowledge_key": "zig-cli",
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "zap",
+      "label": "Zap",
+      "description": "High-performance Zig web framework built on libxev",
+      "icon": "zap.svg",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "zig"
+      ],
+      "recommended_language": "zig",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom",
+        "empty-project"
+      ],
+      "conflicts": [],
+      "knowledge_key": "zap",
       "output_subdir": "backend",
       "required_tools": [],
       "suppresses_language_scaffold": false,
@@ -1403,7 +1469,6 @@
         "sveltekit",
         "nuxt",
         "solidjs",
-        "electron",
         "expo",
         "react-native",
         "plasmo",
@@ -1443,7 +1508,6 @@
         "sveltekit",
         "nuxt",
         "solidjs",
-        "electron",
         "expo",
         "react-native",
         "plasmo",
@@ -1483,7 +1547,6 @@
         "sveltekit",
         "nuxt",
         "solidjs",
-        "electron",
         "expo",
         "react-native",
         "plasmo",
@@ -2507,7 +2570,8 @@
       "vapor"
     ],
     "zig": [
-      "zig-cli"
+      "zig-cli",
+      "zap"
     ],
     "elixir": [
       "phoenix"
@@ -2663,6 +2727,11 @@
       "npm"
     ],
     "zig-cli": [
+      "docker"
+    ],
+    "zap": [
+      "postgresql",
+      "redis",
       "docker"
     ],
     "expo": [

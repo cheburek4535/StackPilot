@@ -44,6 +44,10 @@ export type FrameworkDef = {
   platforms?: string[];
   knowledge_key: string | null;
   conflicts?: string[];
+  /** Почему фреймворк несовместим с конкретным конфликтом (conflict_id → текст) */
+  conflict_notes?: Record<string, string>;
+  /** Фреймворки, доступные как UI-компаньон (tauri → svelte/vue/react, electron → react/vue/svelte) */
+  companions?: string[];
   /** Как фреймворк участвует в создании каркаса: "root", "subdir" или undefined (inplace) */
   scaffold?: "root" | "subdir";
   /** Куда фреймворк создаёт файлы при сегментации: "backend" | "frontend" или undefined (корень) */
@@ -90,7 +94,21 @@ export type ToolDef = {
   conflicts: string[];
 };
 
+/** Пара-предупреждение: выбор `a`+`b` не блокируется, но помечается Warning */
+export type WarningPair = {
+  a: string;
+  b: string;
+  reason: string;
+  alternative: string;
+};
+
 export type WizardTreeData = {
+  /** Легальные связки главных фреймворков одной стороны (gin+cobra, axum+clap, android+jetpack-compose...) */
+  allowed_main_pairs: string[][];
+  /** Фреймворки, не занимающие лимит «одного главного на сторону» (zig-cli) */
+  main_limit_exempt: string[];
+  /** Нежёсткие предупреждения для концептуально спорных связок (Phoenix + SPA) */
+  warning_pairs: WarningPair[];
   project_types: ProjectTypeDef[];
   languages: LanguageDef[];
   frameworks: FrameworkDef[];
