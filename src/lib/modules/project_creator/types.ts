@@ -28,10 +28,14 @@ export type FrameworkDef = {
   icon: string | null;
   /** "standalone" — сам создаёт полное приложение; "inplace" — мини-каркас внутрь проекта языка */
   class: string;
+  /** "app" — главный фреймворк; "side" — побочный (aiogram, telegraf...) */
+  kind: string;
   /** На какой стороне живёт: "backend" | "frontend" | "either" */
   side: string;
   /** Совместимые языки */
   languages: string[];
+  /** Парные рекомендации: идеально сочетающиеся фреймворки (nest → react) */
+  recommends?: { framework: string; note: string }[];
   /** Язык, который конструктор подставит автоматически (из languages) */
   recommended_language: string;
   /** Типы проектов, для которых доступен (пусто = везде) */

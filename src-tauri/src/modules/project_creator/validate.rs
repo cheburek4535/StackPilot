@@ -42,39 +42,12 @@ fn platform_ok(fw: &FrameworkDef, os: &str) -> bool {
     fw.platforms.is_empty() || fw.platforms.iter().any(|p| p == os)
 }
 
-/// На какой стороне живёт фреймворк в текущем выборе:
-/// "backend", "frontend" или None (side="either" и язык не выбран).
-fn resolved_side(
-    fw: &FrameworkDef,
-    backend_lang: Option<&str>,
-    frontend_lang: Option<&str>,
-) -> Option<&'static str> {
-    match fw.side.as_str() {
-        "backend" => Some("backend"),
-        "frontend" => Some("frontend"),
-        _ => {
-            // "either": сторона языка, который фреймворк требует.
-            if let Some(l) = backend_lang {
-                if fw.languages.iter().any(|x| x == l) {
-                    return Some("backend");
-                }
-            }
-            if let Some(l) = frontend_lang {
-                if fw.languages.iter().any(|x| x == l) {
-                    return Some("frontend");
-                }
-            }
-            None
-        }
-    }
-}
-
 /// Проверяет стек и возвращает найденные проблемы (порядок значимый).
 pub fn validate_stack(
     tree: &WizardTreeData,
     project_type: Option<&str>,
-    backend_lang: Option<&str>,
-    frontend_lang: Option<&str>,
+    backend_langs: &[String],
+    frontend_langs: &[String],
     frameworks: &[String],
     os: &str,
 ) -> Vec<StackIssue> {
@@ -153,11 +126,11 @@ pub fn validate_stack(
         }
     }
 
-    // 5. Язык стороны должен подходить фреймворку
+    // 5. Язык(и) стороны должны подходить фреймворку
     for fw in &selected {
         match fw.side.as_str() {
             "backend" => {
-                if !fw.languages.iter().any(|l| Some(l.as_str()) == backend_lang) {
+                if !backend_langs.iter().any(|l| fw.languages.iter().any(|x| x == l)) {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -170,7 +143,7 @@ pub fn validate_stack(
                 }
             }
             "frontend" => {
-                if !fw.languages.iter().any(|l| Some(l.as_str()) == frontend_lang) {
+                if !frontend_langs.iter().any(|l| fw.languages.iter().any(|x| x == l)) {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -183,10 +156,11 @@ pub fn validate_stack(
                 }
             }
             _ => {
-                let backend_ok = backend_lang.is_some_and(|l| fw.languages.iter().any(|x| x == l));
-                let frontend_ok =
-                    frontend_lang.is_some_and(|l| fw.languages.iter().any(|x| x == l));
-                if !backend_ok && !frontend_ok {
+                let any_ok = fw
+                    .languages
+                    .iter()
+                    .any(|x| backend_langs.contains(x) || frontend_langs.contains(x));
+                if !any_ok {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -241,7 +215,9 @@ mod tests {
         os: &str,
     ) -> Vec<StackIssue> {
         let fws: Vec<String> = fws.iter().map(|s| s.to_string()).collect();
-        validate_stack(tree, pt, b, f, &fws, os)
+        let b_langs: Vec<String> = b.map(|s| s.to_string()).into_iter().collect();
+        let f_langs: Vec<String> = f.map(|s| s.to_string()).into_iter().collect();
+        validate_stack(tree, pt, &b_langs, &f_langs, &fws, os)
     }
 
     // ----------------------------------------------------------

@@ -16,7 +16,6 @@ import { validateStack, firstError } from "$lib/modules/project_creator/rules";
 import type {
   WizardTreeData,
   ProjectTypeDef,
-  LanguageDef,
   FrameworkDef,
   ToolDef,
   ProjectPreset,
@@ -57,12 +56,15 @@ let hostOs = $state<string>("windows");
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
 
 // ---- Constructor context ----
-const PHASES = ["Project Type", "Architecture", "Stack", "Features", "Summary"];
+const PHASES = ["Project Type", "Stack & Tools", "Review"];
 let phase = $state(0); // 0..4 — конструктор; 5 — окружение; 6 — генерация
 let selectedType = $state<ProjectTypeDef | null>(null);
 let backendLangs = $state<string[]>([]);
 let frontendLangs = $state<string[]>([]);
 let selectedFrameworks = $state<string[]>([]);
+/** Выбранный язык каждого фреймворка (fw.id → язык). Языки больше не
+ *  выбираются сами по себе — они назначаются при выборе фреймворка. */
+let fwLangs = $state<Record<string, string>>({});
 let selectedTools = $state<string[]>([]);
 let testing = $state(true);
 let git = $state(true);
@@ -109,11 +111,6 @@ function fwLabel(id: string): string {
 /** Метка инструмента по id (для рекомендаций) */
 function toolLabel(id: string): string {
   return tree?.tools.find((t) => t.id === id)?.label ?? id;
-}
-
-/** Сразу добавить рекомендованный фреймворк (как обычный клик по карточке) */
-function applyRecommendedFramework(id: string) {
-  toggleFramework(id);
 }
 
 /** Сразу добавить рекомендованный инструмент */
@@ -227,47 +224,6 @@ function imgSrc(name: string | null): string {
 }
 
 // ----------------------------------------------------------
-// Языки
-// ----------------------------------------------------------
-
-function category(langId: string): string | undefined {
-  return tree?.languages.find((l) => l.id === langId)?.category ?? undefined;
-}
-
-function languageBlockReason(lang: LanguageDef): string | null {
-  if (lang.platforms?.length && !lang.platforms.includes(hostOs)) {
-    return `Available only on ${lang.platforms.join(", ")}`;
-  }
-  return null;
-}
-
-function backendCandidates(): LanguageDef[] {
-  if (!tree || !selectedType) return [];
-  return (tree.project_language_map[selectedType.id] ?? [])
-    .map((id) => tree!.languages.find((l) => l.id === id)!)
-    .filter((l) => l && (l.category === "backend" || l.category === "both"));
-}
-
-function frontendCandidates(): LanguageDef[] {
-  if (!tree || !selectedType) return [];
-  return (tree.project_language_map[selectedType.id] ?? [])
-    .map((id) => tree!.languages.find((l) => l.id === id)!)
-    .filter((l) => l && (l.category === "frontend" || l.category === "both" || l.category === "static"));
-}
-
-function toggleLang(side: "backend" | "frontend", id: string) {
-  if (side === "backend") {
-    backendLangs = backendLangs.includes(id)
-      ? backendLangs.filter((x) => x !== id)
-      : [...backendLangs, id];
-  } else {
-    frontendLangs = frontendLangs.includes(id)
-      ? frontendLangs.filter((x) => x !== id)
-      : [...frontendLangs, id];
-  }
-}
-
-// ----------------------------------------------------------
 // Фреймворки
 // ----------------------------------------------------------
 
@@ -278,39 +234,54 @@ function availableFrameworks(): FrameworkDef[] {
   );
 }
 
-/** Какая сторона языка совместима с фреймворком */
-function sideLanguageOk(fw: FrameworkDef, side: "backend" | "frontend"): boolean {
-  const langs = side === "backend" ? backendLangs : frontendLangs;
-  return langs.some((l) => fw.languages.includes(l));
+/** Уровень фреймворка для группировки в колонках:
+ *  "full" — standalone-приложения (spring-boot, django, nextjs),
+ *  "inplace" — лёгкие фреймворки внутрь базового проекта (fastapi, express),
+ *  "side" — побочные библиотеки (aiogram, telegraf). */
+function fwLevelOf(fw: FrameworkDef): "full" | "inplace" | "side" {
+  if (fw.kind === "side") return "side";
+  return fw.class === "standalone" ? "full" : "inplace";
 }
 
-/** На какую сторону встанет фреймворк при клике */
-function resolveForSelection(fw: FrameworkDef): "backend" | "frontend" {
-  if (fw.side === "backend") return "backend";
-  if (fw.side === "frontend") return "frontend";
-  if (sideLanguageOk(fw, "backend")) return "backend";
-  if (sideLanguageOk(fw, "frontend")) return "frontend";
-  return "backend";
-}
+/** Уровни-колонки внутри сторон (порядок показа) */
+const FW_LEVELS = [
+  {
+    id: "full",
+    icon: "🏗️",
+    title: "Full application frameworks",
+    note: "Create the whole project scaffold by themselves (Spring Boot, Django, Next.js).",
+  },
+  {
+    id: "inplace",
+    icon: "🔧",
+    title: "In-place & lightweight",
+    note: "Attach into a base project of their language (FastAPI, Express, Gin).",
+  },
+  {
+    id: "side",
+    icon: "🧩",
+    title: "Side modules & libraries",
+    note: "Optional add-ons to the main stack (bots, plugins) — can coexist with anything.",
+  },
+] as const;
 
-/** Гарантирует совместимый язык на стороне фреймворка (recommended_language) */
-function ensureSideLanguage(fw: FrameworkDef, side: "backend" | "frontend") {
-  if (sideLanguageOk(fw, side)) return;
-  const rec = fw.recommended_language;
-  if (side === "backend") {
-    if (!backendLangs.includes(rec)) backendLangs = [...backendLangs, rec];
-  } else {
-    if (!frontendLangs.includes(rec)) frontendLangs = [...frontendLangs, rec];
+/** Пересчёт языков сторон из выбранных фреймворков. Языки следуют за
+ *  фреймворками: на каждой стороне собираются языки её фреймворков. */
+function recomputeSideLangs() {
+  const t = tree;
+  if (!t) return;
+  const backend = new Set(backendLangs);
+  const frontend = new Set(frontendLangs);
+  for (const id of selectedFrameworks) {
+    const fw = t.frameworks.find((f) => f.id === id);
+    if (!fw) continue;
+    const lang = fwLangs[id] ?? fw.recommended_language;
+    if (!lang) continue;
+    if (fw.side === "frontend") frontend.add(lang);
+    else backend.add(lang);
   }
-}
-
-/** Группировка для показа: backend / frontend / either (ещё не привязан) */
-function frameworkSide(fw: FrameworkDef): "backend" | "frontend" | "either" {
-  if (fw.side === "backend") return "backend";
-  if (fw.side === "frontend") return "frontend";
-  if (sideLanguageOk(fw, "backend")) return "backend";
-  if (sideLanguageOk(fw, "frontend")) return "frontend";
-  return "either";
+  backendLangs = [...backend];
+  frontendLangs = [...frontend];
 }
 
 /** Причина, по которой фреймворк нельзя выбрать (зеркало правил rules.ts) */
@@ -331,28 +302,184 @@ function frameworkBlockReason(fwId: string): string | null {
       return `Incompatible with ${cFw?.label ?? c}`;
     }
   }
-  const side = frameworkSide(fw);
-  if (side !== "either") {
-    const sameSide = selectedFrameworks.some((id) => frameworkSide(tree!.frameworks.find((f) => f.id === id)!) === side);
-    if (sameSide) return `Only one framework per ${side} side`;
-    if (!sideLanguageOk(fw, side)) {
-      return `Requires one of: ${fw.languages.join(", ")}`;
+  if (fw.side === "backend" || fw.side === "frontend") {
+    if (fw.kind === "app") {
+      const sameSide = selectedFrameworks.some((id) => {
+        const f = tree?.frameworks.find((x) => x.id === id);
+        return !!f && f.kind === "app" && f.side === fw.side;
+      });
+      if (sameSide) return `Only one main ${fw.side} framework`;
     }
   }
   return null;
 }
 
-function toggleFramework(id: string) {
+/** Клик по карточке фреймворка: выбрать (или открыть настройки, если выбран).
+ *  Мультиязычные фреймворки открывают попап выбора языка; однозназычные —
+ *  выбираются сразу с их языком; повторный клик снимает одиночные. */
+function clickFramework(id: string) {
+  const fw = tree?.frameworks.find((f) => f.id === id);
+  if (!fw) return;
   if (selectedFrameworks.includes(id)) {
-    selectedFrameworks = selectedFrameworks.filter((f) => f !== id);
+    if (fw.languages.length > 1 || companionOptions(fw).length > 0) {
+      openFwPopup(id);
+    } else {
+      removeFramework(id);
+    }
     return;
   }
   if (frameworkBlockReason(id)) return;
-  const fw = tree?.frameworks.find((f) => f.id === id);
-  if (!fw) return;
-  ensureSideLanguage(fw, resolveForSelection(fw));
+  if (fw.side === "either" && companionOptions(fw).length > 0 && !linkedCompanions[id]) {
+    const first = companionOptions(fw)[0];
+    addCompanion(fw.id, first.id);
+  }
   const dropConflicts = fw.conflicts ?? [];
   selectedFrameworks = [...selectedFrameworks.filter((f) => !dropConflicts.includes(f)), id];
+  fwLangs = { ...fwLangs, [id]: fwLangs[id] ?? fw.recommended_language };
+  recomputeSideLangs();
+  if (fw.languages.length > 1 || companionOptions(fw).length > 0) {
+    openFwPopup(id);
+  }
+}
+
+/** Сразу добавить рекомендованный фреймворк (как обычный клик по карточке) */
+function applyRecommendedFramework(id: string) {
+  clickFramework(id);
+}
+
+// ----------------------------------------------------------
+// Попап настройки фреймворка (язык + подфреймворк)
+// ----------------------------------------------------------
+
+/** id фреймворка с открытым попапом (null = закрыт) */
+let fwPopup = $state<string | null>(null);
+/** Черновой выбор языка в попапе */
+let popupLang = $state<string | null>(null);
+/** Черновой выбор подфреймворка (для tauri-подобных: фронтовая часть) */
+let popupCompanion = $state<string | null>(null);
+/** Черновой выбор языка подфреймворка */
+let popupCompanionLang = $state<string | null>(null);
+/** Связки «владелец → подфреймворк» (tauri → svelte): удаление владельца тянет подфреймворк */
+let linkedCompanions = $state<Record<string, string>>({});
+
+/** Подфреймворки для side="either" (tauri): совместимые фронтовые приложения */
+function companionOptions(fw: FrameworkDef): FrameworkDef[] {
+  if (!tree || fw.side !== "either" || fw.kind !== "app") return [];
+  const compat = tree.frameworks.filter(
+    (c) =>
+      c.side === "frontend" &&
+      c.kind === "app" &&
+      !(fw.conflicts ?? []).includes(c.id) &&
+      (!c.project_types?.length || !selectedType || c.project_types.includes(selectedType.id)),
+  );
+  const recommendedIds = (fw.recommends ?? []).map((r) => r.framework);
+  return [...compat.filter((c) => recommendedIds.includes(c.id)), ...compat.filter((c) => !recommendedIds.includes(c.id))];
+}
+
+function langLabel(id: string): string {
+  return tree?.languages.find((l) => l.id === id)?.label ?? id;
+}
+
+/** Список языков фреймворка одной строкой ("TypeScript, JavaScript") */
+function fwLangsLabel(fw: FrameworkDef): string {
+  return fw.languages.map((l) => langLabel(l)).join(", ");
+}
+
+/** Сводка выбранных языков для чипа на карточке ("TypeScript" / "TypeScript + JavaScript") */
+function fwLangSummary(fw: FrameworkDef): string {
+  if (!selectedFrameworks.includes(fw.id)) return "";
+  const own = langLabel(fwLangs[fw.id] ?? fw.recommended_language);
+  const cid = linkedCompanions[fw.id];
+  if (cid) {
+    const cfw = tree?.frameworks.find((f) => f.id === cid);
+    const cl = langLabel(fwLangs[cid] ?? cfw?.recommended_language ?? "");
+    return `${own} + ${cl}`;
+  }
+  return own;
+}
+
+function addCompanion(ownerId: string, cid: string) {
+  if (selectedFrameworks.includes(cid)) return;
+  const cfw = tree?.frameworks.find((f) => f.id === cid);
+  if (!cfw) return;
+  selectedFrameworks = [...selectedFrameworks, cid];
+  linkedCompanions = { ...linkedCompanions, [ownerId]: cid };
+  if (!fwLangs[cid]) fwLangs = { ...fwLangs, [cid]: cfw.recommended_language };
+}
+
+function openFwPopup(id: string) {
+  const fw = tree?.frameworks.find((f) => f.id === id);
+  if (!fw) return;
+  popupLang = fwLangs[id] ?? fw.recommended_language;
+  const opts = companionOptions(fw);
+  if (opts.length > 0) {
+    const linked = linkedCompanions[id];
+    const selected = opts.find((o) => o.id === linked) ?? opts[0];
+    popupCompanion = selected.id;
+    popupCompanionLang =
+      fwLangs[selected.id] && selected.languages.includes(fwLangs[selected.id])
+        ? fwLangs[selected.id]
+        : selected.recommended_language;
+  } else {
+    popupCompanion = null;
+    popupCompanionLang = null;
+  }
+  fwPopup = id;
+}
+
+/** Применить черновики попапа (Done) — меню закрывается только явно */
+function applyFwPopup() {
+  const fw = tree?.frameworks.find((f) => f.id === fwPopup);
+  if (!fw) {
+    fwPopup = null;
+    return;
+  }
+  if (popupLang && fw.languages.includes(popupLang)) {
+    fwLangs = { ...fwLangs, [fw.id]: popupLang };
+  }
+  if (companionOptions(fw).length > 0) {
+    const prev = linkedCompanions[fw.id];
+    if (prev && prev !== popupCompanion) {
+      selectedFrameworks = selectedFrameworks.filter((x) => x !== prev);
+      const nl = { ...linkedCompanions };
+      delete nl[fw.id];
+      linkedCompanions = nl;
+      const nf = { ...fwLangs };
+      delete nf[prev];
+      fwLangs = nf;
+    }
+    if (popupCompanion && !selectedFrameworks.includes(popupCompanion)) {
+      addCompanion(fw.id, popupCompanion);
+    }
+    if (popupCompanion && popupCompanionLang) {
+      const cfw = tree?.frameworks.find((f) => f.id === popupCompanion);
+      if (cfw && cfw.languages.includes(popupCompanionLang)) {
+        fwLangs = { ...fwLangs, [popupCompanion]: popupCompanionLang };
+      }
+    }
+  }
+  recomputeSideLangs();
+  fwPopup = null;
+}
+
+function cancelFwPopup() {
+  fwPopup = null;
+}
+
+/** Удалить фреймворк вместе со связанным подфреймворком */
+function removeFramework(id: string) {
+  const prev = linkedCompanions[id];
+  const toRemove = new Set([id]);
+  if (prev) toRemove.add(prev);
+  selectedFrameworks = selectedFrameworks.filter((x) => !toRemove.has(x));
+  const nl = { ...linkedCompanions };
+  delete nl[id];
+  linkedCompanions = nl;
+  const nf = { ...fwLangs };
+  for (const r of toRemove) delete nf[r];
+  fwLangs = nf;
+  recomputeSideLangs();
+  fwPopup = null;
 }
 
 // ----------------------------------------------------------
@@ -435,15 +562,24 @@ function applyPreset(p: ProjectPreset) {
   const t = tree;
   if (!t) return;
   selectedType = t.project_types.find((pt) => pt.id === p.stack.project_type) ?? null;
-  backendLangs = p.stack.backend_lang ? [p.stack.backend_lang] : [];
-  frontendLangs = p.stack.frontend_lang ? [p.stack.frontend_lang] : [];
+  const nextFwLangs: Record<string, string> = {};
+  for (const fid of p.stack.frameworks) {
+    const fw = t.frameworks.find((f) => f.id === fid);
+    if (!fw) continue;
+    const sideLang = fw.side === "frontend" ? p.stack.frontend_lang : p.stack.backend_lang;
+    nextFwLangs[fid] = sideLang && fw.languages.includes(sideLang) ? sideLang : fw.recommended_language;
+  }
+  fwLangs = nextFwLangs;
   selectedFrameworks = [...p.stack.frameworks];
   selectedTools = [...p.stack.tools];
   testing = p.stack.features.testing;
   git = p.stack.features.git;
   vscode = p.stack.features.vscode;
+  backendLangs = p.stack.backend_lang ? [p.stack.backend_lang] : [];
+  frontendLangs = p.stack.frontend_lang ? [p.stack.frontend_lang] : [];
+  recomputeSideLangs();
   mode = "constructor";
-  phase = 4;
+  phase = 2;
 }
 
 // ----------------------------------------------------------
@@ -482,6 +618,7 @@ function applyAnalysis() {
     if (langIds.length > 1) frontendLangs = [langIds[1]];
   }
   selectedFrameworks = [];
+  fwLangs = {};
   selectedTools = analysisResult.detected_technologies
     .filter((t) => tree!.tools.some((tl) => tl.id === t.name.toLowerCase() || tl.label === t.name))
     .map((t) => t.name.toLowerCase());
@@ -491,7 +628,7 @@ function applyAnalysis() {
   testing = analysisResult.has_tests;
   git = analysisResult.has_git;
   mode = "constructor";
-  phase = 4;
+  phase = 2;
 }
 
 // ----------------------------------------------------------
@@ -499,11 +636,7 @@ function applyAnalysis() {
 // ----------------------------------------------------------
 
 function goPhase(p: number) {
-  if (p >= 0 && p <= 4) phase = p;
-}
-
-function nextPhase() {
-  if (phase < 4) phase++;
+  if (p >= 0 && p <= 6) phase = p;
 }
 
 function back() {
@@ -515,6 +648,7 @@ function selectType(t: ProjectTypeDef) {
   backendLangs = [];
   frontendLangs = [];
   selectedFrameworks = [];
+  fwLangs = {};
   selectedTools = [];
   phase = 1;
 }
@@ -944,6 +1078,8 @@ function resetAll() {
   backendLangs = [];
   frontendLangs = [];
   selectedFrameworks = [];
+  fwLangs = {};
+  linkedCompanions = {};
   selectedTools = [];
   testing = true;
   git = true;
@@ -1136,7 +1272,7 @@ function resetAll() {
                 {/if}
               </div>
               <div class="btn-row">
-                <button class="btn-back" onclick={back}>← Back</button>
+                <button class="btn-back" onclick={() => (phase = 2)}>← Back</button>
                 <button class="btn-secondary" onclick={recheckEnvironment}>Re-check environment</button>
                 <button class="btn-primary" onclick={doCreateProject}>Continue</button>
               </div>
@@ -1252,7 +1388,7 @@ function resetAll() {
             {/if}
 
             <div class="btn-row">
-              <button class="btn-back" onclick={back} disabled={envInstalling}>← Back</button>
+              <button class="btn-back" onclick={() => (phase = 2)} disabled={envInstalling}>← Back</button>
               {#if envInstalling}
                 <button class="btn-secondary" onclick={cancelInstall}>Abort</button>
               {:else if missingAll.length > 0}
@@ -1411,167 +1547,166 @@ function resetAll() {
             </div>
           {/if}
 
-          <!-- Phase 1: Architecture (языки сторон) -->
+          <!-- Phase 1: Stack & Tools — одна скролл-страница -->
           {#if phase === 1}
-            <p class="prompt">Architecture</p>
-            <p class="hint">
-              Pick the languages for each side of your <strong>{selectedType?.label}</strong>.
-              You can select several per side; empty side = not used.
-            </p>
-            <div class="side-sections">
-              <div class="side-section">
-                <p class="group-label">Backend</p>
-                <div class="card-grid lang-grid">
-                  {#each backendCandidates() as lang}
-                    {@const blockedReason = languageBlockReason(lang)}
-                    <button
-                      class="card"
-                      class:selected={backendLangs.includes(lang.id)}
-                      class:blocked={blockedReason !== null}
-                      disabled={blockedReason !== null}
-                      onclick={() => toggleLang("backend", lang.id)}
-                    >
-                      {#if lang.icon}
-                        <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
-                      {:else}
-                        <span class="card-img-placeholder-sm">▣</span>
-                      {/if}
-                      <h3>{lang.label}</h3>
-                      {#if blockedReason}
-                        <span class="conflict-badge">{blockedReason}</span>
-                      {/if}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-              <div class="side-section">
-                <p class="group-label">Frontend</p>
-                <div class="card-grid lang-grid">
-                  {#each frontendCandidates() as lang}
-                    {@const blockedReason = languageBlockReason(lang)}
-                    <button
-                      class="card"
-                      class:selected={frontendLangs.includes(lang.id)}
-                      class:blocked={blockedReason !== null}
-                      disabled={blockedReason !== null}
-                      onclick={() => toggleLang("frontend", lang.id)}
-                    >
-                      {#if lang.icon}
-                        <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
-                      {:else}
-                        <span class="card-img-placeholder-sm">▣</span>
-                      {/if}
-                      <h3>{lang.label}</h3>
-                      {#if lang.category === "static"}
-                        <p>Plain HTML, CSS & JS — no framework</p>
-                      {/if}
-                      {#if blockedReason}
-                        <span class="conflict-badge">{blockedReason}</span>
-                      {/if}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            </div>
-            <div class="btn-row">
-              <button class="btn-back" onclick={back}>← Back</button>
-              <button class="btn-primary" onclick={nextPhase}>Next →</button>
-            </div>
-          {/if}
-
-          <!-- Phase 2: Stack (фреймворки) -->
-          {#if phase === 2}
             {@const fws = availableFrameworks()}
-            {@const backendFws = fws.filter((f) => frameworkSide(f) === "backend")}
-            {@const frontendFws = fws.filter((f) => frameworkSide(f) === "frontend")}
-            {@const eitherFws = fws.filter((f) => frameworkSide(f) === "either")}
-            <p class="prompt">Stack</p>
+            {@const backendFws = fws.filter((f) => f.side === "backend")}
+            {@const frontendFws = fws.filter((f) => f.side === "frontend")}
+            {@const eitherFws = fws.filter((f) => f.side === "either")}
+
+            {#snippet fwCard(fw: FrameworkDef)}
+              {@const reason = frameworkBlockReason(fw.id)}
+              {@const summary = fwLangSummary(fw)}
+              <div class="fw-card-wrap">
+                <button
+                  class="card"
+                  class:selected={selectedFrameworks.includes(fw.id)}
+                  class:blocked={reason !== null}
+                  disabled={reason !== null}
+                  onclick={() => clickFramework(fw.id)}
+                >
+                  {#if fw.icon}
+                    <img src={imgSrc(fw.icon)} alt={fw.label} class="card-img-sm" />
+                  {:else}
+                    <span class="card-img-placeholder-sm">▣</span>
+                  {/if}
+                  <h3>{fw.label}</h3>
+                  <p>{fw.description}</p>
+                  {#if selectedFrameworks.includes(fw.id) && summary}
+                    <span class="fw-lang-chip selected">✓ {summary}</span>
+                  {:else}
+                    <span class="fw-lang-chip">{fwLangsLabel(fw)}</span>
+                  {/if}
+                  {#if fw.languages.length > 1}
+                    <span class="fw-lang-multi">⚙ choose language</span>
+                  {/if}
+                  {#if reason}
+                    <span class="conflict-badge">{reason}</span>
+                  {/if}
+                </button>
+                {#if fwPopup === fw.id}
+                  <div class="fw-popup">
+                    <p class="popup-title">{fw.label}</p>
+                    {#if companionOptions(fw).length > 0}
+                      <p class="popup-label">Frontend framework</p>
+                      <div class="popup-list">
+                        {#each companionOptions(fw) as c, ci}
+                          <button
+                            class="popup-opt"
+                            class:selected={popupCompanion === c.id}
+                            onclick={() => {
+                              popupCompanion = c.id;
+                              popupCompanionLang = c.recommended_language;
+                            }}
+                          >
+                            <span>{c.label}</span>
+                            {#if ci === 0}
+                              <span class="star">⭐ recommended</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
+                      {#if popupCompanion}
+                        {@const cfw = tree?.frameworks.find((f) => f.id === popupCompanion)}
+                        {#if cfw}
+                          <p class="popup-label">Frontend language</p>
+                          <div class="popup-list">
+                            {#each cfw.languages as l}
+                              <button
+                                class="popup-opt"
+                                class:selected={popupCompanionLang === l}
+                                onclick={() => (popupCompanionLang = l)}
+                              >
+                                <span>{langLabel(l)}</span>
+                                {#if l === cfw.recommended_language}
+                                  <span class="star">⭐ recommended</span>
+                                {/if}
+                              </button>
+                            {/each}
+                          </div>
+                        {/if}
+                      {/if}
+                    {:else}
+                      <p class="popup-label">Language</p>
+                      <div class="popup-list">
+                        {#each fw.languages as l}
+                          <button
+                            class="popup-opt"
+                            class:selected={popupLang === l}
+                            onclick={() => (popupLang = l)}
+                          >
+                            <span>{langLabel(l)}</span>
+                            {#if l === fw.recommended_language}
+                              <span class="star">⭐ recommended</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                    <div class="popup-actions">
+                      <button class="btn-primary btn-xs" onclick={applyFwPopup}>✓ Done</button>
+                      <button class="btn-secondary btn-xs" onclick={cancelFwPopup}>Cancel</button>
+                      {#if selectedFrameworks.includes(fw.id)}
+                        <button class="btn-remove" onclick={() => removeFramework(fw.id)}>✕ Remove</button>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/snippet}
+
+            <p class="prompt">Stack & Tools</p>
             <p class="hint">
-              Pick frameworks. A compatible language is added automatically.
-              {#if selectedFrameworks.includes("tauri")}
-                <span class="tauri-note">⚡ Tauri selected — frontend is managed by Tauri CLI</span>
-              {/if}
+              Pick frameworks freely — languages are assigned automatically when you select one
+              (multi-language frameworks open a language menu). Options marked
+              <span class="star">⭐</span> are the recommended defaults and apply automatically.
+              One main framework per side — side libraries (bots, plugins) can be added alongside.
             </p>
+
+            {#snippet fwLevel(title: string, icon: string, items: FrameworkDef[], note: string)}
+              <details class="fw-level" open>
+                <summary>
+                  <span class="fw-level-icon">{icon}</span>
+                  <span class="fw-level-title">{title}</span>
+                  <span class="fw-level-count">{items.length}</span>
+                </summary>
+                <p class="fw-level-note">{note}</p>
+                <div class="card-grid fw-grid">
+                  {#each items as fw}
+                    {@render fwCard(fw)}
+                  {/each}
+                </div>
+              </details>
+            {/snippet}
+
             {#if backendFws.length > 0}
               <div class="side-section">
-                <p class="group-label">Backend frameworks</p>
-                <div class="card-grid fw-grid">
-                  {#each backendFws as fw}
-                    {@const reason = frameworkBlockReason(fw.id)}
-                    <button
-                      class="card"
-                      class:selected={selectedFrameworks.includes(fw.id)}
-                      class:blocked={reason !== null}
-                      disabled={reason !== null}
-                      onclick={() => toggleFramework(fw.id)}
-                    >
-                      {#if fw.icon}
-                        <img src={imgSrc(fw.icon)} alt={fw.label} class="card-img-sm" />
-                      {:else}
-                        <span class="card-img-placeholder-sm">▣</span>
-                      {/if}
-                      <h3>{fw.label}</h3>
-                      <p>{fw.description}</p>
-                      {#if reason}
-                        <span class="conflict-badge">{reason}</span>
-                      {/if}
-                    </button>
-                  {/each}
-                </div>
+                <p class="group-label">⚙️ Backend</p>
+                {#each FW_LEVELS as lvl}
+                  {@const items = backendFws.filter((f) => fwLevelOf(f) === lvl.id)}
+                  {#if items.length > 0}
+                    {@render fwLevel(lvl.title, lvl.icon, items, lvl.note)}
+                  {/if}
+                {/each}
               </div>
             {/if}
             {#if frontendFws.length > 0}
               <div class="side-section">
-                <p class="group-label">Frontend frameworks</p>
-                <div class="card-grid fw-grid">
-                  {#each frontendFws as fw}
-                    {@const reason = frameworkBlockReason(fw.id)}
-                    <button
-                      class="card"
-                      class:selected={selectedFrameworks.includes(fw.id)}
-                      class:blocked={reason !== null}
-                      disabled={reason !== null}
-                      onclick={() => toggleFramework(fw.id)}
-                    >
-                      {#if fw.icon}
-                        <img src={imgSrc(fw.icon)} alt={fw.label} class="card-img-sm" />
-                      {:else}
-                        <span class="card-img-placeholder-sm">▣</span>
-                      {/if}
-                      <h3>{fw.label}</h3>
-                      <p>{fw.description}</p>
-                      {#if reason}
-                        <span class="conflict-badge">{reason}</span>
-                      {/if}
-                    </button>
-                  {/each}
-                </div>
+                <p class="group-label">🖥️ Frontend</p>
+                {#each FW_LEVELS as lvl}
+                  {@const items = frontendFws.filter((f) => fwLevelOf(f) === lvl.id)}
+                  {#if items.length > 0}
+                    {@render fwLevel(lvl.title, lvl.icon, items, lvl.note)}
+                  {/if}
+                {/each}
               </div>
             {/if}
             {#if eitherFws.length > 0}
               <div class="side-section">
-                <p class="group-label">Either side</p>
+                <p class="group-label">💻 Desktop & Full-stack</p>
                 <div class="card-grid fw-grid">
                   {#each eitherFws as fw}
-                    {@const reason = frameworkBlockReason(fw.id)}
-                    <button
-                      class="card"
-                      class:selected={selectedFrameworks.includes(fw.id)}
-                      class:blocked={reason !== null}
-                      disabled={reason !== null}
-                      onclick={() => toggleFramework(fw.id)}
-                    >
-                      {#if fw.icon}
-                        <img src={imgSrc(fw.icon)} alt={fw.label} class="card-img-sm" />
-                      {:else}
-                        <span class="card-img-placeholder-sm">▣</span>
-                      {/if}
-                      <h3>{fw.label}</h3>
-                      <p>{fw.description}</p>
-                      {#if reason}
-                        <span class="conflict-badge">{reason}</span>
-                      {/if}
-                    </button>
+                    {@render fwCard(fw)}
                   {/each}
                 </div>
               </div>
@@ -1579,6 +1714,7 @@ function resetAll() {
             {#if fws.length === 0}
               <p class="muted">No frameworks available for this project type.</p>
             {/if}
+
             {#if recommendations && (recommendations.frameworks.length > 0 || recommendations.side_frameworks.length > 0 || recommendations.tools.length > 0 || recommendations.missing_languages.length > 0)}
               <div class="rec-panel">
                 <p class="group-label">Suggestions</p>
@@ -1594,7 +1730,7 @@ function resetAll() {
                         class="rec-chip"
                         title={sug.note}
                         class:selected={selectedFrameworks.includes(sug.id)}
-                        onclick={() => applyRecommendedFramework(sug.id)}
+                        onclick={() => clickFramework(sug.id)}
                       >
                         ⭐ {fwLabel(sug.id)}
                         <span class="rec-chip-note">{sug.note}</span>
@@ -1609,7 +1745,7 @@ function resetAll() {
                         class="rec-chip"
                         title={sug.note}
                         class:selected={selectedFrameworks.includes(sug.id)}
-                        onclick={() => applyRecommendedFramework(sug.id)}
+                        onclick={() => clickFramework(sug.id)}
                       >
                         ➕ {fwLabel(sug.id)}
                         <span class="rec-chip-note">{sug.note}</span>
@@ -1637,90 +1773,95 @@ function resetAll() {
             {#if recommendationsError}
               <p class="rec-error">{recommendationsError}</p>
             {/if}
-            <div class="btn-row">
-              <button class="btn-back" onclick={back}>← Back</button>
-              <button class="btn-primary" onclick={nextPhase}>Next →</button>
-            </div>
-          {/if}
 
-          <!-- Phase 3: Features (инструменты + фичи) -->
-          {#if phase === 3}
-            <p class="prompt">Tools & Features</p>
-            <p class="hint">Add tools, databases, and extra features.</p>
+            <!-- Языки следуют за фреймворками: отдельного выбора нет.
+                 Backend/фронтенд-языки видны на карточках и в сводке. -->
 
-            {#each ["database", "cache", "messaging", "observability", "testing", "tooling", "container", "orchestration", "etl", "baas", "infra"] as cat}
-              {@const catTools = availableTools().filter((t) => t.category === cat)}
-              {#if catTools.length > 0}
-                <div class="tool-group">
-                  <p class="group-label">{toolCategoryIcon(cat)} {cat}</p>
-                  <div class="card-grid tool-grid">
-                    {#each catTools as tool}
-                      <button
-                        class="card card-sm"
-                        class:selected={selectedTools.includes(tool.id)}
-                        onclick={() => toggleTool(tool.id)}
-                        onmouseenter={(e) => showTooltip(tool, e)}
-                        onmouseleave={hideTooltip}
-                        onfocus={(e) => showTooltip(tool, e)}
-                        onblur={hideTooltip}
-                      >
-                        {#if tool.icon}
-                          <img src={imgSrc(tool.icon)} alt={tool.label} class="card-img-xs" />
-                        {:else}
-                          <span class="card-img-placeholder-xs">▣</span>
-                        {/if}
-                        <span class="tool-name">{tool.label}</span>
-                      </button>
-                    {/each}
+            <!-- Инструменты и фичи -->
+            <div class="side-section">
+              <p class="group-label">Tools & Features</p>
+              {#each ["database", "cache", "messaging", "observability", "testing", "tooling", "container", "orchestration", "etl", "baas", "infra"] as cat}
+                {@const catTools = availableTools().filter((t) => t.category === cat)}
+                {#if catTools.length > 0}
+                  <div class="tool-group">
+                    <p class="group-label">{toolCategoryIcon(cat)} {cat}</p>
+                    <div class="card-grid tool-grid">
+                      {#each catTools as tool}
+                        <button
+                          class="card card-sm"
+                          class:selected={selectedTools.includes(tool.id)}
+                          onclick={() => toggleTool(tool.id)}
+                          onmouseenter={(e) => showTooltip(tool, e)}
+                          onmouseleave={hideTooltip}
+                          onfocus={(e) => showTooltip(tool, e)}
+                          onblur={hideTooltip}
+                        >
+                          {#if tool.icon}
+                            <img src={imgSrc(tool.icon)} alt={tool.label} class="card-img-xs" />
+                          {:else}
+                            <span class="card-img-placeholder-xs">▣</span>
+                          {/if}
+                          <span class="tool-name">{tool.label}</span>
+                        </button>
+                      {/each}
+                    </div>
                   </div>
+                {/if}
+              {/each}
+
+              {#if tooltipData}
+                <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
+                  <strong>{tooltipData.tool.label}</strong>
+                  <p>{tooltipData.tool.description}</p>
+                  {#if tooltipData.tool.requires.length > 0}
+                    <p class="tt-req">Requires: {tooltipData.tool.requires.join(", ")}</p>
+                  {/if}
+                  {#if tooltipData.tool.conflicts.length > 0}
+                    <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
+                  {/if}
+                  {#if tooltipData.tool.requires_docker}
+                    <p class="tt-docker">🐳 Requires Docker</p>
+                  {/if}
                 </div>
               {/if}
-            {/each}
 
-            {#if tooltipData}
-              <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
-                <strong>{tooltipData.tool.label}</strong>
-                <p>{tooltipData.tool.description}</p>
-                {#if tooltipData.tool.requires.length > 0}
-                  <p class="tt-req">Requires: {tooltipData.tool.requires.join(", ")}</p>
-                {/if}
-                {#if tooltipData.tool.conflicts.length > 0}
-                  <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
-                {/if}
-                {#if tooltipData.tool.requires_docker}
-                  <p class="tt-docker">🐳 Requires Docker</p>
-                {/if}
+              <div class="features-panel">
+                <p class="group-label">⚙️ Features</p>
+                <label class="feature-toggle">
+                  <input type="checkbox" bind:checked={testing} />
+                  <span>Testing</span>
+                </label>
+                <label class="feature-toggle">
+                  <input type="checkbox" bind:checked={git} />
+                  <span>Git Init</span>
+                </label>
+                <label class="feature-toggle">
+                  <input type="checkbox" bind:checked={vscode} />
+                  <span>VS Code Config</span>
+                </label>
+                <label class="feature-toggle">
+                  <input type="checkbox" checked={dockerEnabled()} disabled />
+                  <span>Docker {isDockerForced() ? "(required by tools)" : ""}</span>
+                </label>
               </div>
-            {/if}
-
-            <div class="features-panel">
-              <p class="group-label">⚙️ Features</p>
-              <label class="feature-toggle">
-                <input type="checkbox" bind:checked={testing} />
-                <span>Testing</span>
-              </label>
-              <label class="feature-toggle">
-                <input type="checkbox" bind:checked={git} />
-                <span>Git Init</span>
-              </label>
-              <label class="feature-toggle">
-                <input type="checkbox" bind:checked={vscode} />
-                <span>VS Code Config</span>
-              </label>
-              <label class="feature-toggle">
-                <input type="checkbox" checked={dockerEnabled()} disabled />
-                <span>Docker {isDockerForced() ? "(required by tools)" : ""}</span>
-              </label>
             </div>
 
-            <div class="btn-row">
-              <button class="btn-back" onclick={back}>← Back</button>
-              <button class="btn-primary" onclick={nextPhase}>Next →</button>
+            <!-- Липкий футер: сводка + переход к финальной сверке -->
+            <div class="mega-footer">
+              <span class="mega-summary">
+                {selectedFrameworks.length} framework{selectedFrameworks.length === 1 ? "" : "s"} · {selectedTools.length} tool{selectedTools.length === 1 ? "" : "s"}
+                {#if stackError}
+                  <span class="mega-error">⚠ {stackError}</span>
+                {/if}
+              </span>
+              <button class="btn-primary" onclick={() => (phase = 2)} disabled={!!stackError}>
+                Review & Create →
+              </button>
             </div>
           {/if}
 
-          <!-- Phase 4: Summary -->
-          {#if phase === 4}
+          <!-- Phase 2: Review -->
+          {#if phase === 2}
             <p class="prompt">Review & Create</p>
 
             <div class="project-name-section">
@@ -1824,7 +1965,7 @@ function resetAll() {
             <div class="ctx-row">
               <span class="ctx-label">Frameworks</span>
               <span class="ctx-value">{selectedFrameworks.length > 0 ? selectedFrameworks.join(", ") : "None"}</span>
-              <button class="btn-change" onclick={() => goPhase(2)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
             </div>
             <div class="ctx-row">
               <span class="ctx-label">Tools</span>
@@ -1833,7 +1974,7 @@ function resetAll() {
                   ? `${selectedTools.length} tool${selectedTools.length > 1 ? "s" : ""}`
                   : "None"}
               </span>
-              <button class="btn-change" onclick={() => goPhase(3)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
             </div>
             <div class="ctx-row">
               <span class="ctx-label">Features</span>
@@ -1845,7 +1986,7 @@ function resetAll() {
                   dockerEnabled() && "Docker",
                 ].filter(Boolean).join(", ") || "None"}
               </span>
-              <button class="btn-change" onclick={() => goPhase(3)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
             </div>
           </div>
 
@@ -1853,7 +1994,7 @@ function resetAll() {
             class="btn-primary ctx-create"
             disabled={stackError !== null}
             title={stackError ?? undefined}
-            onclick={() => goPhase(4)}
+            onclick={() => goPhase(2)}
           >
             Review & Create →
           </button>
@@ -1898,9 +2039,49 @@ function resetAll() {
 .phase-circle { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #2d2d3d; font-weight: 700; font-size: 0.8rem; }
 .phase-label { font-weight: 600; }
 
-/* ---- Стороны (Architecture / Stack) ---- */
-.side-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+/* ---- Стороны (Stack) ---- */
 .side-section { min-width: 0; }
+
+/* ---- Уровни фреймворков (сворачиваемые колонки) ---- */
+.fw-level {
+  border: 1px solid #2c2c46;
+  border-radius: 10px;
+  background: rgba(26, 26, 46, 0.55);
+  margin-bottom: 0.75rem;
+}
+.fw-level > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 10px 10px 0 0;
+}
+.fw-level > summary::-webkit-details-marker { display: none; }
+.fw-level > summary::before {
+  content: "▸";
+  color: #6c5ce7;
+  font-size: 0.8rem;
+  transition: transform 0.15s;
+}
+.fw-level[open] > summary::before { transform: rotate(90deg); }
+.fw-level[open] > summary { border-bottom-color: #2c2c46; }
+.fw-level > summary:hover { background: rgba(108, 92, 231, 0.08); }
+.fw-level-icon { font-size: 1rem; }
+.fw-level-title { font-weight: 700; font-size: 0.9rem; color: #eee; }
+.fw-level-count {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: #888;
+  background: #22224a;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+}
+.fw-level-note { margin: 0; padding: 0.4rem 0.9rem 0.6rem; font-size: 0.75rem; color: #777; }
+.fw-level .fw-grid { margin-bottom: 0; padding: 0.9rem; padding-top: 0.2rem; }
 
 /* ---- Карточки ---- */
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
@@ -1917,9 +2098,62 @@ function resetAll() {
 .card-img-placeholder-sm { font-size: 1.5rem; }
 .card-img-placeholder-xs { font-size: 1rem; }
 .type-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-.lang-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 .fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .conflict-badge { display: block; font-size: 0.7rem; color: #e74c3c; margin-top: 0.25rem; }
+.fw-lang-chip { display: inline-block; font-size: 0.72rem; color: #cdc3f0; background: #2f2460; border: 1px solid #4a3a85; padding: 0.15rem 0.5rem; border-radius: 999px; margin-top: 0.3rem; }
+.fw-lang-chip.selected { color: #b8f5d4; background: #14402c; border-color: #1f7a4d; }
+.fw-lang-multi { display: block; font-size: 0.68rem; color: #7a6cf0; margin-top: 0.15rem; }
+
+/* ---- Попап настройки фреймворка ---- */
+.fw-card-wrap { position: relative; }
+.fw-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  width: 260px;
+  max-width: 90vw;
+  background: #1c1c3a;
+  border: 1px solid #6c5ce7;
+  border-radius: 10px;
+  padding: 0.8rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.popup-title { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: #fff; }
+.popup-label { margin: 0.5rem 0 0.3rem; font-size: 0.72rem; color: #aaa; text-transform: uppercase; letter-spacing: 0.04em; }
+.popup-list { display: flex; flex-direction: column; gap: 0.3rem; max-height: 160px; overflow-y: auto; }
+.popup-opt {
+  display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
+  background: #14142e; border: 1px solid #3a3a6a; color: #ddd;
+  padding: 0.45rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.82rem; text-align: left;
+}
+.popup-opt:hover { border-color: #6c5ce7; }
+.popup-opt.selected { border-color: #6c5ce7; background: #2f2460; color: #fff; }
+.star { color: #f1c40f; font-size: 0.72rem; white-space: nowrap; }
+.popup-actions { display: flex; gap: 0.4rem; margin-top: 0.7rem; align-items: center; flex-wrap: wrap; }
+.btn-xs { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
+.btn-remove { background: none; border: 1px solid #7a2f3a; color: #e74c3c; padding: 0.3rem 0.7rem; border-radius: 6px; cursor: pointer; font-size: 0.78rem; }
+.btn-remove:hover { background: #3a1420; }
+
+/* ---- Липкий футер страницы стека ---- */
+.mega-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding: 0.75rem 1rem;
+  background: rgba(21, 21, 46, 0.95);
+  border: 1px solid #333;
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  z-index: 40;
+}
+.mega-summary { font-size: 0.85rem; color: #ccc; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.mega-error { color: #e74c3c; font-size: 0.78rem; }
+.hint-sm { font-size: 0.75rem; color: #888; margin: 0 0 0.5rem; }
 .tauri-note { display: block; margin-top: 0.5rem; font-size: 0.85rem; color: #6c5ce7; }
 
 /* ---- Инструменты ---- */
@@ -2065,6 +2299,5 @@ function resetAll() {
 @media (max-width: 900px) {
   .builder { grid-template-columns: 1fr; }
   .builder-context { position: static; }
-  .side-sections { grid-template-columns: 1fr; }
 }
 </style>

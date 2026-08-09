@@ -9,8 +9,10 @@
 //   1. Фреймворк доступен на текущей ОС (platforms).
 //   2. Взаимные конфликты из wizard_tree (conflicts).
 //   3. Тип проекта разрешает фреймворк (project_types).
-//   4. На каждую сторону проекта — не более одного фреймворка.
-//   5. Язык стороны совместим с фреймворком (side + languages).
+//   4. На каждую сторону — не более одного «главного» фреймворка
+//      (kind="app", side != "either"). Побочные (aiogram, telegraf)
+//      и универсальные (tauri, qt) этим правилом не ограничены.
+//   5. Язык(и) стороны совместимы с фреймворком (side + languages).
 
 import type {
   WizardTreeData,
@@ -31,19 +33,6 @@ function platformOk(fw: FrameworkDef, os: string): boolean {
   return !fw.platforms?.length || fw.platforms.some((p) => p === os);
 }
 
-/** На какой стороне живёт фреймворк в текущем выборе */
-function resolvedSide(
-  fw: FrameworkDef,
-  backendLang: string | null,
-  frontendLang: string | null,
-): "backend" | "frontend" | null {
-  if (fw.side === "backend") return "backend";
-  if (fw.side === "frontend") return "frontend";
-  if (backendLang && fw.languages.includes(backendLang)) return "backend";
-  if (frontendLang && fw.languages.includes(frontendLang)) return "frontend";
-  return null;
-}
-
 export function validateStack(
   tree: WizardTreeData,
   projectType: string | null,
@@ -53,8 +42,6 @@ export function validateStack(
   os: string,
 ): StackIssue[] {
   const issues: StackIssue[] = [];
-  const backendLang = backendLangs[0] ?? null;
-  const frontendLang = frontendLangs[0] ?? null;
 
   const selected: FrameworkDef[] = frameworks
     .map((id) => tree.frameworks.find((f) => f.id === id))
@@ -95,11 +82,14 @@ export function validateStack(
     }
   }
 
-  // 4. Не более одного фреймворка на сторону
-  const bySide: { side: "backend" | "frontend"; fw: FrameworkDef }[] = [];
+  // 4. Не более одного «главного» (kind="app", side != "either") фреймворка
+  //    на сторону. Универсальные (tauri, qt) и побочные (aiogram, telegraf)
+  //    в лимит сторон не входят — только явные conflicts.
+  const bySide: { side: string; fw: FrameworkDef }[] = [];
   for (const fw of selected) {
-    const side = resolvedSide(fw, backendLang, frontendLang);
-    if (side) bySide.push({ side, fw });
+    if (fw.kind === "app" && fw.side !== "either") {
+      bySide.push({ side: fw.side, fw });
+    }
   }
   for (let i = 0; i < bySide.length; i++) {
     for (let j = i + 1; j < bySide.length; j++) {
@@ -108,32 +98,31 @@ export function validateStack(
       if (a.side === b.side) {
         issues.push({
           severity: "Error",
-          message: `«${a.fw.label}» и «${b.fw.label}» работают на одной стороне (${a.side}). На сторону можно выбрать только один фреймворк.`,
+          message: `«${a.fw.label}» и «${b.fw.label}» — оба главные фреймворки ${a.side}. На сторону можно выбрать только один главный фреймворк.`,
         });
       }
     }
   }
 
-  // 5. Язык стороны должен подходить фреймворку
+  // 5. Язык(и) стороны должны подходить фреймворку
   for (const fw of selected) {
     if (fw.side === "backend") {
-      if (!fw.languages.some((l) => l === backendLang)) {
+      if (!fw.languages.some((l) => backendLangs.includes(l))) {
         issues.push({
           severity: "Error",
           message: `«${fw.label}» работает на бэкенде и требует один из языков: ${fw.languages.join(", ")}. Замените бэкенд-язык на «${fw.recommended_language}».`,
         });
       }
     } else if (fw.side === "frontend") {
-      if (!fw.languages.some((l) => l === frontendLang)) {
+      if (!fw.languages.some((l) => frontendLangs.includes(l))) {
         issues.push({
           severity: "Error",
           message: `«${fw.label}» работает на фронтенде и требует один из языков: ${fw.languages.join(", ")}. Замените фронтенд-язык на «${fw.recommended_language}».`,
         });
       }
     } else {
-      const backendOk = backendLang !== null && fw.languages.includes(backendLang);
-      const frontendOk = frontendLang !== null && fw.languages.includes(frontendLang);
-      if (!backendOk && !frontendOk) {
+      const anyOk = fw.languages.some((l) => backendLangs.includes(l) || frontendLangs.includes(l));
+      if (!anyOk) {
         issues.push({
           severity: "Error",
           message: `«${fw.label}» требует один из языков: ${fw.languages.join(", ")} (на любой стороне).`,
