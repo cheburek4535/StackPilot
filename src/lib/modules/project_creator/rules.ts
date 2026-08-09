@@ -172,6 +172,20 @@ export function validateStack(
     }
   }
 
+  // 7. UI-варианты фреймворка (qt-qml/qt-widgets/qt-webengine/qt-kirigami)
+  //    не могут существовать без своего владельца (qt).
+  for (const fw of selected) {
+    const owner = tree.frameworks.find((f) =>
+      (f.qt_ui_options ?? []).some((m) => m.id === fw.id),
+    );
+    if (owner && !selected.some((x) => x.id === owner.id)) {
+      issues.push({
+        severity: "Error",
+        message: `«${fw.label}» — UI-вариант «${owner.label}» и не может быть выбран без него. Снимите «${fw.label}» или добавьте «${owner.label}».`,
+      });
+    }
+  }
+
   return issues;
 }
 

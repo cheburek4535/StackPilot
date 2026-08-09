@@ -943,7 +943,150 @@
       "required_tools": [],
       "suppresses_language_scaffold": true,
       "kind": "app",
-      "recommends": []
+      "recommends": [],
+      "companions": [
+        "qt-qml",
+        "qt-widgets",
+        "qt-webengine",
+        "qt-kirigami"
+      ],
+      "qt_ui_options": [
+        {
+          "id": "qt-qml",
+          "label": "QML (Qt Quick)",
+          "description": "Declarative UI with fluid animations — the modern Qt way (desktop & embedded)",
+          "icon": "qt.svg",
+          "web_framework_options": []
+        },
+        {
+          "id": "qt-widgets",
+          "label": "Qt Widgets",
+          "description": "Classic desktop controls — dialogs, forms, office-style tools",
+          "icon": "qt.svg",
+          "web_framework_options": []
+        },
+        {
+          "id": "qt-webengine",
+          "label": "Qt WebEngine",
+          "description": "Chromium-based web UI inside Qt — embed a React/Vue/Svelte frontend",
+          "icon": "qt.svg",
+          "web_framework_options": [
+            "react",
+            "vue",
+            "svelte"
+          ]
+        },
+        {
+          "id": "qt-kirigami",
+          "label": "Kirigami (KDE)",
+          "description": "KDE adaptive UI framework on top of Qt Quick (convergent desktop/mobile)",
+          "icon": "qt.svg",
+          "web_framework_options": []
+        }
+      ]
+    },
+    {
+      "id": "qt-qml",
+      "label": "QML (Qt Quick)",
+      "description": "Declarative Qt Quick UI with fluid animations",
+      "icon": "qt.svg",
+      "class": "inplace",
+      "side": "either",
+      "languages": [
+        "cpp"
+      ],
+      "recommended_language": "cpp",
+      "project_types": [
+        "desktop-app",
+        "embedded",
+        "custom",
+        "empty-project"
+      ],
+      "knowledge_key": "qt",
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true,
+      "kind": "side",
+      "recommends": [],
+      "companions": []
+    },
+    {
+      "id": "qt-widgets",
+      "label": "Qt Widgets",
+      "description": "Classic Qt Widgets UI — dialogs, forms and desktop tools",
+      "icon": "qt.svg",
+      "class": "inplace",
+      "side": "either",
+      "languages": [
+        "cpp"
+      ],
+      "recommended_language": "cpp",
+      "project_types": [
+        "desktop-app",
+        "embedded",
+        "custom",
+        "empty-project"
+      ],
+      "knowledge_key": "qt",
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true,
+      "kind": "side",
+      "recommends": [],
+      "companions": []
+    },
+    {
+      "id": "qt-webengine",
+      "label": "Qt WebEngine",
+      "description": "Chromium-based web UI inside Qt — embed a React/Vue/Svelte frontend",
+      "icon": "qt.svg",
+      "class": "inplace",
+      "side": "either",
+      "languages": [
+        "cpp"
+      ],
+      "recommended_language": "cpp",
+      "project_types": [
+        "desktop-app",
+        "custom",
+        "empty-project"
+      ],
+      "knowledge_key": "qt",
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true,
+      "kind": "side",
+      "recommends": [],
+      "companions": [
+        "react",
+        "vue",
+        "svelte"
+      ]
+    },
+    {
+      "id": "qt-kirigami",
+      "label": "Kirigami (KDE)",
+      "description": "KDE adaptive UI framework on top of Qt Quick (convergent desktop/mobile)",
+      "icon": "qt.svg",
+      "class": "inplace",
+      "side": "either",
+      "languages": [
+        "cpp"
+      ],
+      "recommended_language": "cpp",
+      "project_types": [
+        "desktop-app",
+        "embedded",
+        "custom",
+        "empty-project"
+      ],
+      "knowledge_key": "qt",
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true,
+      "kind": "side",
+      "recommends": [],
+      "companions": []
     },
     {
       "id": "flutter",
@@ -1249,7 +1392,7 @@
       "id": "zap",
       "label": "Zap",
       "description": "High-performance Zig web framework built on libxev",
-      "icon": "zap.svg",
+      "icon": "zap.png",
       "class": "inplace",
       "side": "backend",
       "languages": [

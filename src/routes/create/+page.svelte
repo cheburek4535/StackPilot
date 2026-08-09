@@ -192,6 +192,8 @@ function buildSnapshot(): Record<string, unknown> {
     selectedFrameworks,
     fwLangs,
     linkedCompanions,
+    qtUiMode,
+    qtWebLinked,
     selectedTools,
     testing,
     git,
@@ -246,6 +248,14 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   linkedCompanions =
     s.linkedCompanions && typeof s.linkedCompanions === "object"
       ? (s.linkedCompanions as Record<string, string>)
+      : {};
+  qtUiMode =
+    s.qtUiMode && typeof s.qtUiMode === "object"
+      ? (s.qtUiMode as Record<string, string>)
+      : {};
+  qtWebLinked =
+    s.qtWebLinked && typeof s.qtWebLinked === "object"
+      ? (s.qtWebLinked as Record<string, string>)
       : {};
   selectedTools = strArr(s.selectedTools);
   testing = bool(s.testing);
@@ -409,7 +419,7 @@ function availableFrameworks(): FrameworkDef[] {
   if (!tree || !selectedType) return [];
   return tree.frameworks.filter(
     (f) => !f.project_types?.length || f.project_types.includes(selectedType!.id),
-  );
+  ).filter((f) => !isUiVariant(f));
 }
 
 /** Уровень фреймворка для группировки в колонках:
@@ -586,7 +596,10 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
   if (fw.side === "either" && hasSpecific) {
     return {
       message: "Недоступен вместе с бэкенд/фронтенд стеком",
-      detail: `«${fw.label}» сам создаёт всё приложение и не сочетается с выбранной ${hasSpecific ? "бэкенд/фронтенд" : ""} стековой связкой.`,
+      detail:
+        fw.id === "qt"
+          ? "«Qt» сам создаёт всё приложение. Если нужен веб-UI — выберите Qt первым, затем в его настройках Qt WebEngine + React/Vue/Svelte."
+          : `«${fw.label}» сам создаёт всё приложение и не сочетается с выбранной бэкенд/фронтенд стековой связкой.`,
       alternatives: frameworkAlternatives(fw),
     };
   }
@@ -599,7 +612,10 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
       tree?.frameworks.find((x) => x.id === eitherFw)?.label ?? "desktop";
     return {
       message: `Недоступен вместе с «${eitherLabel}»`,
-      detail: `«${eitherLabel}» — самостоятельное приложение, отдельный UI-слой не нужен.`,
+      detail:
+        eitherFw === "qt" && (fw.id === "react" || fw.id === "vue" || fw.id === "svelte")
+          ? "«Qt» — самостоятельное приложение, но через Qt WebEngine он умеет встраивать веб-UI. Выберите Qt и в его настройках укажите WebEngine + этот фреймворк."
+          : `«${eitherLabel}» — самостоятельное приложение, отдельный UI-слой не нужен.`,
       alternatives: frameworkAlternatives(fw),
     };
   }
@@ -704,8 +720,23 @@ let popupLang = $state<string | null>(null);
 let popupCompanion = $state<string | null>(null);
 /** Черновой выбор языка подфреймворка */
 let popupCompanionLang = $state<string | null>(null);
+/** Черновой выбор UI-технологии Qt в попапе (id режима из qt_ui_options) */
+let popupQtUi = $state<string | null>(null);
+/** Черновой выбор веб-фреймворка внутри Qt WebEngine */
+let popupWebFw = $state<string | null>(null);
 /** Связки «владелец → подфреймворк» (tauri → svelte): удаление владельца тянет подфреймворк */
 let linkedCompanions = $state<Record<string, string>>({});
+/** Выбранная UI-технология Qt (id режима из qt_ui_options) для каждого qt */
+let qtUiMode = $state<Record<string, string>>({});
+/** Веб-фреймворк внутри Qt WebEngine (qt → react/vue/svelte) */
+let qtWebLinked = $state<Record<string, string>>({});
+
+/** Фреймворк — UI-вариант другого фреймворка (qt → qt-qml/qt-widgets/...).
+ *  Такие не показываются как самостоятельные карточки — живут в попапе владельца. */
+function isUiVariant(fw: FrameworkDef): boolean {
+  if (!tree) return false;
+  return tree.frameworks.some((f) => (f.qt_ui_options ?? []).some((m) => m.id === fw.id));
+}
 
 /** Подфреймворки для side="either" (tauri): совместимые фронтовые приложения.
  *  Сознательное ограничение: десктопные оболочки работают только со
@@ -714,6 +745,14 @@ const EITHER_COMPANIONS = new Set(["svelte", "vue", "react"]);
 
 function companionOptions(fw: FrameworkDef): FrameworkDef[] {
   if (!tree) return [];
+  // Фреймворки с собственным UI-стеком (Qt): технологии UI из qt_ui_options,
+  // а не фронтовые приложения чужого стека. Порядок — как в qt_ui_options.
+  if (fw.qt_ui_options?.length) {
+    const modeIds = fw.qt_ui_options.map((m) => m.id);
+    return modeIds
+      .map((id) => tree!.frameworks.find((c) => c.id === id))
+      .filter((d): d is FrameworkDef => !!d);
+  }
   // Data-driven: fw.companions из wizard_tree (tauri → svelte/vue/react,
   // electron → react/vue/svelte). Фолбэк для either-фреймворков — прежний
   // фиксированный список.
@@ -768,6 +807,16 @@ function fwLangsLabel(fw: FrameworkDef): string {
 /** Сводка выбранных языков для чипа на карточке ("TypeScript" / "TypeScript + JavaScript") */
 function fwLangSummary(fw: FrameworkDef): string {
   if (!selectedFrameworks.includes(fw.id)) return "";
+  if (fw.qt_ui_options?.length) {
+    const modeId = qtUiMode[fw.id] ?? fw.qt_ui_options[0].id;
+    const mode = fw.qt_ui_options.find((m) => m.id === modeId);
+    const parts = mode ? [mode.label] : [];
+    if (modeId === "qt-webengine" && qtWebLinked[fw.id]) {
+      const wf = tree?.frameworks.find((f) => f.id === qtWebLinked[fw.id]);
+      if (wf) parts.push(wf.label);
+    }
+    return parts.join(" + ");
+  }
   const own = langLabel(fwLangs[fw.id] ?? fw.recommended_language);
   const cid = linkedCompanions[fw.id];
   if (cid) {
@@ -791,18 +840,27 @@ function openFwPopup(id: string) {
   const fw = tree?.frameworks.find((f) => f.id === id);
   if (!fw) return;
   popupLang = fwLangs[id] ?? fw.recommended_language;
-  const opts = companionOptions(fw);
-  if (opts.length > 0) {
-    const linked = linkedCompanions[id];
-    const selected = opts.find((o) => o.id === linked) ?? opts[0];
-    popupCompanion = selected.id;
-    popupCompanionLang =
-      fwLangs[selected.id] && selected.languages.includes(fwLangs[selected.id])
-        ? fwLangs[selected.id]
-        : selected.recommended_language;
-  } else {
+  popupQtUi = null;
+  popupWebFw = null;
+  if (fw.qt_ui_options?.length) {
+    popupQtUi = qtUiMode[id] ?? fw.qt_ui_options[0].id;
+    popupWebFw = qtWebLinked[id] ?? null;
     popupCompanion = null;
     popupCompanionLang = null;
+  } else {
+    const opts = companionOptions(fw);
+    if (opts.length > 0) {
+      const linked = linkedCompanions[id];
+      const selected = opts.find((o) => o.id === linked) ?? opts[0];
+      popupCompanion = selected.id;
+      popupCompanionLang =
+        fwLangs[selected.id] && selected.languages.includes(fwLangs[selected.id])
+          ? fwLangs[selected.id]
+          : selected.recommended_language;
+    } else {
+      popupCompanion = null;
+      popupCompanionLang = null;
+    }
   }
   fwPopup = id;
 }
@@ -814,6 +872,14 @@ function applyFwPopup() {
     fwPopup = null;
     return;
   }
+
+  if (fw.qt_ui_options?.length) {
+    applyQtUiPopup(fw);
+    recomputeSideLangs();
+    fwPopup = null;
+    return;
+  }
+
   if (popupLang && fw.languages.includes(popupLang)) {
     fwLangs = { ...fwLangs, [fw.id]: popupLang };
   }
@@ -842,6 +908,54 @@ function applyFwPopup() {
   fwPopup = null;
 }
 
+/** Применить выбор UI-технологии Qt (qt_ui_options) и веб-фреймворка WebEngine */
+function applyQtUiPopup(fw: FrameworkDef) {
+  const modeId = popupQtUi;
+  const mode = fw.qt_ui_options?.find((m) => m.id === modeId);
+  if (!mode || !modeId) return;
+
+  qtUiMode = { ...qtUiMode, [fw.id]: modeId };
+
+  // Сменить вариант: снять старый (и его веб-фреймворк), поставить новый
+  const prev = linkedCompanions[fw.id];
+  if (prev && prev !== modeId) {
+    selectedFrameworks = selectedFrameworks.filter((x) => x !== prev);
+    const nl = { ...linkedCompanions };
+    delete nl[fw.id];
+    linkedCompanions = nl;
+    const nf = { ...fwLangs };
+    delete nf[prev];
+    fwLangs = nf;
+  }
+  if (modeId && !selectedFrameworks.includes(modeId)) {
+    addCompanion(fw.id, modeId);
+  }
+
+  // Веб-фреймворк внутри WebEngine
+  const webIds = mode.web_framework_options ?? [];
+  if (webIds.length > 0) {
+    const wf = popupWebFw ?? qtWebLinked[fw.id] ?? webIds[0];
+    const prevWf = qtWebLinked[fw.id];
+    if (prevWf && prevWf !== wf) {
+      selectedFrameworks = selectedFrameworks.filter((x) => x !== prevWf);
+      const nf = { ...fwLangs };
+      delete nf[prevWf];
+      fwLangs = nf;
+    }
+    if (wf && !selectedFrameworks.includes(wf)) addCompanion(modeId, wf);
+    qtWebLinked = { ...qtWebLinked, [fw.id]: wf };
+  } else if (qtWebLinked[fw.id]) {
+    const wf = qtWebLinked[fw.id];
+    selectedFrameworks = selectedFrameworks.filter((x) => x !== wf);
+    const nf = { ...fwLangs };
+    delete nf[wf];
+    fwLangs = nf;
+    const nq = { ...qtWebLinked };
+    delete nq[fw.id];
+    qtWebLinked = nq;
+  }
+}
+
 function cancelFwPopup() {
   fwPopup = null;
 }
@@ -851,10 +965,17 @@ function removeFramework(id: string) {
   const prev = linkedCompanions[id];
   const toRemove = new Set([id]);
   if (prev) toRemove.add(prev);
+  // Qt WebEngine: тянем и веб-фреймворк
+  const webFw = qtWebLinked[id];
+  if (webFw) toRemove.add(webFw);
   selectedFrameworks = selectedFrameworks.filter((x) => !toRemove.has(x));
   const nl = { ...linkedCompanions };
   delete nl[id];
+  for (const r of toRemove) delete nl[r];
   linkedCompanions = nl;
+  const nq = { ...qtWebLinked };
+  delete nq[id];
+  qtWebLinked = nq;
   const nf = { ...fwLangs };
   for (const r of toRemove) delete nf[r];
   fwLangs = nf;
@@ -862,19 +983,61 @@ function removeFramework(id: string) {
   fwPopup = null;
 }
 
+/** Подтверждение полной очистки выбранных технологий */
+let confirmClearStack = $state(false);
+
+/** Сбросить выбранные технологии (фреймворки, компаньоны, инструменты),
+ *  оставив тип проекта и языки на месте. */
+function clearStack() {
+  selectedFrameworks = [];
+  fwLangs = {};
+  linkedCompanions = {};
+  selectedTools = [];
+  qtUiMode = {};
+  qtWebLinked = {};
+  dropNotice = null;
+  fwPopup = null;
+  confirmClearStack = false;
+}
+
 // ----------------------------------------------------------
 // Инструменты
 // ----------------------------------------------------------
 
+/** Тул совместим с текущим стеком: его язык присутствует в проекте */
+function toolFitsStack(t: ToolDef): boolean {
+  if (t.for_languages.length === 0) return true;
+  const langs = allSelectedLangs();
+  return t.for_languages.some((l) => langs.includes(l));
+}
+
+/** Все тулы wizard_tree, применимые к текущему стеку.
+ *  Единственный жёсткий фильтр — язык (pytest без python не предлагаем).
+ *  npm скрыт намеренно: для JS/TS-стеков он обязателен и приходит через
+ *  required_tools фреймворков, для остальных бесполезен — как отдельный
+ *  опциональный тул ему в UI не место. */
 function availableTools(): ToolDef[] {
   if (!tree) return [];
-  const ids = new Set<string>();
-  const refs = selectedFrameworks.length > 0 ? selectedFrameworks : [""];
-  for (const fwId of refs) {
-    const toolIds = tree.framework_tool_map[fwId] ?? [];
-    for (const id of toolIds) ids.add(id);
+  return tree.tools.filter((t) => t.id !== "npm" && toolFitsStack(t));
+}
+
+/** Тул «рекомендован» для текущего стека: заявлен в framework_tool_map
+ *  выбранных фреймворков или подходит выбранному типу проекта
+ *  (etl → airflow/clickhouse/grafana). */
+function isToolRecommended(t: ToolDef): boolean {
+  if (!tree || !toolFitsStack(t)) return false;
+  const tm = tree.framework_tool_map;
+  for (const fwId of selectedFrameworks) {
+    if ((tm[fwId] ?? []).includes(t.id)) return true;
   }
-  return tree.tools.filter((t) => ids.has(t.id));
+  if (
+    t.for_project_types.length > 0 &&
+    selectedType &&
+    t.for_project_types.includes(selectedType.id)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isDockerForced(): boolean {
@@ -1374,6 +1537,23 @@ async function confirmAll() {
   await goToEnvironment();
 }
 
+/** Ответы мастера для движка: выбранная UI-технология Qt и веб-фреймворк
+ *  WebEngine (ключи qt_ui / qt_web_framework). */
+function buildAnswers(): Record<string, string[]> {
+  const answers: Record<string, string[]> = {};
+  for (const fwId of selectedFrameworks) {
+    const fw = tree?.frameworks.find((f) => f.id === fwId);
+    if (!fw?.qt_ui_options?.length) continue;
+    const modeId = qtUiMode[fwId];
+    if (modeId) {
+      answers["qt_ui"] = [modeId];
+      if (qtWebLinked[fwId]) answers["qt_web_framework"] = [qtWebLinked[fwId]];
+    }
+    break;
+  }
+  return answers;
+}
+
 async function doCreateProject() {
   const path = effectiveProjectPath();
   if (!path || !selectedFolder || !selectedType) return;
@@ -1395,7 +1575,7 @@ async function doCreateProject() {
     ci: false,
     git_init: git,
     vscode_config: vscode,
-    answers: {},
+    answers: buildAnswers(),
   };
 
   phase = 6;
@@ -2024,7 +2204,45 @@ function resetAll() {
                 {#if fwPopup === fw.id}
                   <div class="fw-popup">
                     <p class="popup-title">{fw.label}</p>
-                    {#if companionOptions(fw).length > 0}
+                    {#if fw.qt_ui_options?.length}
+                      {@const selectedMode = fw.qt_ui_options.find((m) => m.id === popupQtUi) ?? fw.qt_ui_options[0]}
+                      {@const webDefs = (selectedMode.web_framework_options ?? [])
+                        .map((wid) => tree?.frameworks.find((f) => f.id === wid))
+                        .filter((d): d is FrameworkDef => !!d)}
+                      <p class="popup-label">UI technology</p>
+                      <div class="popup-list">
+                        {#each fw.qt_ui_options as mode}
+                          <button
+                            class="popup-opt stack"
+                            class:selected={popupQtUi === mode.id}
+                            onclick={() => (popupQtUi = mode.id)}
+                          >
+                            <span class="popup-opt-label">
+                              {mode.label}
+                              {#if (mode.web_framework_options ?? []).length > 0}
+                                <span class="popup-opt-tag">web UI</span>
+                              {/if}
+                            </span>
+                            <span class="popup-opt-desc">{mode.description}</span>
+                          </button>
+                        {/each}
+                      </div>
+                      {#if webDefs.length > 0}
+                        <p class="popup-label">Web frontend</p>
+                        <div class="popup-list">
+                          {#each webDefs as wf}
+                            <button
+                              class="popup-opt stack"
+                              class:selected={popupWebFw === wf.id}
+                              onclick={() => (popupWebFw = wf.id)}
+                            >
+                              <span class="popup-opt-label">{wf.label}</span>
+                              <span class="popup-opt-desc">{wf.description}</span>
+                            </button>
+                          {/each}
+                        </div>
+                      {/if}
+                    {:else if companionOptions(fw).length > 0}
                       <p class="popup-label">Frontend framework</p>
                       <div class="popup-list">
                         {#each companionOptions(fw) as c, ci}
@@ -2093,6 +2311,15 @@ function resetAll() {
             {/snippet}
 
             <p class="prompt">Stack & Tools</p>
+            {#if selectedFrameworks.length > 0 || selectedTools.length > 0}
+              <button
+                class="btn-clear-stack"
+                title="Сбросить все выбранные фреймворки и инструменты"
+                onclick={() => (confirmClearStack = true)}
+              >
+                ✕ Clear stack
+              </button>
+            {/if}
             {#if dropNotice}
               <p class="notice-bar" role="status">{dropNotice}</p>
             {/if}
@@ -2104,6 +2331,24 @@ function resetAll() {
               Conflicting picks are removed automatically; on blocked cards you'll find the reason
               and compatible alternatives.
             </p>
+
+            {#if confirmClearStack}
+              <div class="clear-overlay" onclick={() => (confirmClearStack = false)}>
+                <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+                  <h3>✕ Clear the selected stack?</h3>
+                  <p>
+                    This will remove all selected <strong>frameworks and tools</strong>
+                    ({selectedFrameworks.length} framework{selectedFrameworks.length === 1 ? "" : "s"},{" "}
+                    {selectedTools.length} tool{selectedTools.length === 1 ? "" : "s"}).
+                    Project type and languages will stay untouched.
+                  </p>
+                  <div class="clear-actions">
+                    <button class="btn-primary" onclick={() => clearStack()}>Yes, clear everything</button>
+                    <button class="btn-back" onclick={() => (confirmClearStack = false)}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            {/if}
 
             {#snippet fwLevel(title: string, icon: string, items: FrameworkDef[], note: string)}
               <details class="fw-level" open>
@@ -2273,12 +2518,16 @@ function resetAll() {
               <div class="territory-body">
                 {#each TOOL_CATEGORIES as cat}
                   {@const catTools = availableTools().filter((t) => t.category === cat.id)}
+                  {@const recTools = catTools.filter((t) => isToolRecommended(t))}
                   {#if catTools.length > 0}
                     <div class="tool-group">
                       <p class="tool-cat-title">
                         <span class="tool-cat-icon">{cat.icon}</span>
                         {cat.label}
                         <span class="tool-cat-count">{catTools.length}</span>
+                        {#if recTools.length > 0}
+                          <span class="tool-cat-rec">⭐ {recTools.length} for your stack</span>
+                        {/if}
                       </p>
                       <div class="tool-menu">
                         {#each catTools as tool}
@@ -2301,6 +2550,9 @@ function resetAll() {
                               <span class="tool-item-desc">{tool.description}</span>
                             </span>
                             <span class="tool-item-badges">
+                              {#if isToolRecommended(tool)}
+                                <span class="tool-item-badge rec">⭐ recommended</span>
+                              {/if}
                               {#if tool.requires_docker}
                                 <span class="tool-item-badge docker">🐳 Docker</span>
                               {/if}
@@ -2479,7 +2731,13 @@ function resetAll() {
             </div>
             <div class="ctx-row">
               <span class="ctx-label">Frameworks</span>
-              <span class="ctx-value">{selectedFrameworks.length > 0 ? selectedFrameworks.join(", ") : "None"}</span>
+              <span class="ctx-value">
+                {selectedFrameworks.length > 0
+                  ? selectedFrameworks
+                      .map((id) => tree?.frameworks.find((f) => f.id === id)?.label ?? id)
+                      .join(", ")
+                  : "None"}
+              </span>
               <button class="btn-change" onclick={() => goPhase(1)}>change</button>
             </div>
             <div class="ctx-row">
@@ -2668,6 +2926,19 @@ function resetAll() {
 }
 .popup-opt:hover { border-color: #6c5ce7; }
 .popup-opt.selected { border-color: #6c5ce7; background: #2f2460; color: #fff; }
+.popup-opt.stack { flex-direction: column; align-items: stretch; gap: 0.2rem; }
+.popup-opt-label { display: flex; align-items: center; gap: 0.45rem; font-weight: 600; }
+.popup-opt-desc { font-size: 0.7rem; color: #888; line-height: 1.35; font-weight: 400; }
+.popup-opt.selected .popup-opt-desc { color: #b5b5d0; }
+.popup-opt-tag {
+  font-size: 0.62rem;
+  color: #8fc5f7;
+  background: #122a44;
+  border: 1px solid #1f5a8a;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-weight: 600;
+}
 .star { color: #f1c40f; font-size: 0.72rem; white-space: nowrap; }
 .popup-actions { display: flex; gap: 0.4rem; margin-top: 0.7rem; align-items: center; flex-wrap: wrap; }
 .btn-xs { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
@@ -2775,6 +3046,16 @@ function resetAll() {
   padding: 0.1rem 0.5rem;
   font-weight: 600;
 }
+.tool-cat-rec {
+  font-size: 0.68rem;
+  color: #f7c948;
+  background: #3a3010;
+  border: 1px solid #6b5a1e;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-weight: 600;
+  margin-left: 0.1rem;
+}
 .tool-menu { display: flex; flex-direction: column; gap: 0.45rem; }
 .tool-item {
   display: flex;
@@ -2801,6 +3082,7 @@ function resetAll() {
 .tool-item-badge { font-size: 0.68rem; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; }
 .tool-item-badge.docker { color: #8fc5f7; background: #122a44; border: 1px solid #1f5a8a; }
 .tool-item-badge.conflict { color: #e74c3c; background: #3a1420; border: 1px solid #7a2f3a; }
+.tool-item-badge.rec { color: #f7c948; background: #3a3010; border: 1px solid #6b5a1e; }
 .tool-item-check { color: #6c5ce7; font-weight: 700; font-size: 0.95rem; }
 .group-label { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; color: #aaa; text-transform: capitalize; }
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #6c5ce7; border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.8rem; max-width: 240px; z-index: 999; pointer-events: none; color: #ccc; }
@@ -2811,8 +3093,7 @@ function resetAll() {
 .feature-toggle input { accent-color: #6c5ce7; }
 
 /* ---- Кнопки ---- */
-.btn-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }
-.btn-back { background: none; border: 1px solid #444; color: #888; padding: 0.4rem 0.9rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+.btn-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }.btn-back { background: none; border: 1px solid #444; color: #888; padding: 0.4rem 0.9rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
 .btn-back:hover { border-color: #6c5ce7; color: #fff; }
 .btn-primary { background: #6c5ce7; color: #fff; padding: 0.6rem 1.5rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2839,6 +3120,27 @@ function resetAll() {
 .pp-checking { font-size: 0.8rem; color: #888; font-style: italic; }
 .pp-exists { font-size: 0.8rem; color: #f39c12; font-weight: 600; }
 .conflict-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.clear-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.clear-dialog { background: #1a1a2e; border: 1px solid #e74c3c; border-radius: 12px; padding: 1.5rem; max-width: 460px; width: 90%; }
+.clear-dialog h3 { margin: 0 0 0.75rem; color: #f39c12; }
+.clear-dialog p { font-size: 0.9rem; color: #aaa; margin: 0 0 1.25rem; line-height: 1.4; }
+.clear-actions { display: flex; flex-direction: column; gap: 0.6rem; }
+.clear-actions button { width: 100%; text-align: center; }
+.btn-clear-stack {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #ff8a80;
+  background: #2a1220;
+  border: 1px solid #7a2f3a;
+  border-radius: 8px;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+  margin-bottom: 0.8rem;
+  margin-left: 0.5rem;
+  transition: background 0.15s;
+}
+.btn-clear-stack:hover { background: #3a1420; border-color: #e74c3c; }
+.notice-bar { display: inline-block; font-size: 0.78rem; color: #ffd166; background: #332b12; border: 1px solid #6b541a; border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
 .conflict-dialog { background: #1a1a2e; border: 1px solid #6c5ce7; border-radius: 12px; padding: 1.5rem; max-width: 480px; width: 90%; }
 .conflict-dialog h3 { margin: 0 0 0.75rem; color: #f39c12; }
 .conflict-dialog p { font-size: 0.9rem; color: #aaa; margin: 0 0 1.25rem; line-height: 1.4; }

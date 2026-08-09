@@ -56,6 +56,20 @@ export type FrameworkDef = {
   required_tools?: string[];
   /** Фреймворк сам создаёт каркас для своих языков — generic-скаффолд языка подавляется */
   suppresses_language_scaffold?: boolean;
+  /** Технологии UI внутри фреймворка с собственным стеком (Qt → QML/Widgets/WebEngine/Kirigami) */
+  qt_ui_options?: QtUiOption[];
+};
+
+/** Технология UI внутри фреймворка с собственным стеком (Qt → QML/Widgets/
+ *  WebEngine/Kirigami). id совпадает с id фреймворка-варианта (qt-qml и т.п.),
+ *  web_framework_options — веб-фреймворки, которые умеет встраивать режим
+ *  (WebEngine → React/Vue/Svelte). */
+export type QtUiOption = {
+  id: string;
+  label: string;
+  description: string;
+  icon: string | null;
+  web_framework_options: string[];
 };
 
 /** Готовый рецепт для вкладки «Шаблоны» */
@@ -92,6 +106,10 @@ export type ToolDef = {
   requires_docker: boolean;
   requires: string[];
   conflicts: string[];
+  /** Языки, для которых тул имеет смысл (pytest — только python). Пусто = для любого стека */
+  for_languages: string[];
+  /** Типы проектов, для которых тул «рекомендован» (airflow/clickhouse — для etl). Пусто = нейтрален */
+  for_project_types: string[];
 };
 
 /** Пара-предупреждение: выбор `a`+`b` не блокируется, но помечается Warning */

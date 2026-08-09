@@ -245,6 +245,26 @@ pub fn validate_stack(
         }
     }
 
+    // 7. UI-варианты фреймворка (qt-qml/qt-widgets/qt-webengine/qt-kirigami)
+    //    не могут существовать без своего владельца (qt): они дописывают
+    //    файлы к его каркасу и в мастере выбираются только в его попапе.
+    for fw in &selected {
+        let owner = tree.frameworks.iter().find(|f| {
+            f.qt_ui_options.iter().any(|m| m.id == fw.id)
+        });
+        if let Some(owner) = owner {
+            if !frameworks.iter().any(|id| id == &owner.id) {
+                issues.push(StackIssue {
+                    severity: StackSeverity::Error,
+                    message: format!(
+                        "«{}» — UI-вариант «{}» и не может быть выбран без него. Снимите «{}» или добавьте «{}».",
+                        fw.label, owner.label, fw.label, owner.label
+                    ),
+                });
+            }
+        }
+    }
+
     issues
 }
 
@@ -424,7 +444,25 @@ mod tests {
                     c
                 );
                 let cdef = fw(&t, c);
-                assert_eq!(cdef.side, "frontend", "компаньон «{}» должен быть frontend", c);
+                if f.qt_ui_options.iter().any(|m| m.id == *c) {
+                    // UI-вариант (qt → qt-qml/qt-widgets/...): собственная
+                    // технология фреймворка, живёт в его попапе, сторона
+                    // может быть "either".
+                } else {
+                    assert_eq!(cdef.side, "frontend", "компаньон «{}» должен быть frontend", c);
+                }
+            }
+            // Каждый qt_ui_options обязан указывать на существующий
+            // фреймворк-вариант kind=side и быть в companions владельца.
+            for m in &f.qt_ui_options {
+                let vdef = fw(&t, &m.id);
+                assert_eq!(vdef.kind, "side", "UI-вариант «{}» должен быть kind=side", m.id);
+                assert!(
+                    f.companions.contains(&m.id),
+                    "«{}» заявляет qt_ui_options «{}», но нет в companions",
+                    f.id,
+                    m.id
+                );
             }
         }
         assert!(

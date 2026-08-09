@@ -998,6 +998,319 @@ pub fn duplicate_framework_write_paths(context: &WizardContext) -> Vec<String> {
     issues
 }
 
+// ============================================================================
+// Qt: генерация по UI-режиму (QML / Widgets / WebEngine / Kirigami).
+// Режим выбирается в мастере (answers["qt_ui"] = ["qt-qml"] и т.п.) —
+// он решает, какие модули Qt подключить и какой main.cpp сгенерировать.
+// ============================================================================
+
+fn qt_ui_mode(context: &WizardContext) -> &'static str {
+    if let Some(modes) = context.answers.get("qt_ui") {
+        if let Some(m) = modes.first() {
+            return match m.as_str() {
+                "qt-qml" => "qml",
+                "qt-webengine" => "webengine",
+                "qt-kirigami" => "kirigami",
+                _ => "widgets",
+            };
+        }
+    }
+    // Ретро-совместимость: стек без ответов мастера (пресеты, старые сессии)
+    if context.frameworks.iter().any(|f| f == "qt-qml") {
+        return "qml";
+    }
+    if context.frameworks.iter().any(|f| f == "qt-webengine") {
+        return "webengine";
+    }
+    if context.frameworks.iter().any(|f| f == "qt-kirigami") {
+        return "kirigami";
+    }
+    "widgets"
+}
+
+fn qt_web_framework_label(context: &WizardContext) -> &'static str {
+    if let Some(fws) = context.answers.get("qt_web_framework") {
+        if let Some(f) = fws.first() {
+            return match f.as_str() {
+                "react" => "React",
+                "vue" => "Vue",
+                "svelte" => "Svelte",
+                _ => "web UI",
+            };
+        }
+    }
+    if context.frameworks.iter().any(|f| f == "react") {
+        "React"
+    } else if context.frameworks.iter().any(|f| f == "vue") {
+        "Vue"
+    } else if context.frameworks.iter().any(|f| f == "svelte") {
+        "Svelte"
+    } else {
+        "web UI"
+    }
+}
+
+fn qt_step_write(id: &str, label: &str, path: &str, content: String) -> Step {
+    Step::WriteFile {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: format!("Create {}", path),
+        path: path.to_string(),
+        content,
+        overwrite: false,
+        condition: None,
+        on_error: ErrorMode::Skip,
+    }
+}
+
+fn qt_step_note(id: &str, label: &str, text: String) -> Step {
+    Step::Command {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: text.clone(),
+        command: "echo".into(),
+        args: vec![text],
+        working_dir: None,
+        env: None,
+        timeout_secs: Some(60),
+        condition: None,
+        on_error: ErrorMode::Skip,
+        interactive: vec![],
+    }
+}
+
+fn qt_steps_widgets(project_name: &str) -> Vec<Step> {
+    vec![
+        qt_step_write("qt_main", "Create Qt main", "src/main.cpp", format!(
+            r#"#include <QApplication>
+#include <QWidget>
+#include <QPushButton>
+
+int main(int argc, char *argv[]) {{
+    QApplication app(argc, argv);
+    QWidget window;
+    window.setWindowTitle("{}");
+    window.resize(400, 300);
+    QPushButton btn("Hello from {}!", &window);
+    btn.setGeometry(50, 50, 300, 200);
+    window.show();
+    return app.exec();
+}}
+"#,
+            project_name, project_name
+        )),
+        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", format!(
+            r#"cmake_minimum_required(VERSION 3.16)
+project({p})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+add_executable({p} src/main.cpp)
+target_link_libraries({p} Qt6::Widgets)
+"#,
+            p = project_name
+        )),
+    ]
+}
+
+fn qt_steps_qml(project_name: &str) -> Vec<Step> {
+    let main_cpp = r#"#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+
+int main(int argc, char *argv[])
+{
+    QGuiApplication app(argc, argv);
+    QQmlApplicationEngine engine;
+    const QUrl url(QStringLiteral("qrc:/main.qml"));
+    QObject::connect(
+        &engine, &QQmlApplicationEngine::objectCreated,
+        &app, [url](QObject *obj, const QUrl &objUrl) {
+            if (!obj && url == objUrl)
+                QCoreApplication::exit(-1);
+        },
+        Qt::QueuedConnection);
+    engine.load(url);
+    return app.exec();
+}
+"#;
+    let main_qml = format!(
+        r#"import QtQuick
+
+Window {{
+    width: 480
+    height: 320
+    visible: true
+    title: "{}"
+
+    Text {{
+        anchors.centerIn: parent
+        text: "Hello from {}!"
+        font.pixelSize: 24
+    }}
+}}
+"#,
+        project_name, project_name
+    );
+    vec![
+        qt_step_write("qt_main", "Create Qt main", "src/main.cpp", main_cpp.into()),
+        qt_step_write("qt_qml_main", "Create QML view", "src/main.qml", main_qml),
+        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", format!(
+            r#"cmake_minimum_required(VERSION 3.16)
+project({p})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Quick)
+
+add_executable({p} src/main.cpp)
+
+qt_add_resources({p} "qml"
+    PREFIX "/"
+    FILES src/main.qml
+)
+
+target_link_libraries({p} Qt6::Quick)
+"#,
+            p = project_name
+        )),
+    ]
+}
+
+fn qt_steps_kirigami(project_name: &str) -> Vec<Step> {
+    let main_cpp = r#"#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+
+int main(int argc, char *argv[])
+{
+    QGuiApplication app(argc, argv);
+    QQmlApplicationEngine engine;
+    const QUrl url(QStringLiteral("qrc:/main.qml"));
+    QObject::connect(
+        &engine, &QQmlApplicationEngine::objectCreated,
+        &app, [url](QObject *obj, const QUrl &objUrl) {
+            if (!obj && url == objUrl)
+                QCoreApplication::exit(-1);
+        },
+        Qt::QueuedConnection);
+    engine.load(url);
+    return app.exec();
+}
+"#;
+    let main_qml = format!(
+        r#"import QtQuick
+import org.kde.kirigami 2.20 as Kirigami
+
+Kirigami.ApplicationWindow {{
+    width: 600
+    height: 450
+    title: "{}"
+
+    pageStack.initialPage: Kirigami.Page {{
+        Kirigami.Heading {{
+            text: "Hello from {}!"
+        }}
+    }}
+}}
+"#,
+        project_name, project_name
+    );
+    vec![
+        qt_step_write("qt_main", "Create Qt main", "src/main.cpp", main_cpp.into()),
+        qt_step_write("qt_kirigami_main", "Create Kirigami view", "src/main.qml", main_qml),
+        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", format!(
+            r#"cmake_minimum_required(VERSION 3.16)
+project({p})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(KF6 REQUIRED COMPONENTS Kirigami)
+
+add_executable({p} src/main.cpp)
+
+qt_add_resources({p} "qml"
+    PREFIX "/"
+    FILES src/main.qml
+)
+
+target_link_libraries({p} Qt6::Quick KF6::Kirigami)
+"#,
+            p = project_name
+        )),
+    ]
+}
+
+fn qt_steps_webengine(project_name: &str, context: &WizardContext) -> Vec<Step> {
+    let web = qt_web_framework_label(context);
+    let main_cpp = r#"#include <QApplication>
+#include <QUrl>
+#include <QWebEngineView>
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+    QWebEngineView view;
+    view.setWindowTitle("PROJECT_TITLE");
+    view.resize(1000, 700);
+    // Собранное веб-приложение встраивается в ресурсы — см. CMakeLists.txt
+    view.load(QUrl(QStringLiteral("qrc:/web/index.html")));
+    view.show();
+    return app.exec();
+}
+"#
+    .replace("PROJECT_TITLE", project_name);
+    vec![
+        qt_step_write("qt_main", "Create Qt main (WebEngine)", "src/main.cpp", main_cpp),
+        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", format!(
+            r#"cmake_minimum_required(VERSION 3.16)
+project({p})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS WebEngineWidgets)
+
+add_executable({p} src/main.cpp)
+
+# Собранная веб-часть (npm run build внутри веб-приложения) встраивается
+# в ресурсы приложения. Веб-приложение может лежать рядом, внутри подпапки
+# проекта или в соседнем сегменте (frontend/) — ищем все варианты.
+if(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/dist/index.html)
+    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/dist)
+elseif(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/${{PROJECT_NAME}}/dist/index.html)
+    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/${{PROJECT_NAME}}/dist)
+elseif(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/../frontend/${{PROJECT_NAME}}/dist/index.html)
+    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/../frontend/${{PROJECT_NAME}}/dist)
+endif()
+
+if(WEB_DIST)
+    qt_add_resources({p} "web"
+        PREFIX "/web"
+        BASE ${{WEB_DIST}}
+        FILES ${{WEB_DIST}}/index.html
+    )
+endif()
+
+target_link_libraries({p} Qt6::WebEngineWidgets)
+"#,
+            p = project_name
+        )),
+        qt_step_note(
+            "qt_webengine_hint",
+            "Qt WebEngine: build the web part",
+            format!(
+                "Web UI is {} — build it first (npm run build in the web app folder), then: cmake -S . -B build && cmake --build build",
+                web
+            ),
+        ),
+    ]
+}
+
 fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
     // Определяем язык фронтенда (для Tauri, Expo и др.)
     let frontend_lang = context.languages.iter().find(|l| is_frontend_lang(l));
@@ -1653,36 +1966,23 @@ func main() {{
                 "dotnet", vec!["new", "maui", "-n", project_name, "--force"]),
         ],
 
-        "qt" => vec![
-            write_file("qt_main", "Create Qt main", "src/main.cpp",
-                &format!(r#"#include <QApplication>
-#include <QWidget>
-#include <QPushButton>
+        // ==================== C++ / Qt ====================
+        // Qt — фреймворк с собственным UI-стеком: режим (QML/Widgets/
+        // WebEngine/Kirigami) выбирается в мастере (answers["qt_ui"]) и
+        // определяет, какие модули Qt подключить и какой main.cpp написать.
+        "qt" => {
+            let mode = qt_ui_mode(context);
+            match mode {
+                "qml" => qt_steps_qml(project_name),
+                "kirigami" => qt_steps_kirigami(project_name),
+                "webengine" => qt_steps_webengine(project_name, context),
+                _ => qt_steps_widgets(project_name),
+            }
+        }
 
-int main(int argc, char *argv[]) {{
-    QApplication app(argc, argv);
-    QWidget window;
-    window.setWindowTitle("{}");
-    window.resize(400, 300);
-    QPushButton btn("Hello from {}!", &window);
-    btn.setGeometry(50, 50, 300, 200);
-    window.show();
-    return app.exec();
-}}
-"#, project_name, project_name)),
-            write_file("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt",
-                &format!(r#"cmake_minimum_required(VERSION 3.16)
-project({})
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_AUTOMOC ON)
-
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
-
-add_executable({} src/main.cpp)
-target_link_libraries({} Qt6::Widgets)
-"#, project_name, project_name, project_name)),
-        ],
+        // Варианты UI Qt — генерируются внутри блока "qt" (см. qt_ui_mode);
+        // отдельные шаги не нужны, чтобы не дублировать файлы.
+        "qt-qml" | "qt-widgets" | "qt-webengine" | "qt-kirigami" => vec![],
 
         // ==================== Dart ====================
         "flutter" => {

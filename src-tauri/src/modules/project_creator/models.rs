@@ -169,6 +169,26 @@ pub struct FrameworkDef {
     /// allowed_main_pairs и не иметь взаимных conflicts.
     #[serde(default)]
     pub companions: Vec<String>,
+    /// Технологии UI внутри фреймворка с собственным стеком (Qt → QML,
+    /// Widgets, WebEngine, Kirigami). id совпадает с id фреймворка-варианта
+    /// (qt-qml и т.п.); варианты живут в companions и рендерятся мастером
+    /// в попапе владельца, а не как самостоятельные карточки.
+    #[serde(default)]
+    pub qt_ui_options: Vec<QtUiOption>,
+}
+
+/// Технология UI внутри фреймворка с собственным стеком (Qt).
+/// `id` — id фреймворка-варианта (qt-qml/qt-widgets/qt-webengine/qt-kirigami);
+/// `web_framework_options` — веб-фреймворки, которые режим умеет встраивать
+/// (Qt WebEngine → react/vue/svelte).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QtUiOption {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub web_framework_options: Vec<String>,
 }
 
 /// Рекомендуемый «компаньон»: фреймворк, который стоит подсветить,
