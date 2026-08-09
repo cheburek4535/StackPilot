@@ -1,7 +1,9 @@
 pub mod content;
 pub mod executor;
 // pub mod template;
+use std::collections::HashMap;
 use std::path::{Path};
+use std::sync::OnceLock;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -292,7 +294,17 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
     }
 
     for lang in &context.languages {
-        steps.extend(steps_for_language(lang, project_name, project_path));
+        // Фреймворк сам создаёт каркас для этого языка (aspnetcore вместо
+        // dotnet new console, nextjs вместо js-скаффолда) — generic-шаги
+        // языка не нужны и конфликтуют с файлами фреймворка.
+        if language_scaffold_suppressed(lang, context) {
+            continue;
+        }
+        let mut lang_steps = steps_for_language(lang, project_name, project_path);
+        if let Some(dir) = layout.for_language(lang) {
+            lang_steps = into_segment(lang_steps, &dir);
+        }
+        steps.extend(lang_steps);
     }
     for fw in &context.frameworks {
         steps.extend(steps_for_framework(fw, project_path, project_name, context, layout.for_framework(fw).as_deref()));
@@ -682,66 +694,136 @@ fn _is_backend_lang(l: &str) -> bool {
 }
 
 // ============================================================================
-// Сегментация проекта: backend/ + frontend/ (моно-репозиторий)
-//
-// Если пользователь выбрал и клиентский, и серверный фреймворк (например
-// nextjs + fastapi), то во избежание конфликтов (перезапись package.json,
-// смешивание src/) каждый фреймворк получает собственный каталог:
-//   backend/  — серверные фреймворки (fastapi, express, django, axum...)
-//   frontend/ — клиентские (nextjs, sveltekit, flutter, electron...)
-// Если выбран только один сегмент, сегментация не применяется и всё
-// создаётся в корне проекта, как раньше.
-//
-// Списки должны совпадать с полем output_subdir в wizard_tree.json.
+// Данные о языках/фреймворках — читаются из wizard_tree.json (не код!).
+// Раньше списки «фронтенд/бэкенд-фреймворков» дублировались константами
+// здесь и полем output_subdir в wizard_tree.json — при правке данных
+// движок молча расходился с мастером. Единый источник истины — JSON.
 // ============================================================================
 
-const FRONTEND_FRAMEWORKS: &[&str] = &[
-    "nextjs", "sveltekit", "nuxt", "electron", "android", "aiogram", "telegraf",
-    "unity", "maui", "unreal", "qt", "godot", "flutter", "jetpack-compose",
-    "swiftui", "react-native", "plasmo", "expo", "solidjs",
-];
-const BACKEND_FRAMEWORKS: &[&str] = &[
-    "fastapi", "django", "flask", "axum", "clap", "gin", "cobra", "express",
-    "spring-boot", "aspnetcore", "laravel", "symfony", "ktor", "vapor",
-    "zig-cli", "nest", "fastify", "phoenix",
-];
+fn wizard_tree() -> &'static WizardTreeData {
+    static TREE: OnceLock<WizardTreeData> = OnceLock::new();
+    TREE.get_or_init(|| {
+        let raw = include_str!("../knowledge/wizard_tree.json");
+        serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON")
+    })
+}
 
-/// К какой стороне проекта относится фреймворк: "frontend" | "backend" | None
-fn segment_of_framework(id: &str) -> Option<&'static str> {
-    if FRONTEND_FRAMEWORKS.contains(&id) {
-        Some("frontend")
-    } else if BACKEND_FRAMEWORKS.contains(&id) {
-        Some("backend")
-    } else {
-        None
+fn framework_def(id: &str) -> Option<&'static FrameworkDef> {
+    wizard_tree().frameworks.iter().find(|f| f.id == id)
+}
+
+fn language_def(id: &str) -> Option<&'static LanguageDef> {
+    wizard_tree().languages.iter().find(|l| l.id == id)
+}
+
+/// Сторона языка по его category (используется, когда мастер не прислал
+/// явные backend_languages/frontend_languages — старые сессии).
+/// "both"-языки (csharp, dart, kotlin...) по умолчанию считаются бэкендом.
+fn language_side_infer(lang: &str) -> Option<&'static str> {
+    match language_def(lang).and_then(|l| l.category.as_deref()) {
+        Some("backend") | Some("both") => Some("backend"),
+        Some("frontend") | Some("static") => Some("frontend"),
+        _ => None,
     }
 }
+
+/// Generic-скаффолд языка подавляется, если выбран фреймворк, который сам
+/// создаёт каркас проекта для этого языка (aspnetcore вместо `dotnet new
+/// console`, nextjs вместо js-скаффолда, spring-boot вместо maven archetype
+/// и т.п.). Флаг suppresses_language_scaffold живёт в wizard_tree.json.
+fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
+    context.frameworks.iter().any(|fw| {
+        framework_def(fw).is_some_and(|def| {
+            def.suppresses_language_scaffold && def.requires_language.iter().any(|l| l == lang)
+        })
+    })
+}
+
+// ============================================================================
+// Сегментация проекта: backend/ + frontend/ (моно-репозиторий)
+//
+// Сторона определяется ЯЗЫКАМИ, которые пользователь выбрал в мастере:
+// backend_languages/frontend_languages — явные назначения (шаги «Backend»
+// и «Frontend»). Фреймворк следует за своим языком (requires_language),
+// а не за собственным kind: express — серверный фреймворк, но если
+// пользователь выбрал его как фреймворк своего «фронтенд»-языка, его файлы
+// попадают в frontend/. Это чинит кейс «aspnetcore + express»: раньше оба
+// были kind=backend, сегментация не включалась и файлы сталкивались в корне.
+//
+// Если мастер не прислал явные стороны (старые сессии) — стороны выводятся
+// из category языка. Если выбрана только одна сторона — сегментация не
+// применяется, всё создаётся в корне проекта, как раньше.
+// ============================================================================
 
 struct SegLayout {
     frontend: Option<String>,
     backend: Option<String>,
+    /// язык → "backend" | "frontend" (явное назначение мастера или вывод по category)
+    lang_side: HashMap<String, &'static str>,
 }
 
 impl SegLayout {
-    /// Если выбраны фреймворки обеих сторон — выделяем под них подпапки.
     fn compute(context: &WizardContext) -> SegLayout {
-        let has_frontend = context.frameworks.iter().any(|f| segment_of_framework(f) == Some("frontend"));
-        let has_backend = context.frameworks.iter().any(|f| segment_of_framework(f) == Some("backend"));
-        if has_frontend && has_backend {
+        let mut lang_side: HashMap<String, &'static str> = HashMap::new();
+        for l in &context.backend_languages {
+            lang_side.insert(l.clone(), "backend");
+        }
+        for l in &context.frontend_languages {
+            lang_side.insert(l.clone(), "frontend");
+        }
+        // Языки без явного назначения — по category (обратная совместимость).
+        for l in &context.languages {
+            lang_side
+                .entry(l.clone())
+                .or_insert_with(|| language_side_infer(l).unwrap_or("backend"));
+        }
+        // Забытые языки (в списке языка нет, а сторона заявлена) — не важны.
+
+        let has_backend = lang_side.values().any(|s| *s == "backend");
+        let has_frontend = lang_side.values().any(|s| *s == "frontend");
+        if has_backend && has_frontend {
             SegLayout {
                 frontend: Some("frontend".into()),
                 backend: Some("backend".into()),
+                lang_side,
             }
         } else {
-            SegLayout { frontend: None, backend: None }
+            SegLayout {
+                frontend: None,
+                backend: None,
+                lang_side,
+            }
         }
     }
 
-    /// Каталог сегмента для фреймворка (None = корень проекта)
-    fn for_framework(&self, id: &str) -> Option<String> {
-        match segment_of_framework(id) {
-            Some("frontend") => self.frontend.clone(),
+    /// Каталог сегмента для языка (None = корень проекта)
+    fn for_language(&self, lang: &str) -> Option<String> {
+        match self.lang_side.get(lang).copied() {
             Some("backend") => self.backend.clone(),
+            Some("frontend") => self.frontend.clone(),
+            _ => None,
+        }
+    }
+
+    /// Каталог сегмента для фреймворка (None = корень проекта).
+    /// Сначала — сторона языка, который фреймворк требует (пользователь
+    /// назначил этот язык стороне в мастере); запасной вариант — kind
+    /// фреймворка из wizard_tree.json.
+    fn for_framework(&self, id: &str) -> Option<String> {
+        if let Some(fw) = framework_def(id) {
+            for lang in &fw.requires_language {
+                if let Some(side) = self.lang_side.get(lang).copied() {
+                    return match side {
+                        "backend" => self.backend.clone(),
+                        "frontend" => self.frontend.clone(),
+                        _ => None,
+                    };
+                }
+            }
+        }
+        match framework_def(id).and_then(|f| f.kind.as_deref()) {
+            Some("backend") => self.backend.clone(),
+            Some("frontend") => self.frontend.clone(),
             _ => None,
         }
     }
@@ -825,7 +907,25 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
 }
 
 fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
-    let steps = steps_for_framework_impl(fw, project_path, project_name, context);
+    let mut steps = steps_for_framework_impl(fw, project_path, project_name, context);
+
+    // Inplace-фреймворки (scaffold не задан: express, fastapi, gin, clap...)
+    // дописывают файлы в каркас, созданный language-скаффолдом. Их файлы —
+    // это «настоящий» контент приложения, а скаффолд языка — заглушка:
+    // express обязан перезаписать package.json/src/index.js, иначе шаг
+    // молча скипается (executor не пишет поверх при overwrite=false).
+    // Раньше это обещание было описано в коммите, но не реализовано —
+    // express-шаги в связке js+express просто пропадали.
+    if let Some(def) = framework_def(fw) {
+        if def.scaffold.is_none() {
+            for step in &mut steps {
+                if let Step::WriteFile { overwrite, .. } = step {
+                    *overwrite = true;
+                }
+            }
+        }
+    }
+
     match seg {
         Some(dir) => into_segment(steps, dir),
         None => steps,
@@ -1492,7 +1592,11 @@ target_link_libraries({} Qt6::Widgets)
         ],
 
         "ktor" => vec![
-            write_file("ktor_main", "Create Ktor entry", "src/main/kotlin/Application.kt",
+            // Пишем В Application.kt, а в Main.kt: kotlin language-скаффолд
+            // создаёт src/main/kotlin/Main.kt с main() — второй main()
+            // в Application.kt не дал бы проекту собраться. Inplace-фреймворк
+            // перезаписывает заглушку (overwrite выставляется в steps_for_framework).
+            write_file("ktor_main", "Create Ktor entry", "src/main/kotlin/Main.kt",
                 &format!(r#"import io.ktor.application.*
 import io.ktor.response.*
 import io.ktor.routing.*
@@ -2186,5 +2290,123 @@ mod tests {
             .collect();
         assert!(mkdirs.contains(&"frontend".to_string()), "backend/ и frontend/ должны создаваться: {mkdirs:?}");
         assert!(mkdirs.contains(&"backend".to_string()), "backend/ и frontend/ должны создаваться: {mkdirs:?}");
+    }
+
+    #[test]
+    fn reported_stack_aspnetcore_express_segments_by_language_side() {
+        // Регрессия из репорта: c# + aspnetcore (backend) и js + express —
+        // пользователь назначил javascript «фронтенд»-языком, поэтому даже
+        // серверный express попадает в frontend/, а не сталкивается с
+        // aspnetcore в корне. Скаффолды языков не конфликтуют с фреймворками.
+        let mut ctx = context();
+        ctx.languages = vec!["csharp".into(), "javascript".into()];
+        ctx.backend_languages = vec!["csharp".into()];
+        ctx.frontend_languages = vec!["javascript".into()];
+        ctx.frameworks = vec!["aspnetcore".into(), "express".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
+
+        // aspnetcore (dotnet new webapi) выполняется в backend/
+        let asp = recipe.steps.iter().find(|s| s.id() == "aspnet_new")
+            .expect("aspnet_new должен быть в плане");
+        match asp {
+            Step::Command { working_dir, .. } => {
+                let wd = working_dir.as_deref().expect("aspnetcore должен работать в backend/");
+                assert!(
+                    wd.ends_with("backend"),
+                    "aspnetcore должен работать в backend/, а не в корне: {wd}"
+                );
+            }
+            _ => panic!("aspnet_new — Command"),
+        }
+
+        // express-файлы пишутся в frontend/ и не скипаются (overwrite=true)
+        for (step_id, expected_path) in [("express_index", "frontend/src/index.js"), ("express_package", "frontend/package.json")] {
+            let step = recipe.steps.iter().find(|s| s.id() == step_id)
+                .unwrap_or_else(|| panic!("{step_id} должен быть в плане"));
+            match step {
+                Step::WriteFile { path, overwrite, .. } => {
+                    assert_eq!(path, expected_path, "{step_id} должен писать в {expected_path}");
+                    assert!(*overwrite, "{step_id} обязан перезаписать заглушку языка");
+                }
+                _ => panic!("{step_id} — WriteFile"),
+            }
+        }
+
+        // Скаффолд csharp (dotnet new console) подавлен aspnetcore,
+        // js-скаффолд (package.json/src/index.js) подавлен express
+        for suppressed in ["dotnet_new", "package_json", "js_src_index"] {
+            assert!(
+                !recipe.steps.iter().any(|s| s.id() == suppressed),
+                "шаг {suppressed} не должен выполняться: aspnetcore/express создают каркас сами"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_tauri_keeps_cargo_init() {
+        // tauri НЕ подавляет язык: cargo tauri init требует существующий
+        // cargo-проект. Отдельный кейс против слепого подавления скаффолда.
+        let mut ctx = context();
+        ctx.languages = vec!["rust".into()];
+        ctx.frameworks = vec!["tauri".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        assert!(
+            recipe.steps.iter().any(|s| s.id() == "cargo_init"),
+            "cargo init обязателен перед cargo tauri init"
+        );
+        assert!(recipe.steps.iter().any(|s| s.id() == "tauri_init"));
+    }
+
+    #[test]
+    fn python_scaffold_kept_for_fastapi_requirements_overwrite() {
+        // python-скаффолд (pyproject.toml) остаётся — fastapi его не создаёт,
+        // а requirements.txt fastapi перезаписывает (иначе зависимости терялись).
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        assert!(recipe.steps.iter().any(|s| s.id() == "pyproject_toml"));
+        let reqs = recipe.steps.iter().find(|s| s.id() == "fastapi_requirements").unwrap();
+        match reqs {
+            Step::WriteFile { path, overwrite, .. } => {
+                assert_eq!(path, "requirements.txt");
+                assert!(*overwrite, "fastapi должен перезаписать requirements.txt");
+            }
+            _ => panic!("fastapi_requirements — WriteFile"),
+        }
+    }
+
+    #[test]
+    fn inplace_framework_entry_files_overwrite() {
+        // Inplace-фреймворки (scaffold=None) перезаписывают entry-файлы,
+        // иначе их шаги молча скипались на файлах language-скаффолда.
+        for (fw, entry_ids) in [
+            ("express", vec!["express_index", "express_package"]),
+            ("gin", vec!["gin_main"]),
+            ("clap", vec!["clap_main"]),
+            ("axum", vec!["axum_main"]),
+            ("flask", vec!["flask_app", "flask_requirements"]),
+        ] {
+            let steps = steps_for_framework(fw, "C:\\dev\\myapp", "myapp", &context(), None);
+            for id in &entry_ids {
+                let step = steps.iter().find(|s| s.id() == id.to_string())
+                    .unwrap_or_else(|| panic!("{fw}: шаг {id} должен существовать"));
+                match step {
+                    Step::WriteFile { overwrite, .. } => assert!(*overwrite, "{fw}: шаг {id} должен перезаписываться"),
+                    _ => panic!("{fw}: {id} — WriteFile"),
+                }
+            }
+        }
     }
 }

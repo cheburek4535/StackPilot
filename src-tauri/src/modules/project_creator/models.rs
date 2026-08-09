@@ -81,6 +81,17 @@ pub struct FrameworkDef {
     /// Применяется к фреймворкам с scaffold="subdir" или inplace-фреймворкам.
     #[serde(default)]
     pub output_subdir: Option<String>,
+    /// Системные инструменты, без которых фреймворк нельзя собрать/запустить
+    /// независимо от выбора пользователя (npm для JS/TS-фреймворков,
+    /// maven/gradle для JVM). В отличие от framework_tool_map (тулы, которые
+    /// мастер лишь ПРЕДЛАГАЕТ выбрать), это безусловные требования окружения.
+    #[serde(default)]
+    pub required_tools: Vec<String>,
+    /// Фреймворк сам создаёт полный каркас проекта для своих
+    /// requires_language языков (dotnet new webapi, create-next-app и т.п.) —
+    /// generic-скаффолд языка не нужен и конфликтует с ним.
+    #[serde(default)]
+    pub suppresses_language_scaffold: bool,
     pub knowledge_key: Option<String>,
     #[serde(default)]
     pub conflicts: Vec<String>, // id фреймворков, с которыми несовместим
@@ -177,6 +188,14 @@ pub struct WizardContext {
     pub project_type: Option<String>,
     /// Выбранные языки
     pub languages: Vec<String>,
+    /// Языки, назначенные пользователем серверной стороне (шаг «Backend»).
+    /// Движок использует их для сегментации backend/ frontend/; когда список
+    /// пуст (старые сессии), сторона выводится из category языка.
+    #[serde(default)]
+    pub backend_languages: Vec<String>,
+    /// Языки, назначенные пользователем клиентской стороне (шаг «Frontend»).
+    #[serde(default)]
+    pub frontend_languages: Vec<String>,
     /// Выбранные фреймворки (language_id → framework_id)
     pub frameworks: Vec<String>,
     /// Выбранные инструменты
@@ -201,6 +220,8 @@ impl Default for WizardContext {
             is_existing: false,
             project_type: None,
             languages: Vec::new(),
+            backend_languages: Vec::new(),
+            frontend_languages: Vec::new(),
             frameworks: Vec::new(),
             tools: Vec::new(),
             features: Vec::new(),

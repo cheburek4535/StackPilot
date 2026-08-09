@@ -756,6 +756,8 @@ async function doCreateProject(useProjectName: string) {
     is_existing: false,
     project_type: selectedType?.id ?? null,
     languages: allSelectedLangs(),
+    backend_languages: backendLang ? [backendLang] : [],
+    frontend_languages: frontendLang ? [frontendLang] : [],
     frameworks: selectedFrameworks,
     tools: selectedTools,
     features: [],

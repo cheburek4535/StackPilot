@@ -39,6 +39,10 @@ export type FrameworkDef = {
   scaffold?: "root" | "subdir";
   /** Куда фреймворк создаёт файлы при сегментации: "backend" | "frontend" или undefined (корень) */
   output_subdir?: "backend" | "frontend";
+  /** Обязательные системные инструменты сборки (npm, maven...) — безусловные требования окружения */
+  required_tools?: string[];
+  /** Фреймворк сам создаёт каркас для своих языков — generic-скаффолд языка подавляется */
+  suppresses_language_scaffold?: boolean;
 };
 
 export type StackSeverity = "Error" | "Warning";
@@ -80,6 +84,10 @@ export type WizardContext = {
   is_existing: boolean;
   project_type: string | null;
   languages: string[];
+  /** Языки, назначенные серверной стороне (шаг «Backend») — драйвер сегментации backend/ frontend/ */
+  backend_languages: string[];
+  /** Языки, назначенные клиентской стороне (шаг «Frontend») */
+  frontend_languages: string[];
   frameworks: string[];
   tools: string[];
   features: string[];

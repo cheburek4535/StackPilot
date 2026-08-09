@@ -299,7 +299,9 @@
       "requires_language": [
         "python"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "django",
@@ -317,7 +319,9 @@
         "python"
       ],
       "scaffold": "root",
-      "output_subdir": null
+      "output_subdir": null,
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "flask",
@@ -335,7 +339,9 @@
       "requires_language": [
         "python"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "axum",
@@ -351,7 +357,9 @@
       "requires_language": [
         "rust"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "tauri",
@@ -372,7 +380,9 @@
         "rust"
       ],
       "scaffold": "root",
-      "output_subdir": null
+      "output_subdir": null,
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "clap",
@@ -388,7 +398,9 @@
       "requires_language": [
         "rust"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "gin",
@@ -404,7 +416,9 @@
       "requires_language": [
         "go"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "cobra",
@@ -420,7 +434,9 @@
       "requires_language": [
         "go"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "nextjs",
@@ -441,7 +457,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "sveltekit",
@@ -462,7 +482,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "nuxt",
@@ -483,7 +507,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "express",
@@ -502,7 +530,11 @@
         "typescript",
         "javascript"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "electron",
@@ -520,7 +552,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "aiogram",
@@ -536,7 +572,9 @@
       "requires_language": [
         "python"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "telegraf",
@@ -554,7 +592,11 @@
         "typescript",
         "javascript"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "spring-boot",
@@ -571,7 +613,12 @@
         "java"
       ],
       "scaffold": "root",
-      "output_subdir": null
+      "output_subdir": null,
+      "required_tools": [
+        "maven",
+        "gradle"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "android",
@@ -586,7 +633,9 @@
         "java",
         "kotlin"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "aspnetcore",
@@ -601,7 +650,9 @@
         "csharp"
       ],
       "scaffold": "subdir",
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "unity",
@@ -618,7 +669,9 @@
       "requires_language": [
         "csharp"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "maui",
@@ -633,7 +686,9 @@
         "csharp"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "unreal",
@@ -650,7 +705,9 @@
       "requires_language": [
         "cpp"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "qt",
@@ -664,7 +721,9 @@
       "requires_language": [
         "cpp"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "godot",
@@ -682,7 +741,9 @@
         "csharp",
         "cpp"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "flutter",
@@ -700,7 +761,9 @@
         "dart"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "laravel",
@@ -717,7 +780,9 @@
         "php"
       ],
       "scaffold": "subdir",
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "symfony",
@@ -734,7 +799,9 @@
         "php"
       ],
       "scaffold": "subdir",
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "jetpack-compose",
@@ -748,7 +815,9 @@
       "requires_language": [
         "kotlin"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "ktor",
@@ -764,7 +833,11 @@
       "requires_language": [
         "kotlin"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [
+        "gradle"
+      ],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "swiftui",
@@ -781,7 +854,9 @@
       "platforms": [
         "macos"
       ],
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "vapor",
@@ -799,7 +874,9 @@
         "macos"
       ],
       "scaffold": "subdir",
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "react-native",
@@ -818,7 +895,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "plasmo",
@@ -834,7 +915,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "zig-cli",
@@ -848,7 +933,9 @@
       "requires_language": [
         "zig"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": false
     },
     {
       "id": "expo",
@@ -867,7 +954,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "phoenix",
@@ -882,7 +973,9 @@
         "elixir"
       ],
       "scaffold": "subdir",
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "nest",
@@ -901,7 +994,11 @@
         "javascript"
       ],
       "scaffold": "root",
-      "output_subdir": null
+      "output_subdir": null,
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "fastify",
@@ -920,7 +1017,11 @@
         "typescript",
         "javascript"
       ],
-      "output_subdir": "backend"
+      "output_subdir": "backend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     },
     {
       "id": "solidjs",
@@ -941,7 +1042,11 @@
         "javascript"
       ],
       "scaffold": "subdir",
-      "output_subdir": "frontend"
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true
     }
   ],
   "tools": [

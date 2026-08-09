@@ -6,14 +6,23 @@
 //
 // Правило независимости: toolchain НЕ зависит от project_creator
 // как от кода — на вход приходит простой JSON-контракт. Но чтобы
-// маппинг «фреймворк → тулы» не расходился с мастером, таблица
-// framework_tool_map читается из wizard_tree.json (данные, не код).
+// маппинг «фреймворк → тулы» не расходился с мастером, таблицы
+// читаются из wizard_tree.json (данные, не код).
+//
+// ВАЖНО: framework_tool_map из wizard_tree.json — это НЕ список
+// обязательных инструментов, а набор, который мастер ПРЕДЛАГАЕТ
+// выбрать к фреймворку (БД, кеши и т.п.). Что пользователь реально
+// выбрал, приходит в requirements.tools. Безусловно обязательными
+// считаются только required_tools фреймворка (npm для JS/TS,
+// maven/gradle для JVM-сборки) — иначе aspnetcore начал бы требовать
+// mongodb/sqlite только за то, что они упомянуты в каталоге.
 //
 // Источники требований:
 //   1. языки       — статичная таблица language_tools (рантайм языка);
 //   2. фреймворки  — framework_extra_tools (рантайм, которого нет
-//                    в wizard_tree) + framework_tool_map из wizard_tree.json;
-//   3. выбранные тулы — wizard_tool_to_toolchain;
+//                    в wizard_tree) + required_tools из wizard_tree.json
+//                    (обязательные инструменты сборки) + requires_language;
+//   3. выбранные тулы — wizard_tool_to_toolchain (явный выбор мастера);
 //   4. флаги       — git_init → git, vscode_config → vscode, docker → docker.
 
 use std::collections::{HashMap, HashSet};
@@ -86,29 +95,33 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
     }
 }
 
-/// Таблица «фреймворк → тулы» из wizard_tree.json.
-/// Кэшируется в OnceLock: файл компилируется в бинарь (include_str!),
-/// парсится один раз при первом обращении.
-fn framework_tool_map() -> &'static HashMap<String, Vec<String>> {
+/// Таблица «фреймворк → обязательные системные инструменты» из wizard_tree.json.
+/// В отличие от framework_tool_map (тулы, которые мастер лишь предлагает
+/// выбрать пользователю), эти инструменты нужны фреймворку всегда — без них
+/// проект не собрать (npm для JS/TS, maven/gradle для JVM). Кэшируется
+/// в OnceLock: файл компилируется в бинарь (include_str!), парсится один раз.
+fn framework_required_tools() -> &'static HashMap<String, Vec<String>> {
     static MAP: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     MAP.get_or_init(|| {
         let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
         let tree: serde_json::Value = serde_json::from_str(raw)
             .expect("wizard_tree.json должен быть корректным JSON");
-        tree.get("framework_tool_map")
-            .and_then(|m| m.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .map(|(fw, tools)| {
-                        let list = tools
-                            .as_array()
+        tree.get("frameworks")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|fw| {
+                        let id = fw.get("id")?.as_str()?.to_string();
+                        let tools = fw
+                            .get("required_tools")
+                            .and_then(|t| t.as_array())
                             .map(|a| {
                                 a.iter()
                                     .filter_map(|t| t.as_str().map(String::from))
                                     .collect()
                             })
                             .unwrap_or_default();
-                        (fw.clone(), list)
+                        Some((id, tools))
                     })
                     .collect()
             })
@@ -232,7 +245,10 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
                 }
             }
         }
-        if let Some(tools) = framework_tool_map().get(fw) {
+        // Безусловно обязательные инструменты сборки (npm, maven, gradle).
+        // Инфраструктуру (БД, кеши, docker) сюда НЕ включаем: она приходит
+        // только через явный выбор пользователя в requirements.tools.
+        if let Some(tools) = framework_required_tools().get(fw) {
             for wizard_tool in tools {
                 if let Some(id) = wizard_tool_to_toolchain(wizard_tool) {
                     push(id);
@@ -311,34 +327,72 @@ mod tests {
         r.frameworks = vec!["tauri".into()];
         let ids = resolve(&r);
         // рантаймы из статичной таблицы + tauri-cli для `cargo tauri`
-        for expected in ["rust", "node", "tauri-cli"] {
+        for expected in ["rust", "node", "tauri-cli", "msvc-build-tools"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
-        // тулы из wizard_tree.json (framework_tool_map: tauri → docker, npm)
-        for expected in ["docker", "npm"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
-        }
+        // инфраструктура из framework_tool_map (docker, npm) НЕ является
+        // обязательным требованием — она приходит только явным выбором
+        assert!(!ids.contains(&"docker".to_string()), "tauri не должен требовать docker сам по себе: {ids:?}");
     }
 
     #[test]
-    fn spring_boot_brings_jdk_without_language() {
+    fn spring_boot_brings_jdk_and_build_tools() {
         let mut r = req();
         r.frameworks = vec!["spring-boot".into()];
         let ids = resolve(&r);
         assert!(ids.iter().any(|i| i == "java"), "spring boot без JDK: {ids:?}");
-        // тулы из wizard_tree.json (framework_tool_map: spring-boot → maven, gradle, ...)
-        for expected in ["maven", "gradle", "postgresql", "redis", "docker", "kafka", "mongodb"] {
+        // обязательные тулы сборки из required_tools
+        for expected in ["maven", "gradle"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+        }
+        // БД/кеши/очереди из framework_tool_map — только по явному выбору
+        for unexpected in ["postgresql", "redis", "docker", "kafka", "mongodb"] {
+            assert!(!ids.contains(&unexpected.to_string()), "{unexpected} не должен требоваться без выбора: {ids:?}");
         }
     }
 
     #[test]
-    fn ktor_brings_jdk() {
+    fn aspnetcore_does_not_require_infra_without_user_choice() {
+        // Регрессия из репорта: стек c# + aspnetcore + express без выбора
+        // mongodb/sqlite не должен тянуть их в требования окружения.
+        let mut r = req();
+        r.languages = vec!["csharp".into(), "javascript".into()];
+        r.frameworks = vec!["aspnetcore".into(), "express".into()];
+        let ids = resolve(&r);
+
+        for unexpected in ["mongodb", "sqlite"] {
+            assert!(
+                !ids.contains(&unexpected.to_string()),
+                "aspnetcore не должен требовать {unexpected} сам по себе: {ids:?}"
+            );
+        }
+        // рантаймы и обязательные тулы на месте
+        for expected in ["dotnet", "node", "npm"] {
+            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+        }
+        // инфраструктура появляется ТОЛЬКО явным выбором
+        let mut r2 = req();
+        r2.languages = vec!["csharp".into(), "javascript".into()];
+        r2.frameworks = vec!["aspnetcore".into(), "express".into()];
+        r2.tools = vec!["postgresql".into(), "redis".into(), "docker".into()];
+        r2.git_init = true;
+        r2.vscode_config = true;
+        let ids2 = resolve(&r2);
+        for expected in ["postgresql", "redis", "docker", "git", "vscode"] {
+            assert!(ids2.iter().any(|i| i == expected), "нет {expected} в {ids2:?}");
+        }
+        assert!(!ids2.contains(&"mongodb".to_string()), "mongodb всё ещё в требованиях: {ids2:?}");
+        assert!(!ids2.contains(&"sqlite".to_string()), "sqlite всё ещё в требованиях: {ids2:?}");
+    }
+
+    #[test]
+    fn ktor_brings_jdk_and_gradle() {
         let mut r = req();
         r.frameworks = vec!["ktor".into()];
         let ids = resolve(&r);
         assert!(ids.iter().any(|i| i == "java"), "ktor без JDK: {ids:?}");
-        assert!(ids.iter().any(|i| i == "kafka"), "ktor без kafka: {ids:?}");
+        assert!(ids.iter().any(|i| i == "gradle"), "ktor без gradle: {ids:?}");
+        assert!(!ids.contains(&"kafka".to_string()), "kafka не обязательна для ktor: {ids:?}");
     }
 
     #[test]
