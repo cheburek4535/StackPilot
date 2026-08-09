@@ -10,12 +10,18 @@ import {
   checkFolderExists,
   getHostPlatform,
   validateProjectStack,
-  getStackRecommendations,
+  getProjectExecutionSnapshot,
 } from "$lib/modules/project_creator/api";
 import { validateStack, firstError } from "$lib/modules/project_creator/rules";
+import {
+  loadCreateSession,
+  saveCreateSession,
+  clearCreateSession,
+} from "$lib/modules/project_creator/createSession";
 import type {
   WizardTreeData,
   ProjectTypeDef,
+  LanguageDef,
   FrameworkDef,
   ToolDef,
   ProjectPreset,
@@ -25,7 +31,6 @@ import type {
   ExecutionEvent,
   StepStatus,
   StackIssue,
-  StackRecommendations,
 } from "$lib/modules/project_creator/types";
 import {
   checkEnvironment as tcCheckEnvironment,
@@ -36,6 +41,7 @@ import {
   listenInstallDone,
   listenCheckProgress,
   getNewSecrets,
+  getInstallStatus,
 } from "$lib/modules/toolchain/api";
 import type {
   EnvironmentCheck,
@@ -61,6 +67,10 @@ let phase = $state(0); // 0..4 — конструктор; 5 — окружен�
 let selectedType = $state<ProjectTypeDef | null>(null);
 let backendLangs = $state<string[]>([]);
 let frontendLangs = $state<string[]>([]);
+/** Вручную выбранные языки сторон (без фреймворка). Авто-языки от
+ *  фреймворков сюда не попадают и убираются при снятии фреймворка. */
+let manualBackendLangs = $state<string[]>([]);
+let manualFrontendLangs = $state<string[]>([]);
 let selectedFrameworks = $state<string[]>([]);
 /** Выбранный язык каждого фреймворка (fw.id → язык). Языки больше не
  *  выбираются сами по себе — они назначаются при выборе фреймворка. */
@@ -77,46 +87,6 @@ let stackIssues = $derived<StackIssue[]>(
     : [],
 );
 let stackError = $derived(firstError(stackIssues));
-
-// ---- Рекомендации стека (бэкенд recommend.rs) ----
-let recommendations = $state<StackRecommendations | null>(null);
-let recommendationsError = $state<string | null>(null);
-$effect(() => {
-  const t = tree;
-  const type = selectedType?.id ?? null;
-  const backend = backendLangs;
-  const frontend = frontendLangs;
-  const fws = selectedFrameworks;
-  if (!t) return;
-  let cancelled = false;
-  recommendations = null;
-  recommendationsError = null;
-  getStackRecommendations(type, backend, frontend, fws)
-    .then((r) => {
-      if (!cancelled) recommendations = r;
-    })
-    .catch(() => {
-      if (!cancelled) recommendationsError = "Failed to load recommendations";
-    });
-  return () => {
-    cancelled = true;
-  };
-});
-
-/** Метка фреймворка по id (для рекомендаций) */
-function fwLabel(id: string): string {
-  return tree?.frameworks.find((f) => f.id === id)?.label ?? id;
-}
-
-/** Метка инструмента по id (для рекомендаций) */
-function toolLabel(id: string): string {
-  return tree?.tools.find((t) => t.id === id)?.label ?? id;
-}
-
-/** Сразу добавить рекомендованный инструмент */
-function applyRecommendedTool(id: string) {
-  toggleTool(id);
-}
 
 // ---- Project name & folder ----
 let projectName = $state("");
@@ -195,10 +165,213 @@ function hideTooltip() {
   tooltipData = null;
 }
 
+// ----------------------------------------------------------
+// Персистентность вкладки: переключение маршрутов не убивает прогресс
+// ----------------------------------------------------------
+
+/** false, пока не восстановлено сохранённое состояние — автозейв отключён,
+ *  чтобы первое срабатывание эффекта не затёрло снапшот до восстановления. */
+let persistReady = $state(false);
+/** id типа проекта из снапшота — резолвится в объект после загрузки дерева */
+let restoredTypeId: string | null = null;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Сериализуемое состояние вкладки (без транзиентных полей: тултипы, попапы) */
+function buildSnapshot(): Record<string, unknown> {
+  return {
+    v: 1,
+    mode,
+    phase,
+    typeId: selectedType?.id ?? null,
+    backendLangs,
+    frontendLangs,
+    manualBackendLangs,
+    manualFrontendLangs,
+    selectedFrameworks,
+    fwLangs,
+    linkedCompanions,
+    selectedTools,
+    testing,
+    git,
+    vscode,
+    projectName,
+    selectedFolder,
+    conflictResolvedFolder,
+    folderExists,
+    analysisResult,
+    analysisError,
+    analyzedPath,
+    execPlan,
+    execStatuses: [...execStatuses.entries()],
+    execOverallStatus,
+    execResult,
+    execError,
+    execLogs,
+    envCheck,
+    envPlan,
+    envLogs,
+    envTaskStates: [...envTaskStates.entries()],
+    envRestartHint,
+    envInstallDone,
+    envErrors,
+    envDownload: [...envDownload.entries()],
+    envPhaseStart: [...envPhaseStart.entries()],
+    envSelectedIds: [...envSelectedIds],
+    envCheckProgress,
+    newSecrets,
+    envInstalling,
+  };
+}
+
+function restoreSnapshot(snap: Record<string, unknown>) {
+  const s = snap;
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const bool = (v: unknown): boolean => v === true;
+  const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+  const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+
+  mode = (["constructor", "presets", "analyze"] as const).includes(s.mode as never)
+    ? (s.mode as "constructor" | "presets" | "analyze")
+    : "constructor";
+  phase = num(s.phase);
+  restoredTypeId = str(s.typeId) || null;
+  backendLangs = strArr(s.backendLangs);
+  frontendLangs = strArr(s.frontendLangs);
+  manualBackendLangs = strArr(s.manualBackendLangs);
+  manualFrontendLangs = strArr(s.manualFrontendLangs);
+  selectedFrameworks = strArr(s.selectedFrameworks);
+  fwLangs = s.fwLangs && typeof s.fwLangs === "object" ? (s.fwLangs as Record<string, string>) : {};
+  linkedCompanions =
+    s.linkedCompanions && typeof s.linkedCompanions === "object"
+      ? (s.linkedCompanions as Record<string, string>)
+      : {};
+  selectedTools = strArr(s.selectedTools);
+  testing = bool(s.testing);
+  git = bool(s.git);
+  vscode = bool(s.vscode);
+  projectName = str(s.projectName);
+  selectedFolder = str(s.selectedFolder) || null;
+  conflictResolvedFolder = str(s.conflictResolvedFolder) || null;
+  folderExists = bool(s.folderExists);
+  analysisResult = (s.analysisResult as AnalysisReport | null) ?? null;
+  analysisError = str(s.analysisError) || null;
+  analyzedPath = str(s.analyzedPath) || null;
+  execPlan = (s.execPlan as ExecutionPlan | null) ?? null;
+  execStatuses = new Map(
+    Array.isArray(s.execStatuses)
+      ? (s.execStatuses as [number, { name: string; status: StepStatus; logs: string[] }][])
+      : [],
+  );
+  execOverallStatus = str(s.execOverallStatus) || "pending";
+  execResult = (s.execResult as { duration: number; status: string } | null) ?? null;
+  execError = str(s.execError) || null;
+  execLogs = strArr(s.execLogs);
+  envCheck = (s.envCheck as EnvironmentCheck | null) ?? null;
+  envPlan = (s.envPlan as InstallPlan | null) ?? null;
+  envLogs = strArr(s.envLogs);
+  envTaskStates = new Map(
+    Array.isArray(s.envTaskStates) ? (s.envTaskStates as [string, TaskState][]) : [],
+  );
+  envRestartHint = bool(s.envRestartHint);
+  envInstallDone = bool(s.envInstallDone);
+  envErrors = strArr(s.envErrors);
+  envDownload = new Map(
+    Array.isArray(s.envDownload) ? (s.envDownload as [string, { received: number; total: number }][]) : [],
+  );
+  envPhaseStart = new Map(Array.isArray(s.envPhaseStart) ? (s.envPhaseStart as [string, number][]) : []);
+  envSelectedIds = new Set(strArr(s.envSelectedIds));
+  envCheckProgress = Array.isArray(s.envCheckProgress) ? (s.envCheckProgress as CheckProgressEvent[]) : [];
+  newSecrets = (s.newSecrets as Record<string, string> | null) ?? null;
+  envInstalling = bool(s.envInstalling);
+}
+
+/** Автозейв с дебаунсом: логогенерация (установка/генерация) не спамит storage */
+$effect(() => {
+  if (!persistReady) return;
+  const snap = buildSnapshot();
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => saveCreateSession(snap), 300);
+});
+
+function persistNow() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = null;
+  if (persistReady) saveCreateSession(buildSnapshot());
+}
+
+/** Синхронизация «живых» сессий (установка окружения / генерация проекта),
+ *  которые могли завершиться на бэкенде, пока вкладка была неактивна. */
+async function reSyncLiveSessions() {
+  if (phase === 5 && envPlan && !envInstallDone) {
+    try {
+      const session = await getInstallStatus();
+      if (session) {
+        envPlan = session.plan;
+        envTaskStates = new Map(session.plan.tasks.map((t) => [t.task_id, t.state]));
+        if (session.running) {
+          envInstalling = true;
+          startTick();
+          if (unlistenTc) unlistenTc();
+          if (unlistenTcDone) unlistenTcDone();
+          unlistenTc = await listenToolchainEvents(handleToolchainEvent);
+          unlistenTcDone = await listenInstallDone(handleInstallDone);
+        } else {
+          envInstalling = false;
+          envInstallDone = true;
+          stopTick();
+          if (!newSecrets && session.secrets && Object.keys(session.secrets).length > 0) {
+            newSecrets = session.secrets;
+          }
+        }
+      }
+    } catch {
+      // сессия недоступна — оставляем состояние из снапшота
+    }
+  }
+  if (phase === 6 && execOverallStatus === "running") {
+    try {
+      const snap = await getProjectExecutionSnapshot();
+      if (snap) {
+        for (const ev of snap.events) handleExecEvent(ev);
+        if (snap.running) {
+          if (unlisten) unlisten();
+          unlisten = await listen<ExecutionEvent>("project_creator:step_event", (e) => {
+            handleExecEvent(e.payload);
+          });
+        } else if (execOverallStatus === "running") {
+          execOverallStatus = "error";
+          execError = "Project creation was interrupted while you were away.";
+        }
+      }
+    } catch {
+      // снапшот недоступен — переподключаемся к событиям
+      try {
+        if (unlisten) unlisten();
+        unlisten = await listen<ExecutionEvent>("project_creator:step_event", (e) => {
+          handleExecEvent(e.payload);
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 onMount(async () => {
+  const saved = loadCreateSession();
+  if (saved) {
+    try {
+      restoreSnapshot(saved);
+    } catch (e) {
+      console.error("[create] failed to restore session:", e);
+    }
+  }
   try {
     tree = await getWizardTree();
     status = tree.project_types.length > 0 ? "ready" : "empty";
+    if (restoredTypeId) {
+      selectedType = tree.project_types.find((pt) => pt.id === restoredTypeId) ?? null;
+    }
   } catch (e) {
     status = "error";
     console.error(e);
@@ -208,9 +381,12 @@ onMount(async () => {
   } catch (e) {
     console.error("cannot detect host OS:", e);
   }
+  await reSyncLiveSessions();
+  persistReady = true;
 });
 
 onDestroy(() => {
+  persistNow();
   if (unlisten) unlisten();
   if (unlistenTc) unlistenTc();
   if (unlistenTcDone) unlistenTcDone();
@@ -265,13 +441,14 @@ const FW_LEVELS = [
   },
 ] as const;
 
-/** Пересчёт языков сторон из выбранных фреймворков. Языки следуют за
- *  фреймворками: на каждой стороне собираются языки её фреймворков. */
+/** Пересчёт языков сторон: ручной выбор + языки выбранных фреймворков.
+ *  Языки, добавленные только фреймворком, исчезают при его снятии —
+ *  ручные остаются всегда. */
 function recomputeSideLangs() {
   const t = tree;
   if (!t) return;
-  const backend = new Set(backendLangs);
-  const frontend = new Set(frontendLangs);
+  const backend = new Set(manualBackendLangs);
+  const frontend = new Set(manualFrontendLangs);
   for (const id of selectedFrameworks) {
     const fw = t.frameworks.find((f) => f.id === id);
     if (!fw) continue;
@@ -282,6 +459,17 @@ function recomputeSideLangs() {
   }
   backendLangs = [...backend];
   frontendLangs = [...frontend];
+}
+
+/** Выбор языка стороны вручную (radio): новый язык заменяет старый,
+ *  повторный клик по выбранному очищает сторону. */
+function toggleLang(side: "backend" | "frontend", id: string) {
+  if (side === "backend") {
+    manualBackendLangs = manualBackendLangs.includes(id) ? [] : [id];
+  } else {
+    manualFrontendLangs = manualFrontendLangs.includes(id) ? [] : [id];
+  }
+  recomputeSideLangs();
 }
 
 /** Причина, по которой фреймворк нельзя выбрать (зеркало правил rules.ts) */
@@ -302,6 +490,20 @@ function frameworkBlockReason(fwId: string): string | null {
       return `Incompatible with ${cFw?.label ?? c}`;
     }
   }
+  const hasSpecific = selectedFrameworks.some((id) => {
+    const f = tree?.frameworks.find((x) => x.id === id);
+    return !!f && (f.side === "backend" || f.side === "frontend");
+  });
+  const hasEither = selectedFrameworks.some((id) => {
+    const f = tree?.frameworks.find((x) => x.id === id);
+    return !!f && f.side === "either";
+  });
+  if (fw.side === "either" && hasSpecific) {
+    return "Unavailable with the selected backend/frontend stack";
+  }
+  if (fw.side !== "either" && hasEither) {
+    return "Unavailable with the selected desktop framework";
+  }
   if (fw.side === "backend" || fw.side === "frontend") {
     if (fw.kind === "app") {
       const sameSide = selectedFrameworks.some((id) => {
@@ -309,6 +511,10 @@ function frameworkBlockReason(fwId: string): string | null {
         return !!f && f.kind === "app" && f.side === fw.side;
       });
       if (sameSide) return `Only one main ${fw.side} framework`;
+    }
+    const langs = fw.side === "backend" ? backendLangs : frontendLangs;
+    if (langs.length > 0 && !fw.languages.some((l) => langs.includes(l))) {
+      return `Needs ${fw.side} language: ${fw.languages.map((l) => langLabel(l)).join(", ")}`;
     }
   }
   return null;
@@ -362,13 +568,18 @@ let popupCompanionLang = $state<string | null>(null);
 /** Связки «владелец → подфреймворк» (tauri → svelte): удаление владельца тянет подфреймворк */
 let linkedCompanions = $state<Record<string, string>>({});
 
-/** Подфреймворки для side="either" (tauri): совместимые фронтовые приложения */
+/** Подфреймворки для side="either" (tauri): совместимые фронтовые приложения.
+ *  Сознательное ограничение: десктопные оболочки работают только со
+ *  Svelte/Vue/React — полнофреймворковые Next/Nuxt/SvelteKit в них не живут. */
+const EITHER_COMPANIONS = new Set(["svelte", "vue", "react"]);
+
 function companionOptions(fw: FrameworkDef): FrameworkDef[] {
   if (!tree || fw.side !== "either" || fw.kind !== "app") return [];
   const compat = tree.frameworks.filter(
     (c) =>
       c.side === "frontend" &&
       c.kind === "app" &&
+      EITHER_COMPANIONS.has(c.id) &&
       !(fw.conflicts ?? []).includes(c.id) &&
       (!c.project_types?.length || !selectedType || c.project_types.includes(selectedType.id)),
   );
@@ -378,6 +589,27 @@ function companionOptions(fw: FrameworkDef): FrameworkDef[] {
 
 function langLabel(id: string): string {
   return tree?.languages.find((l) => l.id === id)?.label ?? id;
+}
+
+/** Языки, доступные для «чистого» backend-выбора (без фреймворка) */
+function backendCandidates(): LanguageDef[] {
+  if (!tree) return [];
+  return tree.languages.filter((l) => l.category === "backend");
+}
+
+/** Языки для «чистого» frontend-выбора (включая чистый HTML/CSS/JS) */
+function frontendCandidates(): LanguageDef[] {
+  if (!tree) return [];
+  return tree.languages.filter((l) => l.category === "frontend" || l.category === "static");
+}
+
+/** Причина, по которой чистый язык нельзя выбрать (сторона уже занята) */
+function languageBlockReason(lang: LanguageDef): string | null {
+  const side = lang.category === "static" ? "frontend" : lang.category;
+  const active = side === "frontend" ? frontendLangs : backendLangs;
+  if (active.includes(lang.id)) return null;
+  if (active.length > 0) return `Already ${active.map((l) => langLabel(l)).join(", ")} on this side`;
+  return null;
 }
 
 /** Список языков фреймворка одной строкой ("TypeScript, JavaScript") */
@@ -554,6 +786,20 @@ function toolCategoryIcon(cat: string): string {
   return icons[cat] ?? "🔹";
 }
 
+const TOOL_CATEGORIES: { id: string; label: string; icon: string }[] = [
+  { id: "database", label: "Databases", icon: "🗄️" },
+  { id: "cache", label: "Caches", icon: "⚡" },
+  { id: "messaging", label: "Messaging & Queues", icon: "📨" },
+  { id: "observability", label: "Observability", icon: "📊" },
+  { id: "testing", label: "Testing", icon: "🧪" },
+  { id: "tooling", label: "Tooling", icon: "🔧" },
+  { id: "container", label: "Containers", icon: "📦" },
+  { id: "orchestration", label: "Orchestration", icon: "🎼" },
+  { id: "etl", label: "ETL & Data", icon: "🔄" },
+  { id: "baas", label: "Backend as a Service", icon: "☁️" },
+  { id: "infra", label: "Infrastructure", icon: "🏗️" },
+];
+
 // ----------------------------------------------------------
 // Шаблоны
 // ----------------------------------------------------------
@@ -575,8 +821,8 @@ function applyPreset(p: ProjectPreset) {
   testing = p.stack.features.testing;
   git = p.stack.features.git;
   vscode = p.stack.features.vscode;
-  backendLangs = p.stack.backend_lang ? [p.stack.backend_lang] : [];
-  frontendLangs = p.stack.frontend_lang ? [p.stack.frontend_lang] : [];
+  manualBackendLangs = p.stack.backend_lang ? [p.stack.backend_lang] : [];
+  manualFrontendLangs = p.stack.frontend_lang ? [p.stack.frontend_lang] : [];
   recomputeSideLangs();
   mode = "constructor";
   phase = 2;
@@ -612,11 +858,13 @@ function applyAnalysis() {
     .map((t) => t.name.toLowerCase());
   const firstLang = tree.languages.find((l) => l.id === langIds[0]);
   if (firstLang?.category === "frontend" || firstLang?.category === "static") {
-    frontendLangs = langIds.slice(0, 1);
+    manualFrontendLangs = langIds.slice(0, 1);
+    manualBackendLangs = [];
   } else {
-    backendLangs = langIds.slice(0, 1);
-    if (langIds.length > 1) frontendLangs = [langIds[1]];
+    manualBackendLangs = langIds.slice(0, 1);
+    manualFrontendLangs = langIds.length > 1 ? [langIds[1]] : [];
   }
+  recomputeSideLangs();
   selectedFrameworks = [];
   fwLangs = {};
   selectedTools = analysisResult.detected_technologies
@@ -647,6 +895,8 @@ function selectType(t: ProjectTypeDef) {
   selectedType = t;
   backendLangs = [];
   frontendLangs = [];
+  manualBackendLangs = [];
+  manualFrontendLangs = [];
   selectedFrameworks = [];
   fwLangs = {};
   selectedTools = [];
@@ -1077,6 +1327,8 @@ function resetAll() {
   selectedType = null;
   backendLangs = [];
   frontendLangs = [];
+  manualBackendLangs = [];
+  manualFrontendLangs = [];
   selectedFrameworks = [];
   fwLangs = {};
   linkedCompanions = {};
@@ -1106,6 +1358,7 @@ function resetAll() {
   folderExists = false;
   phase = 0;
   mode = "constructor";
+  clearCreateSession();
 }
 </script>
 
@@ -1679,176 +1932,249 @@ function resetAll() {
               </details>
             {/snippet}
 
-            {#if backendFws.length > 0}
-              <div class="side-section">
-                <p class="group-label">⚙️ Backend</p>
-                {#each FW_LEVELS as lvl}
-                  {@const items = backendFws.filter((f) => fwLevelOf(f) === lvl.id)}
-                  {#if items.length > 0}
-                    {@render fwLevel(lvl.title, lvl.icon, items, lvl.note)}
-                  {/if}
-                {/each}
-              </div>
-            {/if}
-            {#if frontendFws.length > 0}
-              <div class="side-section">
-                <p class="group-label">🖥️ Frontend</p>
-                {#each FW_LEVELS as lvl}
-                  {@const items = frontendFws.filter((f) => fwLevelOf(f) === lvl.id)}
-                  {#if items.length > 0}
-                    {@render fwLevel(lvl.title, lvl.icon, items, lvl.note)}
-                  {/if}
-                {/each}
-              </div>
-            {/if}
-            {#if eitherFws.length > 0}
-              <div class="side-section">
-                <p class="group-label">💻 Desktop & Full-stack</p>
-                <div class="card-grid fw-grid">
-                  {#each eitherFws as fw}
-                    {@render fwCard(fw)}
+            {#snippet territory(side: string, title: string, icon: string, desc: string, items: FrameworkDef[], langs: string[])}
+              <section class="territory territory-{side}">
+                <header class="territory-head">
+                  <span class="territory-icon">{icon}</span>
+                  <div class="territory-title-wrap">
+                    <h3 class="territory-title">{title}</h3>
+                    <p class="territory-desc">{desc}</p>
+                  </div>
+                  <div class="territory-meta">
+                    {#each langs as l}
+                      <span class="territory-lang-chip">{langLabel(l)}</span>
+                    {/each}
+                    <span class="territory-count">{items.length}</span>
+                  </div>
+                </header>
+                <div class="territory-body">
+                  {#each FW_LEVELS as lvl}
+                    {@const lvlItems = items.filter((f) => fwLevelOf(f) === lvl.id)}
+                    {#if lvlItems.length > 0}
+                      {@render fwLevel(lvl.title, lvl.icon, lvlItems, lvl.note)}
+                    {/if}
                   {/each}
                 </div>
-              </div>
+              </section>
+            {/snippet}
+
+            {#if backendFws.length > 0}
+              {@render territory(
+                "backend",
+                "Backend territory",
+                "⚙️",
+                "Server-side: APIs, services, bots — goes into backend/",
+                backendFws,
+                backendLangs,
+              )}
+            {/if}
+            {#if frontendFws.length > 0}
+              {@render territory(
+                "frontend",
+                "Frontend territory",
+                "🎨",
+                "Client-side: interfaces for the browser or apps — goes into frontend/",
+                frontendFws,
+                frontendLangs,
+              )}
+            {/if}
+            {#if eitherFws.length > 0}
+              {@render territory(
+                "either",
+                "Desktop & standalone territory",
+                "💻",
+                "Whole-project apps that own everything (Tauri, Qt) — conflicts with backend/frontend stacks",
+                eitherFws,
+                [],
+              )}
             {/if}
             {#if fws.length === 0}
               <p class="muted">No frameworks available for this project type.</p>
             {/if}
 
-            {#if recommendations && (recommendations.frameworks.length > 0 || recommendations.side_frameworks.length > 0 || recommendations.tools.length > 0 || recommendations.missing_languages.length > 0)}
-              <div class="rec-panel">
-                <p class="group-label">Suggestions</p>
-                {#if recommendations.missing_languages.length > 0}
-                  <p class="rec-note">
-                    Add language: {recommendations.missing_languages.join(", ")} — required by your frameworks.
+            <!-- Языки без фреймворков (необязательно): чистый стек или поддержка -->
+            <section class="territory territory-langs">
+              <header class="territory-head">
+                <span class="territory-icon">🔤</span>
+                <div class="territory-title-wrap">
+                  <h3 class="territory-title">Plain languages</h3>
+                  <p class="territory-desc">
+                    Optional — pick languages without frameworks (pure backend, plain JS frontend).
+                    Frameworks adapt to them automatically.
                   </p>
-                {/if}
-                {#if recommendations.frameworks.length > 0}
-                  <div class="rec-row">
-                    {#each recommendations.frameworks as sug}
-                      <button
-                        class="rec-chip"
-                        title={sug.note}
-                        class:selected={selectedFrameworks.includes(sug.id)}
-                        onclick={() => clickFramework(sug.id)}
-                      >
-                        ⭐ {fwLabel(sug.id)}
-                        <span class="rec-chip-note">{sug.note}</span>
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-                {#if recommendations.side_frameworks.length > 0}
-                  <div class="rec-row">
-                    {#each recommendations.side_frameworks as sug}
-                      <button
-                        class="rec-chip"
-                        title={sug.note}
-                        class:selected={selectedFrameworks.includes(sug.id)}
-                        onclick={() => clickFramework(sug.id)}
-                      >
-                        ➕ {fwLabel(sug.id)}
-                        <span class="rec-chip-note">{sug.note}</span>
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-                {#if recommendations.tools.length > 0}
-                  <div class="rec-row">
-                    {#each recommendations.tools as sug}
-                      <button
-                        class="rec-chip"
-                        title={sug.note}
-                        class:selected={selectedTools.includes(sug.id)}
-                        onclick={() => applyRecommendedTool(sug.id)}
-                      >
-                        🛠 {toolLabel(sug.id)}
-                        <span class="rec-chip-note">{sug.note}</span>
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
-            {/if}
-            {#if recommendationsError}
-              <p class="rec-error">{recommendationsError}</p>
-            {/if}
-
-            <!-- Языки следуют за фреймворками: отдельного выбора нет.
-                 Backend/фронтенд-языки видны на карточках и в сводке. -->
-
-            <!-- Инструменты и фичи -->
-            <div class="side-section">
-              <p class="group-label">Tools & Features</p>
-              {#each ["database", "cache", "messaging", "observability", "testing", "tooling", "container", "orchestration", "etl", "baas", "infra"] as cat}
-                {@const catTools = availableTools().filter((t) => t.category === cat)}
-                {#if catTools.length > 0}
-                  <div class="tool-group">
-                    <p class="group-label">{toolCategoryIcon(cat)} {cat}</p>
-                    <div class="card-grid tool-grid">
-                      {#each catTools as tool}
+                </div>
+              </header>
+              <div class="territory-body">
+                <div class="lang-sides">
+                  <div class="lang-side">
+                    <p class="lang-side-title">Backend language</p>
+                    <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                    <div class="card-grid lang-grid">
+                      {#each backendCandidates() as lang}
+                        {@const blockedReason = languageBlockReason(lang)}
                         <button
-                          class="card card-sm"
-                          class:selected={selectedTools.includes(tool.id)}
-                          onclick={() => toggleTool(tool.id)}
-                          onmouseenter={(e) => showTooltip(tool, e)}
-                          onmouseleave={hideTooltip}
-                          onfocus={(e) => showTooltip(tool, e)}
-                          onblur={hideTooltip}
+                          class="card"
+                          class:selected={backendLangs.includes(lang.id)}
+                          class:blocked={blockedReason !== null}
+                          disabled={blockedReason !== null}
+                          onclick={() => toggleLang("backend", lang.id)}
                         >
-                          {#if tool.icon}
-                            <img src={imgSrc(tool.icon)} alt={tool.label} class="card-img-xs" />
+                          {#if lang.icon}
+                            <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
                           {:else}
-                            <span class="card-img-placeholder-xs">▣</span>
+                            <span class="card-img-placeholder-sm">▣</span>
                           {/if}
-                          <span class="tool-name">{tool.label}</span>
+                          <h3>{lang.label}</h3>
+                          {#if backendLangs.includes(lang.id)}
+                            <span class="fw-lang-chip selected">✓ active</span>
+                          {/if}
+                          {#if blockedReason}
+                            <span class="conflict-badge">{blockedReason}</span>
+                          {/if}
                         </button>
                       {/each}
                     </div>
                   </div>
-                {/if}
-              {/each}
-
-              {#if tooltipData}
-                <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
-                  <strong>{tooltipData.tool.label}</strong>
-                  <p>{tooltipData.tool.description}</p>
-                  {#if tooltipData.tool.requires.length > 0}
-                    <p class="tt-req">Requires: {tooltipData.tool.requires.join(", ")}</p>
-                  {/if}
-                  {#if tooltipData.tool.conflicts.length > 0}
-                    <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
-                  {/if}
-                  {#if tooltipData.tool.requires_docker}
-                    <p class="tt-docker">🐳 Requires Docker</p>
-                  {/if}
+                  <div class="lang-side">
+                    <p class="lang-side-title">Frontend language</p>
+                    <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                    <div class="card-grid lang-grid">
+                      {#each frontendCandidates() as lang}
+                        {@const blockedReason = languageBlockReason(lang)}
+                        <button
+                          class="card"
+                          class:selected={frontendLangs.includes(lang.id)}
+                          class:blocked={blockedReason !== null}
+                          disabled={blockedReason !== null}
+                          onclick={() => toggleLang("frontend", lang.id)}
+                        >
+                          {#if lang.icon}
+                            <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
+                          {:else}
+                            <span class="card-img-placeholder-sm">▣</span>
+                          {/if}
+                          <h3>{lang.label}</h3>
+                          {#if lang.category === "static"}
+                            <p>Plain HTML, CSS & JS</p>
+                          {/if}
+                          {#if frontendLangs.includes(lang.id)}
+                            <span class="fw-lang-chip selected">✓ active</span>
+                          {/if}
+                          {#if blockedReason}
+                            <span class="conflict-badge">{blockedReason}</span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
                 </div>
-              {/if}
-
-              <div class="features-panel">
-                <p class="group-label">⚙️ Features</p>
-                <label class="feature-toggle">
-                  <input type="checkbox" bind:checked={testing} />
-                  <span>Testing</span>
-                </label>
-                <label class="feature-toggle">
-                  <input type="checkbox" bind:checked={git} />
-                  <span>Git Init</span>
-                </label>
-                <label class="feature-toggle">
-                  <input type="checkbox" bind:checked={vscode} />
-                  <span>VS Code Config</span>
-                </label>
-                <label class="feature-toggle">
-                  <input type="checkbox" checked={dockerEnabled()} disabled />
-                  <span>Docker {isDockerForced() ? "(required by tools)" : ""}</span>
-                </label>
               </div>
-            </div>
+            </section>
+
+            <!-- Инструменты и фичи -->
+            <section class="territory territory-tools">
+              <header class="territory-head">
+                <span class="territory-icon">🧰</span>
+                <div class="territory-title-wrap">
+                  <h3 class="territory-title">Tools & Features</h3>
+                  <p class="territory-desc">Databases, caches, testing, containers — pick what your stack needs.</p>
+                </div>
+                <span class="territory-count">{selectedTools.length} selected</span>
+              </header>
+              <div class="territory-body">
+                {#each TOOL_CATEGORIES as cat}
+                  {@const catTools = availableTools().filter((t) => t.category === cat.id)}
+                  {#if catTools.length > 0}
+                    <div class="tool-group">
+                      <p class="tool-cat-title">
+                        <span class="tool-cat-icon">{cat.icon}</span>
+                        {cat.label}
+                        <span class="tool-cat-count">{catTools.length}</span>
+                      </p>
+                      <div class="tool-menu">
+                        {#each catTools as tool}
+                          <button
+                            class="tool-item"
+                            class:selected={selectedTools.includes(tool.id)}
+                            onclick={() => toggleTool(tool.id)}
+                            onmouseenter={(e) => showTooltip(tool, e)}
+                            onmouseleave={hideTooltip}
+                            onfocus={(e) => showTooltip(tool, e)}
+                            onblur={hideTooltip}
+                          >
+                            {#if tool.icon}
+                              <img src={imgSrc(tool.icon)} alt={tool.label} class="tool-item-icon" />
+                            {:else}
+                              <span class="tool-item-icon tool-item-icon-ph">▣</span>
+                            {/if}
+                            <span class="tool-item-text">
+                              <span class="tool-item-name">{tool.label}</span>
+                              <span class="tool-item-desc">{tool.description}</span>
+                            </span>
+                            <span class="tool-item-badges">
+                              {#if tool.requires_docker}
+                                <span class="tool-item-badge docker">🐳 Docker</span>
+                              {/if}
+                              {#if tool.conflicts.length > 0}
+                                <span class="tool-item-badge conflict">
+                                  ⚠ conflicts {tool.conflicts.length > 1 ? `(${tool.conflicts.length})` : ""}
+                                </span>
+                              {/if}
+                              {#if selectedTools.includes(tool.id)}
+                                <span class="tool-item-check">✓</span>
+                              {/if}
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                {/each}
+
+                {#if tooltipData}
+                  <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
+                    <strong>{tooltipData.tool.label}</strong>
+                    <p>{tooltipData.tool.description}</p>
+                    {#if tooltipData.tool.requires.length > 0}
+                      <p class="tt-req">Requires: {tooltipData.tool.requires.join(", ")}</p>
+                    {/if}
+                    {#if tooltipData.tool.conflicts.length > 0}
+                      <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
+                    {/if}
+                    {#if tooltipData.tool.requires_docker}
+                      <p class="tt-docker">🐳 Requires Docker</p>
+                    {/if}
+                  </div>
+                {/if}
+
+                <div class="features-panel">
+                  <p class="group-label">⚙️ Features</p>
+                  <label class="feature-toggle">
+                    <input type="checkbox" bind:checked={testing} />
+                    <span>Testing</span>
+                  </label>
+                  <label class="feature-toggle">
+                    <input type="checkbox" bind:checked={git} />
+                    <span>Git Init</span>
+                  </label>
+                  <label class="feature-toggle">
+                    <input type="checkbox" bind:checked={vscode} />
+                    <span>VS Code Config</span>
+                  </label>
+                  <label class="feature-toggle">
+                    <input type="checkbox" checked={dockerEnabled()} disabled />
+                    <span>Docker {isDockerForced() ? "(required by tools)" : ""}</span>
+                  </label>
+                </div>
+              </div>
+            </section>
 
             <!-- Липкий футер: сводка + переход к финальной сверке -->
             <div class="mega-footer">
               <span class="mega-summary">
+                {#if allSelectedLangs().length > 0}
+                  <span class="mega-langs">{allSelectedLangs().map((l) => langLabel(l)).join(" · ")}</span>
+                {/if}
                 {selectedFrameworks.length} framework{selectedFrameworks.length === 1 ? "" : "s"} · {selectedTools.length} tool{selectedTools.length === 1 ? "" : "s"}
                 {#if stackError}
                   <span class="mega-error">⚠ {stackError}</span>
@@ -2098,7 +2424,12 @@ function resetAll() {
 .card-img-placeholder-sm { font-size: 1.5rem; }
 .card-img-placeholder-xs { font-size: 1rem; }
 .type-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-.fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); grid-auto-rows: 1fr; align-items: stretch; }
+.fw-grid .card { min-height: 200px; height: 100%; box-sizing: border-box; }
+.fw-grid .card p { flex: 1; }
+.fw-grid .card .fw-lang-chip,
+.fw-grid .card .fw-lang-multi,
+.fw-grid .card .conflict-badge { margin-top: 0.3rem; }
 .conflict-badge { display: block; font-size: 0.7rem; color: #e74c3c; margin-top: 0.25rem; }
 .fw-lang-chip { display: inline-block; font-size: 0.72rem; color: #cdc3f0; background: #2f2460; border: 1px solid #4a3a85; padding: 0.15rem 0.5rem; border-radius: 999px; margin-top: 0.3rem; }
 .fw-lang-chip.selected { color: #b8f5d4; background: #14402c; border-color: #1f7a4d; }
@@ -2152,16 +2483,118 @@ function resetAll() {
   z-index: 40;
 }
 .mega-summary { font-size: 0.85rem; color: #ccc; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.mega-langs {
+  font-size: 0.78rem;
+  color: #cdc3f0;
+  background: #2f2460;
+  border: 1px solid #4a3a85;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+}
 .mega-error { color: #e74c3c; font-size: 0.78rem; }
 .hint-sm { font-size: 0.75rem; color: #888; margin: 0 0 0.5rem; }
 .tauri-note { display: block; margin-top: 0.5rem; font-size: 0.85rem; color: #6c5ce7; }
 
+/* ---- Территории стека ---- */
+.territory {
+  position: relative;
+  border: 1px solid #2c2c46;
+  border-radius: 12px;
+  background: rgba(24, 24, 44, 0.6);
+  margin-bottom: 1rem;
+}
+.territory-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #2c2c46;
+  border-radius: 11px 11px 0 0;
+}
+.territory-backend .territory-head { background: rgba(108, 92, 231, 0.12); border-bottom-color: rgba(108, 92, 231, 0.35); }
+.territory-frontend .territory-head { background: rgba(46, 196, 182, 0.1); border-bottom-color: rgba(46, 196, 182, 0.3); }
+.territory-either .territory-head { background: rgba(241, 196, 15, 0.08); border-bottom-color: rgba(241, 196, 15, 0.3); }
+.territory-icon { font-size: 1.3rem; line-height: 1; }
+.territory-title-wrap { flex: 1; min-width: 0; }
+.territory-title { margin: 0; font-size: 0.95rem; font-weight: 700; color: #eee; }
+.territory-desc { margin: 0.15rem 0 0; font-size: 0.78rem; color: #888; }
+.territory-meta { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.territory-lang-chip {
+  font-size: 0.72rem;
+  color: #cdc3f0;
+  background: #2f2460;
+  border: 1px solid #4a3a85;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+.territory-count {
+  font-size: 0.72rem;
+  color: #888;
+  background: #22224a;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+.territory-body { padding: 0.9rem; }
+.territory-body .fw-level { margin-bottom: 0.5rem; }
+.territory-body .fw-level:last-child { margin-bottom: 0; }
+.territory-body .card-grid { margin-bottom: 0.25rem; }
+
+/* ---- Чистые языки (plain language picker) ---- */
+.lang-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+@media (max-width: 900px) { .lang-sides { grid-template-columns: 1fr; } }
+.lang-side-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: #ddd; }
+.lang-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-bottom: 0; }
+
 /* ---- Инструменты ---- */
-.tool-group { margin-bottom: 1rem; }
+.tool-group { margin-bottom: 1.25rem; }
+.tool-cat-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #bbb;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tool-cat-icon { font-size: 0.9rem; }
+.tool-cat-count {
+  font-size: 0.68rem;
+  color: #777;
+  background: #22224a;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-weight: 600;
+}
+.tool-menu { display: flex; flex-direction: column; gap: 0.45rem; }
+.tool-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  background: #14142e;
+  border: 1px solid #333;
+  border-radius: 9px;
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+  text-align: left;
+  color: #ddd;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tool-item:hover { border-color: #6c5ce7; background: #1c1c3a; }
+.tool-item.selected { border-color: #6c5ce7; background: #241a44; box-shadow: inset 0 0 0 1px #6c5ce7; }
+.tool-item-icon { width: 26px; height: 26px; object-fit: contain; flex: 0 0 26px; }
+.tool-item-icon-ph { display: flex; align-items: center; justify-content: center; font-size: 1.1rem; color: #6c5ce7; }
+.tool-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.tool-item-name { font-size: 0.88rem; font-weight: 600; }
+.tool-item-desc { font-size: 0.74rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-item-badges { display: flex; align-items: center; gap: 0.35rem; flex: 0 0 auto; }
+.tool-item-badge { font-size: 0.68rem; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; }
+.tool-item-badge.docker { color: #8fc5f7; background: #122a44; border: 1px solid #1f5a8a; }
+.tool-item-badge.conflict { color: #e74c3c; background: #3a1420; border: 1px solid #7a2f3a; }
+.tool-item-check { color: #6c5ce7; font-weight: 700; font-size: 0.95rem; }
 .group-label { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; color: #aaa; text-transform: capitalize; }
-.tool-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
-.card-sm { padding: 0.6rem; }
-.tool-name { font-size: 0.78rem; }
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #6c5ce7; border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.8rem; max-width: 240px; z-index: 999; pointer-events: none; color: #ccc; }
 .tooltip strong { color: #fff; }
 .tt-req, .tt-conf, .tt-docker { margin: 0.2rem 0; font-size: 0.75rem; }
@@ -2181,18 +2614,6 @@ function resetAll() {
 /* ---- Проблемы стека ---- */
 .stack-issues { border: 1px solid rgba(231, 76, 60, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: #2a1220; }
 .stack-issues p { margin: 0.3rem 0; font-size: 0.8rem; }
-
-/* ---- Рекомендации стека ---- */
-.rec-panel { border: 1px solid rgba(108, 92, 231, 0.35); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: #1a1230; }
-.rec-panel .group-label { margin-top: 0; }
-.rec-note { font-size: 0.82rem; color: #f39c12; margin: 0.3rem 0 0.5rem; }
-.rec-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-.rec-row:last-child { margin-bottom: 0; }
-.rec-chip { background: #241a44; border: 1px solid #4a3a85; color: #cdc3f0; padding: 0.35rem 0.7rem; border-radius: 999px; cursor: pointer; font-size: 0.78rem; display: inline-flex; align-items: center; gap: 0.4rem; max-width: 100%; }
-.rec-chip:hover { border-color: #6c5ce7; color: #fff; }
-.rec-chip.selected { border-color: #6c5ce7; background: #2f2460; color: #fff; }
-.rec-chip-note { color: #888; font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
-.rec-error { font-size: 0.8rem; color: #e74c3c; margin: 0.3rem 0; }
 
 /* ---- Summary ---- */
 .project-name-section { border: 1px solid #333; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; background: #15152e; }

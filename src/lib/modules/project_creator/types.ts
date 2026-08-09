@@ -317,6 +317,12 @@ export type ExecutionEventType =
   | { AllCompleted: { result: ExecutionResult } }
   | { Error: { message: string } };
 
+/** Снимок выполнения проекта (для восстановления вкладки Create) */
+export type ExecutionSnapshot = {
+  running: boolean;
+  events: ExecutionEvent[];
+};
+
 export type StepStatus =
   | "Pending"
   | "Running"

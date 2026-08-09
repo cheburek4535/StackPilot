@@ -583,6 +583,14 @@ pub enum ExecutionEventType {
     Error { message: String },
 }
 
+/// Снимок выполнения проекта для восстановления вкладки Create после
+/// переключения маршрутов: работает ли выполнение и буфер его событий.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionSnapshot {
+    pub running: bool,
+    pub events: Vec<ExecutionEvent>,
+}
+
 // ============================================================
 // Generators — генераторы
 // ============================================================

@@ -6,6 +6,7 @@ import type {
   WizardSession,
   AnalysisReport,
   ExecutionPlan,
+  ExecutionSnapshot,
   RecipePreview,
   WizardContext,
   StackIssue,
@@ -59,6 +60,11 @@ export function startProjectExecution(
   projectPath: string,
 ): Promise<ExecutionPlan> {
   return invoke("start_project_execution", { context, projectPath });
+}
+
+/** Снимок выполнения: работает ли оно и буфер событий (для восстановления вкладки) */
+export function getProjectExecutionSnapshot(): Promise<ExecutionSnapshot> {
+  return invoke("project_execution_snapshot");
 }
 
 export function checkFolderExists(path: string): Promise<boolean> {

@@ -1,10 +1,11 @@
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
 
 use super::models::*;
-use super::ProjectCreatorState;
+use super::{ProjectCreatorState, EXECUTION_SNAPSHOT_LIMIT};
 
 #[tauri::command]
 pub fn get_wizard_tree(state: State<'_, ProjectCreatorState>) -> WizardTreeData {
@@ -162,22 +163,53 @@ pub async fn start_project_execution(
     let plan_clone = plan.clone();
     let engine = Arc::clone(&state.engine);
     let app_clone = app.clone();
+    let events_store = Arc::clone(&state.execution_events);
+    let running_flag = Arc::clone(&state.execution_running);
+
+    running_flag.store(true, Ordering::SeqCst);
+    *events_store.lock().map_err(|_| "execution state poisoned".to_string())? = Vec::new();
 
     tokio::spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecutionEvent>(32);
 
-        // Forward events from channel to Tauri frontend
+        // Forward events from channel to Tauri frontend and keep a bounded
+        // buffer so a re-mounting Create tab can restore the live progress.
         let forward_app = app.clone();
+        let events_store_f = Arc::clone(&events_store);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let _ = forward_app.emit("project_creator:step_event", &event);
+                if let Ok(mut buf) = events_store_f.lock() {
+                    if buf.len() >= EXECUTION_SNAPSHOT_LIMIT {
+                        let drop_count = buf.len() - EXECUTION_SNAPSHOT_LIMIT + 1;
+                        buf.drain(..drop_count);
+                    }
+                    buf.push(event);
+                }
             }
         });
 
         engine.execute(plan_clone, tx).await;
 
         let _ = app_clone.emit("project_creator:execution_done", ());
+        running_flag.store(false, Ordering::SeqCst);
     });
 
     Ok(plan)
+}
+
+/// Снимок текущего/последнего выполнения проекта: работает ли оно ещё и
+/// буфер событий. Используется фронтендом при восстановлении вкладки Create
+/// (переключение вкладок не убивает выполнение на бэкенде).
+#[tauri::command]
+pub fn project_execution_snapshot(
+    state: State<'_, ProjectCreatorState>,
+) -> Result<ExecutionSnapshot, String> {
+    let events = state
+        .execution_events
+        .lock()
+        .map_err(|_| "execution state poisoned".to_string())?
+        .clone();
+    let running = state.execution_running.load(Ordering::SeqCst);
+    Ok(ExecutionSnapshot { running, events })
 }
