@@ -51,6 +51,7 @@ pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> Inst
             size_mb: req.size_mb,
             needs_admin: req.needs_admin,
             source_description: req.source_description.clone(),
+            install_options: req.install_options.clone(),
             state: TaskState::Pending,
         });
     }
@@ -86,6 +87,7 @@ mod tests {
             size_mb: 10,
             needs_admin: false,
             source_description: "test".to_string(),
+            install_options: vec![],
         }
     }
 

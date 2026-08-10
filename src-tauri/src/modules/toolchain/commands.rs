@@ -52,6 +52,13 @@ pub async fn tc_check_environment(
     let requested = core::requirements::resolve(&requirements);
     eprintln!("[toolchain] check_environment: требования = {requested:?}");
 
+    // Опции установки (Qt: UI-модули qt-qml/qt-webengine/...) — уезжают
+    // в план и говорят установщику, какие пакеты репозитория ставить.
+    let install_options = core::requirements::resolve_install_options(&requirements);
+    eprintln!(
+        "[toolchain] check_environment: опции установки = {install_options:?}"
+    );
+
     // Прогресс по каждому инструменту стримится на фронтенд —
     // пользователь видит «проверяется X (2/N)» вместо тишины.
     let progress: core::check::ProgressFn = Arc::new(move |ev| {
@@ -64,7 +71,7 @@ pub async fn tc_check_environment(
     let free_space_mb = core::disk::free_space_mb(&core::disk::install_root())
         .await
         .unwrap_or(0);
-    let check = core::check::run_check(state.definitions(), &requested, free_space_mb, Some(progress)).await;
+    let check = core::check::run_check(state.definitions(), &requested, &install_options, free_space_mb, Some(progress)).await;
     eprintln!(
         "[toolchain] check_environment: готово — {} требований, {} МБ, all_ready={}",
         check.requirements.len(),

@@ -20,6 +20,7 @@
 // free_space_mb на этапе 2 всегда 0 (проверка диска — этап 5):
 // 0 означает «свободное место не проверялось» → enough_space=true.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,10 +45,13 @@ pub type ProgressFn = Arc<dyn Fn(CheckProgressEvent) + Send + Sync>;
 
 /// Полная проверка окружения под требования проекта.
 /// `requested` — упорядоченный список id (из requirements::resolve),
+/// `options` — дополнительные опции установки по инструментам
+/// (из requirements::resolve_install_options: для Qt — UI-модули),
 /// `free_space_mb` — свободное место на диске (0 = не проверялось).
 pub async fn run_check(
     definitions: &[ToolDefinition],
     requested: &[String],
+    options: &HashMap<String, Vec<String>>,
     free_space_mb: u64,
     on_progress: Option<ProgressFn>,
 ) -> EnvironmentCheck {
@@ -143,6 +147,7 @@ pub async fn run_check(
 
             let is_manual = matches!(status, ToolStatus::ManualInstall { .. });
             let desc = source_description(&def);
+            let install_options = options.get(&def.id).cloned().unwrap_or_default();
             temp_requirements.push((index, ToolRequirement {
                 tool_id: def.id,
                 display: def.display,
@@ -152,6 +157,7 @@ pub async fn run_check(
                 size_mb: if is_manual { 0 } else { def.size_mb },
                 needs_admin: def.needs_admin && !is_manual,
                 source_description: desc,
+                install_options,
             }));
         }
     };
@@ -225,6 +231,9 @@ fn source_description(def: &ToolDefinition) -> String {
         InstallSourceKind::PkgManager => format!("Менеджер пакетов: {}", first.id),
         InstallSourceKind::Official => format!("Официальный установщик: {}", first.id),
         InstallSourceKind::Script => format!("Скрипт установки: {}", first.id),
+        // Qt ставится через собственный конвейер (qt_installer.rs):
+        // официальный online-репозиторий с выбором модулей.
+        InstallSourceKind::QtOnline => "Официальный репозиторий Qt (online)".to_string(),
     }
 }
 
@@ -279,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tool_id_is_ignored() {
-        let check = run_check(&[], &["no-such-tool".to_string()], 0, None).await;
+        let check = run_check(&[], &["no-such-tool".to_string()], &HashMap::new(), 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -287,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn missing_installable_tool_becomes_requirement() {
         let defs = vec![fake_def("fake-tool")];
-        let check = run_check(&defs, &["fake-tool".to_string()], 0, None).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], &HashMap::new(), 0, None).await;
 
         assert_eq!(check.requirements.len(), 1);
         let req = &check.requirements[0];
@@ -309,7 +318,7 @@ mod tests {
         let mut def = fake_def("fake-info");
         def.sources = InstallSources::default();
 
-        let check = run_check(&[def], &["fake-info".to_string()], 0, None).await;
+        let check = run_check(&[def], &["fake-info".to_string()], &HashMap::new(), 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -319,7 +328,7 @@ mod tests {
         let mut def = fake_def("fake-bundled");
         def.bundled_with = Some("fake-host".to_string());
 
-        let check = run_check(&[def], &["fake-bundled".to_string()], 0, None).await;
+        let check = run_check(&[def], &["fake-bundled".to_string()], &HashMap::new(), 0, None).await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -334,7 +343,7 @@ mod tests {
         def.needs_admin = true; // не должно влиять на needs_admin_any
         def.size_mb = 5000; // не должно влиять на total_size_mb
 
-        let check = run_check(&[def], &["fake-engine".to_string()], 0, None).await;
+        let check = run_check(&[def], &["fake-engine".to_string()], &HashMap::new(), 0, None).await;
 
         assert_eq!(check.requirements.len(), 1);
         let req = &check.requirements[0];
@@ -355,12 +364,12 @@ mod tests {
     async fn free_space_is_compared_when_known() {
         let defs = vec![fake_def("fake-tool")];
         // 5 МБ свободно, нужно 10 → мало места
-        let check = run_check(&defs, &["fake-tool".to_string()], 5, None).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], &HashMap::new(), 5, None).await;
         assert!(!check.enough_space);
         assert_eq!(check.free_space_mb, 5);
 
         // 20 МБ свободно, нужно 10 → хватает
-        let check = run_check(&defs, &["fake-tool".to_string()], 20, None).await;
+        let check = run_check(&defs, &["fake-tool".to_string()], &HashMap::new(), 20, None).await;
         assert!(check.enough_space);
     }
 
@@ -376,6 +385,7 @@ mod tests {
         let check = run_check(
             &defs,
             &["fake-tool".to_string(), "fake-tool-2".to_string()],
+            &HashMap::new(),
             0,
             Some(cb),
         )

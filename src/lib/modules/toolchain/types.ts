@@ -43,7 +43,7 @@ export type ToolDefinition = {
 };
 
 export type InstallSource = {
-  kind: { PkgManager: null } | { Official: null } | { Script: null };
+  kind: { PkgManager: null } | { Official: null } | { Script: null } | { QtOnline: null };
   id: string;
   url: string | null;
   args: string[];
@@ -72,6 +72,7 @@ export type ToolRequirement = {
   size_mb: number;
   needs_admin: boolean;
   source_description: string;
+  install_options?: string[];
 };
 
 export type EnvironmentCheck = {
@@ -111,6 +112,7 @@ export type InstallTask = {
   size_mb: number;
   needs_admin: boolean;
   source_description: string;
+  install_options?: string[];
   state: TaskState;
 };
 

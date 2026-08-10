@@ -154,6 +154,13 @@ pub enum InstallSourceKind {
     PkgManager,
     Official,
     Script,
+    /// Прямая установка из официального online-репозитория (Qt).
+    /// url — базовый каталог репозитория (например
+    /// https://download.qt.io/online/qtsdkrepository/windows_x86);
+    /// install_dir — корень, куда складывается Qt (обычно
+    /// %LOCALAPPDATA%/Programs/Qt). Пакеты, версии и каталоги
+    /// извлечения разбираются из Updates.xml репозитория.
+    QtOnline,
 }
 
 /// Дополнительная health-проверка: команда должна выполниться успешно.
@@ -237,6 +244,11 @@ pub struct ToolRequirement {
     pub needs_admin: bool,
     /// Человекочитаемое описание источника (например «winget: Git.Git»)
     pub source_description: String,
+    /// Модули/компоненты установки (для Qt: qt-qml, qt-webengine, ...).
+    /// Заполняется из выбора пользователя в мастере, переносится
+    /// в InstallTask и передаётся установщику.
+    #[serde(default)]
+    pub install_options: Vec<String>,
 }
 
 /// Полный отчёт проверки окружения под конкретный проект.
@@ -264,6 +276,10 @@ pub struct InstallTask {
     pub size_mb: u32,
     pub needs_admin: bool,
     pub source_description: String,
+    /// Модули/компоненты установки (Qt: qt-qml/qt-widgets/qt-webengine/...),
+    /// переносятся из ToolRequirement без изменений.
+    #[serde(default)]
+    pub install_options: Vec<String>,
     pub state: TaskState,
 }
 

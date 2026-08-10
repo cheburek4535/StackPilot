@@ -203,6 +203,37 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
 // Сборка
 // ------------------------------------------------------------
 
+/// UI-вариант фреймворка (qt → qt-qml/qt-widgets/qt-webengine/qt-kirigami)
+/// → модуль установки Qt. Варианты приходят из мастера как «подфреймворки»
+/// (wizard_tree.json: qt_ui_options), а в toolchain превращаются в
+/// install_options задачи установки.
+fn qt_ui_module(framework: &str) -> Option<&'static str> {
+    match framework {
+        "qt-qml" => Some("qt-qml"),
+        "qt-widgets" => Some("qt-widgets"),
+        "qt-webengine" => Some("qt-webengine"),
+        "qt-kirigami" => Some("qt-kirigami"),
+        _ => None,
+    }
+}
+
+/// Дополнительные опции установки по инструментам (tool_id → модули).
+/// Сейчас единственный потребитель — Qt: мастерийские UI-варианты
+/// (qt-webengine и т.п.) превращаются в модули, которые установщик
+/// превратит в конкретные пакеты репозитория.
+pub fn resolve_install_options(requirements: &ProjectRequirements) -> std::collections::HashMap<String, Vec<String>> {
+    let mut options: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for fw in &requirements.frameworks {
+        if let Some(module) = qt_ui_module(fw) {
+            options
+                .entry("qt".to_string())
+                .or_default()
+                .push(module.to_string());
+        }
+    }
+    options
+}
+
 /// Полный список id инструментов для проверки окружения.
 /// Порядок: winget → языки → фреймворки → выбранные тулы → флаги.
 /// Дубликаты убираются (HashSet-страж), первый порядок сохраняется.

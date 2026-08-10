@@ -1226,22 +1226,36 @@
     "id": "qt",
     "category": "framework",
     "display": "Qt",
-    "description": "C++-фреймворк для десктопа и встраиваемых систем — ставится вручную",
+    "description": "C++-фреймворк для десктопа и встраиваемых систем (Qt Widgets, Qt Quick/QML)",
     "icon": null,
     "detection": {
-      "version_probes": [["qmake", "--version"]],
-      "known_paths": [],
+      "version_probes": [["qmake", "-query", "QT_VERSION"]],
+      "known_paths": ["%LOCALAPPDATA%/Programs/Qt/*/msvc2022_64/bin"],
       "registry_keys": []
     },
     "versions": { "min": "6.2", "recommended": "6.8" },
-    "sources": { "windows": [], "linux": [], "macos": [] },
-    "size_mb": 0,
+    "sources": {
+      "windows": [
+        {
+          "kind": "QtOnline",
+          "id": "qt-online-repo",
+          "url": "https://download.qt.io/online/qtsdkrepository/windows_x86",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "%LOCALAPPDATA%/Programs/Qt",
+          "needs_admin": false
+        }
+      ],
+      "linux": [],
+      "macos": []
+    },
+    "size_mb": 420,
     "needs_admin": false,
-    "path_entries": [],
+    "path_entries": ["%LOCALAPPDATA%/Programs/Qt/*/msvc2022_64/bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Qt ставится только через Qt Online Installer (qt.io/download-open-source).",
-    "manual_install": "Установите Qt вручную через Qt Online Installer (qt.io/download-open-source): выберите версию Qt 6 и вашу ОС."
+    "notes": "Ставится из официального репозитория Qt (download.qt.io) в %LOCALAPPDATA%/Programs/Qt. Сборка для MSVC 2022 64-bit."
   },
   {
     "id": "xcodebuild",

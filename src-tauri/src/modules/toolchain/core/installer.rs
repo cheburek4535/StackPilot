@@ -332,6 +332,13 @@ try {{
                 })
             }
         }
+
+        // QtOnline обрабатывается целиком в qt_installer (в try_install_source
+        // происходит ранний выход) — сюда команда не доходит.
+        InstallSourceKind::QtOnline => Err(format!(
+            "{}: репозиторий Qt ставится отдельным установщиком",
+            source.id
+        )),
     }
 }
 
@@ -481,7 +488,7 @@ async fn run_task(
                 &tool_id,
             ));
         }
-        match try_install_source(def, source, index, total, &task_id, &tool_id, sink, abort).await
+        match try_install_source(def, source, task, index, total, &task_id, &tool_id, sink, abort).await
         {
             Ok((version, secret)) => {
                 if let Some(pw) = secret {
@@ -521,6 +528,7 @@ async fn run_task(
 async fn try_install_source(
     def: &ToolDefinition,
     source: &InstallSource,
+    task: &InstallTask,
     index: usize,
     total: usize,
     task_id: &str,
@@ -528,6 +536,23 @@ async fn try_install_source(
     sink: &Arc<dyn EventSink>,
     abort: &Arc<AtomicBool>,
 ) -> Result<(String, Option<String>), String> {
+    // QtOnline (Qt из официального репозитория) — свой конвейер:
+    // пакетов несколько, каждый качается и распаковывается отдельно.
+    if matches!(source.kind, InstallSourceKind::QtOnline) {
+        return super::qt_installer::install_qt_online(
+            def,
+            source,
+            &task.install_options,
+            index,
+            total,
+            task_id,
+            tool_id,
+            sink,
+            Arc::clone(abort),
+        )
+        .await;
+    }
+
     // dynamic_args (PostgreSQL): пароль нужен ещё до запуска установщика.
     let password = source.dynamic_args.then(generate_db_password);
     let mut offline_path: Option<std::path::PathBuf> = None;
@@ -742,6 +767,7 @@ mod tests {
                 size_mb: 1,
                 needs_admin: false,
                 source_description: "test".to_string(),
+                install_options: vec![],
                 state: TaskState::Pending,
             }],
             total_size_mb: 1,

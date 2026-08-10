@@ -26,5 +26,6 @@ pub mod installer;
 pub mod metadata;
 pub mod path_service;
 pub mod planner;
+pub mod qt_installer;
 pub mod requirements;
 pub mod version;
