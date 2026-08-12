@@ -135,6 +135,10 @@ let unlistenTcDone: (() => void) | null = null;
 let unlistenTcCheck: (() => void) | null = null;
 let envCheckProgress = $state<CheckProgressEvent[]>([]);
 let envSelectedIds = $state<Set<string>>(new Set());
+/** Docker-инструменты мастера (postgresql, redis, ...), выбранные для
+ * локальной установки вместо docker-compose. Наполняется кнопкой
+ * «Install locally» в опциональной секции экрана окружения. */
+let envLocalInfra = $state<Set<string>>(new Set());
 
 function startTick() {
   if (tickTimer) return;
@@ -221,6 +225,7 @@ function buildSnapshot(): Record<string, unknown> {
     envDownload: [...envDownload.entries()],
     envPhaseStart: [...envPhaseStart.entries()],
     envSelectedIds: [...envSelectedIds],
+    envLocalInfra: [...envLocalInfra],
     envCheckProgress,
     newSecrets,
     envInstalling,
@@ -292,6 +297,7 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   );
   envPhaseStart = new Map(Array.isArray(s.envPhaseStart) ? (s.envPhaseStart as [string, number][]) : []);
   envSelectedIds = new Set(strArr(s.envSelectedIds));
+  envLocalInfra = new Set(strArr(s.envLocalInfra));
   envCheckProgress = Array.isArray(s.envCheckProgress) ? (s.envCheckProgress as CheckProgressEvent[]) : [];
   newSecrets = (s.newSecrets as Record<string, string> | null) ?? null;
   envInstalling = bool(s.envInstalling);
@@ -1286,6 +1292,7 @@ function buildRequirements(): ProjectRequirements {
     languages: allSelectedLangs(),
     frameworks: selectedFrameworks,
     tools: selectedTools,
+    local_infra_tools: [...envLocalInfra],
     git_init: git,
     vscode_config: vscode,
     docker: dockerEnabled(),
@@ -1356,6 +1363,17 @@ function toggleEnvTool(toolId: string) {
 
 function selectAllEnvTools() {
   envSelectedIds = new Set(allMissingTools().map((r) => r.tool_id));
+}
+
+/** Опциональный docker-инструмент (postgresql, redis, ...) пользователь
+ * решил ставить ЛОКАЛЬНО вместо docker-compose: добавляем его в
+ * envLocalInfra и перезапускаем проверку — теперь тул обычное требование
+ * (Missing → установка), а из docker-compose проекта он исключится. */
+async function optInLocalInfra(toolId: string) {
+  const next = new Set(envLocalInfra);
+  next.add(toolId);
+  envLocalInfra = next;
+  await recheckEnvironment();
 }
 
 async function startInstall() {
@@ -1568,6 +1586,7 @@ async function doCreateProject() {
     frontend_languages: frontendLangs,
     frameworks: selectedFrameworks,
     tools: selectedTools,
+    local_infra_tools: [...envLocalInfra],
     features: [],
     infrastructure: [],
     docker: dockerEnabled(),
@@ -1678,6 +1697,7 @@ function resetAll() {
   envDownload = new Map();
   envPhaseStart = new Map();
   envSelectedIds = new Set();
+  envLocalInfra = new Set();
   newSecrets = null;
   secretCopied = null;
   projectName = "";
@@ -1914,6 +1934,29 @@ function resetAll() {
                 </div>
               {/each}
             </div>
+
+            {#if (envCheck.optional_requirements ?? []).length > 0}
+              <div class="env-optional">
+                <p class="group-label">Optional — run in Docker</p>
+                <p class="hint">
+                  These tools are deployed as Docker containers with the project.
+                  Choose <strong>Install locally</strong> to set them up on this machine
+                  instead — they will be checked and installed like the requirements above,
+                  and excluded from docker-compose.
+                </p>
+                {#each envCheck.optional_requirements ?? [] as req}
+                  <div class="env-row broken">
+                    <span class="env-select">🐳</span>
+                    <span class="env-icon">{toolCategoryIcon(req.category)}</span>
+                    <span class="env-name">{req.display}</span>
+                    <span class="env-source">Docker (docker-compose.yaml)</span>
+                    <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
+                      Install locally
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
 
             {#if envPlan && envInstalling}
               <div class="env-install">
@@ -3186,6 +3229,9 @@ function resetAll() {
 .env-row.broken { border-left-color: #e74c3c; }
 .env-row.missing { border-left-color: #e74c3c; opacity: 0.8; }
 .env-row.manual { border-left-color: #f39c12; }
+.env-optional { margin-bottom: 1rem; padding: 0.75rem 1rem; border: 1px dashed #e74c3c; border-radius: 10px; background: rgba(231, 76, 60, 0.06); }
+.env-optional .group-label { color: #e74c3c; margin: 0 0 0.35rem; }
+.env-optional .env-row { background: #1c1420; }
 .env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .env-select input { accent-color: #6c5ce7; cursor: pointer; width: 15px; height: 15px; }
 .manual-badge { cursor: help; font-size: 0.95rem; }

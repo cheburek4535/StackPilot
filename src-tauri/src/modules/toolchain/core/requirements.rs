@@ -23,12 +23,20 @@
 //                    в wizard_tree) + required_tools из wizard_tree.json
 //                    (обязательные инструменты сборки) + requires_language;
 //   3. выбранные тулы — wizard_tool_to_toolchain (явный выбор мастера);
+//                      «двойные» docker-инструменты (requires_docker +
+//                      локальные источники в tools.json: postgresql, redis,
+//                      mongodb, kafka, grafana, mysql) попадают в требования
+//                      ТОЛЬКО когда пользователь выбрал их локальную
+//                      установку (requirements.local_infra_tools); чисто
+//                      docker-инструменты (clickhouse, airflow, mailpit)
+//                      сюда НЕ попадают никогда — их разворачивает project
+//                      creator в docker-compose;
 //   4. флаги       — git_init → git, vscode_config → vscode, docker → docker.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use crate::modules::toolchain::models::ProjectRequirements;
+use crate::modules::toolchain::models::{ProjectRequirements, ToolDefinition, ToolRequirement, ToolStatus};
 
 // ------------------------------------------------------------
 // 1. Языки → инструменты
@@ -167,36 +175,133 @@ fn framework_requires_language() -> &'static HashMap<String, Vec<String>> {
 // ------------------------------------------------------------
 
 /// id тула из wizard_tree.json → id в tools.json.
-/// Большинство совпадает (postgresql, docker, ...). Тех, кого нет
-/// в каталоге toolchain (pytest, sqlalchemy, alembic, ruff, prisma,
-/// drizzle, dbt), нет по дизайну: это pip/npm-пакеты или docker-образы
-/// (clickhouse, airflow, opentelemetry), а не системное ПО — их
-/// доставит менеджер пакетов языка или docker. docker-инструменты
-/// идут вместе с самим docker (requires_docker в wizard_tree).
+///
+/// «Двойные» docker-инструменты (requires_docker: true в wizard_tree.json
+/// И локальные источники в tools.json: postgresql, redis, mongodb, kafka,
+/// grafana, mysql) замаплены здесь: наличие маппинга НЕ значит, что тул
+/// требуется локально — resolve() добавляет их только когда пользователь
+/// выбрал локальную установку (requirements.local_infra_tools). По умолчанию
+/// их разворачивает project creator в docker-compose.yaml.
+///
+/// Чисто docker-инструменты без локального источника (clickhouse, airflow,
+/// mailpit) отсутствуют в таблице — в локальную проверку не попадают
+/// никогда. По той же причине отсутствуют pip/npm-пакеты и docker-образы
+/// (pytest, sqlalchemy, alembic, prisma, drizzle, dbt, opentelemetry):
+/// их доставит менеджер пакетов языка или docker.
 pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
     // id, совпадающие с каталогом toolchain, возвращаются строковыми
     // литералами, а не заимствованным входным &str: это даёт
     match wizard_id {
         "npm" => Some("npm"),
         "docker" => Some("docker"),
-        "postgresql" => Some("postgresql"),
-        "redis" => Some("redis"),
-        "mongodb" => Some("mongodb"),
         "sqlite" => Some("sqlite"),
         "maven" => Some("maven"),
         "gradle" => Some("gradle"),
-        "kafka" => Some("kafka"),
-        "grafana" => Some("grafana"),
-        // "terra" — старый id из мастера, оставлен для обратной
+        // Terra — старый id из мастера, оставлен для обратной
         // совместимости с сохранёнными сессиями.
         "terra" | "terraform" => Some("terraform"),
         "firebase" => Some("firebase"),
+        // «Двойные» docker-инструменты: локальная установка — только
+        // по явному выбору пользователя (см. resolve и is_dual_tool).
+        "postgresql" => Some("postgresql"),
+        "redis" => Some("redis"),
+        "mongodb" => Some("mongodb"),
+        "kafka" => Some("kafka"),
+        "grafana" => Some("grafana"),
+        "mysql" => Some("mysql"),
         // C# REPL: npm-пакета dotnet-cmd не существует (registry 404),
         // реальный REPL — CSharpRepl (dotnet tool install -g CSharpRepl).
         // «dotnet-cmd» замаплен на него для совместимости с мастером.
         "dotnet-cmd" | "csharprepl" => Some("csharprepl"),
         _ => None,
     }
+}
+
+// ------------------------------------------------------------
+// Docker-инструменты мастера и «двойные» инструменты
+// ------------------------------------------------------------
+
+/// Все id тулов мастера с requires_docker: true (из wizard_tree.json).
+/// Кэшируется в OnceLock: файл компилируется в бинарь, парсится один раз.
+fn docker_managed_tools() -> &'static HashSet<String> {
+    static SET: OnceLock<HashSet<String>> = OnceLock::new();
+    SET.get_or_init(|| {
+        let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
+        let tree: serde_json::Value = serde_json::from_str(raw)
+            .expect("wizard_tree.json должен быть корректным JSON");
+        tree.get("tools")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|t| {
+                        t.get("requires_docker")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|t| t.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// «Двойной» инструмент: разворачивается docker-compose.yaml проекта,
+/// НО при желании ставится локально (есть установочные источники
+/// в tools.json). Примеры: postgresql, redis, mongodb, kafka, grafana, mysql.
+/// Чисто docker-инструменты (clickhouse, airflow, mailpit) в tools.json
+/// отсутствуют и «двойными» не являются.
+pub fn is_dual_tool(id: &str, definitions: &[ToolDefinition]) -> bool {
+    docker_managed_tools().contains(id)
+        && definitions
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.installable())
+            .unwrap_or(false)
+}
+
+/// Docker-инструменты из requirements.tools, НЕ выбранные локально
+/// (отсутствуют в local_infra_tools). Из них команда tc_check_environment
+/// соберёт optional_requirements — опциональную секцию экрана окружения.
+pub fn docker_optional_tool_ids(requirements: &ProjectRequirements) -> Vec<String> {
+    requirements
+        .tools
+        .iter()
+        .filter(|t| docker_managed_tools().contains(*t) && !requirements.local_infra_tools.contains(*t))
+        .cloned()
+        .collect()
+}
+
+/// Опциональные требования для экрана окружения: docker-инструменты
+/// мастера, которые по умолчанию развернутся контейнерами. Статус
+/// RunInDocker — «в Docker, не требуется локально». Пользователь может
+/// переключить такой инструмент на локальную установку, дописав его
+/// в local_infra_tools и перезапустив проверку.
+pub fn docker_optional_requirements(
+    requirements: &ProjectRequirements,
+    definitions: &[ToolDefinition],
+) -> Vec<ToolRequirement> {
+    docker_optional_tool_ids(requirements)
+        .into_iter()
+        .filter_map(|id| {
+            let def = definitions.iter().find(|d| d.id == id)?;
+            // Чисто docker-инструменты (нет локальных источников) в
+            // опциональную секцию не попадают: выбирать локальную
+            // установку для них нечего.
+            if !def.installable() {
+                return None;
+            }
+            Some(ToolRequirement {
+                tool_id: def.id.clone(),
+                display: def.display.clone(),
+                category: def.category.clone(),
+                status: ToolStatus::RunInDocker,
+                size_mb: 0,
+                needs_admin: false,
+                source_description: "Docker (docker-compose.yaml)".to_string(),
+                install_options: Vec::new(),
+            })
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------
@@ -289,6 +394,14 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
     }
 
     for tool in &requirements.tools {
+        // «Двойные» docker-инструменты (postgresql, redis, mongodb, kafka,
+        // grafana, mysql) локально требуются только по явному выбору:
+        // по умолчанию их разворачивает project creator в docker-compose.
+        // Чисто docker-инструменты (clickhouse, airflow, mailpit) здесь же
+        // отсекаются — маппинга в tools.json у них нет.
+        if docker_managed_tools().contains(tool) && !requirements.local_infra_tools.contains(tool) {
+            continue;
+        }
         if let Some(id) = wizard_tool_to_toolchain(tool) {
             push(id);
             // Инструменты, которые не могут установиться без своего рантайма:
@@ -401,7 +514,9 @@ mod tests {
         for expected in ["dotnet", "node", "npm"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
-        // инфраструктура появляется ТОЛЬКО явным выбором
+        // инфраструктура появляется ТОЛЬКО явным выбором, причём
+        // docker-инструменты (postgresql, redis) по умолчанию локально
+        // не требуются — их разворачивает docker-compose из project creator.
         let mut r2 = req();
         r2.languages = vec!["csharp".into(), "javascript".into()];
         r2.frameworks = vec!["aspnetcore".into(), "express".into()];
@@ -409,11 +524,20 @@ mod tests {
         r2.git_init = true;
         r2.vscode_config = true;
         let ids2 = resolve(&r2);
-        for expected in ["postgresql", "redis", "docker", "git", "vscode"] {
+        for expected in ["docker", "git", "vscode"] {
             assert!(ids2.iter().any(|i| i == expected), "нет {expected} в {ids2:?}");
         }
-        assert!(!ids2.contains(&"mongodb".to_string()), "mongodb всё ещё в требованиях: {ids2:?}");
-        assert!(!ids2.contains(&"sqlite".to_string()), "sqlite всё ещё в требованиях: {ids2:?}");
+        for unexpected in ["postgresql", "redis", "mongodb", "sqlite"] {
+            assert!(!ids2.contains(&unexpected.to_string()), "{unexpected} в требованиях: {ids2:?}");
+        }
+        // локальная установка docker-инструментов — только по явному выбору:
+        // postgresql и redis в local_infra_tools обязаны появиться в требованиях
+        let mut r3 = r2.clone();
+        r3.local_infra_tools = vec!["postgresql".into(), "redis".into()];
+        let ids3 = resolve(&r3);
+        for expected in ["postgresql", "redis"] {
+            assert!(ids3.iter().any(|i| i == expected), "нет {expected} после локального выбора в {ids3:?}");
+        }
     }
 
     #[test]
@@ -436,12 +560,76 @@ mod tests {
     }
 
     #[test]
-    fn airflow_grafana_and_terraform_tools_resolve() {
+    fn terraform_and_firebase_tools_resolve() {
         let mut r = req();
         r.tools = vec!["grafana".into(), "terraform".into(), "firebase".into()];
         let ids = resolve(&r);
-        for expected in ["grafana", "terraform", "firebase"] {
+        for expected in ["terraform", "firebase"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+        }
+        // grafana — «двойной» docker-инструмент: без локального выбора
+        // его разворачивает docker-compose, локально он не нужен
+        assert!(
+            !ids.contains(&"grafana".to_string()),
+            "grafana не должен требоваться локально без выбора: {ids:?}"
+        );
+        // явный локальный выбор — grafana попадает в требования
+        let mut r2 = r.clone();
+        r2.local_infra_tools = vec!["grafana".into()];
+        let ids2 = resolve(&r2);
+        assert!(
+            ids2.iter().any(|i| i == "grafana"),
+            "grafana должен появиться после локального выбора: {ids2:?}"
+        );
+    }
+
+    #[test]
+    fn dockerized_tools_require_only_docker() {
+        // Docker-инструменты мастера (requires_docker: true) по умолчанию
+        // не попадают в локальную проверку: их разворачивает docker-compose.
+        // В требованиях остаётся только сам docker.
+        let mut r = req();
+        r.tools = vec![
+            "postgresql".into(),
+            "redis".into(),
+            "mongodb".into(),
+            "kafka".into(),
+            "grafana".into(),
+            "mysql".into(),
+            "clickhouse".into(),
+            "airflow".into(),
+            "mailpit".into(),
+            "docker".into(),
+        ];
+        assert_eq!(resolve(&r), vec!["winget", "docker"]);
+
+        // попытка выбрать «локально» чисто docker-инструмент (нет источников
+        // в tools.json) ничего не даёт: clickhouse/airflow/mailpit не замаплены
+        let mut r2 = r.clone();
+        r2.local_infra_tools = vec!["clickhouse".into(), "mailpit".into()];
+        assert_eq!(resolve(&r2), vec!["winget", "docker"]);
+    }
+
+    #[test]
+    fn local_opt_in_brings_dual_tools_to_requirements() {
+        // «Двойные» инструменты (docker + локальная установка): выбор
+        // local_infra_tools переносит их из docker-compose в требования.
+        let mut r = req();
+        r.tools = vec![
+            "postgresql".into(),
+            "redis".into(),
+            "mongodb".into(),
+            "kafka".into(),
+            "grafana".into(),
+            "mysql".into(),
+        ];
+        r.local_infra_tools = r.tools.clone();
+        let ids = resolve(&r);
+        for expected in ["postgresql", "redis", "mongodb", "kafka", "grafana", "mysql"] {
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} после локального выбора в {ids:?}"
+            );
         }
     }
 
@@ -505,7 +693,18 @@ mod tests {
         assert_eq!(wizard_tool_to_toolchain("sqlalchemy"), None);
         assert_eq!(wizard_tool_to_toolchain("prisma"), None);
         assert_eq!(wizard_tool_to_toolchain("npm"), Some("npm"));
+        // «Двойные» docker-инструменты замаплены: resolve() решает, нужны ли
+        // они локально (только по выбору пользователя в local_infra_tools).
         assert_eq!(wizard_tool_to_toolchain("postgresql"), Some("postgresql"));
+        assert_eq!(wizard_tool_to_toolchain("redis"), Some("redis"));
+        assert_eq!(wizard_tool_to_toolchain("mongodb"), Some("mongodb"));
+        assert_eq!(wizard_tool_to_toolchain("kafka"), Some("kafka"));
+        assert_eq!(wizard_tool_to_toolchain("grafana"), Some("grafana"));
+        assert_eq!(wizard_tool_to_toolchain("mysql"), Some("mysql"));
+        // чисто docker-инструменты (нет локальных источников) не замаплены
+        assert_eq!(wizard_tool_to_toolchain("clickhouse"), None);
+        assert_eq!(wizard_tool_to_toolchain("airflow"), None);
+        assert_eq!(wizard_tool_to_toolchain("mailpit"), None);
         // npm-пакета dotnet-cmd нет — реальный REPL ставится через dotnet tool
         assert_eq!(wizard_tool_to_toolchain("dotnet-cmd"), Some("csharprepl"));
         assert_eq!(wizard_tool_to_toolchain("csharprepl"), Some("csharprepl"));
@@ -628,7 +827,7 @@ mod tests {
         let mut checked = 0usize;
         let mut missing: Vec<String> = Vec::new();
 
-        let mut check_ids = |r: &ProjectRequirements, origin: &str, out: &mut Vec<String>| {
+        let check_ids = |r: &ProjectRequirements, origin: &str, out: &mut Vec<String>| {
             for id in resolve(r) {
                 if !tool_ids.contains(&id) {
                     out.push(format!("{origin} → {id}"));
@@ -652,6 +851,14 @@ mod tests {
             let mut r = req();
             r.tools = vec![tool.clone()];
             check_ids(&r, &format!("тул {tool}"), &mut missing);
+            checked += 1;
+            // Локальная установка «двойных» docker-инструментов: resolve()
+            // должен вернуть только id, существующие в tools.json
+            // (postgresql/redis/mongodb/kafka/grafana/mysql).
+            let mut r2 = req();
+            r2.tools = vec![tool.clone()];
+            r2.local_infra_tools = vec![tool.clone()];
+            check_ids(&r2, &format!("тул {tool} (локально)"), &mut missing);
             checked += 1;
         }
         {

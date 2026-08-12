@@ -72,9 +72,17 @@ pub async fn tc_check_environment(
         .await
         .unwrap_or(0);
     let check = core::check::run_check(state.definitions(), &requested, &install_options, free_space_mb, Some(progress)).await;
+    // Опциональные требования: docker-инструменты мастера (postgresql,
+    // mongodb, kafka, ...), которые по умолчанию разворачиваются контейнерами
+    // проекта. Пользователь может переключить их на локальную установку —
+    // тогда они переезжают в requirements (local_infra_tools).
+    let mut check = check;
+    check.optional_requirements =
+        core::requirements::docker_optional_requirements(&requirements, state.definitions());
     eprintln!(
-        "[toolchain] check_environment: готово — {} требований, {} МБ, all_ready={}",
+        "[toolchain] check_environment: готово — {} требований, {} опциональных (docker), {} МБ, all_ready={}",
         check.requirements.len(),
+        check.optional_requirements.len(),
         check.total_size_mb,
         check.all_ready
     );
@@ -256,11 +264,31 @@ pub fn tc_get_metadata(state: State<'_, ToolchainState>) -> ToolchainMetadata {
 /// Health-отчёт по всему окружению: для каждого инструмента каталога
 /// — прогон health_checks из tools.json + общий score. Отдаётся
 /// фронтенду страницы окружения.
+///
+/// «Двойные» docker-инструменты (postgresql, redis, mongodb, kafka,
+/// grafana, mysql) НЕ показываются, пока не установлены локально:
+/// по умолчанию их разворачивает docker-compose проекта, и «красная»
+/// запись о них в локальном окружении — ложная тревога.
 #[tauri::command]
 pub async fn tc_get_health_report(
     state: State<'_, ToolchainState>,
 ) -> Result<HealthReport, String> {
-    Ok(core::health::run_health_report(state.definitions()).await)
+    let definitions = state.definitions();
+    let installed = state
+        .metadata()
+        .lock()
+        .expect("metadata poisoned")
+        .data()
+        .tools
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<String>>();
+    let visible: Vec<ToolDefinition> = definitions
+        .iter()
+        .filter(|d| !core::requirements::is_dual_tool(&d.id, definitions) || installed.contains(&d.id))
+        .cloned()
+        .collect();
+    Ok(core::health::run_health_report(&visible).await)
 }
 
 /// Прокладка из Tauri в ядро: шлёт события установки на фронтенд.

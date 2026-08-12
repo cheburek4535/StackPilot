@@ -36,6 +36,11 @@ pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> Inst
         if matches!(req.status, ToolStatus::ManualInstall { .. }) {
             continue;
         }
+        // RunInDocker — docker-инструмент мастера, разворачивается
+        // docker-compose.yaml проекта; локальная установка не нужна.
+        if matches!(req.status, ToolStatus::RunInDocker) {
+            continue;
+        }
         if let Some(list) = selected {
             if !list.iter().any(|id| id == &req.tool_id) {
                 continue;
@@ -95,6 +100,7 @@ mod tests {
         EnvironmentCheck {
             os: "windows".to_string(),
             requirements,
+            optional_requirements: vec![],
             total_size_mb: 0,
             free_space_mb: 0,
             enough_space: true,
@@ -202,6 +208,20 @@ mod tests {
 
         // даже если фронт попросил — manual-тул не ставится автоматически
         let plan = build_plan(&check, Some(&["unity".to_string(), "git".to_string()]));
+        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
+        assert_eq!(ids, vec!["git"]);
+        assert_eq!(plan.total_size_mb, 10);
+    }
+
+    #[test]
+    fn run_in_docker_tools_never_scheduled() {
+        // Опциональные docker-инструменты (postgresql и т.п.) в план
+        // установки не попадают: их разворачивает docker-compose проекта.
+        let check = check_with(vec![
+            requirement("postgresql", ToolStatus::RunInDocker),
+            requirement("git", ToolStatus::Missing),
+        ]);
+        let plan = build_plan(&check, Some(&["postgresql".to_string(), "git".to_string()]));
         let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
         assert_eq!(ids, vec!["git"]);
         assert_eq!(plan.total_size_mb, 10);

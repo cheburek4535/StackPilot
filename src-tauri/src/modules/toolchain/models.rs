@@ -189,6 +189,11 @@ pub enum ToolStatus {
     /// Честное предупреждение в отчёте: не блокирует создание проекта,
     /// не участвует в установке. Причина — текст для пользователя.
     ManualInstall { reason: String },
+    /// «Двойной» инструмент мастера (postgresql, mongodb, kafka, ...):
+    /// по умолчанию разворачивается docker-compose.yaml проекта, локально
+    /// не устанавливается. Показывается в ОПЦИОНАЛЬНОЙ секции отчёта с
+    /// предложением поставить локально; в план установки не попадает.
+    RunInDocker,
 }
 
 impl ToolStatus {
@@ -223,6 +228,12 @@ pub struct ProjectRequirements {
     pub frameworks: Vec<String>,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Docker-инструменты мастера (postgresql, redis, mongodb, kafka,
+    /// grafana, mysql), которые пользователь решил ставить ЛОКАЛЬНО вместо
+    /// docker-compose. Попадают в обычные requirements (как Missing и т.п.),
+    /// а из docker-compose.yaml проекта исключаются (см. WizardContext.local_infra_tools).
+    #[serde(default)]
+    pub local_infra_tools: Vec<String>,
     #[serde(default)]
     pub git_init: bool,
     #[serde(default)]
@@ -257,6 +268,13 @@ pub struct ToolRequirement {
 pub struct EnvironmentCheck {
     pub os: String,
     pub requirements: Vec<ToolRequirement>,
+    /// «Опциональные» требования: docker-инструменты мастера (см.
+    /// requirements::docker_optional_requirements), которые по умолчанию
+    /// разворачиваются контейнерами проекта. Показываются отдельной
+    /// секцией экрана окружения с возможностью переключиться на локальную
+    /// установку (тогда они уезжают в requirements).
+    #[serde(default)]
+    pub optional_requirements: Vec<ToolRequirement>,
     /// Суммарный размер загрузки, МБ
     pub total_size_mb: u64,
     /// Свободное место на целевом диске, МБ (0 = ещё не проверялось)

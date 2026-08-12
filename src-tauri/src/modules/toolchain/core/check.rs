@@ -184,6 +184,7 @@ pub async fn run_check(
     EnvironmentCheck {
         os,
         requirements,
+        optional_requirements: Vec::new(),
         total_size_mb,
         free_space_mb,
         enough_space,

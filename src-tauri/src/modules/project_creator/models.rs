@@ -350,6 +350,13 @@ pub struct WizardContext {
     pub frameworks: Vec<String>,
     /// Выбранные инструменты
     pub tools: Vec<String>,
+    /// Docker-инструменты мастера (postgresql, redis, mongodb, ...), выбранные
+    /// пользователем для ЛОКАЛЬНОЙ установки вместо docker-compose.
+    /// По умолчанию такие инструменты разворачиваются контейнерами; когда
+    /// тул попадает в этот список, он исключается из docker-compose.yaml,
+    /// а в .env.example и LOCAL_INFRA.md собираются локальные настройки.
+    #[serde(default)]
+    pub local_infra_tools: Vec<String>,
     /// Включённые фичи
     pub features: Vec<String>,
     /// Инфраструктурные компоненты
@@ -374,6 +381,7 @@ impl Default for WizardContext {
             frontend_languages: Vec::new(),
             frameworks: Vec::new(),
             tools: Vec::new(),
+            local_infra_tools: Vec::new(),
             features: Vec::new(),
             infrastructure: Vec::new(),
             docker: true,

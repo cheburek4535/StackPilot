@@ -108,6 +108,7 @@ fn guard_context(
         frontend_languages: frontend_languages.to_vec(),
         frameworks: frameworks.to_vec(),
         tools: vec![],
+        local_infra_tools: vec![],
         features: vec![],
         infrastructure: vec![],
         docker: false,

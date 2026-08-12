@@ -106,7 +106,14 @@ impl WizardEngine {
                 ctx.frameworks = answers;
             }
             "tools" => {
-                ctx.docker = answers.contains(&"docker".to_string());
+                ctx.docker = answers.contains(&"docker".to_string())
+                    // Любой выбранный инструмент с requires_docker (postgresql,
+                    // redis, mongodb, ...) разворачивается docker-compose.yaml —
+                    // значит docker включается сам, даже если пользователь
+                    // не отметил его явно.
+                    || self.tree.tools.iter().any(|t| {
+                        t.requires_docker && answers.iter().any(|a| a == &t.id)
+                    });
                 ctx.tools = answers;
             }
             "features" => {

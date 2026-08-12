@@ -178,6 +178,10 @@ export type WizardContext = {
   frontend_languages: string[];
   frameworks: string[];
   tools: string[];
+  /** Docker-инструменты мастера (postgresql, redis, ...), выбранные для
+   * локальной установки вместо docker-compose: исключаются из compose,
+   * в .env.example и LOCAL_INFRA.md уходят локальные настройки. */
+  local_infra_tools: string[];
   features: string[];
   infrastructure: string[];
   docker: boolean;

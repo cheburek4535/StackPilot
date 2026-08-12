@@ -100,12 +100,30 @@ impl ToolchainState {
 
     /// Информация об ОС и количестве известных инструментов.
     /// Версия ОС спрашивается у системы (быстрая команда с таймаутом).
+    /// «Двойные» docker-инструменты считаются только после локальной
+    /// установки (см. tc_get_health_report).
     pub async fn environment_info(&self) -> EnvironmentInfo {
+        let installed = self
+            .metadata()
+            .lock()
+            .expect("metadata poisoned")
+            .data()
+            .tools
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<String>>();
+        let visible_count = self
+            .definitions
+            .iter()
+            .filter(|d| {
+                !core::requirements::is_dual_tool(&d.id, &self.definitions) || installed.contains(&d.id)
+            })
+            .count();
         EnvironmentInfo {
             os: std::env::consts::OS.to_string(),
             os_version: platforms::current_platform().os_version().await,
             package_managers: platforms::current_platform().package_managers(),
-            tool_count: self.definitions.len(),
+            tool_count: visible_count,
         }
     }
 }

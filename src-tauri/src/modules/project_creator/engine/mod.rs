@@ -309,7 +309,7 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
     for fw in &context.frameworks {
         steps.extend(steps_for_framework(fw, project_path, project_name, context, layout.for_framework(fw).as_deref()));
     }
-    steps.extend(steps_for_tools(&context.tools, project_path));
+    steps.extend(steps_for_tools(context, project_path));
     steps.extend(steps_for_docker(context, project_path, project_name));
     steps.extend(steps_for_git(context, project_path, project_name));
     steps.extend(steps_for_ci(context, project_path, project_name));
@@ -2220,7 +2220,8 @@ pub fn main() !void {{
 }
 
 
-fn steps_for_tools(tools: &[String], project_path: &str) -> Vec<Step> {
+fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
+    let tools = &context.tools;
     let mut steps = Vec::new();
     let mut infra_envs: Vec<String> = Vec::new();
 
@@ -2378,10 +2379,24 @@ with DAG(
             // Infra tools — сервисы docker-compose; переменные окружения
             // собираем в один .env.example в конце (иначе каждый следующий
             // инструмент видел бы существующий файл и шаг скипался).
+            // Инструменты из local_infra_tools поставлены локально:
+            // для них в .env.example — локальные адреса (localhost),
+            // а из docker-compose.yaml они исключаются (steps_for_docker).
             "postgresql" | "redis" | "mongodb" | "mysql" | "kafka" | "clickhouse" | "rabbitmq" | "minio" | "mailpit" => {
-                infra_envs.push(content::get_env_example(tool_id));
+                if context.local_infra_tools.contains(tool_id) {
+                    infra_envs.push(content::get_local_env_example(tool_id));
+                } else {
+                    infra_envs.push(content::get_env_example(tool_id));
+                }
             }
             "grafana" | "opentelemetry" => {
+                if tool_id == "grafana" {
+                    if context.local_infra_tools.contains(tool_id) {
+                        infra_envs.push(content::get_local_env_example(tool_id));
+                    } else {
+                        infra_envs.push(content::get_env_example(tool_id));
+                    }
+                }
                 steps.push(write_file(&format!("config_{}", tool_id),
                     &format!("Config hint for {}", tool_id),
                     &format!("config/{}.md", tool_id),
@@ -2421,6 +2436,17 @@ with DAG(
         ));
     }
 
+    // Локально установленные инфра-инструменты: инструкция по запуску
+    // (LOCAL_INFRA.md) — как поднять сервис и куда он смотрит.
+    if !context.local_infra_tools.is_empty() {
+        steps.push(write_file(
+            "local_infra_guide",
+            "Create LOCAL_INFRA.md",
+            "LOCAL_INFRA.md",
+            &content::generate_local_infra_guide(&context.local_infra_tools),
+        ));
+    }
+
     steps
 }
 
@@ -2456,7 +2482,15 @@ fn steps_for_docker(context: &WizardContext, _project_path: &str, project_name: 
         condition: (None), 
         on_error: (ErrorMode::Skip) });
 
-    let services = content::collect_docker_services(&context.tools);
+    // Локально установленные инфра-инструменты исключаются из docker-compose:
+    // их сервисы уже запущены на машине, контейнер просто займёт порт.
+    let docker_tools: Vec<String> = context
+        .tools
+        .iter()
+        .filter(|t| !context.local_infra_tools.contains(t))
+        .cloned()
+        .collect();
+    let services = content::collect_docker_services(&docker_tools);
     if !services.is_empty() {
         let app_port = match primary_fw {
             Some("django") | Some("fastapi") => "8000",
@@ -3103,5 +3137,42 @@ mod tests {
         ctx.frameworks = vec!["tauri".into(), "react".into()];
         let issues = duplicate_framework_write_paths(&ctx);
         assert!(issues.is_empty(), "ложные срабатывания: {issues:?}");
+    }
+
+    #[test]
+    fn every_requires_docker_tool_lands_in_compose() {
+        // Каждый инструмент мастера с requires_docker: true обязан давать
+        // сервис в collect_docker_services: локально он не ставится
+        // (toolchain не требует его для проверки окружения), а
+        // docker-compose.yaml — единственный способ его развернуть.
+        let raw = include_str!("../knowledge/wizard_tree.json");
+        let tree: serde_json::Value =
+            serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON");
+        let docker_tools: Vec<String> = tree
+            .get("tools")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter(|t| {
+                        t.get("requires_docker")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|t| t.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert!(
+            !docker_tools.is_empty(),
+            "в мастере должны быть docker-инструменты"
+        );
+        for tool in &docker_tools {
+            let services = content::collect_docker_services(std::slice::from_ref(tool));
+            assert!(
+                !services.is_empty(),
+                "requires_docker-инструмент {tool} не создаёт сервис в docker-compose"
+            );
+        }
     }
 }

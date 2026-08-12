@@ -15,7 +15,8 @@ export type ToolStatus =
   | { Installed: { version: string } }
   | { UpdateAvailable: { installed: string; recommended: string } }
   | { PathBroken: { reason: string } }
-  | { ManualInstall: { reason: string } };
+  | { ManualInstall: { reason: string } }
+  | "RunInDocker";
 
 export type ToolDefinition = {
   id: string;
@@ -59,6 +60,9 @@ export type ProjectRequirements = {
   languages: string[];
   frameworks: string[];
   tools: string[];
+  /** Docker-инструменты мастера (postgresql, redis, ...), выбранные для
+   * ЛОКАЛЬНОЙ установки вместо docker-compose. */
+  local_infra_tools: string[];
   git_init: boolean;
   vscode_config: boolean;
   docker: boolean;
@@ -78,6 +82,10 @@ export type ToolRequirement = {
 export type EnvironmentCheck = {
   os: string;
   requirements: ToolRequirement[];
+  /** Опциональные требования: docker-инструменты мастера, которые по
+   * умолчанию разворачиваются контейнерами проекта. Пользователь может
+   * переключить их на локальную установку. */
+  optional_requirements: ToolRequirement[];
   total_size_mb: number;
   free_space_mb: number;
   enough_space: boolean;
@@ -187,19 +195,22 @@ export type CheckProgressEvent = {
 // ============================================================
 
 export function statusIsOk(status: ToolStatus | undefined): boolean {
-  return !!status && status !== "Missing" && "Installed" in status;
+  if (!status || status === "Missing" || status === "RunInDocker") return false;
+  return "Installed" in status;
 }
 
 export function statusLabel(status: ToolStatus): string {
   if (status === "Missing") return "Не установлен";
+  if (status === "RunInDocker") return "В Docker (docker-compose)";
   if ("Installed" in status) return `✓ ${status.Installed.version}`;
   if ("UpdateAvailable" in status) return `Обновить до ${status.UpdateAvailable.recommended}`;
   if ("ManualInstall" in status) return `⚠ Вручную: ${status.ManualInstall.reason}`;
   return `⚠ ${status.PathBroken.reason}`;
 }
 
-export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" | "manual" {
+export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" | "manual" | "docker" {
   if (status === "Missing") return "missing";
+  if (status === "RunInDocker") return "docker";
   if ("Installed" in status) return "ok";
   if ("UpdateAvailable" in status) return "update";
   if ("ManualInstall" in status) return "manual";

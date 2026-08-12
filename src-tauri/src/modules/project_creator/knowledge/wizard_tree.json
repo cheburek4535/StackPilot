@@ -1880,6 +1880,20 @@
       "for_project_types": []
     },
     {
+      "id": "mysql",
+      "label": "MySQL",
+      "description": "Relational database",
+      "icon": null,
+      "category": "database",
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": []
+    },
+    {
       "id": "sqlite",
       "label": "SQLite",
       "description": "Embedded relational database",
@@ -1992,6 +2006,24 @@
         "rest-api",
         "web-app",
         "data-pipeline",
+        "custom"
+      ]
+    },
+    {
+      "id": "mailpit",
+      "label": "Mailpit",
+      "description": "Email testing UI and SMTP sink for development",
+      "icon": null,
+      "category": "messaging",
+      "knowledge_key": null,
+      "requires_docker": true,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [],
+      "for_project_types": [
+        "rest-api",
+        "web-app",
         "custom"
       ]
     },
@@ -2725,6 +2757,7 @@
   "framework_tool_map": {
     "fastapi": [
       "postgresql",
+      "mysql",
       "redis",
       "sqlalchemy",
       "alembic",
@@ -2734,16 +2767,20 @@
     ],
     "django": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
-      "pytest"
+      "pytest",
+      "mailpit"
     ],
     "flask": [
       "postgresql",
+      "mysql",
       "redis",
       "sqlalchemy",
       "docker",
-      "pytest"
+      "pytest",
+      "mailpit"
     ],
     "axum": [
       "postgresql",
@@ -2782,9 +2819,11 @@
     ],
     "express": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
-      "npm"
+      "npm",
+      "mailpit"
     ],
     "electron": [
       "docker",
@@ -2803,6 +2842,7 @@
     ],
     "spring-boot": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
       "maven",
@@ -2817,6 +2857,7 @@
     ],
     "aspnetcore": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
       "sqlite",
@@ -2833,14 +2874,18 @@
     ],
     "laravel": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
-      "sqlite"
+      "sqlite",
+      "mailpit"
     ],
     "symfony": [
       "postgresql",
+      "mysql",
       "redis",
-      "docker"
+      "docker",
+      "mailpit"
     ],
     "jetpack-compose": [
       "firebase",
@@ -2849,6 +2894,7 @@
     ],
     "ktor": [
       "postgresql",
+      "mysql",
       "redis",
       "docker",
       "kafka"
@@ -2889,6 +2935,7 @@
     ],
     "nest": [
       "postgresql",
+      "mysql",
       "prisma",
       "drizzle",
       "redis",
@@ -2898,6 +2945,7 @@
     ],
     "fastify": [
       "postgresql",
+      "mysql",
       "prisma",
       "redis",
       "docker",

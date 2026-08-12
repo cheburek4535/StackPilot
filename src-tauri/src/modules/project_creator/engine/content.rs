@@ -29,8 +29,148 @@ AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:12345@postgre
 AIRFLOW__CORE__LOAD_EXAMPLES=False
 AIRFLOW_WEBSERVER_PORT=8080
 "#.to_string(),
+        "grafana" => r#"GRAFANA_URL=http://localhost:3001
+"#.to_string(),
         _ => format!("# Environment variables for {}\n", tool_id),
     }
+}
+
+/// Переменные окружения для ЛОКАЛЬНО установленного инфра-инструмента
+/// (postgresql, redis, mongodb, ...). Используются, когда пользователь
+/// выбрал локальную установку вместо docker-compose: адреса указывают на
+/// localhost, а не на имя контейнера.
+pub fn get_local_env_example(tool_id: &str) -> String {
+    match tool_id {
+        "postgresql" => r#"# PostgreSQL (local install)
+# Пароль суперпользователя сгенерирован при установке — он показан один раз
+# в StackPilot («Generated passwords»). Базу создайте сами:
+#   createdb -U postgres <dbname>
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=<PASSWORD_FROM_STACKPILOT>
+POSTGRES_DB=dbname
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql://postgres:<PASSWORD_FROM_STACKPILOT>@localhost:5432/dbname
+"#
+        .to_string(),
+        "redis" => r#"# Redis (local install)
+# Запустите один раз: redis-server (см. LOCAL_INFRA.md)
+REDIS_URL=redis://localhost:6379/0
+"#
+        .to_string(),
+        "mongodb" => r#"# MongoDB (local install)
+# Запустите один раз: mongod --dbpath <data-folder> (см. LOCAL_INFRA.md)
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=dbname
+"#
+        .to_string(),
+        "mysql" => r#"# MySQL (local install)
+# Пароль root задаётся при установке (MSI-мастер). Базу создайте сами:
+#   mysql -u root -p -e "CREATE DATABASE dbname CHARACTER SET utf8mb4;"
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_DATABASE=dbname
+MYSQL_USER=root
+MYSQL_PASSWORD=<ROOT_PASSWORD_FROM_INSTALL>
+"#
+        .to_string(),
+        "kafka" => r#"# Apache Kafka (local install)
+# Одноузловой режим (KRaft) — запустите один раз (см. LOCAL_INFRA.md)
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+"#
+        .to_string(),
+        // Локальный Grafana слушает свой штатный порт 3000 — конфликта
+        // с app-сервисом проекта в локальном режиме нет (в docker его
+        // выносим на 3001, чтобы не пересекаться с app_port).
+        "grafana" => r#"# Grafana (local install)
+# Запустите один раз: grafana-server (см. LOCAL_INFRA.md)
+GRAFANA_URL=http://localhost:3000
+"#
+        .to_string(),
+        _ => get_env_example(tool_id),
+    }
+}
+
+/// Инструкция по запуску локально установленных инфра-инструментов
+/// (файл LOCAL_INFRA.md в проекте). Пишется, когда пользователь выбрал
+/// локальную установку вместо docker-compose.
+pub fn generate_local_infra_guide(tools: &[String]) -> String {
+    let mut out = String::from(
+        "# Local infrastructure\n\n\
+You chose to run these services locally instead of Docker. They were installed \
+by StackPilot and detected on this machine. Start them once per session — \
+they must be running before you launch the project.\n",
+    );
+
+    for tool in tools {
+        let section: &str = match tool.as_str() {
+            "postgresql" => r#"## PostgreSQL
+
+- The superuser password was generated during installation and shown ONCE in
+  StackPilot (`Generated passwords` window after installation).
+- Create the database before first run:
+  ```powershell
+  createdb -U postgres dbname
+  ```
+- Connection: see `POSTGRES_*` / `DATABASE_URL` in `.env.example`.
+"#,
+            "redis" => r#"## Redis
+
+- Start the server once (install directory is on PATH):
+  ```powershell
+  redis-server
+  ```
+- Connection: `REDIS_URL=redis://localhost:6379/0`.
+"#,
+            "mongodb" => r#"## MongoDB
+
+- Create a data folder and start the server once (install directory is on PATH):
+  ```powershell
+  mkdir $env:USERPROFILE\mongo-data
+  mongod --dbpath $env:USERPROFILE\mongo-data
+  ```
+- Connection: `MONGODB_URI=mongodb://localhost:27017`.
+"#,
+            "mysql" => r#"## MySQL
+
+- The root password was set during installation (MSI setup).
+- The server runs as a Windows service (`MySQL80`); start it with:
+  ```powershell
+  net start MySQL80
+  ```
+- Create the database before first run:
+  ```powershell
+  mysql -u root -p -e "CREATE DATABASE dbname CHARACTER SET utf8mb4;"
+  ```
+- Connection: `MYSQL_*` in `.env.example`.
+"#,
+            "kafka" => r#"## Apache Kafka
+
+- Single-node KRaft mode. From the Kafka install directory (`bin/windows`):
+  ```powershell
+  kafka-storage random-uuid > uuid.txt
+  kafka-storage format -t (Get-Content uuid.txt) -c ..\config\kraft\server.properties
+  kafka-server-start ..\config\kraft\server.properties
+  ```
+- Connection: `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
+"#,
+            "grafana" => r#"## Grafana
+
+- Start the server once (install directory is on PATH):
+  ```powershell
+  grafana-server
+  ```
+- UI: http://localhost:3000 (admin/admin on first run).
+- Connection: `GRAFANA_URL=http://localhost:3000`.
+"#,
+            _ => "",
+        };
+        if !section.is_empty() {
+            out.push('\n');
+            out.push_str(section);
+        }
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -77,9 +217,14 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                 depends_on: Vec::new(),
             }),
 
-            // "mongodb" не добавляем в docker: toolchain ставит mongod локально,
-            // и docker-контейнер на порту 27017 будет конфликтовать с ним,
-            // а MONGODB_URI в .env.example указывает на localhost.
+            "mongodb" => services.push(DockerService {
+                name: "mongo".into(),
+                image: "mongo:8".into(),
+                ports: vec!["27017:27017".into()],
+                environment: Vec::new(),
+                volumes: Vec::new(),
+                depends_on: Vec::new(),
+            }),
 
             "mysql" => services.push(DockerService {
                 name: "mysql".into(),
@@ -154,6 +299,17 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                     "./logs:/opt/airflow/logs".into(),
                 ],
                 depends_on: vec!["postgres".into()],
+            }),
+
+            // grafana: контейнерный порт 3000 — конфликтовал бы с app-сервисом
+            // проекта (app_port 3000), поэтому наружу отдаём 3001.
+            "grafana" => services.push(DockerService {
+                name: "grafana".into(),
+                image: "grafana/grafana:11.6.1".into(),
+                ports: vec!["3001:3000".into()],
+                environment: Vec::new(),
+                volumes: Vec::new(),
+                depends_on: Vec::new(),
             }),
 
             _ => {}
