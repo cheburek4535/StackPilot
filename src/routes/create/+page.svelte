@@ -53,6 +53,7 @@ import type {
   ToolRequirement,
 } from "$lib/modules/toolchain/types";
 import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/modules/toolchain/types";
+import TechIcon from "$lib/components/TechIcon.svelte";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -303,9 +304,13 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   envInstalling = bool(s.envInstalling);
 }
 
-/** Автозейв с дебаунсом: логогенерация (установка/генерация) не спамит storage */
+/** Автозейв с дебаунсом: логогенерация (установка/генерация) не спамит storage.
+ *  Во время стриминга (phase 5/6) персист отключён вовсе — состояние
+ *  восстанавливается из бэкенд-сессии (reSyncLiveSessions), а финальные
+ *  точки (завершение установки/генерации) сами вызывают persistNow(). */
 $effect(() => {
   if (!persistReady) return;
+  if (phase === 5 || phase === 6) return;
   const snap = buildSnapshot();
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => saveCreateSession(snap), 300);
@@ -384,21 +389,28 @@ onMount(async () => {
       console.error("[create] failed to restore session:", e);
     }
   }
-  try {
-    tree = await getWizardTree();
-    status = tree.project_types.length > 0 ? "ready" : "empty";
-    if (restoredTypeId) {
-      selectedType = tree.project_types.find((pt) => pt.id === restoredTypeId) ?? null;
-    }
-  } catch (e) {
-    status = "error";
-    console.error(e);
-  }
-  try {
-    hostOs = await getHostPlatform();
-  } catch (e) {
-    console.error("cannot detect host OS:", e);
-  }
+  // Дерево и ОС независимы — грузим параллельно, не блокируя друг друга.
+  await Promise.allSettled([
+    (async () => {
+      try {
+        tree = await getWizardTree();
+        status = tree.project_types.length > 0 ? "ready" : "empty";
+        if (restoredTypeId) {
+          selectedType = tree.project_types.find((pt) => pt.id === restoredTypeId) ?? null;
+        }
+      } catch (e) {
+        status = "error";
+        console.error(e);
+      }
+    })(),
+    (async () => {
+      try {
+        hostOs = await getHostPlatform();
+      } catch (e) {
+        console.error("cannot detect host OS:", e);
+      }
+    })(),
+  ]);
   await reSyncLiveSessions();
   persistReady = true;
 });
@@ -412,9 +424,9 @@ onDestroy(() => {
   stopTick();
 });
 
-function imgSrc(name: string | null): string {
-  if (!name) return "";
-  return `/images/${name}`;
+/** Иконка тула из wizard_tree по tool_id (для requirements/tasks окружения) */
+function toolIcon(toolId: string): string | null {
+  return tree?.tools.find((t) => t.id === toolId)?.icon ?? null;
 }
 
 // ----------------------------------------------------------
@@ -441,19 +453,16 @@ function fwLevelOf(fw: FrameworkDef): "full" | "inplace" | "side" {
 const FW_LEVELS = [
   {
     id: "full",
-    icon: "🏗️",
     title: "Full application frameworks",
     note: "Create the whole project scaffold by themselves (Spring Boot, Django, Next.js).",
   },
   {
     id: "inplace",
-    icon: "🔧",
     title: "In-place & lightweight",
     note: "Attach into a base project of their language (FastAPI, Express, Gin).",
   },
   {
     id: "side",
-    icon: "🧩",
     title: "Side modules & libraries",
     note: "Optional add-ons to the main stack (bots, plugins) — can coexist with anything.",
   },
@@ -1090,31 +1099,18 @@ function toggleTool(id: string) {
   }
 }
 
-function toolCategoryIcon(cat: string): string {
-  const icons: Record<string, string> = {
-    database: "🗄️",
-    cache: "⚡",
-    container: "📦",
-    testing: "🧪",
-    tooling: "🔧",
-    ci: "🔄",
-    monitoring: "📊",
-  };
-  return icons[cat] ?? "🔹";
-}
-
-const TOOL_CATEGORIES: { id: string; label: string; icon: string }[] = [
-  { id: "database", label: "Databases", icon: "🗄️" },
-  { id: "cache", label: "Caches", icon: "⚡" },
-  { id: "messaging", label: "Messaging & Queues", icon: "📨" },
-  { id: "observability", label: "Observability", icon: "📊" },
-  { id: "testing", label: "Testing", icon: "🧪" },
-  { id: "tooling", label: "Tooling", icon: "🔧" },
-  { id: "container", label: "Containers", icon: "📦" },
-  { id: "orchestration", label: "Orchestration", icon: "🎼" },
-  { id: "etl", label: "ETL & Data", icon: "🔄" },
-  { id: "baas", label: "Backend as a Service", icon: "☁️" },
-  { id: "infra", label: "Infrastructure", icon: "🏗️" },
+const TOOL_CATEGORIES: { id: string; label: string }[] = [
+  { id: "database", label: "Databases" },
+  { id: "cache", label: "Caches" },
+  { id: "messaging", label: "Messaging & Queues" },
+  { id: "observability", label: "Observability" },
+  { id: "testing", label: "Testing" },
+  { id: "tooling", label: "Tooling" },
+  { id: "container", label: "Containers" },
+  { id: "orchestration", label: "Orchestration" },
+  { id: "etl", label: "ETL & Data" },
+  { id: "baas", label: "Backend as a Service" },
+  { id: "infra", label: "Infrastructure" },
 ];
 
 // ----------------------------------------------------------
@@ -1246,16 +1242,24 @@ async function onProjectNameInput() {
   }
 }
 
+/** Номер последнего запущенного запроса к checkFolderExists: устаревшие
+ *  ответы (пользователь успел переименовать проект) игнорируются. */
+let folderCheckSeq = 0;
+
 async function checkProjectFolder() {
   const path = effectiveProjectPath();
   if (!path) return;
+  const seq = ++folderCheckSeq;
   folderCheckPending = true;
   try {
-    folderExists = await checkFolderExists(path);
+    const exists = await checkFolderExists(path);
+    if (seq !== folderCheckSeq) return;
+    folderExists = exists;
   } catch {
+    if (seq !== folderCheckSeq) return;
     folderExists = false;
   } finally {
-    folderCheckPending = false;
+    if (seq === folderCheckSeq) folderCheckPending = false;
   }
 }
 
@@ -1426,10 +1430,10 @@ function handleToolchainEvent(event: ToolchainEvent) {
       envDownload.set(event.task_id, { received: Number(dl[1]), total: Number(dl[2]) });
       envDownload = new Map(envDownload);
     } else if (line.startsWith("tc:error ")) {
-      envErrors = [...envErrors, `${event.tool_id}: ${line.slice("tc:error ".length)}`];
-      envLogs = [...envLogs, line];
+      envErrors = [...envErrors.slice(-199), `${event.tool_id}: ${line.slice("tc:error ".length)}`];
+      envLogs = [...envLogs.slice(-2999), line];
     } else {
-      envLogs = [...envLogs, line];
+      envLogs = [...envLogs.slice(-2999), line];
     }
   }
   if ("TaskCompleted" in t) {
@@ -1448,6 +1452,7 @@ function handleInstallDone(plan: InstallPlan) {
   stopTick();
   const installedCount = plan.tasks.filter((t) => taskStateKind(t.state) === "success").length;
   if (installedCount > 0) envRestartHint = true;
+  persistNow();
   fetchNewSecrets();
 }
 
@@ -1539,8 +1544,10 @@ async function confirmAll() {
   }
 
   folderCheckPending = true;
+  const seq = ++folderCheckSeq;
   try {
     const exists = await checkFolderExists(path);
+    if (seq !== folderCheckSeq) return;
     if (exists) {
       folderExists = true;
       folderCheckPending = false;
@@ -1550,6 +1557,7 @@ async function confirmAll() {
   } catch {
     // ignore, proceed anyway
   }
+  if (seq !== folderCheckSeq) return;
   folderCheckPending = false;
 
   await goToEnvironment();
@@ -1638,8 +1646,10 @@ function handleExecEvent(event: ExecutionEvent) {
       const p = (t as Record<string, { stdout?: string; stderr?: string }>).StepProgress;
       const line = p?.stdout || p?.stderr || "";
       if (line) {
-        entry.logs = [...entry.logs, line];
-        execLogs = [...execLogs, line];
+        // Ограничиваем накопление: длинные генерации (npm install, cargo build)
+        // льют тысячи строк — держим последние 300 строк шага и 3000 всего.
+        entry.logs = [...entry.logs.slice(-299), line];
+        execLogs = [...execLogs.slice(-2999), line];
       }
     }
     if ("StepCompleted" in t) {
@@ -1650,11 +1660,13 @@ function handleExecEvent(event: ExecutionEvent) {
       const a = (t as Record<string, { result: { total_duration_ms: number; overall: unknown } }>).AllCompleted;
       execOverallStatus = "done";
       execResult = { duration: a?.result?.total_duration_ms ?? 0, status: JSON.stringify(a?.result?.overall) };
+      persistNow();
     }
     if ("Error" in t) {
       const err = (t as Record<string, { message: string }>).Error;
       execError = err?.message ?? String(t);
       execOverallStatus = "error";
+      persistNow();
     }
   }
   execStatuses = new Map(execStatuses);
@@ -1668,6 +1680,7 @@ function openInVSCode() {
 
 function cancelExecution() {
   execOverallStatus = "cancelled";
+  persistNow();
 }
 
 function resetAll() {
@@ -1780,11 +1793,7 @@ function resetAll() {
       <div class="preset-grid">
         {#each tree!.presets as p}
           <div class="preset-card">
-            {#if p.icon}
-              <img src={imgSrc(p.icon)} alt={p.label} class="card-img" />
-            {:else}
-              <span class="card-img-placeholder">▣</span>
-            {/if}
+            <TechIcon icon={p.icon} alt={p.label} size="xl" />
             <h3>{p.label}</h3>
             <p class="preset-desc">{p.description}</p>
             <div class="preset-stack">
@@ -1817,6 +1826,7 @@ function resetAll() {
                 {#each envCheckProgress as ev}
                   <div class="env-progress-row">
                     <span class="env-icon">{statusKind(ev.status) === "ok" ? "✅" : "🔍"}</span>
+                    <TechIcon icon={ev.icon ?? toolIcon(ev.tool_id)} alt={ev.display} size="sm" />
                     <span class="env-name">{ev.display}</span>
                     <span class="env-status muted">
                       {statusKind(ev.status) === "ok"
@@ -1849,6 +1859,7 @@ function resetAll() {
                       {:else if taskStateKind(st) === "skipped"}⏭️
                       {:else}•{/if}
                     </span>
+                    <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
                     <span class="env-name">{task.display}</span>
                     <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
                     <span
@@ -1910,7 +1921,7 @@ function resetAll() {
                   {#if kind === "ok"}
                     <span class="env-select">✅</span>
                   {:else if kind === "manual"}
-                    <span class="env-select manual-badge" title="Installed manually, no auto-install">⚙️</span>
+                    <span class="env-select manual-badge" title="Installed manually, no auto-install"><TechIcon alt="" size="sm" /></span>
                   {:else}
                     <label class="env-select">
                       <input
@@ -1920,7 +1931,7 @@ function resetAll() {
                       />
                     </label>
                   {/if}
-                  <span class="env-icon">{toolCategoryIcon(req.category)}</span>
+                  <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
                   <span class="env-name">{req.display}</span>
                   <span class="env-source">{req.source_description}</span>
                   <span
@@ -1946,8 +1957,8 @@ function resetAll() {
                 </p>
                 {#each envCheck.optional_requirements ?? [] as req}
                   <div class="env-row broken">
-                    <span class="env-select">🐳</span>
-                    <span class="env-icon">{toolCategoryIcon(req.category)}</span>
+                    <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
+                    <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
                     <span class="env-name">{req.display}</span>
                     <span class="env-source">Docker (docker-compose.yaml)</span>
                     <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
@@ -1977,6 +1988,7 @@ function resetAll() {
                         {:else if kind === "skipped"}⏭️
                         {:else}•{/if}
                       </span>
+                      <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
                       <span class="env-name">{task.display}</span>
                       <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
                       <span class="env-status">
@@ -2159,11 +2171,7 @@ function resetAll() {
             <div class="card-grid type-grid">
               {#each tree!.project_types as pt}
                 <button class="card" onclick={() => selectType(pt)}>
-                  {#if pt.icon}
-                    <img src={imgSrc(pt.icon)} alt={pt.label} class="card-img" />
-                  {:else}
-                    <span class="card-img-placeholder">▣</span>
-                  {/if}
+                  <TechIcon icon={pt.icon} alt={pt.label} size="xl" />
                   <h3>{pt.label}</h3>
                   <p>{pt.description}</p>
                 </button>
@@ -2191,11 +2199,7 @@ function resetAll() {
                   title={altInfo?.detail}
                   onclick={() => clickFramework(fw.id)}
                 >
-                  {#if fw.icon}
-                    <img src={imgSrc(fw.icon)} alt={fw.label} class="card-img-sm" />
-                  {:else}
-                    <span class="card-img-placeholder-sm">▣</span>
-                  {/if}
+                  <TechIcon icon={fw.icon} alt={fw.label} size="lg" />
                   <h3>{fw.label}</h3>
                   <p>{fw.description}</p>
                   {#if selectedFrameworks.includes(fw.id) && summary}
@@ -2204,7 +2208,7 @@ function resetAll() {
                     <span class="fw-lang-chip">{fwLangsLabel(fw)}</span>
                   {/if}
                   {#if fw.languages.length > 1}
-                    <span class="fw-lang-multi">⚙ choose language</span>
+                    <span class="fw-lang-multi">choose language</span>
                   {/if}
                   {#if warnReason !== null}
                     <span class="warn-badge" title={warnReason}>⚠ {warnReason}</span>
@@ -2393,10 +2397,10 @@ function resetAll() {
               </div>
             {/if}
 
-            {#snippet fwLevel(title: string, icon: string, items: FrameworkDef[], note: string)}
+            {#snippet fwLevel(title: string, items: FrameworkDef[], note: string)}
               <details class="fw-level" open>
                 <summary>
-                  <span class="fw-level-icon">{icon}</span>
+                  <TechIcon alt="" size="sm" />
                   <span class="fw-level-title">{title}</span>
                   <span class="fw-level-count">{items.length}</span>
                 </summary>
@@ -2409,10 +2413,10 @@ function resetAll() {
               </details>
             {/snippet}
 
-            {#snippet territory(side: string, title: string, icon: string, desc: string, items: FrameworkDef[], langs: string[])}
+            {#snippet territory(side: string, title: string, desc: string, items: FrameworkDef[], langs: string[])}
               <section class="territory territory-{side}">
                 <header class="territory-head">
-                  <span class="territory-icon">{icon}</span>
+                  <TechIcon alt="" size="md" />
                   <div class="territory-title-wrap">
                     <h3 class="territory-title">{title}</h3>
                     <p class="territory-desc">{desc}</p>
@@ -2428,7 +2432,7 @@ function resetAll() {
                   {#each FW_LEVELS as lvl}
                     {@const lvlItems = items.filter((f) => fwLevelOf(f) === lvl.id)}
                     {#if lvlItems.length > 0}
-                      {@render fwLevel(lvl.title, lvl.icon, lvlItems, lvl.note)}
+                      {@render fwLevel(lvl.title, lvlItems, lvl.note)}
                     {/if}
                   {/each}
                 </div>
@@ -2439,7 +2443,6 @@ function resetAll() {
               {@render territory(
                 "backend",
                 "Backend territory",
-                "⚙️",
                 "Server-side: APIs, services, bots — goes into backend/",
                 backendFws,
                 backendLangs,
@@ -2449,7 +2452,6 @@ function resetAll() {
               {@render territory(
                 "frontend",
                 "Frontend territory",
-                "🎨",
                 "Client-side: interfaces for the browser or apps — goes into frontend/",
                 frontendFws,
                 frontendLangs,
@@ -2459,7 +2461,6 @@ function resetAll() {
               {@render territory(
                 "either",
                 "Desktop & standalone territory",
-                "💻",
                 "Whole-project apps that own everything (Tauri, Qt) — conflicts with backend/frontend stacks",
                 eitherFws,
                 [],
@@ -2472,7 +2473,7 @@ function resetAll() {
             <!-- Языки без фреймворков (необязательно): чистый стек или поддержка -->
             <section class="territory territory-langs">
               <header class="territory-head">
-                <span class="territory-icon">🔤</span>
+                <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
                   <h3 class="territory-title">Plain languages</h3>
                   <p class="territory-desc">
@@ -2496,11 +2497,7 @@ function resetAll() {
                           disabled={blockedReason !== null}
                           onclick={() => toggleLang("backend", lang.id)}
                         >
-                          {#if lang.icon}
-                            <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
-                          {:else}
-                            <span class="card-img-placeholder-sm">▣</span>
-                          {/if}
+                          <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
                           <h3>{lang.label}</h3>
                           {#if backendLangs.includes(lang.id)}
                             <span class="fw-lang-chip selected">✓ active</span>
@@ -2525,11 +2522,7 @@ function resetAll() {
                           disabled={blockedReason !== null}
                           onclick={() => toggleLang("frontend", lang.id)}
                         >
-                          {#if lang.icon}
-                            <img src={imgSrc(lang.icon)} alt={lang.label} class="card-img-sm" />
-                          {:else}
-                            <span class="card-img-placeholder-sm">▣</span>
-                          {/if}
+                          <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
                           <h3>{lang.label}</h3>
                           {#if lang.category === "static"}
                             <p>Plain HTML, CSS & JS</p>
@@ -2551,7 +2544,7 @@ function resetAll() {
             <!-- Инструменты и фичи -->
             <section class="territory territory-tools">
               <header class="territory-head">
-                <span class="territory-icon">🧰</span>
+                <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
                   <h3 class="territory-title">Tools & Features</h3>
                   <p class="territory-desc">Databases, caches, testing, containers — pick what your stack needs.</p>
@@ -2565,7 +2558,7 @@ function resetAll() {
                   {#if catTools.length > 0}
                     <div class="tool-group">
                       <p class="tool-cat-title">
-                        <span class="tool-cat-icon">{cat.icon}</span>
+                        <TechIcon alt="" size="xs" />
                         {cat.label}
                         <span class="tool-cat-count">{catTools.length}</span>
                         {#if recTools.length > 0}
@@ -2583,11 +2576,7 @@ function resetAll() {
                             onfocus={(e) => showTooltip(tool, e)}
                             onblur={hideTooltip}
                           >
-                            {#if tool.icon}
-                              <img src={imgSrc(tool.icon)} alt={tool.label} class="tool-item-icon" />
-                            {:else}
-                              <span class="tool-item-icon tool-item-icon-ph">▣</span>
-                            {/if}
+                            <TechIcon icon={tool.icon} alt={tool.label} size="md" />
                             <span class="tool-item-text">
                               <span class="tool-item-name">{tool.label}</span>
                               <span class="tool-item-desc">{tool.description}</span>
@@ -2597,7 +2586,7 @@ function resetAll() {
                                 <span class="tool-item-badge rec">⭐ recommended</span>
                               {/if}
                               {#if tool.requires_docker}
-                                <span class="tool-item-badge docker">🐳 Docker</span>
+                                <span class="tool-item-badge docker"><TechIcon icon="docker.svg" alt="" size="xs" /> Docker</span>
                               {/if}
                               {#if tool.conflicts.length > 0}
                                 <span class="tool-item-badge conflict">
@@ -2626,13 +2615,13 @@ function resetAll() {
                       <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
                     {/if}
                     {#if tooltipData.tool.requires_docker}
-                      <p class="tt-docker">🐳 Requires Docker</p>
+                      <p class="tt-docker"><TechIcon icon="docker.svg" alt="" size="xs" /> Requires Docker</p>
                     {/if}
                   </div>
                 {/if}
 
                 <div class="features-panel">
-                  <p class="group-label">⚙️ Features</p>
+                  <p class="group-label">Features</p>
                   <label class="feature-toggle">
                     <input type="checkbox" bind:checked={testing} />
                     <span>Testing</span>
@@ -2886,7 +2875,6 @@ function resetAll() {
 .fw-level[open] > summary::before { transform: rotate(90deg); }
 .fw-level[open] > summary { border-bottom-color: #2c2c46; }
 .fw-level > summary:hover { background: rgba(108, 92, 231, 0.08); }
-.fw-level-icon { font-size: 1rem; }
 .fw-level-title { font-weight: 700; font-size: 0.9rem; color: #eee; }
 .fw-level-count {
   margin-left: auto;
@@ -2908,12 +2896,6 @@ function resetAll() {
 .card.blocked:hover { border-color: #333; background: #15152e; }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: #888; }
-.card-img { width: 56px; height: 56px; object-fit: contain; }
-.card-img-sm { width: 40px; height: 40px; object-fit: contain; }
-.card-img-xs { width: 24px; height: 24px; object-fit: contain; }
-.card-img-placeholder { font-size: 2rem; }
-.card-img-placeholder-sm { font-size: 1.5rem; }
-.card-img-placeholder-xs { font-size: 1rem; }
 .type-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); grid-auto-rows: 1fr; align-items: stretch; }
 .fw-grid .card { min-height: 200px; height: 100%; box-sizing: border-box; }
@@ -3036,7 +3018,6 @@ function resetAll() {
 .territory-backend .territory-head { background: rgba(108, 92, 231, 0.12); border-bottom-color: rgba(108, 92, 231, 0.35); }
 .territory-frontend .territory-head { background: rgba(46, 196, 182, 0.1); border-bottom-color: rgba(46, 196, 182, 0.3); }
 .territory-either .territory-head { background: rgba(241, 196, 15, 0.08); border-bottom-color: rgba(241, 196, 15, 0.3); }
-.territory-icon { font-size: 1.3rem; line-height: 1; }
 .territory-title-wrap { flex: 1; min-width: 0; }
 .territory-title { margin: 0; font-size: 0.95rem; font-weight: 700; color: #eee; }
 .territory-desc { margin: 0.15rem 0 0; font-size: 0.78rem; color: #888; }
@@ -3080,7 +3061,6 @@ function resetAll() {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.tool-cat-icon { font-size: 0.9rem; }
 .tool-cat-count {
   font-size: 0.68rem;
   color: #777;
@@ -3116,8 +3096,6 @@ function resetAll() {
 }
 .tool-item:hover { border-color: #6c5ce7; background: #1c1c3a; }
 .tool-item.selected { border-color: #6c5ce7; background: #241a44; box-shadow: inset 0 0 0 1px #6c5ce7; }
-.tool-item-icon { width: 26px; height: 26px; object-fit: contain; flex: 0 0 26px; }
-.tool-item-icon-ph { display: flex; align-items: center; justify-content: center; font-size: 1.1rem; color: #6c5ce7; }
 .tool-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .tool-item-name { font-size: 0.88rem; font-weight: 600; }
 .tool-item-desc { font-size: 0.74rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

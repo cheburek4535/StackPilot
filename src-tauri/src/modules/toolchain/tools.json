@@ -3,8 +3,8 @@
     "id": "winget",
     "category": "utility",
     "display": "Winget (App Installer)",
-    "description": "РњРµРЅРµРґР¶РµСЂ РїР°РєРµС‚РѕРІ Windows вЂ” РѕСЃРЅРѕРІРЅРѕР№ РёСЃС‚РѕС‡РЅРёРє СѓСЃС‚Р°РЅРѕРІРєРё РџРћ",
-    "icon": null,
+    "description": "Менеджер пакетов Windows — основной источник установки ПО",
+    "icon": "winget.svg",
     "detection": {
       "version_probes": [["winget", "--version"]],
       "known_paths": [],
@@ -30,14 +30,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Winget СЂР°СЃРїСЂРѕСЃС‚СЂР°РЅСЏРµС‚СЃСЏ РєР°Рє Microsoft App Installer (MSIX). РЈСЃС‚Р°РЅР°РІР»РёРІР°РµС‚СЃСЏ С‡РµСЂРµР· Add-AppxPackage СЃ РѕС„РёС†РёР°Р»СЊРЅРѕРіРѕ GitHub-СЂРµР»РёР·Р°, Р±РµР· РїСЂР°РІ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР°."
+    "notes": "Winget распространяется как Microsoft App Installer (MSIX). Устанавливается через Add-AppxPackage с официального GitHub-релиза, без прав администратора."
   },
   {
     "id": "node",
     "category": "language",
     "display": "Node.js",
-    "description": "Р Р°РЅС‚Р°Р№Рј JavaScript/TypeScript, РЅСѓР¶РµРЅ npm, npx Рё РІСЃРµРј JS-С„СЂРµР№РјРІРѕСЂРєР°Рј",
-    "icon": null,
+    "description": "Рантайм JavaScript/TypeScript, нужен npm, npx и всем JS-фреймворкам",
+    "icon": "node.svg",
     "detection": {
       "version_probes": [["node", "--version"]],
       "known_paths": ["C:/Program Files/nodejs", "%LOCALAPPDATA%/Programs/nodejs"],
@@ -66,8 +66,8 @@
     "id": "npm",
     "category": "package_manager",
     "display": "NPM",
-    "description": "РњРµРЅРµРґР¶РµСЂ РїР°РєРµС‚РѕРІ Node.js (РїРѕСЃС‚Р°РІР»СЏРµС‚СЃСЏ РІРјРµСЃС‚Рµ СЃ Node.js)",
-    "icon": null,
+    "description": "Менеджер пакетов Node.js (поставляется вместе с Node.js)",
+    "icon": "npm.svg",
     "detection": {
       "version_probes": [["npm", "--version"]],
       "known_paths": [],
@@ -86,8 +86,8 @@
     "id": "python",
     "category": "language",
     "display": "Python",
-    "description": "РРЅС‚РµСЂРїСЂРµС‚Р°С‚РѕСЂ Python, РЅСѓР¶РµРЅ pip, venv Рё Python-С„СЂРµР№РјРІРѕСЂРєР°Рј",
-    "icon": null,
+    "description": "Интерпретатор Python, нужен pip, venv и Python-фреймворкам",
+    "icon": "python.svg",
     "detection": {
       "version_probes": [["python", "--version"], ["python3", "--version"]],
       "known_paths": ["C:/Program Files/Python3*", "%LOCALAPPDATA%/Programs/Python/Python3*"],
@@ -116,8 +116,8 @@
     "id": "pip",
     "category": "package_manager",
     "display": "Pip",
-    "description": "РњРµРЅРµРґР¶РµСЂ РїР°РєРµС‚РѕРІ Python (РїРѕСЃС‚Р°РІР»СЏРµС‚СЃСЏ РІРјРµСЃС‚Рµ СЃ Python)",
-    "icon": null,
+    "description": "Менеджер пакетов Python (поставляется вместе с Python)",
+    "icon": "pip.svg",
     "detection": {
       "version_probes": [["pip", "--version"], ["python", "-m", "pip", "--version"]],
       "known_paths": [],
@@ -136,8 +136,8 @@
     "id": "rust",
     "category": "language",
     "display": "Rust (rustup)",
-    "description": "РЈСЃС‚Р°РЅРѕРІС‰РёРє С‚СѓР»С‡РµР№РЅР° Rust: rustup, rustc Рё cargo",
-    "icon": null,
+    "description": "Установщик тулчейна Rust: rustup, rustc и cargo",
+    "icon": "rust.png",
     "detection": {
       "version_probes": [["rustc", "--version"], ["rustup", "--version"]],
       "known_paths": ["%USERPROFILE%/.cargo/bin"],
@@ -160,14 +160,14 @@
       { "label": "rustc", "command": ["rustc", "--version"] },
       { "label": "cargo", "command": ["cargo", "--version"] }
     ],
-    "notes": "Р”Р»СЏ stable-С‚СѓР»С‡РµР№РЅР° РЅР° Windows РЅСѓР¶РµРЅ MSVC Build Tools вЂ” РѕРЅ Р±СѓРґРµС‚ СѓСЃС‚Р°РЅРѕРІР»РµРЅ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё."
+    "notes": "Для stable-тулчейна на Windows нужен MSVC Build Tools — он будет установлен автоматически."
   },
   {
     "id": "rustc",
     "category": "compiler",
     "display": "Rustc",
-    "description": "РљРѕРјРїРёР»СЏС‚РѕСЂ Rust (РїРѕСЃС‚Р°РІР»СЏРµС‚СЃСЏ РІРјРµСЃС‚Рµ СЃ rustup)",
-    "icon": null,
+    "description": "Компилятор Rust (поставляется вместе с rustup)",
+    "icon": "rust.png",
     "detection": {
       "version_probes": [["rustc", "--version"]],
       "known_paths": [],
@@ -186,8 +186,8 @@
     "id": "cargo",
     "category": "package_manager",
     "display": "Cargo",
-    "description": "РњРµРЅРµРґР¶РµСЂ РїР°РєРµС‚РѕРІ Рё СЃР±РѕСЂРєРё Rust (РїРѕСЃС‚Р°РІР»СЏРµС‚СЃСЏ РІРјРµСЃС‚Рµ СЃ rustup)",
-    "icon": null,
+    "description": "Менеджер пакетов и сборки Rust (поставляется вместе с rustup)",
+    "icon": "rust.png",
     "detection": {
       "version_probes": [["cargo", "--version"]],
       "known_paths": [],
@@ -206,8 +206,8 @@
     "id": "tauri-cli",
     "category": "tooling",
     "display": "Tauri CLI",
-    "description": "CLI РґР»СЏ СЃР±РѕСЂРєРё Tauri-РїСЂРёР»РѕР¶РµРЅРёР№ (cargo tauri / tauri dev). РЎС‚Р°РІРёС‚СЃСЏ С‡РµСЂРµР· npm (РіР»РѕР±Р°Р»СЊРЅС‹Р№ @tauri-apps/cli) РёР»Рё cargo",
-    "icon": null,
+    "description": "CLI для сборки Tauri-приложений (cargo tauri / tauri dev). Ставится через npm (глобальный @tauri-apps/cli) или cargo",
+    "icon": "tauri.svg",
     "detection": {
       "version_probes": [["tauri", "--version"]],
       "known_paths": ["%APPDATA%/npm", "%USERPROFILE%/.cargo/bin"],
@@ -231,14 +231,14 @@
     "path_entries": ["%APPDATA%\\npm", "%USERPROFILE%\\.cargo\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "url: \"npm\"/\"cargo\" вЂ” СЌС‚Рѕ РєРѕРјР°РЅРґР° Р·Р°РїСѓСЃРєР° (РїР°С‚С‚РµСЂРЅ В«Р»РѕРєР°Р»СЊРЅС‹Р№ РїСѓС‚СЊ Р±РµР· httpВ»). РСЃС‚РѕС‡РЅРёРєРё РїСЂРѕР±СѓСЋС‚СЃСЏ РїРѕ РїРѕСЂСЏРґРєСѓ: npm Р±С‹СЃС‚СЂРµРµ (prebuilt), cargo вЂ” Р·Р°РїР°СЃРЅРѕР№."
+    "notes": "url: \"npm\"/\"cargo\" — это команда запуска (паттерн «локальный путь без http»). Источники пробуются по порядку: npm быстрее (prebuilt), cargo — запасной."
   },
   {
     "id": "go",
     "category": "language",
     "display": "Go",
-    "description": "РЇР·С‹Рє Рё С‚СѓР»С‡РµР№РЅ Go (go, gofmt, go mod)",
-    "icon": null,
+    "description": "Язык и тулчейн Go (go, gofmt, go mod)",
+    "icon": "go.webp",
     "detection": {
       "version_probes": [["go", "version"]],
       "known_paths": ["C:/Program Files/Go/bin"],
@@ -264,8 +264,8 @@
     "id": "java",
     "category": "language",
     "display": "Java (Temurin JDK)",
-    "description": "JDK РѕС‚ Eclipse Adoptium вЂ” РЅСѓР¶РµРЅ Maven, Gradle, Spring Boot Рё Android",
-    "icon": null,
+    "description": "JDK от Eclipse Adoptium — нужен Maven, Gradle, Spring Boot и Android",
+    "icon": "java.svg",
     "detection": {
       "version_probes": [["java", "-version"]],
       "known_paths": ["C:/Program Files/Eclipse Adoptium"],
@@ -285,13 +285,13 @@
     "path_entries": ["C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.1.12-hotspot\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Р’РµСЂСЃРёСЏ РїРµС‡Р°С‚Р°РµС‚СЃСЏ РІ stderr вЂ” РїР°СЂСЃРµСЂ СѓС‡С‚С‘С‚ СЌС‚Рѕ РЅР° СЌС‚Р°РїРµ 2."  },
+    "notes": "Версия печатается в stderr — парсер учтёт это на этапе 2."  },
   {
     "id": "kotlin",
     "category": "language",
     "display": "Kotlin (kotlinc)",
     "description": "Компилятор Kotlin: kotlinc, kapt (JVM)",
-    "icon": null,
+    "icon": "kotlin.svg",
     "detection": {
       "version_probes": [["kotlinc", "-version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/kotlin/*/bin"],
@@ -317,7 +317,7 @@
     "category": "middleware",
     "display": "Apache Kafka",
     "description": "Распределённая брокерская очередь сообщений (Kafka, Zookeeper-совместимый KRaft)",
-    "icon": null,
+    "icon": "kafka.svg",
     "detection": {
       "version_probes": [["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Get-ChildItem \"$env:LOCALAPPDATA\\Programs\\kafka\\*\\libs\\kafka_*.jar\" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $_.Name -replace '^kafka_[^-]+-', '' -replace '\\.jar$', '' }"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/kafka/*/bin/windows"],
@@ -343,7 +343,7 @@
     "category": "monitoring",
     "display": "Grafana",
     "description": "Панель мониторинга и аналитики (Grafana OSS)",
-    "icon": null,
+    "icon": "grafana.svg",
     "detection": {
       "version_probes": [["grafana-server", "--version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/grafana/*/bin", "C:/Program Files/GrafanaLabs/Grafana/bin"],
@@ -370,7 +370,7 @@
     "category": "tooling",
     "display": "Terraform",
     "description": "Инфраструктура как код (HashiCorp Terraform)",
-    "icon": null,
+    "icon": "terra.svg",
     "detection": {
       "version_probes": [["terraform", "version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/terraform"],
@@ -397,7 +397,7 @@
     "category": "tooling",
     "display": "Firebase CLI",
     "description": "Firebase CLI: deploy, functions, emulators",
-    "icon": null,
+    "icon": "firebase.svg",
     "detection": {
       "version_probes": [["firebase", "--version"]],
       "known_paths": ["%APPDATA%/npm"],
@@ -406,8 +406,8 @@
     "versions": { "min": "12", "recommended": "13" },
     "sources": {
       "windows": [
-        { "kind": "PkgManager", "id": "Google.FirebaseCLI", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
-        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "firebase-tools"], "extra_args": [], "dynamic_args": false }
+        { "kind": "Official", "id": "npm-global", "url": "npm", "args": ["install", "-g", "firebase-tools"], "extra_args": [], "dynamic_args": false },
+        { "kind": "PkgManager", "id": "Google.FirebaseCLI", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false }
       ],
       "linux": [
         { "kind": "PkgManager", "id": "firebase-tools", "args": [], "extra_args": [], "dynamic_args": false },
@@ -423,14 +423,14 @@
     "path_entries": ["%APPDATA%\\npm"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "winget-порт Firebase CLI устарел — fallback: npm install -g firebase-tools."
+    "notes": "npm global install -g firebase-tools — основной источник (winget-порт Google.FirebaseCLI устарел и иногда отдаёт 404)."
   },
   {
     "id": "dotnet",
     "category": "language",
     "display": ".NET SDK",
-    "description": "SDK РґР»СЏ C#: dotnet new, build, run (ASP.NET Core, MAUI, Unity-РёРЅСЃС‚СЂСѓРјРµРЅС‚С‹)",
-    "icon": null,
+    "description": "SDK для C#: dotnet new, build, run (ASP.NET Core, MAUI, Unity-инструменты)",
+    "icon": "dotnet.svg",
     "detection": {
       "version_probes": [["dotnet", "--version"]],
       "known_paths": ["C:/Program Files/dotnet"],
@@ -457,7 +457,7 @@
     "category": "tooling",
     "display": "C# REPL (CSharpRepl)",
     "description": "Интерактивная консоль C# (REPL), ставится глобально через dotnet tool",
-    "icon": null,
+    "icon": "csharp.svg",
     "detection": {
       "version_probes": [["csharprepl", "--version"]],
       "known_paths": [],
@@ -486,8 +486,8 @@
     "id": "msvc-build-tools",
     "category": "compiler",
     "display": "MSVC Build Tools (C++)",
-    "description": "РљРѕРјРїРёР»СЏС‚РѕСЂ MSVC Рё Windows SDK вЂ” РѕР±СЏР·Р°С‚РµР»СЊРЅС‹ РґР»СЏ Rust РЅР° Windows Рё C++",
-    "icon": null,
+    "description": "Компилятор MSVC и Windows SDK — обязательны для Rust на Windows и C++",
+    "icon": "msvc.svg",
     "detection": {
       "version_probes": [
         ["C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe", "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationVersion"],
@@ -523,14 +523,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РЎР°РјС‹Р№ С‚СЏР¶С‘Р»С‹Р№ РєРѕРјРїРѕРЅРµРЅС‚ (~4 Р“Р‘). РЈСЃС‚Р°РЅРѕРІРєР° РґРѕР»РіР°СЏ, РЅРѕ РїРѕР»РЅРѕСЃС‚СЊСЋ С‚РёС…Р°СЏ. РўСЂРµР±СѓРµС‚ РїСЂР°РІ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР°."
+    "notes": "Самый тяжёлый компонент (~4 ГБ). Установка долгая, но полностью тихая. Требует прав администратора."
   },
   {
     "id": "zig",
     "category": "language",
     "display": "Zig",
-    "description": "РЇР·С‹Рє Рё РєРѕРјРїРёР»СЏС‚РѕСЂ Zig (zig init-exe)",
-    "icon": null,
+    "description": "Язык и компилятор Zig (zig init-exe)",
+    "icon": "zig.svg",
     "detection": {
       "version_probes": [["zig", "version"]],
       "known_paths": ["%USERPROFILE%/zig/*"],
@@ -556,8 +556,8 @@
     "id": "dart",
     "category": "language",
     "display": "Dart SDK",
-    "description": "SDK РґР»СЏ Dart: dart create, pub (РЅСѓР¶РµРЅ Flutter)",
-    "icon": null,
+    "description": "SDK для Dart: dart create, pub (нужен Flutter)",
+    "icon": "dart.svg",
     "detection": {
       "version_probes": [["dart", "--version"]],
       "known_paths": ["C:/Program Files/Dart", "%LOCALAPPDATA%/dart-sdk/*/bin"],
@@ -583,8 +583,8 @@
     "id": "php",
     "category": "language",
     "display": "PHP",
-    "description": "РРЅС‚РµСЂРїСЂРµС‚Р°С‚РѕСЂ PHP (Laravel, Symfony)",
-    "icon": null,
+    "description": "Интерпретатор PHP (Laravel, Symfony)",
+    "icon": "php.webp",
     "detection": {
       "version_probes": [["php", "--version"]],
       "known_paths": ["C:/Program Files/php", "%LOCALAPPDATA%/Programs/php"],
@@ -593,7 +593,6 @@
     "versions": { "min": "8.1", "recommended": "8.4" },
     "sources": {
       "windows": [
-        { "kind": "PkgManager", "id": "PHP.PHP.8.3", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
         { "kind": "Official", "id": "php-zip", "url": "https://windows.php.net/downloads/releases/php-8.4.24-nts-Win32-vs17-x64.zip", "args": [], "extra_args": [], "dynamic_args": false, "install_dir": "%LOCALAPPDATA%/Programs/php" }
       ],
       "linux": [{ "kind": "PkgManager", "id": "php", "args": [], "extra_args": [], "dynamic_args": false }],
@@ -604,14 +603,14 @@
     "path_entries": ["C:\\Program Files\\php", "%LOCALAPPDATA%\\Programs\\php"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": null
+    "notes": "winget-источник PHP.PHP.8.3 нестабилен (падает с кодом -2145844844) — удалён, основная установка: zip с windows.php.net."
   },
   {
     "id": "composer",
     "category": "package_manager",
     "display": "Composer",
-    "description": "РњРµРЅРµРґР¶РµСЂ РїР°РєРµС‚РѕРІ PHP",
-    "icon": null,
+    "description": "Менеджер пакетов PHP",
+    "icon": "composer.svg",
     "detection": {
       "version_probes": [["composer", "--version"]],
       "known_paths": [],
@@ -630,14 +629,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РўСЂРµР±СѓРµС‚ PHP."
+    "notes": "Требует PHP."
   },
   {
     "id": "swift",
     "category": "language",
     "display": "Swift",
-    "description": "РўСѓР»С‡РµР№РЅ Swift (SwiftUI, Vapor)",
-    "icon": null,
+    "description": "Тулчейн Swift (SwiftUI, Vapor)",
+    "icon": "swift.svg",
     "detection": {
       "version_probes": [["swift", "--version"]],
       "known_paths": ["C:/Library/Swift"],
@@ -661,18 +660,18 @@
     "id": "erlang",
     "category": "language",
     "display": "Erlang/OTP",
-    "description": "Р Р°РЅС‚Р°Р№Рј Erlang вЂ” РѕР±СЏР·Р°С‚РµР»СЊРЅР°СЏ Р·Р°РІРёСЃРёРјРѕСЃС‚СЊ Elixir Рё Phoenix",
-    "icon": null,
+    "description": "Рантайм Erlang — обязательная зависимость Elixir и Phoenix",
+    "icon": "erlang.svg",
     "detection": {
       "version_probes": [["erl", "-noshell", "-eval", "io:format(\"~s\",[erlang:system_info(otp_release)]),halt()."]],
       "known_paths": ["C:/Program Files/erl-*"],
       "registry_keys": []
     },
-    "versions": { "min": "25", "recommended": "27" },
+    "versions": { "min": "25", "recommended": "29" },
     "sources": {
       "windows": [
-        { "kind": "PkgManager", "id": "Erlang.ErlangOTP", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
-        { "kind": "Official", "id": "erlang-exe", "url": "https://github.com/erlang/otp/releases/download/OTP-27.2/otp_win64_27.2.exe", "args": ["/S"], "extra_args": [], "dynamic_args": false }
+        { "kind": "Official", "id": "erlang-exe", "url": "https://github.com/erlang/otp/releases/download/OTP-29.0.5/otp_win64_29.0.5.exe", "args": ["/S"], "extra_args": [], "dynamic_args": false },
+        { "kind": "PkgManager", "id": "Erlang.ErlangOTP", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false }
       ],
       "linux": [{ "kind": "PkgManager", "id": "erlang", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "erlang", "args": [], "extra_args": [], "dynamic_args": false }]
@@ -682,40 +681,40 @@
     "path_entries": ["C:\\Program Files\\erl-*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": null
+    "notes": "Основная установка — официальный NSIS-инсталлятор с github.com/erlang/otp (winget-пакет Erlang.ErlangOTP нестабилен: падает с кодом 1)."
   },
   {
     "id": "elixir",
     "category": "language",
     "display": "Elixir",
-    "description": "РЇР·С‹Рє Elixir (mix new, Phoenix)",
-    "icon": null,
+    "description": "Язык Elixir (mix new, Phoenix)",
+    "icon": "elixir.svg",
     "detection": {
       "version_probes": [["elixir", "--version"]],
-      "known_paths": ["C:/Program Files/Elixir", "%LOCALAPPDATA%/Programs/elixir/*/bin"],
+      "known_paths": ["%LOCALAPPDATA%/Programs/elixir/bin", "%LOCALAPPDATA%/Programs/elixir/*/bin", "C:/Program Files/Elixir"],
       "registry_keys": []
     },
-    "versions": { "min": "1.14", "recommended": "1.18" },
+    "versions": { "min": "1.14", "recommended": "1.20" },
     "sources": {
       "windows": [
-        { "kind": "Official", "id": "elixir-zip", "url": "https://github.com/elixir-lang/elixir/releases/download/v1.18.2/elixir-otp-27.zip", "args": [], "extra_args": [], "dynamic_args": false, "install_dir": "%LOCALAPPDATA%/Programs/elixir" }
+        { "kind": "Official", "id": "elixir-zip", "url": "https://github.com/elixir-lang/elixir/releases/download/v1.20.3/elixir-otp-29.zip", "args": [], "extra_args": [], "dynamic_args": false, "install_dir": "%LOCALAPPDATA%/Programs/elixir" }
       ],
       "linux": [{ "kind": "PkgManager", "id": "elixir", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "elixir", "args": [], "extra_args": [], "dynamic_args": false }]
     },
     "size_mb": 30,
     "needs_admin": false,
-    "path_entries": ["C:\\Program Files\\Elixir\\bin", "%LOCALAPPDATA%\\Programs\\elixir\\*\\bin"],
+    "path_entries": ["%LOCALAPPDATA%\\Programs\\elixir\\bin", "%LOCALAPPDATA%\\Programs\\elixir\\*\\bin", "C:\\Program Files\\Elixir\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РўСЂРµР±СѓРµС‚ Erlang/OTP."
+    "notes": "Требует Erlang/OTP. Precompiled zip ставит bin/ сразу в install_dir (без промежуточной папки) — проверка и PATH учитывают оба варианта."
   },
   {
     "id": "gleam",
     "category": "language",
     "display": "Gleam",
-    "description": "РЇР·С‹Рє Gleam (gleam new)",
-    "icon": null,
+    "description": "Язык Gleam (gleam new)",
+    "icon": "gleam.svg",
     "detection": {
       "version_probes": [["gleam", "--version"]],
       "known_paths": ["%USERPROFILE%/.local/bin"],
@@ -741,8 +740,8 @@
     "id": "flutter",
     "category": "language",
     "display": "Flutter SDK",
-    "description": "SDK Flutter (flutter create) вЂ” РІРєР»СЋС‡Р°РµС‚ СЃРѕР±СЃС‚РІРµРЅРЅС‹Р№ Dart SDK",
-    "icon": null,
+    "description": "SDK Flutter (flutter create) — включает собственный Dart SDK",
+    "icon": "flutter.svg",
     "detection": {
       "version_probes": [["flutter", "--version"]],
       "known_paths": ["%USERPROFILE%/flutter"],
@@ -761,14 +760,14 @@
     "path_entries": ["%USERPROFILE%\\flutter\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Flutter СЃС‚Р°РІРёС‚СЃСЏ git-РєР»РѕРЅРёСЂРѕРІР°РЅРёРµРј СЃС‚Р°Р±РёР»СЊРЅРѕР№ РІРµС‚РєРё. РџРµСЂРІС‹Р№ Р·Р°РїСѓСЃРє flutter --version РґРѕР»СЊС€Рµ РѕР±С‹С‡РЅРѕРіРѕ."
+    "notes": "Flutter ставится git-клонированием стабильной ветки. Первый запуск flutter --version дольше обычного."
   },
   {
     "id": "maven",
     "category": "package_manager",
     "display": "Maven",
-    "description": "РЎР±РѕСЂС‰РёРє Java (mvn) вЂ” РЅСѓР¶РµРЅ Spring Boot",
-    "icon": null,
+    "description": "Сборщик Java (mvn) — нужен Spring Boot",
+    "icon": "maven.svg",
     "detection": {
       "version_probes": [["mvn", "--version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/maven/*/bin"],
@@ -787,14 +786,14 @@
     "path_entries": ["%LOCALAPPDATA%\\Programs\\maven\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РўСЂРµР±СѓРµС‚ Java JDK. Р’ winget РїР°РєРµС‚Р° РЅРµС‚ (Apache.Maven РЅРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚) вЂ” С‚РѕР»СЊРєРѕ РѕС„РёС†РёР°Р»СЊРЅС‹Р№ zip СЃ archive.apache.org; dlcdn С…СЂР°РЅРёС‚ Р»РёС€СЊ Р°РєС‚СѓР°Р»СЊРЅС‹Рµ РІРµСЂСЃРёРё."
+    "notes": "Требует Java JDK. В winget пакета нет (Apache.Maven не существует) — только официальный zip с archive.apache.org; dlcdn хранит лишь актуальные версии."
   },
   {
     "id": "gradle",
     "category": "package_manager",
     "display": "Gradle",
-    "description": "РЎР±РѕСЂС‰РёРє Java/Kotlin вЂ” РЅСѓР¶РµРЅ Android, Spring Boot",
-    "icon": null,
+    "description": "Сборщик Java/Kotlin — нужен Android, Spring Boot",
+    "icon": "gradle.svg",
     "detection": {
       "version_probes": [["gradle", "--version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/gradle/*/bin"],
@@ -813,14 +812,14 @@
     "path_entries": ["%LOCALAPPDATA%\\Programs\\gradle\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РўСЂРµР±СѓРµС‚ Java JDK."
+    "notes": "Требует Java JDK."
   },
   {
     "id": "postgresql",
     "category": "database",
     "display": "PostgreSQL",
-    "description": "Р РµР»СЏС†РёРѕРЅРЅР°СЏ РЎРЈР‘Р” (psql, СЃРµСЂРІРµСЂ)",
-    "icon": null,
+    "description": "Реляционная СУБД (psql, сервер)",
+    "icon": "postgresql.svg",
     "detection": {
       "version_probes": [["psql", "--version"]],
       "known_paths": ["C:/Program Files/PostgreSQL/*/bin"],
@@ -853,14 +852,14 @@
     "path_entries": ["C:\\Program Files\\PostgreSQL\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РџР°СЂРѕР»СЊ СЃСѓРїРµСЂРїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РіРµРЅРµСЂРёСЂСѓРµС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё Рё РїРѕРєР°Р·С‹РІР°РµС‚СЃСЏ РЅР° СЌРєСЂР°РЅРµ СЂРµР·СѓР»СЊС‚Р°С‚Р° (dynamic_args)."
+    "notes": "Пароль суперпользователя генерируется автоматически и показывается на экране результата (dynamic_args)."
   },
   {
     "id": "redis",
     "category": "database",
     "display": "Redis (Memurai)",
-    "description": "In-memory РєРµС€ Рё Р±СЂРѕРєРµСЂ СЃРѕРѕР±С‰РµРЅРёР№. РћС„РёС†РёР°Р»СЊРЅС‹Р№ Redis РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ Windows вЂ” РёСЃРїРѕР»СЊР·СѓРµРј Memurai (СЃРѕРІРјРµСЃС‚РёРјС‹Р№) РёР»Рё Docker",
-    "icon": null,
+    "description": "In-memory кеш и брокер сообщений. Официальный Redis не поддерживает Windows — используем Memurai (совместимый) или Docker",
+    "icon": "redis.svg",
     "detection": {
       "version_probes": [["redis-server", "--version"]],
       "known_paths": ["C:/Program Files/Memurai", "%LOCALAPPDATA%/Programs/redis/*"],
@@ -880,14 +879,14 @@
     "path_entries": ["C:\\Program Files\\Memurai\\bin", "%LOCALAPPDATA%\\Programs\\redis\\*"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РћС„РёС†РёР°Р»СЊРЅС‹Р№ Redis РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ Windows: РѕСЃРЅРѕРІРЅРѕР№ РёСЃС‚РѕС‡РЅРёРє вЂ” portable-РїРѕСЂС‚ Redis 8.10 (redis-windows), СЂР°СЃРїР°РєРѕРІРєР° Р±РµР· РїСЂР°РІ РІ %LOCALAPPDATA%\\Programs\\redis. Р—Р°РїР°СЃРЅРѕР№ вЂ” Memurai (winget, MSI, РЅСѓР¶РµРЅ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ)."
+    "notes": "Официальный Redis не поддерживает Windows: основной источник — portable-порт Redis 8.10 (redis-windows), распаковка без прав в %LOCALAPPDATA%\\Programs\\redis. Запасной — Memurai (winget, MSI, нужен администратор)."
   },
   {
     "id": "mongodb",
     "category": "database",
     "display": "MongoDB",
-    "description": "Р”РѕРєСѓРјРµРЅС‚РЅР°СЏ NoSQL РЎРЈР‘Р” (mongod)",
-    "icon": null,
+    "description": "Документная NoSQL СУБД (mongod)",
+    "icon": "mongodb.svg",
     "detection": {
       "version_probes": [["mongod", "--version"]],
       "known_paths": ["C:/Program Files/MongoDB/Server/*/bin", "%LOCALAPPDATA%/Programs/mongodb/*/bin"],
@@ -913,8 +912,8 @@
     "id": "mysql",
     "category": "database",
     "display": "MySQL",
-    "description": "Р РµР»СЏС†РёРѕРЅРЅР°СЏ РЎРЈР‘Р” (mysql)",
-    "icon": null,
+    "description": "Реляционная СУБД (mysql)",
+    "icon": "mysql.svg",
     "detection": {
       "version_probes": [["mysql", "--version"]],
       "known_paths": ["C:/Program Files/MySQL/*/bin"],
@@ -934,14 +933,14 @@
     "path_entries": ["C:\\Program Files\\MySQL\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "MySQL-СѓСЃС‚Р°РЅРѕРІС‰РёРє РІ unattended-СЂРµР¶РёРјРµ С‚СЂРµР±СѓРµС‚ РїСЂРµРґРІР°СЂРёС‚РµР»СЊРЅРѕР№ РєРѕРЅС„РёРіСѓСЂР°С†РёРё; РїСЂРё СЃР±РѕРµ вЂ” РёСЃРїРѕР»СЊР·СѓР№С‚Рµ Docker-РІР°СЂРёР°РЅС‚ РёР· РєР°СЂРєР°СЃР° РїСЂРѕРµРєС‚Р°."
+    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; при сбое — используйте Docker-вариант из каркаса проекта."
   },
   {
     "id": "sqlite",
     "category": "database",
     "display": "SQLite",
-    "description": "Р’СЃС‚СЂР°РёРІР°РµРјР°СЏ РЎРЈР‘Р” (РІС…РѕРґРёС‚ РІ СЃРѕСЃС‚Р°РІ Python/.NET/Node, РѕС‚РґРµР»СЊРЅРѕ РЅРµ СЃС‚Р°РІРёС‚СЃСЏ)",
-    "icon": null,
+    "description": "Встраиваемая СУБД (входит в состав Python/.NET/Node, отдельно не ставится)",
+    "icon": "sqlite.svg",
     "detection": {
       "version_probes": [["sqlite3", "--version"]],
       "known_paths": [],
@@ -954,14 +953,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "РРЅС„РѕСЂРјР°С†РёРѕРЅРЅС‹Р№ С‚СѓР»: РЅРёРєРѕРіРґР° РЅРµ Р±Р»РѕРєРёСЂСѓРµС‚ СЃРѕР·РґР°РЅРёРµ РїСЂРѕРµРєС‚Р°."
+    "notes": "Информационный тул: никогда не блокирует создание проекта."
   },
   {
     "id": "docker",
     "category": "container",
     "display": "Docker Desktop",
-    "description": "РљРѕРЅС‚РµР№РЅРµСЂРёР·Р°С†РёСЏ (docker, docker compose)",
-    "icon": null,
+    "description": "Контейнеризация (docker, docker compose)",
+    "icon": "docker.svg",
     "detection": {
       "version_probes": [["docker", "--version"]],
       "known_paths": ["C:/Program Files/Docker/Docker/resources/bin"],
@@ -983,14 +982,14 @@
     "health_checks": [
       { "label": "docker daemon", "command": ["docker", "version", "--format", "{{.Server.Version}}"] }
     ],
-    "notes": "РўСЂРµР±СѓРµС‚ WSL2. Р•СЃР»Рё WSL2 РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ вЂ” РїСЂРµРґР»РѕР¶РёРј СѓСЃС‚Р°РЅРѕРІРёС‚СЊ Microsoft.WSL С‡РµСЂРµР· winget. РџРѕСЃР»Рµ СѓСЃС‚Р°РЅРѕРІРєРё РЅСѓР¶РЅРѕ РѕРґРёРЅ СЂР°Р· Р·Р°РїСѓСЃС‚РёС‚СЊ Docker Desktop."
+    "notes": "Требует WSL2. Если WSL2 не установлен — предложим установить Microsoft.WSL через winget. После установки нужно один раз запустить Docker Desktop."
   },
   {
     "id": "git",
     "category": "vcs",
     "display": "Git",
-    "description": "РЎРёСЃС‚РµРјР° РєРѕРЅС‚СЂРѕР»СЏ РІРµСЂСЃРёР№ (git init, commit)",
-    "icon": null,
+    "description": "Система контроля версий (git init, commit)",
+    "icon": "git.svg",
     "detection": {
       "version_probes": [["git", "--version"]],
       "known_paths": ["C:/Program Files/Git/cmd"],
@@ -1016,8 +1015,8 @@
     "id": "vscode",
     "category": "editor",
     "display": "VS Code",
-    "description": "Р РµРґР°РєС‚РѕСЂ РєРѕРґР° (РЅСѓР¶РµРЅ РґР»СЏ С€Р°РіР° В«VS Code ConfigВ» Рё РєРЅРѕРїРєРё В«Open in VS CodeВ»)",
-    "icon": null,
+    "description": "Редактор кода (нужен для шага «VS Code Config» и кнопки «Open in VS Code»)",
+    "icon": "vscode.svg",
     "detection": {
       "version_probes": [["code", "--version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/Microsoft VS Code/bin"],
@@ -1043,8 +1042,8 @@
     "id": "cmake",
     "category": "utility",
     "display": "CMake",
-    "description": "РљСЂРѕСЃСЃРїР»Р°С‚С„РѕСЂРјРµРЅРЅР°СЏ СЃРёСЃС‚РµРјР° СЃР±РѕСЂРєРё (РЅСѓР¶РЅР° C++ РїСЂРѕРµРєС‚Р°Рј)",
-    "icon": null,
+    "description": "Кроссплатформенная система сборки (нужна C++ проектам)",
+    "icon": "cmake.svg",
     "detection": {
       "version_probes": [["cmake", "--version"]],
       "known_paths": ["C:/Program Files/CMake/bin"],
@@ -1070,8 +1069,8 @@
     "id": "make",
     "category": "utility",
     "display": "Make",
-    "description": "РљР»Р°СЃСЃРёС‡РµСЃРєРёР№ make (РґР»СЏ C/C++ Рё Zig-РїСЂРѕРµРєС‚РѕРІ СЃ Makefile)",
-    "icon": null,
+    "description": "Классический make (для C/C++ и Zig-проектов с Makefile)",
+    "icon": "make.svg",
     "detection": {
       "version_probes": [["make", "--version"]],
       "known_paths": ["C:/Program Files/GnuWin32/bin"],
@@ -1096,8 +1095,8 @@
     "id": "curl",
     "category": "utility",
     "display": "Curl",
-    "description": "Р—Р°РіСЂСѓР·РєР° С„Р°Р№Р»РѕРІ РїРѕ URL (РЅСѓР¶РµРЅ Spring Boot СЃРєР°С„С„РѕР»РґСѓ)",
-    "icon": null,
+    "description": "Загрузка файлов по URL (нужен Spring Boot скаффолду)",
+    "icon": "curl.svg",
     "detection": {
       "version_probes": [["curl", "--version"]],
       "known_paths": ["C:/Windows/System32/curl.exe"],
@@ -1110,14 +1109,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Р’СЃС‚СЂРѕРµРЅ РІ Windows 10+ Рё Р±РѕР»СЊС€РёРЅСЃС‚РІРѕ РґРёСЃС‚СЂРёР±СѓС‚РёРІРѕРІ Linux. РРЅС„РѕСЂРјР°С†РёРѕРЅРЅС‹Р№ С‚СѓР»."
+    "notes": "Встроен в Windows 10+ и большинство дистрибутивов Linux. Информационный тул."
   },
   {
     "id": "tar",
     "category": "utility",
     "display": "Tar",
-    "description": "РђСЂС…РёРІР°С‚РѕСЂ (РЅСѓР¶РµРЅ РґР»СЏ СЂР°СЃРїР°РєРѕРІРєРё zip/spring-boot)",
-    "icon": null,
+    "description": "Архиватор (нужен для распаковки zip/spring-boot)",
+    "icon": "tar.svg",
     "detection": {
       "version_probes": [["tar", "--version"]],
       "known_paths": ["C:/Windows/System32/tar.exe"],
@@ -1130,14 +1129,14 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Р’СЃС‚СЂРѕРµРЅ РІ Windows 10+ (bsdtar). РРЅС„РѕСЂРјР°С†РёРѕРЅРЅС‹Р№ С‚СѓР»."
+    "notes": "Встроен в Windows 10+ (bsdtar). Информационный тул."
   },
   {
     "id": "unity",
     "category": "engine",
     "display": "Unity Editor",
     "description": "Игровой движок с C#-скриптами — проект генерируется, движок ставится вручную",
-    "icon": null,
+    "icon": "unity.svg",
     "detection": {
       "version_probes": [],
       "known_paths": [
@@ -1161,7 +1160,7 @@
     "category": "engine",
     "display": "Unreal Engine",
     "description": "Игровой движок на C++ — проект генерируется, движок ставится вручную",
-    "icon": null,
+    "icon": "unreal-engine.svg",
     "detection": {
       "version_probes": [],
       "known_paths": ["C:/Program Files/Epic Games/UE_*"],
@@ -1182,7 +1181,7 @@
     "category": "engine",
     "display": "Godot",
     "description": "Open-source игровой движок (C++, C#) — проект генерируется, движок ставится вручную",
-    "icon": null,
+    "icon": "godot.svg",
     "detection": {
       "version_probes": [["godot", "--version"]],
       "known_paths": ["C:/Program Files/Godot*"],
@@ -1203,7 +1202,7 @@
     "category": "mobile",
     "display": "Android SDK",
     "description": "Android SDK / Android Studio для Java и Kotlin — ставится вручную",
-    "icon": null,
+    "icon": "android.svg",
     "detection": {
       "version_probes": [["adb", "--version"]],
       "known_paths": [
@@ -1227,7 +1226,7 @@
     "category": "framework",
     "display": "Qt",
     "description": "C++-фреймворк для десктопа и встраиваемых систем (Qt Widgets, Qt Quick/QML)",
-    "icon": null,
+    "icon": "qt.svg",
     "detection": {
       "version_probes": [["qmake", "-query", "QT_VERSION"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/Qt/*/msvc2022_64/bin"],
@@ -1262,7 +1261,7 @@
     "category": "compiler",
     "display": "Xcode (xcodebuild)",
     "description": "Инструменты командной строки Apple — SwiftUI/Vapor требуют Xcode на macOS",
-    "icon": null,
+    "icon": "xcodebuild.svg",
     "detection": {
       "version_probes": [["xcodebuild", "-version"]],
       "known_paths": ["/Applications/Xcode.app/Contents/Developer/usr/bin"],
@@ -1279,3 +1278,5 @@
     "manual_install": "Установите Xcode вручную из Mac App Store (только macOS) — xcodebuild приходит вместе с ним."
   }
 ]
+
+

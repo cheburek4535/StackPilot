@@ -9,6 +9,7 @@
   // ================================================================
 
   import { onMount } from "svelte";
+  import TechIcon from "$lib/components/TechIcon.svelte";
   import {
     getEnvironmentInfo,
     getHealthReport,
@@ -119,6 +120,7 @@
                 <details>
                   <summary>
                     <span class="tool-dot" class:ok={tool.ok}></span>
+                    <TechIcon icon={tool.icon} alt={tool.display} size="sm" />
                     <span class="tool-name">{tool.display}</span>
                     <span class="tool-status">{toolVersion(tool)}</span>
                   </summary>

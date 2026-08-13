@@ -72,6 +72,8 @@ export type ToolRequirement = {
   tool_id: string;
   display: string;
   category: string;
+  /** Имя файла иконки из tools.json (рендерится как /images/<icon>) */
+  icon: string | null;
   status: ToolStatus;
   size_mb: number;
   needs_admin: boolean;
@@ -117,6 +119,8 @@ export type InstallTask = {
   task_id: string;
   tool_id: string;
   display: string;
+  /** Имя файла иконки из tools.json (рендерится как /images/<icon>) */
+  icon: string | null;
   size_mb: number;
   needs_admin: boolean;
   source_description: string;
@@ -178,7 +182,14 @@ export type ToolchainMetadata = {
 };
 
 export type HealthCheckResult = { label: string; ok: boolean; detail: string };
-export type ToolHealth = { tool_id: string; display: string; checks: HealthCheckResult[]; ok: boolean };
+export type ToolHealth = {
+  tool_id: string;
+  display: string;
+  /** Имя файла иконки из tools.json (рендерится как /images/<icon>) */
+  icon: string | null;
+  checks: HealthCheckResult[];
+  ok: boolean;
+};
 export type HealthReport = { tools: ToolHealth[]; score: number; scanned_at: string };
 
 // Событие toolchain:check_progress — по одному на проверенный инструмент
@@ -187,6 +198,8 @@ export type CheckProgressEvent = {
   total: number;
   tool_id: string;
   display: string;
+  /** Имя файла иконки из tools.json (рендерится как /images/<icon>) */
+  icon: string | null;
   status: ToolStatus;
 };
 

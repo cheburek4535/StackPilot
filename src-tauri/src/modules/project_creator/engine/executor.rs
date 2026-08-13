@@ -199,7 +199,7 @@ impl StepExecutor {
     use std::env::consts::OS;
     use std::process::Stdio;
 
-    let (command, args, working_dir, env, timeout_secs) = match step {
+    let (command, raw_args, working_dir, env, timeout_secs) = match step {
         Step::Command {
             command,
             args,
@@ -219,6 +219,14 @@ impl StepExecutor {
             }
         }
     };
+
+    // Подавление интерактивности: npx без --yes спрашивает «Ok to proceed?
+    // (y)» и ждёт ввода, убивая автоматическую генерацию. Флаг добавляется
+    // первым аргументом, если его ещё нет (npx --yes nuxt ... и т.п.).
+    let mut args: Vec<String> = raw_args.clone();
+    if command == "npx" && !args.iter().any(|a| a.starts_with("--yes")) {
+        args.insert(0, "--yes".into());
+    }
 
     // Кроссплатформенный запуск через shell
     let mut cmd = match OS {
@@ -277,6 +285,13 @@ impl StepExecutor {
     if let Some(env_map) = env {
         cmd.envs(env_map);
     }
+
+    // Принудительный неинтерактивный режим для ВСЕХ команд: CI=1 заставляет
+    // npm/prisma/create-* CLI (Tauri, Vite, Next.js...) пропускать промпты,
+    // NPM_CONFIG_YES отвечает «да» на подтверждение установки пакета у npx.
+    // Без этого prisma init повисает на вопросе о БД, create-* ждут Enter.
+    cmd.env("CI", "1");
+    cmd.env("NPM_CONFIG_YES", "true");
 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

@@ -59,7 +59,7 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
         "php" => &["php"],
         "swift" => &["swift"],
         "zig" => &["zig"],
-        "elixir" => &["elixir", "erlang"],
+        "elixir" => &["erlang", "elixir"],
         // gleam компилируется в Erlang и требует erlc/erlang для сборки
         "gleam" => &["gleam", "erlang"],
         // html — статика, отдельного рантайма нет
@@ -81,10 +81,17 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
 /// предупреждение «установите вручную» (см. manual_install в tools.json).
 fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
     match framework {
-        // tauri-cli: генерация проекта запускает `cargo tauri`,
-        // а без CLI это падает «no such command: tauri».
-        "tauri" => &["rust", "node", "tauri-cli"],
+        // Генерация Tauri-проекта идёт через `npx create-tauri-app`
+        // (CLI-first, см. engine/mod.rs) — cargo-подкоманда tauri-cli
+        // больше не нужна, хватает rust + node/npm.
+        "tauri" => &["rust", "node"],
         "flutter" => &["flutter"],
+        // PHP-фреймворки: генерация проекта идёт через composer
+        // (`composer create-project symfony/skeleton`, `laravel/laravel`),
+        // поэтому php и composer обязаны попасть в требования даже
+        // если язык php не выбран в мастере явно (symfony/laravel —
+        // standalone-фреймворки со своим scaffold'ом).
+        "symfony" | "laravel" => &["php", "composer"],
         // Android SDK нужен и для android, и для jetpack-compose.
         "android" | "jetpack-compose" => &["java", "android"],
         // JVM-фреймворки: spring boot и ktor требуют JDK, даже если
@@ -294,6 +301,7 @@ pub fn docker_optional_requirements(
                 tool_id: def.id.clone(),
                 display: def.display.clone(),
                 category: def.category.clone(),
+                icon: def.icon.clone(),
                 status: ToolStatus::RunInDocker,
                 size_mb: 0,
                 needs_admin: false,
@@ -462,7 +470,34 @@ mod tests {
     fn elixir_brings_erlang_runtime() {
         let mut r = req();
         r.languages = vec!["elixir".into()];
-        assert_eq!(resolve(&r), vec!["winget", "elixir", "erlang"]);
+        // erlang идёт ПЕРВЫМ: elixir.bat запускает erl, без рантайма
+        // на PATH проверка установленного elixir не сработает.
+        assert_eq!(resolve(&r), vec!["winget", "erlang", "elixir"]);
+    }
+
+    #[test]
+    fn symfony_and_laravel_bring_php_and_composer() {
+        // Standalone-фреймворки: scaffold идёт через `composer create-project`,
+        // поэтому php и composer обязаны попасть в check_environment, даже
+        // если язык php в мастере не выбран явно.
+        for fw in ["symfony", "laravel"] {
+            let mut r = req();
+            r.frameworks = vec![fw.into()];
+            let ids = resolve(&r);
+            for expected in ["php", "composer"] {
+                assert!(
+                    ids.iter().any(|i| i == expected),
+                    "{fw} без {expected}: {ids:?}"
+                );
+            }
+            // composer ставится ПОСЛЕ php (команда php нужна его установщику)
+            let php_pos = ids.iter().position(|i| i == "php").unwrap();
+            let composer_pos = ids.iter().position(|i| i == "composer").unwrap();
+            assert!(
+                php_pos < composer_pos,
+                "php должен идти раньше composer: {ids:?}"
+            );
+        }
     }
 
     #[test]
@@ -470,8 +505,9 @@ mod tests {
         let mut r = req();
         r.frameworks = vec!["tauri".into()];
         let ids = resolve(&r);
-        // рантаймы из статичной таблицы + tauri-cli для `cargo tauri`
-        for expected in ["rust", "node", "tauri-cli", "msvc-build-tools"] {
+        // рантаймы из статичной таблицы (tauri-cli больше не нужен —
+        // генерация идёт через npx create-tauri-app)
+        for expected in ["rust", "node", "msvc-build-tools"] {
             assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
         }
         // инфраструктура из framework_tool_map (docker, npm) НЕ является

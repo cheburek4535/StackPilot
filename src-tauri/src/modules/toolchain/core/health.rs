@@ -26,10 +26,11 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
         status,
         ToolStatus::Missing | ToolStatus::PathBroken { .. }
     ) {
-        return ToolHealth {
+return ToolHealth {
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
+            icon: def.icon.clone(),
             checks: vec![HealthCheckResult {
                 label: "инструмент".to_string(),
                 ok: false,
@@ -40,10 +41,11 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
 
     // Проверок нет — «здоровым» не считаем: не проверяли.
     if def.health_checks.is_empty() {
-        return ToolHealth {
+return ToolHealth {
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
+            icon: def.icon.clone(),
             checks: Vec::new(),
         };
     }
@@ -80,10 +82,11 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
         }
     }
 
-    ToolHealth {
+ToolHealth {
         ok: all_ok,
         tool_id: def.id.clone(),
         display: def.display.clone(),
+        icon: def.icon.clone(),
         checks,
     }
 }

@@ -154,23 +154,31 @@ fn build_install_command(
                         ));
                     };
                     let dir = path_service::expand_env_vars(dir);
+                    // .bat-обёртки из Unix-сборок (elixir-otp-*.zip с GitHub)
+                    // приходят с LF-only переносами, cmd их не понимает —
+                    // нормализуем в CRLF после распаковки.
                     let script = format!(
                         r#"$ErrorActionPreference = 'Stop'
+$dir = {1}
 try {{
-    Expand-Archive -Path {} -DestinationPath {} -Force
+    Expand-Archive -Path {0} -DestinationPath $dir -Force
 }} catch {{
     Write-Output "tc:warn Expand-Archive не сработал ($($_.Exception.Message)) — пробуем tar"
-    tar -xf {} -C {}
+    tar -xf {2} -C $dir
     if ($LASTEXITCODE -ne 0) {{
         Write-Output "tc:error tar -xf не смог распаковать архив"
         exit 1
     }}
 }}
+Get-ChildItem -Path $dir -Recurse -Include *.bat -File | ForEach-Object {{
+    $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $t = ($t -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($_.FullName, $t, (New-Object System.Text.UTF8Encoding $false))
+}}
 "#,
                         ps_quote(&path.to_string_lossy()),
                         ps_quote(&dir),
-                        ps_quote(&path.to_string_lossy()),
-                        ps_quote(&dir)
+                        ps_quote(&path.to_string_lossy())
                     );
                     Ok(InstallCommand {
                         program: "powershell".to_string(),
@@ -434,6 +442,11 @@ pub async fn execute_plan(
 /// Источники установки (tools.json) пробуются ПО ПОРЯДКУ: если
 /// первый не сработал (npm-глобал упал), переходим ко второму
 /// (cargo install). Успех — первого же удачного источника.
+///
+/// Fallback тихий: причина сбоя промежуточного источника уходит
+/// только в DEBUG-лог (stdout пользователя не пугаем). Единственное
+/// сообщение об ошибке шлётся в UI, только когда НЕ сработали вообще
+/// все источники, — тогда одним tc:error со списком причин.
 async fn run_task(
     def: &ToolDefinition,
     task: &InstallTask,
@@ -472,22 +485,8 @@ async fn run_task(
         };
     }
 
-    let mut last_error: Option<String> = None;
-    for (si, source) in os_sources.iter().enumerate() {
-        // Прозрачность для пользователя: почему переключились на запасной
-        // источник — раньше это видели только в терминале разработчика.
-        if si > 0 {
-            let reason = last_error.as_deref().unwrap_or("неизвестная причина");
-            sink.emit(console::event(
-                ToolchainEventType::TaskProgress {
-                    line: format!("tc:info Источник «{}» не сработал: {reason} — пробуем «{}»", os_sources[si - 1].id, source.id),
-                },
-                index,
-                total,
-                &task_id,
-                &tool_id,
-            ));
-        }
+    let mut failures: Vec<String> = Vec::new();
+    for source in os_sources.iter() {
         match try_install_source(def, source, task, index, total, &task_id, &tool_id, sink, abort).await
         {
             Ok((version, secret)) => {
@@ -506,8 +505,14 @@ async fn run_task(
                 return TaskState::Success { version };
             }
             Err(e) => {
-                eprintln!("[toolchain] источник `{}` для {tool_id} не сработал: {e}", source.id);
-                last_error = Some(e);
+                // Тихий fallback: причина сбоя промежуточного источника —
+                // только в DEBUG-лог, в UI не уходит (там потом будет
+                // tc:ok, если запасной источник сработает).
+                debug_log(&format!(
+                    "[toolchain] источник `{}` для {tool_id} не сработал: {e}",
+                    source.id
+                ));
+                failures.push(format!("«{}»: {e}", source.id));
             }
         }
         if abort.load(Ordering::SeqCst) {
@@ -517,8 +522,33 @@ async fn run_task(
         }
     }
 
-    TaskState::Failed {
-        error: last_error.unwrap_or_else(|| "Ни один источник установки не сработал".to_string()),
+    // Все источники исчерпаны — только теперь одно сообщение об ошибке
+    // со списком причин (а не спам после каждого упавшего источника).
+    let reason = failures.join("; ");
+    sink.emit(console::event(
+        ToolchainEventType::TaskProgress {
+            line: format!(
+                "tc:error Не удалось установить «{}» ни одним из {} источников: {reason}",
+                def.display,
+                os_sources.len()
+            ),
+        },
+        index,
+        total,
+        &task_id,
+        &tool_id,
+    ));
+
+    TaskState::Failed { error: reason }
+}
+
+/// DEBUG-лог установки: пишется в stderr только при DEVLAUNCHER_DEBUG=1.
+/// Промежуточные сбои источников при fallback живут здесь — пользователь
+/// в UI видит только итоговый результат (tc:ok / tc:error), а не каждый
+/// неудавшийся способ установки.
+fn debug_log(msg: &str) {
+    if std::env::var("DEVLAUNCHER_DEBUG").is_ok() {
+        eprintln!("{msg}");
     }
 }
 
@@ -764,6 +794,7 @@ mod tests {
                 task_id: tool_id.to_string(),
                 tool_id: tool_id.to_string(),
                 display: tool_id.to_string(),
+                icon: None,
                 size_mb: 1,
                 needs_admin: false,
                 source_description: "test".to_string(),
@@ -917,6 +948,12 @@ mod tests {
         assert!(script.contains(&expected), "раскрытый install_dir в скрипте: {script}");
         assert!(!script.contains("%LOCALAPPDATA%"), "сырой %VAR% в скрипте: {script}");
         assert!(script.contains("foo.zip"), "путь к архиву в скрипте: {script}");
+        // .bat-обёртки (elixir и др. GitHub-архивы) нормализуются в CRLF —
+        // иначе cmd их не читает
+        assert!(
+            script.contains("`r`n") && script.contains("*.bat"),
+            "нет CRLF-нормализации bat: {script}"
+        );
     }
 
     #[test]
@@ -1049,7 +1086,8 @@ mod tests {
             other => panic!("ожидали Success после fallback, получили {other:?}"),
         }
 
-        // Пользователь должен видеть причину переключения на запасной источник
+        // Fallback тихий: промежуточный сбой НЕ должен попадать в UI
+        // (tc:info о смене источника) — там только итоговый tc:ok.
         let events: Vec<ToolchainEventType> = sink
             .events
             .lock()
@@ -1058,11 +1096,18 @@ mod tests {
             .map(|e| e.event_type.clone())
             .collect();
         assert!(
-            events.iter().any(|e| matches!(
+            !events.iter().any(|e| matches!(
                 e,
-                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:info Источник «bad-source» не сработал")
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:info Источник")
             )),
-            "нет tc:info о смене источника: {events:?}"
+            "промежуточный сбой не должен светиться в UI: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error")
+            )),
+            "tc:error при успешном fallback быть не должно: {events:?}"
         );
         assert!(
             events.iter().any(|e| matches!(
@@ -1070,6 +1115,66 @@ mod tests {
                 ToolchainEventType::TaskProgress { line } if line.starts_with("tc:ok Установлено через источник «local-cmd»")
             )),
             "нет tc:ok с источником успеха: {events:?}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn all_sources_failed_emits_single_error() {
+        // Оба источника падают — в UI уходит ровно ОДНО tc:error
+        // со списком причин (не спам после каждого источника).
+        let mut def = echo_def("total-fail-tool");
+        let bad = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "bad-1".to_string(),
+            url: Some("cmd.exe".to_string()),
+            args: vec!["/c".to_string(), "exit".to_string(), "1".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+                file_name: None,
+        };
+        let bad2 = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "bad-2".to_string(),
+            url: Some("cmd.exe".to_string()),
+            args: vec!["/c".to_string(), "exit".to_string(), "2".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+                file_name: None,
+        };
+        def.sources.windows = vec![bad, bad2];
+
+        let mut plan = one_task_plan("total-fail-tool");
+        let sink = Arc::new(TestSink::default());
+        let trait_sink: Arc<dyn EventSink> = sink.clone();
+
+        execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+
+        assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
+
+        let events: Vec<ToolchainEventType> = sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.event_type.clone())
+            .collect();
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error") => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "должно быть одно tc:error: {events:?}");
+        assert!(
+            errors[0].contains("«bad-1»") && errors[0].contains("«bad-2»"),
+            "tc:error должен перечислить оба источника: {}",
+            errors[0]
         );
     }
 

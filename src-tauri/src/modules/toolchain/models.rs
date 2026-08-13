@@ -249,6 +249,10 @@ pub struct ToolRequirement {
     pub tool_id: String,
     pub display: String,
     pub category: String,
+    /// Имя файла иконки (static/images/), из tools.json. Фронтенд
+    /// рендерит /images/<icon>, отсутствующий файл → дефолтная SVG.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub status: ToolStatus,
     /// Сколько МБ скачаем, если нужна установка
     pub size_mb: u32,
@@ -291,6 +295,9 @@ pub struct InstallTask {
     pub task_id: String,
     pub tool_id: String,
     pub display: String,
+    /// Имя файла иконки (static/images/). Копируется из ToolRequirement.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub size_mb: u32,
     pub needs_admin: bool,
     pub source_description: String,
@@ -375,6 +382,9 @@ pub struct CheckProgressEvent {
     pub total: usize,
     pub tool_id: String,
     pub display: String,
+    /// Имя файла иконки (static/images/), из tools.json.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub status: ToolStatus,
 }
 
@@ -393,6 +403,9 @@ pub struct HealthCheckResult {
 pub struct ToolHealth {
     pub tool_id: String,
     pub display: String,
+    /// Имя файла иконки (static/images/), из tools.json.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub checks: Vec<HealthCheckResult>,
     pub ok: bool,
 }

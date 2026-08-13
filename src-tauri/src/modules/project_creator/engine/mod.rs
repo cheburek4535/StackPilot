@@ -252,7 +252,18 @@ impl RecipeEngine for DefaultRecipeEngine {
 // Вспомогательные функции — их вы будете наполнять в TZ
 // ============================================================================
 
-/// Составить рецепт на основе WizardContext (TZ Task 1)
+/// Составить рецепт на основе WizardContext (TZ Task 1).
+///
+/// Шаги складываются в СТРОГУЮ очередь фаз (см. также `ExecutionPhase`):
+///   1. Root Scaffolding — CLI фреймворков со scaffold="root" (tauri,
+///      django, spring-boot, nest) запускаются ПЕРВЫМИ в корне проекта.
+///      Движок не создаёт для них backend//frontend/ — корнем владеет CLI.
+///   2. Subdir Scaffolding — сегменты моно-репозитория, language-скаффолды
+///      (cargo init, package.json...) и CLI фреймворков со scaffold="subdir"
+///      (create-vite, create-next-app, ...).
+///   3. Установка инструментов — prisma init, alembic init, docker-compose
+///      пишутся ПОСЛЕ каркасов (prisma требует package.json).
+///   4. Шаблонизация оставшихся конфигов — docker/git/ci/readme/vscode.
 fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, String> {
     // project_name может отличаться от folder_name (при auto-rename папки)
     let project_name = context.project_name.as_deref().unwrap_or(folder_name);
@@ -270,8 +281,22 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         on_error: ErrorMode::Abort,
     });
 
-    // При моно-репозитории (backend + frontend) заранее создаём подпапки
+    // Фаза 1: Root Scaffolding. Root-фреймворки выполняются до ВСЕГО
+    // остального в корне проекта (см. SegLayout::compute — присутствие
+    // хотя бы одного scaffold="root" отключает сегментацию backend/frontend).
     let layout = SegLayout::compute(context);
+    let mut rest_frameworks: Vec<String> = Vec::new();
+    for fw in &context.frameworks {
+        if framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root")) {
+            steps.extend(steps_for_framework(fw, project_path, project_name, context, None));
+        } else {
+            rest_frameworks.push(fw.clone());
+        }
+    }
+
+    // Фаза 2: Subdir Scaffolding. Сегменты моно-репозитория (backend + frontend)
+    // создаются только когда root-фреймворков нет; генераторы подпапок сами
+    // создают свои каталоги (create-next-app frontend и т.п.).
     if let Some(dir) = &layout.backend {
         steps.push(Step::CreateDirectory {
             id: "create_backend_dir".into(),
@@ -295,8 +320,9 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
 
     for lang in &context.languages {
         // Фреймворк сам создаёт каркас для этого языка (aspnetcore вместо
-        // dotnet new console, nextjs вместо js-скаффолда) — generic-шаги
-        // языка не нужны и конфликтуют с файлами фреймворка.
+        // dotnet new console, nextjs вместо js-скаффолда, tauri вместо
+        // cargo init) — generic-шаги языка не нужны и конфликтуют с
+        // файлами фреймворка.
         if language_scaffold_suppressed(lang, context) {
             continue;
         }
@@ -306,17 +332,20 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         }
         steps.extend(lang_steps);
     }
-    for fw in &context.frameworks {
-        steps.extend(steps_for_framework(fw, project_path, project_name, context, layout.for_framework(fw).as_deref()));
+    for fw in rest_frameworks {
+        steps.extend(steps_for_framework(&fw, project_path, project_name, context, layout.for_framework(&fw).as_deref()));
     }
+
+    // Фаза 3: установка инструментов (prisma init требует существующий
+    // package.json — выполняется строго после каркасов).
     steps.extend(steps_for_tools(context, project_path));
+
+    // Фаза 4: шаблонизация оставшихся конфигов.
     steps.extend(steps_for_docker(context, project_path, project_name));
     steps.extend(steps_for_git(context, project_path, project_name));
     steps.extend(steps_for_ci(context, project_path, project_name));
     steps.extend(steps_for_readme(context, project_path, project_name));
     steps.extend(steps_for_vscode(context));
-
-    
 
     Ok(Recipe {
         id: format!("recipe_{}", project_name),
@@ -686,7 +715,7 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
 }
 
 /// Вспомогательные функции для определения категорий языков
-fn is_frontend_lang(l: &str) -> bool {
+fn _is_frontend_lang(l: &str) -> bool {
     matches!(l, "typescript" | "javascript" | "dart" | "kotlin" | "swift" | "csharp")
 }
 fn _is_backend_lang(l: &str) -> bool {
@@ -764,6 +793,22 @@ struct SegLayout {
 
 impl SegLayout {
     fn compute(context: &WizardContext) -> SegLayout {
+        // Root-scaffold фреймворки (tauri, django, spring-boot, nest) создают
+        // проект ПРЯМО В КОРНЕ: их CLI (create-tauri-app, django-admin
+        // startproject ., Spring Initializr, nest new .) не умеет работать
+        // «внутри» предварительно созданных backend//frontend/ сегментов —
+        // они либо падают, либо тащат каркас в корень. Сегментация
+        // отключается целиком: никаких eager-папок frontend/backend.
+        if context.frameworks.iter().any(|fw| {
+            framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
+        }) {
+            return SegLayout {
+                frontend: None,
+                backend: None,
+                lang_side: HashMap::new(),
+            };
+        }
+
         let mut lang_side: HashMap<String, &'static str> = HashMap::new();
         for l in &context.backend_languages {
             lang_side.insert(l.clone(), "backend");
@@ -924,7 +969,63 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
     }).collect()
 }
 
+/// Скаффолдеры, которые генерируют package.json и называют его по имени
+/// папки (frontend/, <project_name>/) вместо project_name из WizardContext.
+/// Для них движок добавляет пост-шаг, переписывающий поле name
+/// (см. package_name_patch_step) — чинит баг «frontend/package.json
+/// называется frontend».
+const PACKAGE_JSON_SCAFFOLDS: &[&str] = &[
+    "react", "vue", "svelte", "nextjs", "sveltekit", "nuxt", "solidjs",
+    "electron", "expo", "react-native", "plasmo", "tauri", "nest",
+];
+
+/// Пост-шаг после CLI-скаффолдинга: переписывает ТОЛЬКО поле name в
+/// package.json (node -e сохраняет форматирование и остальные поля).
+/// Исправляет баг шаблонизатора: скаффолдер называет проект по имени
+/// родительской папки (frontend/) вместо project_name из WizardContext.
+fn package_name_patch_step(id: &str, label: &str, workdir: Option<&str>, project_name: &str) -> Step {
+    // Апостроф в имени проекта ломает JS-строку — экранируем.
+    let safe_name = project_name.replace('\'', "\\'");
+    Step::Command {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: "Set package.json name to the real project name".into(),
+        command: "node".into(),
+        args: vec![
+            "-e".into(),
+            format!(
+                "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.name='{}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\\n')",
+                safe_name
+            ),
+        ],
+        working_dir: workdir.map(String::from),
+        env: None,
+        timeout_secs: Some(30),
+        condition: None,
+        on_error: ErrorMode::Skip,
+        interactive: vec![],
+    }
+}
+
+/// Root-фреймворк (scaffold="root") со своим CLI скаффолдит своих
+/// frontend-компаньонов сам (tauri → create-tauri-app --template react-ts).
+/// Шаги такого компаньона подавляются: второй фронтенд (лишняя vite-папка)
+/// поверх каркаса root-фреймворка не нужен.
+fn root_scaffold_consumes_companion(fw: &str, context: &WizardContext) -> bool {
+    context.frameworks.iter().any(|root| {
+        framework_def(root).is_some_and(|def| {
+            def.scaffold.as_deref() == Some("root") && def.companions.iter().any(|c| c == fw)
+        })
+    })
+}
+
 fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
+    // Root-фреймворк со своим CLI сам скаффолдит фронтенд-компаньона —
+    // отдельные шаги компаньона не нужны (см. root_scaffold_consumes_companion).
+    if root_scaffold_consumes_companion(fw, context) {
+        return Vec::new();
+    }
+
     let mut steps = steps_for_framework_impl(fw, project_path, project_name, context);
 
     // Inplace-фреймворки (scaffold не задан: express, fastapi, gin, clap...)
@@ -944,10 +1045,35 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
         }
     }
 
-    match seg {
+    let mut steps = match seg {
         Some(dir) => into_segment(steps, dir),
         None => steps,
+    };
+
+    // Баг шаблонизатора: скаффолдеры (create-vite, create-tauri-app,
+    // create-next-app...) называют package.json по имени папки, в которую
+    // пишут (frontend/ или корень), а не по project_name из WizardContext.
+    // Пост-шаг примешивается ПОСЛЕ сегментации — его рабочая директория
+    // должна указывать на фактическое место package.json.
+    if let Some(def) = framework_def(fw) {
+        if def.scaffold.is_some() && PACKAGE_JSON_SCAFFOLDS.contains(&fw) {
+            let workdir: Option<String> = match def.scaffold.as_deref() {
+                // root-скаффолдеры (tauri, nest) создают package.json в корне проекта
+                Some("root") => None,
+                // subdir-скаффолдеры — внутри созданной подпапки (сегмент
+                // frontend/ в моно-репозитории или <project_name> в монолите)
+                _ => Some(seg.map(String::from).unwrap_or_else(|| project_name.to_string())),
+            };
+            steps.push(package_name_patch_step(
+                &format!("{}_pkg_name", fw),
+                &format!("Fix package.json name for {}", fw),
+                workdir.as_deref(),
+                project_name,
+            ));
+        }
     }
+
+    steps
 }
 
 /// Проверка целостности генерации: не пишут ли два разных фреймворка один
@@ -1311,9 +1437,46 @@ target_link_libraries({p} Qt6::WebEngineWidgets)
     ]
 }
 
+/// UI-компаньон для десктоп-каркасов с собственным CLI (tauri):
+/// react/vue/svelte — иначе vanilla. nextjs/nuxt/sveltekit не могут
+/// соседствовать с tauri (явные conflicts в wizard_tree.json).
+fn ui_framework(context: &WizardContext) -> &'static str {
+    if context.frameworks.iter().any(|f| f == "react" || f == "nextjs") {
+        "react"
+    } else if context.frameworks.iter().any(|f| f == "vue" || f == "nuxt") {
+        "vue"
+    } else if context.frameworks.iter().any(|f| f == "svelte" || f == "sveltekit") {
+        "svelte"
+    } else {
+        "vanilla"
+    }
+}
+
+/// Бандл-идентификатор для create-tauri-app (--identifier): домен +
+/// санитизированное имя проекта (только [a-zA-Z0-9-._], сегмент не
+/// начинается с цифры — иначе CLI отвергает ввод).
+fn tauri_identifier(project_name: &str) -> String {
+    let mut base: String = project_name
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if base.is_empty() {
+        base.push_str("app");
+    }
+    if base.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        base.insert(0, 'a');
+    }
+    format!("com.{}", base)
+}
+
 fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
-    // Определяем язык фронтенда (для Tauri, Expo и др.)
-    let frontend_lang = context.languages.iter().find(|l| is_frontend_lang(l));
     let has_typescript = context.languages.iter().any(|l| l == "typescript");
     let has_javascript = context.languages.iter().any(|l| l == "javascript");
 
@@ -1384,43 +1547,26 @@ async fn main() {{
         ],
 
         "tauri" => {
-            // Определяем язык фронтенда для Tauri
-            let frontend_choice = if frontend_lang.is_some() {
-                "TypeScript / JavaScript"
-            } else if has_typescript {
-                "TypeScript / JavaScript"
-            } else {
-                "Rust"
+            // CLI-First (scaffold="root"): create-tauri-app скаффолдит ВЕСЬ
+            // проект (Rust-каркас + фронтенд по шаблону react-ts/vue-ts/
+            // svelte-ts/vanilla-ts) прямо в корне проекта. Установленный
+            // tauri-cli НЕ требуется («cargo tauri» падал с «no such command:
+            // tauri») — npx скачивает CLI на лету, --yes + npx --yes
+            // подавляют все промпты (см. executor: CI=1).
+            let template = match (ui_framework(context), has_typescript) {
+                ("react", true) => "react-ts",
+                ("react", false) => "react",
+                ("vue", true) => "vue-ts",
+                ("vue", false) => "vue",
+                ("svelte", true) => "svelte-ts",
+                ("svelte", false) => "svelte",
+                (_, true) => "vanilla-ts",
+                _ => "vanilla",
             };
+            let identifier = tauri_identifier(project_name);
             vec![
-                cmd_i("tauri_init", "Init Tauri", "Initialize Tauri in current project",
-                    "cargo", vec!["tauri", "init", "--app-name", project_name, "--window-title", project_name, "--dev-url", "http://localhost:1420", "--before-dev-command", "", "--before-build-command", ""],
-                    vec![
-                        InteractiveEntry {
-                            trigger: "Choose which language to use for your frontend".into(),
-                            response_type: ResponseType::Text(frontend_choice.to_string()),
-                        },
-                        InteractiveEntry {
-                            trigger: "Choose your package manager".into(),
-                            response_type: ResponseType::Text("npm".to_string()),
-                        },
-                        InteractiveEntry {
-                            trigger: "Choose your UI template".into(),
-                            response_type: if context.frameworks.iter().any(|f| f == "react" || f == "nextjs") {
-                                ResponseType::Text("React".to_string())
-                            } else if context.frameworks.iter().any(|f| f == "vue" || f == "nuxt") {
-                                ResponseType::Text("Vue".to_string())
-                            } else if context.frameworks.iter().any(|f| f == "svelte" || f == "sveltekit") {
-                                ResponseType::Text("Svelte".to_string())
-                            } else {
-                                ResponseType::Text("Vanilla".to_string())
-                            },
-                        },
-                        InteractiveEntry {
-                            trigger: "Would you like to install WiX Toolset v3?".into(),
-                            response_type: ResponseType::Confirm(false),
-                        },
-                    ]),
+                cmd("tauri_create", "Create Tauri app", "Scaffold Tauri + frontend in project root",
+                    "npx", vec!["--yes", "create-tauri-app@latest", ".", "--template", template, "--manager", "npm", "--identifier", identifier.as_str(), "--yes", "--force"]),
             ]
         },
 
@@ -2063,7 +2209,7 @@ fun main() {{
         "symfony" => vec![
             cmd_i("symfony_new", "Create Symfony project",
                 "Scaffold Symfony application",
-                "symfony", vec!["new", project_name, "--dir", project_path],
+                "symfony", vec!["new", project_name, "--dir", project_path, "--no-interaction"],
                 vec![
                     InteractiveEntry {
                         trigger: "Do you want to include support for Docker?".into(),
@@ -2279,15 +2425,35 @@ def get_db():
                 });
             }
             "prisma" => {
+                // Интерактивный `npx prisma init` спрашивает пакетный
+                // менеджер и БД («Next, choose how you want to set up your
+                // database») и повисает на вводе. Провайдер передаётся
+                // флагом --datasource-provider, npx — с --yes, а CI=1
+                // проставляется executor'ом для всех команд.
+                let provider = if context.tools.iter().any(|t| t == "postgresql") {
+                    "postgresql"
+                } else if context.tools.iter().any(|t| t == "mysql") {
+                    "mysql"
+                } else if context.tools.iter().any(|t| t == "mongodb") {
+                    "mongodb"
+                } else {
+                    "sqlite"
+                };
                 steps.push(Step::Command {
                     id: "prisma_init".into(),
                     label: "Init Prisma".into(),
                     description: "Initialize Prisma ORM".into(),
                     command: "npx".into(),
-                    args: vec!["prisma".into(), "init".into()],
+                    args: vec![
+                        "--yes".into(),
+                        "prisma".into(),
+                        "init".into(),
+                        "--datasource-provider".into(),
+                        provider.into(),
+                    ],
                     working_dir: Some(project_path.to_string()),
                     env: None,
-                    timeout_secs: Some(30),
+                    timeout_secs: Some(120),
                     condition: None,
                     on_error: ErrorMode::Skip,
                     interactive: vec![],
@@ -2791,10 +2957,17 @@ mod tests {
     fn frontend_frameworks_use_project_subfolder() {
         // Фронтенды создают проект в подпапке <project_name>, а не в корне:
         // иначе они перезапишут package.json бэкенда (express+nextjs и т.п.).
-        for fw_id in ["nextjs", "nuxt", "sveltekit", "solidjs"] {
+        // Пост-шаг правки имени package.json не в счёт — важен сам генератор.
+        for (fw_id, create_id) in [
+            ("nextjs", "nextjs_create"),
+            ("nuxt", "nuxt_create"),
+            ("sveltekit", "sveltekit_create"),
+            ("solidjs", "solid_init"),
+        ] {
             let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context(), None);
-            assert_eq!(steps.len(), 1, "{fw_id}");
-            let args = cmd_args(&steps[0]);
+            let create = steps.iter().find(|s| s.id() == create_id)
+                .unwrap_or_else(|| panic!("{fw_id}: шаг {create_id} должен быть в плане"));
+            let args = cmd_args(create);
             assert!(
                 args.contains(&"myapp".to_string()),
                 "{fw_id} не создаёт проект в подпапке: {args:?}"
@@ -2945,19 +3118,161 @@ mod tests {
     }
 
     #[test]
-    fn rust_tauri_keeps_cargo_init() {
-        // tauri НЕ подавляет язык: cargo tauri init требует существующий
-        // cargo-проект. Отдельный кейс против слепого подавления скаффолда.
+    fn rust_tauri_cli_first_root_scaffold() {
+        // tauri (scaffold="root"): create-tauri-app запускается ПЕРВЫМ в
+        // корне проекта и сам создаёт и Rust-каркас, и фронтенд (шаблон
+        // react-ts). Никаких cargo init / backend/ frontend/ — корнем
+        // владеет CLI, компаньон react подавлен.
         let mut ctx = context();
-        ctx.languages = vec!["rust".into()];
-        ctx.frameworks = vec!["tauri".into()];
+        ctx.languages = vec!["rust".into(), "typescript".into()];
+        ctx.frameworks = vec!["tauri".into(), "react".into()];
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        // create-tauri-app создаёт Cargo.toml сам — language-скаффолд подавлен
         assert!(
-            recipe.steps.iter().any(|s| s.id() == "cargo_init"),
-            "cargo init обязателен перед cargo tauri init"
+            !recipe.steps.iter().any(|s| s.id() == "cargo_init"),
+            "cargo init не нужен: create-tauri-app создаёт каркас"
         );
-        assert!(recipe.steps.iter().any(|s| s.id() == "tauri_init"));
+        // Segment-папки backend//frontend/ при root-скаффолде не создаются
+        assert!(
+            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
+                if path == "backend" || path == "frontend")),
+            "root-скаффолд не должен создавать сегменты"
+        );
+        // Компаньон react сам скаффолдится create-tauri-app — vite не нужен
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "vite_create"),
+            "create-tauri-app сам скаффолдит фронтенд"
+        );
+
+        // CLI-first: tauri_create — сразу после create_root
+        let create_idx = recipe.steps.iter().position(|s| s.id() == "tauri_create")
+            .expect("tauri_create должен быть в плане");
+        assert_eq!(create_idx, 1, "create-tauri-app должен идти первым: {}", create_idx);
+
+        // Неинтерактивные флаги + шаблон react-ts + корень проекта
+        match &recipe.steps[create_idx] {
+            Step::Command { command, args, working_dir, .. } => {
+                assert_eq!(command, "npx");
+                assert!(
+                    args.iter().any(|a| a == "--yes"),
+                    "npx create-tauri-app должен идти с --yes: {args:?}"
+                );
+                assert!(args.contains(&"create-tauri-app@latest".to_string()));
+                let template = args.iter().position(|a| a == "--template")
+                    .map(|i| args[i + 1].as_str());
+                assert_eq!(template, Some("react-ts"), "typescript + react → react-ts");
+                // CLI работает в корне проекта, а не в backend//frontend/
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"));
+            }
+            _ => panic!("tauri_create — Command"),
+        }
+
+        // Баг шаблонизатора: патч имени package.json подставляет project_name
+        let patch = recipe.steps.iter().find(|s| s.id() == "tauri_pkg_name")
+            .expect("патч имени package.json должен быть в плане");
+        match patch {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), None, "package.json лежит в корне");
+                assert!(
+                    args[1].contains("j.name='myapp'"),
+                    "патч должен писать project_name: {:?}",
+                    args
+                );
+            }
+            _ => panic!("tauri_pkg_name — Command"),
+        }
+    }
+
+    #[test]
+    fn root_scaffold_runs_first_no_segments() {
+        // Строгая очередь фаз: 1. Root CLI (django) → 2. Subdir (react) →
+        // 3. Инструменты (prisma) → 4. Конфиги (docker-compose).
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["django".into(), "react".into()];
+        ctx.tools = vec!["prisma".into(), "postgresql".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        // Root-скаффолд отключает сегменты backend//frontend/
+        assert!(
+            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
+                if path == "backend" || path == "frontend")),
+            "при django (root) не должно быть сегментов"
+        );
+
+        let idx = |id: &str| recipe.steps.iter().position(|s| s.id() == id)
+            .unwrap_or_else(|| panic!("{id} должен быть в плане"));
+        assert!(idx("django_start") < idx("vite_create"), "root CLI идёт до subdir-скаффолда");
+        assert!(idx("vite_create") < idx("prisma_init"), "subdir-скаффолд идёт до инструментов");
+        assert!(idx("prisma_init") < idx("docker_compose"), "инструменты идут до конфигов");
+
+        // django-admin startproject работает в корне проекта, а не в backend/
+        match &recipe.steps[idx("django_start")] {
+            Step::Command { working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"), "django стартует в корне");
+            }
+            _ => panic!("django_start — Command"),
+        }
+
+        // react (subdir) НЕ подавляется django (у django нет компаньонов)
+        assert!(
+            recipe.steps.iter().any(|s| s.id() == "vite_create"),
+            "django не поглощает react — vite-скаффолд остаётся"
+        );
+    }
+
+    #[test]
+    fn prisma_init_is_non_interactive() {
+        // Prisma не должен спрашивать «how to set up your database»:
+        // провайдер передаётся флагом, npx — с --yes / CI=1 (executor).
+        let mut ctx = context();
+        ctx.tools = vec!["prisma".into(), "postgresql".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let step = recipe.steps.iter().find(|s| s.id() == "prisma_init")
+            .expect("prisma_init должен быть в плане");
+        match step {
+            Step::Command { command, args, .. } => {
+                assert_eq!(command, "npx");
+                assert!(args.contains(&"--yes".to_string()), "{args:?}");
+                let provider = args.iter().position(|a| a == "--datasource-provider")
+                    .map(|i| args[i + 1].as_str());
+                assert_eq!(provider, Some("postgresql"), "{args:?}");
+            }
+            _ => panic!("prisma_init — Command"),
+        }
+    }
+
+    #[test]
+    fn segmented_vite_package_name_patched_to_project_name() {
+        // Баг шаблонизатора: create-vite frontend → package.json name
+        // = "frontend". Движок добавляет пост-шаг, переписывающий name
+        // на project_name из WizardContext.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["react".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let patch = recipe.steps.iter().find(|s| s.id() == "react_pkg_name")
+            .expect("патч имени package.json должен быть в плане");
+        match patch {
+            Step::Command { working_dir, args, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("frontend"), "патч работает в папке скаффолда");
+                assert!(
+                    args[1].contains("j.name='myapp'"),
+                    "name берётся из project_name, а не из папки frontend: {:?}",
+                    args
+                );
+            }
+            _ => panic!("react_pkg_name — Command"),
+        }
     }
 
     #[test]

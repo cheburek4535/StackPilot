@@ -442,7 +442,7 @@
       "scaffold": "root",
       "output_subdir": null,
       "required_tools": [],
-      "suppresses_language_scaffold": false,
+      "suppresses_language_scaffold": true,
       "kind": "app",
       "companions": [
         "svelte",

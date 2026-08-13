@@ -94,6 +94,7 @@ pub async fn run_check(
                     total,
                     tool_id: def.id.clone(),
                     display: def.display.clone(),
+                    icon: def.icon.clone(),
                     status: status.clone(),
                 });
             }
@@ -152,6 +153,7 @@ pub async fn run_check(
                 tool_id: def.id,
                 display: def.display,
                 category: def.category,
+                icon: def.icon.clone(),
                 status,
                 // ManualInstall ни откуда не скачивается — размер 0.
                 size_mb: if is_manual { 0 } else { def.size_mb },
