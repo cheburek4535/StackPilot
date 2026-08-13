@@ -529,7 +529,7 @@
     "id": "zig",
     "category": "language",
     "display": "Zig",
-    "description": "Язык и компилятор Zig (zig init-exe)",
+    "description": "Язык и компилятор Zig (zig init)",
     "icon": "zig.svg",
     "detection": {
       "version_probes": [["zig", "version"]],
@@ -613,23 +613,23 @@
     "icon": "composer.svg",
     "detection": {
       "version_probes": [["composer", "--version"]],
-      "known_paths": [],
+      "known_paths": ["%APPDATA%/Composer/vendor/bin"],
       "registry_keys": []
     },
     "versions": { "min": "2.5", "recommended": "2.8" },
     "sources": {
       "windows": [
-        { "kind": "Script", "id": "composer-installer", "url": "https://getcomposer.org/installer", "args": ["--quiet"], "extra_args": [], "dynamic_args": false }
+        { "kind": "Official", "id": "composer-setup-exe", "url": "https://getcomposer.org/Composer-Setup.exe", "args": ["/S"], "extra_args": [], "dynamic_args": false, "needs_admin": false }
       ],
       "linux": [{ "kind": "PkgManager", "id": "composer", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "composer", "args": [], "extra_args": [], "dynamic_args": false }]
     },
     "size_mb": 5,
     "needs_admin": false,
-    "path_entries": [],
+    "path_entries": ["%APPDATA%\\Composer\\vendor\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Требует PHP."
+    "notes": "Требует PHP. Windows: официальный Composer-Setup.exe (тихая установка /S) — PHP-инсталлятор getcomposer.org/installer на Windows запускать нельзя (os error 193), .phar выполняется через php."
   },
   {
     "id": "swift",
@@ -690,7 +690,7 @@
     "description": "Язык Elixir (mix new, Phoenix)",
     "icon": "elixir.svg",
     "detection": {
-      "version_probes": [["elixir", "--version"]],
+      "version_probes": [["elixir", "--version"], ["elixir.bat", "--version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/elixir/bin", "%LOCALAPPDATA%/Programs/elixir/*/bin", "C:/Program Files/Elixir"],
       "registry_keys": []
     },

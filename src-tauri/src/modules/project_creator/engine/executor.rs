@@ -2,8 +2,10 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use chrono::Local;
+use std::sync::Arc;
 use std::time::Duration;
 use crate::modules::project_creator::engine::ExecutionPlan;
+use crate::modules::project_creator::generators::GeneratorRegistry;
 use crate::modules::project_creator::models::*;
 
 /// Стандартные fallback-триггеры на все случаи, когда step‑специфичных нет.
@@ -37,11 +39,21 @@ static FALLBACK_TRIGGERS: &[(&str, &str)] = &[
 ];
 
 /// StepExecutor — выполняет отдельные шаги плана.
-pub struct StepExecutor;
+pub struct StepExecutor {
+    /// Встроенные генераторы для шагов Step::Generate
+    /// (spring-boot, fs-cleanup, cli).
+    pub generators: Arc<GeneratorRegistry>,
+}
 
 impl StepExecutor {
     pub fn new() -> Self {
-        Self
+        Self {
+            generators: Arc::new(GeneratorRegistry::with_defaults()),
+        }
+    }
+
+    pub fn with_generators(generators: Arc<GeneratorRegistry>) -> Self {
+        Self { generators }
     }
 
     /// Собрать карту триггеров из interactive-поля шага (владеющие данные).
@@ -530,6 +542,112 @@ impl StepExecutor {
         duration_ms,
     }
 }
+
+    /// Выполнить шаг Generate: диспетчеризация во встроенные генераторы
+    /// движка (spring-boot, fs-cleanup, cli). Ошибка генератора (например,
+    /// «Spring Initializr error: HTTP 400 ...») становится Failed-статусом
+    /// шага и останавливает пайплайн при on_error=Abort.
+    pub async fn run_generate(
+        &self,
+        step: &Step,
+        plan: &ExecutionPlan,
+        tx: &mpsc::Sender<ExecutionEvent>,
+        index: usize,
+    ) -> StepResult {
+        let (generator_id, generator_config) = match step {
+            Step::Generate {
+                generator_id,
+                generator_config,
+                ..
+            } => (generator_id, generator_config),
+            _ => {
+                return StepResult {
+                    step_id: step_id(step),
+                    label: step_label(step),
+                    status: StepStatus::Failed {
+                        error: "Expected Generate step".into(),
+                    },
+                    duration_ms: 0,
+                }
+            }
+        };
+
+        tx.send(ExecutionEvent {
+            event_type: ExecutionEventType::StepStarted,
+            step_id: step_id(step),
+            step_index: index,
+            total_steps: plan.step_count(),
+            step_name: step_label(step),
+            step_description: step_description(step),
+            timestamp: local_time(),
+        })
+        .await
+        .ok();
+
+        let start = std::time::Instant::now();
+
+        let outcome = match self.generators.get(generator_id) {
+            Some(generator) => {
+                generator
+                    .generate(&plan.context, &plan.project_path, generator_config)
+                    .await
+            }
+            None => Err(format!("Unknown generator '{}'", generator_id)),
+        };
+
+        let (status, progress_msg) = match outcome {
+            Ok(report) => (
+                StepStatus::Success {
+                    message: report.message.clone(),
+                },
+                format!("{}: {}", generator_id, report.message),
+            ),
+            Err(error) => (
+                StepStatus::Failed {
+                    error: error.clone(),
+                },
+                format!("{}: {}", generator_id, error),
+            ),
+        };
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        tx.send(ExecutionEvent {
+            event_type: ExecutionEventType::StepProgress {
+                stdout: progress_msg,
+                stderr: String::new(),
+            },
+            step_id: step_id(step),
+            step_index: index,
+            total_steps: plan.step_count(),
+            step_name: step_label(step),
+            step_description: step_description(step),
+            timestamp: local_time(),
+        })
+        .await
+        .ok();
+
+        tx.send(ExecutionEvent {
+            event_type: ExecutionEventType::StepCompleted {
+                status: status.clone(),
+                duration_ms,
+            },
+            step_id: step_id(step),
+            step_index: index,
+            total_steps: plan.step_count(),
+            step_name: step_label(step),
+            step_description: step_description(step),
+            timestamp: local_time(),
+        })
+        .await
+        .ok();
+
+        StepResult {
+            step_id: step_id(step),
+            label: step_label(step),
+            status,
+            duration_ms,
+        }
+    }
 
     /// Записать файл
     pub async fn write_file(

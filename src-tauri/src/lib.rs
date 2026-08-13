@@ -60,7 +60,7 @@ pub fn run() {
             let project_creator_state = modules::project_creator::ProjectCreatorState::new(
                 Arc::new(DefaultProjectAnalyzer::new()),
                 Arc::new(DefaultRecipeEngine::new()),
-                Arc::new(GeneratorRegistry::new()),
+                Arc::new(GeneratorRegistry::with_defaults()),
                 Arc::new(DefaultPackRegistry::new()),
                 Arc::new(DefaultKnowledgeBase::new()),
             );

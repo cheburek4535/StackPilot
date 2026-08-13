@@ -9,6 +9,9 @@ export type ProjectTypeDef = {
   icon: string | null;
   tags: string[];
   allow_custom_stack: boolean;
+  /** false = тип проекта концептуально не имеет серверной стороны
+   *  (browser-extension): UI скрывает шаги Backend Language / Framework */
+  has_backend?: boolean;
 };
 
 export type LanguageDef = {

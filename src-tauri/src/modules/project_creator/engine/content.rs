@@ -749,6 +749,31 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 // Docker Compose generation
 // ---------------------------------------------------------------------------
 
+/// Именованный том Docker или bind-mount? Bind-mount начинается с ".", "/",
+/// "\\", "~" или Windows drive letter (C:\...). Только именованные тома можно
+/// объявлять в глобальной секции `volumes:` docker-compose.yaml — bind-mount
+/// обязан жить исключительно внутри сервиса.
+fn is_named_volume(volume: &str) -> bool {
+    if volume.is_empty() {
+        return false;
+    }
+    // Windows drive letter: "C:\data:/data" — двоеточие внутри host-пути
+    // (проверяем по всей строке, до split по ':')
+    let bytes = volume.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let host_part = volume.split(':').next().unwrap_or(volume);
+    if host_part.is_empty() {
+        return false;
+    }
+    let first = host_part.as_bytes()[0];
+    if matches!(first, b'.' | b'/' | b'\\' | b'~') {
+        return false;
+    }
+    true
+}
+
 pub fn generate_docker_compose(services: &[DockerService], project_name: &str, app_port: &str) -> String {
     let mut result = String::new();
     let mut volumes_section = String::new();
@@ -805,9 +830,14 @@ pub fn generate_docker_compose(services: &[DockerService], project_name: &str, a
             result.push_str("    volumes:\n");
             for volume in &service.volumes {
                 result.push_str(&format!("      - {}\n", volume));
-                // Извлекаем имя volume для секции volumes в конце файла
-                let vol_name = volume.split(':').next().unwrap_or(volume);
-                volumes_section.push_str(&format!("\n  {}:", vol_name));
+                // В глобальную секцию volumes в конце файла попадают ТОЛЬКО
+                // именованные тома (postgres_data). Bind-mounts (./dags:...) —
+                // это локальные пути хоста, их объявлять на верхнем уровне
+                // нельзя (Docker Compose: «Property is not allowed»).
+                if is_named_volume(volume) {
+                    let vol_name = volume.split(':').next().unwrap_or(volume);
+                    volumes_section.push_str(&format!("\n  {}:", vol_name));
+                }
             }
         }
         if !service.depends_on.is_empty() {
@@ -1393,5 +1423,57 @@ pub fn generate_vscode_extensions(lang: &str) -> String {
         _ => r#"{
     "recommendations": []
 }"#.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_mounts_stay_out_of_global_volumes_block() {
+        // airflow монтирует ./dags и ./logs — это bind-mounts, их НЕЛЬЗЯ
+        // объявлять в глобальной секции volumes (Property is not allowed).
+        let services = collect_docker_services(&["airflow".into(), "postgresql".into()]);
+        let compose = generate_docker_compose(&services, "myproj", "3000");
+
+        // Bind-mount остаётся внутри сервиса
+        assert!(compose.contains("./dags:/opt/airflow/dags"), "{compose}");
+        assert!(compose.contains("./logs:/opt/airflow/logs"), "{compose}");
+
+        // Глобальная секция volumes: без именованных томов её не должно
+        // быть вовсе (раньше туда попадали ./dags и ./logs).
+        assert!(
+            !compose.contains("\nvolumes:\n\n  ./"),
+            "bind-mount попал в глобальный volumes: {compose}"
+        );
+        assert!(
+            !compose.contains("\nvolumes:"),
+            "глобальная volumes не нужна без именованных томов: {compose}"
+        );
+    }
+
+    #[test]
+    fn named_volumes_are_declared_globally() {
+        let services = vec![DockerService {
+            name: "postgres".into(),
+            image: "postgres:16-alpine".into(),
+            ports: vec!["5432:5432".into()],
+            environment: vec![],
+            volumes: vec!["postgres_data:/var/lib/postgresql/data".into()],
+            depends_on: vec![],
+        }];
+        let compose = generate_docker_compose(&services, "myproj", "3000");
+        assert!(compose.contains("volumes:\n\n  postgres_data:") || compose.contains("\nvolumes:\n  postgres_data:"), "{compose}");
+    }
+
+    #[test]
+    fn is_named_volume_detects_bind_mounts() {
+        assert!(!is_named_volume("./dags:/opt/airflow/dags"));
+        assert!(!is_named_volume("/host/path:/container/path"));
+        assert!(!is_named_volume("~/data:/data"));
+        assert!(!is_named_volume(r"C:\data:/data"));
+        assert!(!is_named_volume(r"\\server\share:/data"));
+        assert!(is_named_volume("postgres_data:/var/lib/postgresql/data"));
     }
 }

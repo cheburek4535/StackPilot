@@ -44,6 +44,29 @@ struct InstallCommand {
     args: Vec<String>,
 }
 
+/// Windows: `.phar`-файлы (composer.phar и т.п.) — это PHP-скрипты,
+/// CreateProcess их не понимает («%1 не является приложением Win32»,
+/// os error 193). Запускаем через `php`, путь к `.phar` передаём как
+/// аргумент. На Unix `.phar` исполняется напрямую (shebang-строка).
+fn resolve_phar(program: String, args: Vec<String>) -> InstallCommand {
+    #[cfg(target_os = "windows")]
+    {
+        let is_phar = Path::new(&program)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("phar"));
+        if is_phar {
+            let mut php_args = vec![program];
+            php_args.extend(args);
+            return InstallCommand {
+                program: "php".to_string(),
+                args: php_args,
+            };
+        }
+    }
+    InstallCommand { program, args }
+}
+
 /// Генерирует пароль для БД (PostgreSQL). 16 hex-символов от
 /// наносекунд системного времени — достаточно для локальной
 /// dev-базы; настоящая генерация/хранение — этап 5 (metadata).
@@ -306,10 +329,13 @@ try {{
                 _ => {
                     let mut args = source.args.clone();
                     args.extend(dynamic);
-                    Ok(InstallCommand {
-                        program: path.to_string_lossy().into_owned(),
-                        args,
-                    })
+                    // NSIS-инсталлятор Erlang/OTP: без /S в неинтерактивной
+                    // сессии падает с кодом 1 — флаг тихой установки
+                    // принудительный, даже если его забыли в tools.json.
+                    if source.id == "erlang-exe" && !args.iter().any(|a| a == "/S") {
+                        args.insert(0, "/S".to_string());
+                    }
+                    Ok(resolve_phar(path.to_string_lossy().into_owned(), args))
                 }
             }
         }
@@ -334,10 +360,10 @@ try {{
                     ],
                 })
             } else {
-                Ok(InstallCommand {
-                    program: path.to_string_lossy().into_owned(),
-                    args: source.args.clone(),
-                })
+                Ok(resolve_phar(
+                    path.to_string_lossy().into_owned(),
+                    source.args.clone(),
+                ))
             }
         }
 
@@ -863,6 +889,74 @@ mod tests {
         let cmd = build_install_command(&source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
         assert_eq!(cmd.args, vec!["--quiet".to_string()]);
+    }
+
+    #[test]
+    fn erlang_exe_forces_silent_flag() {
+        // NSIS-инсталлятор Erlang/OTP: без /S в неинтерактивной сессии
+        // падает с кодом 1 — флаг добавляется принудительно, даже если
+        // его забыли в tools.json.
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "erlang-exe".to_string(),
+            url: Some("https://example.com/otp_win64_29.0.5.exe".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+        };
+        let cmd = build_install_command(&source, None, None).unwrap();
+        assert_eq!(cmd.args[0], "/S", "/S должен идти первым: {:?}", cmd.args);
+        assert!(cmd.args.iter().any(|a| a == "/S"), "нет /S: {:?}", cmd.args);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn official_phar_runs_via_php() {
+        // composer.phar — PHP-скрипт: CreateProcess его не понимает
+        // (os error 193, «%1 не является приложением Win32»). На
+        // Windows команда обязана запускаться через php с путём
+        // к .phar в качестве аргумента.
+        let source = InstallSource {
+            kind: InstallSourceKind::Script,
+            id: "composer-installer".to_string(),
+            url: Some("https://getcomposer.org/download/latest-stable/composer.phar".to_string()),
+            args: vec!["--quiet".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+        };
+        let phar = std::env::temp_dir().join("tc-tool-composer.phar");
+        let cmd = build_install_command(&source, Some(&phar), None).unwrap();
+        assert_eq!(cmd.program, "php", "phar обязан идти через php");
+        assert_eq!(cmd.args[0], phar.to_string_lossy());
+        assert!(cmd.args.iter().any(|a| a == "--quiet"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn script_non_phar_runs_directly() {
+        // Обычный скрипт (без .phar) запускается как был — phar-обёртка
+        // не должна затронуть прочие Script-источники.
+        let source = InstallSource {
+            kind: InstallSourceKind::Script,
+            id: "setup-sh".to_string(),
+            url: Some("https://example.com/setup.sh".to_string()),
+            args: vec!["--silent".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+        };
+        let script = std::env::temp_dir().join("tc-tool-setup.sh");
+        let cmd = build_install_command(&source, Some(&script), None).unwrap();
+        assert_eq!(cmd.program, script.to_string_lossy());
+        assert_eq!(cmd.args, vec!["--silent".to_string()]);
     }
 
     #[test]

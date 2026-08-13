@@ -18,8 +18,9 @@
 //      побочные (aiogram, telegraf) этим правилом не ограничены —
 //      только явными конфликтами.
 //   5. Язык стороны совместим с фреймворком (side + languages).
-//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA) —
-//      не блокируют генерацию, только поясняют и советуют альтернативу.
+//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA, два
+//      full-stack фреймворка, backend + Electron) — не блокируют
+//      генерацию, только поясняют и советуют альтернативу.
 
 use super::models::{FrameworkDef, WizardTreeData};
 
@@ -167,28 +168,33 @@ pub fn validate_stack(
         }
     }
 
-    // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA
-    //    и т.п.): не блокируют генерацию, но объясняют концептуальный
-    //    конфликт и советуют альтернативу.
+    // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA,
+    //    два full-stack фреймворка, backend + Electron...): не блокируют
+    //    генерацию, но объясняют концептуальный конфликт и советуют
+    //    альтернативу. Плейсхолдеры {a}/{b}/{a_lang} заменяются label'ами.
     for wp in &tree.warning_pairs {
-        let has_a = selected.iter().any(|f| f.id == wp.a);
-        let has_b = selected.iter().any(|f| f.id == wp.b);
-        if has_a && has_b {
-            let label = |id: &str| -> String {
-                selected
-                    .iter()
-                    .find(|f| f.id == id)
-                    .map(|f| f.label.clone())
-                    .unwrap_or_else(|| id.to_string())
+        let a = selected.iter().find(|f| f.id == wp.a);
+        let b = selected.iter().find(|f| f.id == wp.b);
+        if let (Some(a), Some(b)) = (a, b) {
+            let a_lang_label = tree
+                .languages
+                .iter()
+                .find(|l| l.id == a.recommended_language)
+                .map(|l| l.label.clone())
+                .unwrap_or_else(|| a.recommended_language.clone());
+            let resolve = |text: &str| -> String {
+                text.replace("{a_lang}", &a_lang_label)
+                    .replace("{a}", &a.label)
+                    .replace("{b}", &b.label)
             };
             let mut message = format!(
                 "«{}» и «{}» — спорная связка. {}",
-                label(&wp.a),
-                label(&wp.b),
-                wp.reason
+                a.label,
+                b.label,
+                resolve(&wp.reason)
             );
             if !wp.alternative.is_empty() {
-                message.push_str(&format!(" Альтернатива: {}.", wp.alternative));
+                message.push_str(&format!(" Альтернатива: {}.", resolve(&wp.alternative)));
             }
             issues.push(StackIssue {
                 severity: StackSeverity::Warning,
@@ -798,6 +804,58 @@ mod tests {
         // Чистый UI (React/Vue/Svelte) с Phoenix — обычная архитектура API+SPA.
         let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "react"], "windows");
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn backend_mvc_with_metaframework_warns() {
+        let t = tree();
+        // Laravel + Next.js — два full-stack фреймворка с собственным
+        // роутингом и сервером: Warning, но не блокировка.
+        let issues = validate(&t, Some("web-app"), Some("php"), Some("typescript"), &["laravel", "nextjs"], "windows");
+        let warn = issues.iter().find(|i| matches!(i.severity, StackSeverity::Warning));
+        assert!(
+            warn.is_some_and(|i| i.message.contains("роутинг и сервер") && i.message.contains("Laravel") && i.message.contains("Next.js")),
+            "{issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            "предупреждение не должно блокировать: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn django_with_nuxt_warns() {
+        let t = tree();
+        let issues = validate(&t, Some("web-app"), Some("python"), Some("typescript"), &["django", "nuxt"], "windows");
+        assert!(
+            issues.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("роутинг и сервер")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn backend_mvc_with_pure_spa_is_clean() {
+        let t = tree();
+        // Laravel + чистый SPA (React) — легальная архитектура API + SPA.
+        let issues = validate(&t, Some("web-app"), Some("php"), Some("typescript"), &["laravel", "react"], "windows");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn backend_with_electron_warns_about_sidecar() {
+        let t = tree();
+        // Laravel + Electron: бэкенд на PHP придётся запускать сайдкаром.
+        let issues = validate(&t, Some("desktop-app"), Some("php"), Some("typescript"), &["laravel", "electron"], "windows");
+        assert!(
+            issues.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("сайдкар") && i.message.contains("PHP")),
+            "{issues:?}"
+        );
+        // Spring Boot + Electron — та же логика, язык Java подставляется.
+        let issues2 = validate(&t, Some("desktop-app"), Some("java"), Some("typescript"), &["spring-boot", "electron"], "windows");
+        assert!(
+            issues2.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("сайдкар") && i.message.contains("Java")),
+            "{issues2:?}"
+        );
     }
 
     // ----------------------------------------------------------

@@ -1,6 +1,6 @@
 pub mod content;
 pub mod executor;
-// pub mod template;
+pub mod template;
 use std::collections::HashMap;
 use std::path::{Path};
 use std::sync::OnceLock;
@@ -10,6 +10,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use chrono::Local;
 
+use crate::modules::project_creator::generators::GeneratorRegistry;
 use crate::modules::project_creator::models::*;
 
 /// Полный движок рецептов:
@@ -39,15 +40,16 @@ pub trait RecipeEngine: Send + Sync {
 /// DefaultRecipeEngine — заглушка. Всю логику будете писать вы по TZ.
 /// ============================================================================
 pub struct DefaultRecipeEngine {
-    // pub template_engine: Arc<template::TemplateEngine>,
     pub executor: Arc<executor::StepExecutor>,
 }
 
 impl DefaultRecipeEngine {
     pub fn new() -> Self {
+        // Единый реестр встроенных генераторов (spring-boot, fs-cleanup,
+        // cli) — тот же, что получает ProjectCreatorState.
+        let generators = Arc::new(GeneratorRegistry::with_defaults());
         Self {
-            // template_engine: Arc::new(template::TemplateEngine::new()),
-            executor: Arc::new(executor::StepExecutor::new()),
+            executor: Arc::new(executor::StepExecutor::with_generators(generators)),
         }
     }
 }
@@ -155,13 +157,7 @@ impl RecipeEngine for DefaultRecipeEngine {
                     self.executor.create_directory(step, &plan, &tx, i).await
                 }
                 Step::Generate { .. } => {
-                    // TBD: generator-based step
-                    StepResult {
-                        step_id: step.id(),
-                        label: step.label(),
-                        status: StepStatus::Skipped { reason: "Generator not yet implemented".into() },
-                        duration_ms: 0,
-                    }
+                    self.executor.run_generate(step, &plan, &tx, i).await
                 }
                 Step::Parallel { .. } => {
                     // TBD: parallel execution
@@ -260,10 +256,20 @@ impl RecipeEngine for DefaultRecipeEngine {
 ///      Движок не создаёт для них backend//frontend/ — корнем владеет CLI.
 ///   2. Subdir Scaffolding — сегменты моно-репозитория, language-скаффолды
 ///      (cargo init, package.json...) и CLI фреймворков со scaffold="subdir"
-///      (create-vite, create-next-app, ...).
+///      (create-vite, create-next-app, ...). Если корнем владеет root-скаффолд,
+///      компаньоны (nextjs при nest) получают собственный сегмент frontend/
+///      и выполняются ВНУТРИ него с аргументом "." — иначе CLI создаёт
+///      вложенную папку <project_name>/ (матрешка testapp2/testapp2).
 ///   3. Установка инструментов — prisma init, alembic init, docker-compose
 ///      пишутся ПОСЛЕ каркасов (prisma требует package.json).
-///   4. Шаблонизация оставшихся конфигов — docker/git/ci/readme/vscode.
+///   4. git init — чистим вложенные .git от генераторов и создаём корневой
+///      репозиторий ДО шаблонизации.
+///   5. ФИНАЛЬНАЯ шаблонизация — README.md, docker-compose.yaml, .gitignore
+///      рендерятся ПОСЛЕ всех CLI-фреймворков и перезаписывают их версии
+///      (overwrite=true), иначе create-next-app/nest new затирают шаблон.
+///   6. Финализация — единственная установка зависимостей (npm install
+///      ровно один раз на каждый JS-каталог, в самом конце) и стартовый
+///      git add/commit со всеми готовыми файлами.
 fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, String> {
     // project_name может отличаться от folder_name (при auto-rename папки)
     let project_name = context.project_name.as_deref().unwrap_or(folder_name);
@@ -285,33 +291,73 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
     // остального в корне проекта (см. SegLayout::compute — присутствие
     // хотя бы одного scaffold="root" отключает сегментацию backend/frontend).
     let layout = SegLayout::compute(context);
+    let root_present = context.frameworks.iter().any(|fw| {
+        framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
+    });
     let mut rest_frameworks: Vec<String> = Vec::new();
+    // Каталоги, в которых после всех CLI-каркасов нужен РОВНО ОДИН npm install
+    // ("." = корень проекта). Скаффолдеры запускаются с --skip-install/
+    // --no-install, поэтому node_modules не плодятся на каждом шаге.
+    let mut js_dirs: Vec<String> = Vec::new();
     for fw in &context.frameworks {
         if framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root")) {
-            steps.extend(steps_for_framework(fw, project_path, project_name, context, None));
+            steps.extend(steps_for_framework(fw, project_path, project_name, context, None, false));
+            // Root-JS-фреймворк (nest): работает в корне с --skip-install,
+            // его package.json ставится один раз в финальной фазе.
+            if is_js_framework(fw) {
+                push_unique(&mut js_dirs, ".".to_string());
+            }
         } else {
             rest_frameworks.push(fw.clone());
         }
     }
 
+    // Сегмент для фреймворка рядом с root-скаффолдом: корень уже занят
+    // (nest, django, spring-boot...), поэтому остальным фреймворкам
+    // назначается каталог по их side (frontend → frontend/). Без этого
+    // create-next-app создал бы вложенную папку <project_name>/ прямо в
+    // корне — матрёшка testapp2/testapp2.
+    let root_rest_seg = |fw: &str| -> Option<String> {
+        if !root_present {
+            return None;
+        }
+        match framework_def(fw).map(|def| def.side.as_str()) {
+            Some("backend") => Some("backend".to_string()),
+            Some("frontend") => Some("frontend".to_string()),
+            _ => None,
+        }
+    };
+
     // Фаза 2: Subdir Scaffolding. Сегменты моно-репозитория (backend + frontend)
     // создаются только когда root-фреймворков нет; генераторы подпапок сами
-    // создают свои каталоги (create-next-app frontend и т.п.).
-    if let Some(dir) = &layout.backend {
-        steps.push(Step::CreateDirectory {
-            id: "create_backend_dir".into(),
-            label: format!("Create {}/", dir),
-            description: format!("Create {} directory for backend frameworks", dir),
-            path: dir.clone(),
-            condition: None,
-            on_error: ErrorMode::Abort,
-        });
+    // создают свои каталоги (create-next-app frontend и т.п.). При
+    // root-скаффолде папки сегментов создаёт движок — CLI компаньона будет
+    // работать ВНУТРИ них с аргументом ".".
+    let mut seg_dirs: Vec<String> = Vec::new();
+    if root_present {
+        for fw in &rest_frameworks {
+            // Компаньон, которого root-фреймворк скаффолдит сам
+            // (tauri → react-ts), сегмента не получает.
+            if root_scaffold_consumes_companion(fw, context) {
+                continue;
+            }
+            if let Some(seg) = root_rest_seg(fw) {
+                push_unique(&mut seg_dirs, seg);
+            }
+        }
+    } else {
+        if let Some(dir) = &layout.backend {
+            seg_dirs.push(dir.clone());
+        }
+        if let Some(dir) = &layout.frontend {
+            seg_dirs.push(dir.clone());
+        }
     }
-    if let Some(dir) = &layout.frontend {
+    for dir in &seg_dirs {
         steps.push(Step::CreateDirectory {
-            id: "create_frontend_dir".into(),
+            id: format!("create_{}_dir", dir),
             label: format!("Create {}/", dir),
-            description: format!("Create {} directory for frontend frameworks", dir),
+            description: format!("Create {} directory for frameworks", dir),
             path: dir.clone(),
             condition: None,
             on_error: ErrorMode::Abort,
@@ -326,26 +372,65 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         if language_scaffold_suppressed(lang, context) {
             continue;
         }
+        let lang_seg = if root_present {
+            match language_side_infer(lang) {
+                Some("backend") => seg_dirs.iter().find(|d| *d == "backend").cloned(),
+                Some("frontend") => seg_dirs.iter().find(|d| *d == "frontend").cloned(),
+                _ => None,
+            }
+        } else {
+            layout.for_language(lang)
+        };
         let mut lang_steps = steps_for_language(lang, project_name, project_path);
-        if let Some(dir) = layout.for_language(lang) {
-            lang_steps = into_segment(lang_steps, &dir);
+        if let Some(dir) = &lang_seg {
+            lang_steps = into_segment(lang_steps, dir, root_present);
         }
         steps.extend(lang_steps);
+        // JS-язык без фреймворка-каркаса: package.json ляжет в этот каталог —
+        // там нужен финальный npm install.
+        if matches!(lang.to_lowercase().as_str(), "typescript" | "javascript") {
+            push_unique(&mut js_dirs, lang_seg.clone().unwrap_or_else(|| ".".to_string()));
+        }
     }
+
     for fw in rest_frameworks {
-        steps.extend(steps_for_framework(&fw, project_path, project_name, context, layout.for_framework(&fw).as_deref()));
+        let seg = if root_present {
+            root_rest_seg(&fw)
+        } else {
+            layout.for_framework(&fw)
+        };
+        let fw_steps = steps_for_framework(&fw, project_path, project_name, context, seg.as_deref(), root_present);
+        // Поглощённый root-фреймворком компаньон (tauri → react) не создаёт
+        // своих файлов — npm install для него не нужен.
+        if is_js_framework(&fw) && !fw_steps.is_empty() {
+            // root-скаффолды уже зарегистрированы в js_dirs фазой 1
+            push_unique(&mut js_dirs, seg.clone().unwrap_or_else(|| project_name.to_string()));
+        }
+        steps.extend(fw_steps);
     }
 
     // Фаза 3: установка инструментов (prisma init требует существующий
     // package.json — выполняется строго после каркасов).
     steps.extend(steps_for_tools(context, project_path));
 
-    // Фаза 4: шаблонизация оставшихся конфигов.
+    // Фаза 4: git init — ДО шаблонизации: убираем вложенные .git, созданные
+    // генераторами, и инициализируем корневой репозиторий.
+    steps.extend(steps_for_git_init(context, project_path));
+
+    // Фаза 5: ФИНАЛЬНАЯ шаблонизация — ПОСЛЕ выполнения ВСЕХ CLI-фреймворков.
+    // README.md, docker-compose.yaml и .gitignore, созданные самими CLI
+    // (create-next-app, nest new...), перезаписываются нашими шаблонами
+    // (overwrite=true) — иначе шаблон молча теряется.
     steps.extend(steps_for_docker(context, project_path, project_name));
-    steps.extend(steps_for_git(context, project_path, project_name));
+    steps.extend(steps_for_gitignore(context, project_path));
     steps.extend(steps_for_ci(context, project_path, project_name));
     steps.extend(steps_for_readme(context, project_path, project_name));
     steps.extend(steps_for_vscode(context));
+
+    // Фаза 6: финализация — единственная установка зависимостей в самом
+    // конце (npm install ровно один раз на JS-каталог) и стартовый
+    // git add/commit со всеми готовыми файлами.
+    steps.extend(steps_for_finalize(context, &js_dirs, project_path, project_name));
 
     Ok(Recipe {
         id: format!("recipe_{}", project_name),
@@ -353,6 +438,22 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         description: format!("Full setup for {} project", project_name),
         tags: context.languages.clone(),
         steps,
+    })
+}
+
+/// Добавить значение в список, если его там ещё нет.
+fn push_unique(list: &mut Vec<String>, value: String) {
+    if !list.contains(&value) {
+        list.push(value);
+    }
+}
+
+/// JS/TS-фреймворки: создают package.json и нуждаются в npm install.
+fn is_js_framework(fw: &str) -> bool {
+    framework_def(fw).is_some_and(|def| {
+        def.languages
+            .iter()
+            .any(|l| l == "typescript" || l == "javascript")
     })
 }
 
@@ -633,8 +734,8 @@ fn steps_for_language(lang: &str, project_name: &str, project_path: &str) -> Vec
 
         "zig" => vec![
             cmd("zig_init", "Init Zig project", 
-                "Initialize Zig executable project",
-                "zig init-exe"),
+                "Initialize Zig project",
+                "zig init"),
         ],
 
         "dart" => {
@@ -880,6 +981,7 @@ impl SegLayout {
 
 /// Шаги CLI-генераторов, которые сами создают подпапку с именем проекта
 /// (create-next-app <name>, flutter create <name> и т.п.).
+/// Индекс — позиция имени создаваемой подпапки в args.
 /// При сегментации в такой команде подменяется имя создаваемой подпапки
 /// (индекс в args), а рабочая директория остаётся корнем проекта;
 /// остальные шаги (write_file, остальные команды) переносятся в сегмент.
@@ -900,12 +1002,21 @@ const FOLDER_MAKER_STEPS: &[(&str, usize)] = &[
     ("vite_create", 1),     // npx create-vite@latest <имя>
 ];
 
-/// Шаги-«хвосты» генераторов подпапок, которые должны выполняться ВНУТРИ
-/// созданной подпапки (npm install после create-vite и т.п.). При
-/// сегментации их working_dir переносится на имя сегмента, а в корневом
-/// режиме остаётся именем созданной папки.
-const FOLDER_WORKDIR_STEPS: &[&str] = &[
-    "vite_install",
+/// CLI-генераторы подпапок, которые УМЕЮТ работать в текущей папке с
+/// аргументом "." (create-next-app ., create-vite ., nuxi init . и т.п.).
+/// Когда корнем владеет root-скаффолд (nest + nextjs), такие команды
+/// выполняются ВНУТРИ уже созданной движком папки сегмента с "." — вместо
+/// создания вложенной <project_name>/ (матрешка testapp2/testapp2).
+/// Остальные (RN CLI, electron-forge...) оставляем в режиме переименования
+/// папки: их CLI не гарантирует работу в текущей директории.
+const FOLDER_MAKER_DOT_CAPABLE: &[&str] = &[
+    "nextjs_create",
+    "sveltekit_create",
+    "nuxt_create",
+    "solid_init",
+    "flutter_create",
+    "expo_init",
+    "vite_create",
 ];
 
 fn join_seg(wd: &str, seg: &str) -> String {
@@ -918,30 +1029,39 @@ fn join_seg(wd: &str, seg: &str) -> String {
 
 /// Заворачивает шаги фреймворка в каталог сегмента (backend/ или frontend/):
 /// пути WriteFile/CreateDirectory и рабочие директории команд получают
-/// префикс, а у генераторов подпапок (create-next-app и т.п.) меняется имя
-/// архивного каталога.
-fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
+/// префикс. Поведение генераторов подпапок зависит от `cli_inplace`:
+///   - cli_inplace == false (обычная сегментация): имя создаваемой подпапки
+///     меняется на имя сегмента (create-next-app frontend из корня);
+///   - cli_inplace == true (рядом с root-скаффолдом, корень занят): папку
+///     сегмента уже создал движок, CLI выполняется ВНУТРИ неё с ".".
+fn into_segment(steps: Vec<Step>, dir: &str, cli_inplace: bool) -> Vec<Step> {
     steps.into_iter().map(|step| {
-        let replaces = matches!(&step, Step::Command { id, .. } if
-            FOLDER_MAKER_STEPS.iter().any(|(sid, _)| *sid == id.as_str()));
-        let name_index = FOLDER_MAKER_STEPS.iter()
+        let folder_maker_index = FOLDER_MAKER_STEPS.iter()
             .find(|(sid, _)| matches!(&step, Step::Command { id, .. } if *sid == id.as_str()))
             .map(|(_, idx)| *idx);
+        let replaces = folder_maker_index.is_some();
         match step {
             Step::Command { id, label, description, command, mut args, working_dir, env, timeout_secs, condition, on_error, interactive } => {
                 if replaces {
-                    if let Some(idx) = name_index {
+                    if let Some(idx) = folder_maker_index {
                         if let Some(arg) = args.get_mut(idx) {
-                            *arg = dir.to_string();
+                            if cli_inplace && FOLDER_MAKER_DOT_CAPABLE.contains(&id.as_str()) {
+                                // Root-скаффолд владеет корнем: создаём проект
+                                // в ТЕКУЩЕЙ папке сегмента, а не вложенную
+                                // папку с именем проекта.
+                                *arg = ".".to_string();
+                            } else {
+                                *arg = dir.to_string();
+                            }
                         }
                     }
-                    // генератор сам создаст подпапку — рабочая директория остаётся корневой
-                    Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
-                } else if FOLDER_WORKDIR_STEPS.contains(&id.as_str()) {
-                    // «хвост» генератора подпапки (npm install после create-vite):
-                    // при сегментации созданная папка уже переименована в сегмент —
-                    // рабочая директория становится самим сегментом
-                    Step::Command { id, label, description, command, args, working_dir: Some(dir.to_string()), env, timeout_secs, condition, on_error, interactive }
+                    if cli_inplace && FOLDER_MAKER_DOT_CAPABLE.contains(&id.as_str()) {
+                        // CLI работает внутри папки сегмента
+                        Step::Command { id, label, description, command, args, working_dir: Some(dir.to_string()), env, timeout_secs, condition, on_error, interactive }
+                    } else {
+                        // генератор сам создаст подпапку — рабочая директория остаётся корневой
+                        Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
+                    }
                 } else {
                     Step::Command {
                         id, label, description, command, args,
@@ -1019,7 +1139,7 @@ fn root_scaffold_consumes_companion(fw: &str, context: &WizardContext) -> bool {
     })
 }
 
-fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
+fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>, cli_inplace: bool) -> Vec<Step> {
     // Root-фреймворк со своим CLI сам скаффолдит фронтенд-компаньона —
     // отдельные шаги компаньона не нужны (см. root_scaffold_consumes_companion).
     if root_scaffold_consumes_companion(fw, context) {
@@ -1046,7 +1166,7 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
     }
 
     let mut steps = match seg {
-        Some(dir) => into_segment(steps, dir),
+        Some(dir) => into_segment(steps, dir, cli_inplace),
         None => steps,
     };
 
@@ -1092,10 +1212,24 @@ pub fn duplicate_framework_write_paths(context: &WizardContext) -> Vec<String> {
         .clone()
         .unwrap_or_else(|| "app".to_string());
     let layout = SegLayout::compute(context);
+    let root_present = context.frameworks.iter().any(|fw| {
+        framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
+    });
     let mut by_path: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for fw in &context.frameworks {
-        let seg = layout.for_framework(fw);
-        let steps = steps_for_framework(fw, ".", &project_name, context, seg.as_deref());
+        // Тот же путь сегмента, что в compose_recipe: при root-скаффолде
+        // компаньоны получают каталог по своему side (frontend/backend),
+        // иначе — обычный SegLayout.
+        let seg = if root_present {
+            match framework_def(fw).map(|def| def.side.as_str()) {
+                Some("backend") => Some("backend".to_string()),
+                Some("frontend") => Some("frontend".to_string()),
+                _ => None,
+            }
+        } else {
+            layout.for_framework(fw)
+        };
+        let steps = steps_for_framework(fw, ".", &project_name, context, seg.as_deref(), root_present);
         for step in steps {
             if let Step::WriteFile { path, .. } = step {
                 by_path.entry(path).or_default().push(fw.clone());
@@ -1373,59 +1507,14 @@ target_link_libraries({p} Qt6::Quick KF6::Kirigami)
 
 fn qt_steps_webengine(project_name: &str, context: &WizardContext) -> Vec<Step> {
     let web = qt_web_framework_label(context);
-    let main_cpp = r#"#include <QApplication>
-#include <QUrl>
-#include <QWebEngineView>
-
-int main(int argc, char *argv[])
-{
-    QApplication app(argc, argv);
-    QWebEngineView view;
-    view.setWindowTitle("PROJECT_TITLE");
-    view.resize(1000, 700);
-    // Собранное веб-приложение встраивается в ресурсы — см. CMakeLists.txt
-    view.load(QUrl(QStringLiteral("qrc:/web/index.html")));
-    view.show();
-    return app.exec();
-}
-"#
-    .replace("PROJECT_TITLE", project_name);
+    // Расширенные шаблоны живут в TemplateEngine ({{ project_name }} и т.п.)
+    // — см. engine/template.rs: qt_webengine_main_cpp / qt_webengine_cmake.
+    let engine = template::TemplateEngine::new();
+    let main_cpp = engine.qt_webengine_main_cpp(project_name);
+    let cmake_lists = engine.qt_webengine_cmake(project_name);
     vec![
         qt_step_write("qt_main", "Create Qt main (WebEngine)", "src/main.cpp", main_cpp),
-        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", format!(
-            r#"cmake_minimum_required(VERSION 3.16)
-project({p})
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_AUTOMOC ON)
-
-find_package(Qt6 REQUIRED COMPONENTS WebEngineWidgets)
-
-add_executable({p} src/main.cpp)
-
-# Собранная веб-часть (npm run build внутри веб-приложения) встраивается
-# в ресурсы приложения. Веб-приложение может лежать рядом, внутри подпапки
-# проекта или в соседнем сегменте (frontend/) — ищем все варианты.
-if(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/dist/index.html)
-    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/dist)
-elseif(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/${{PROJECT_NAME}}/dist/index.html)
-    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/${{PROJECT_NAME}}/dist)
-elseif(EXISTS ${{CMAKE_CURRENT_SOURCE_DIR}}/../frontend/${{PROJECT_NAME}}/dist/index.html)
-    set(WEB_DIST ${{CMAKE_CURRENT_SOURCE_DIR}}/../frontend/${{PROJECT_NAME}}/dist)
-endif()
-
-if(WEB_DIST)
-    qt_add_resources({p} "web"
-        PREFIX "/web"
-        BASE ${{WEB_DIST}}
-        FILES ${{WEB_DIST}}/index.html
-    )
-endif()
-
-target_link_libraries({p} Qt6::WebEngineWidgets)
-"#,
-            p = project_name
-        )),
+        qt_step_write("qt_cmake", "Create CMakeLists.txt", "CMakeLists.txt", cmake_lists),
         qt_step_note(
             "qt_webengine_hint",
             "Qt WebEngine: build the web part",
@@ -1705,26 +1794,16 @@ if __name__ == "__main__":
             vec![
                 cmd("vite_create", &format!("Create {fw} app"), "Scaffold Vite project",
                     "npx", vec!["create-vite@latest", project_name, "--template", template]),
-                Step::Command {
-                    id: "vite_install".into(),
-                    label: "Install npm dependencies".into(),
-                    description: "npm install inside the created app".into(),
-                    command: "npm".into(),
-                    args: vec!["install".into()],
-                    working_dir: Some(format!("{}/{}", project_path, project_name)),
-                    env: None,
-                    timeout_secs: Some(600),
-                    condition: None,
-                    on_error: ErrorMode::Skip,
-                    interactive: vec![],
-                },
+                // npm install НЕ выполняется здесь — зависимости ставятся
+                // один раз в финальной фазе (steps_for_finalize), чтобы не
+                // плодить node_modules в середине пайплайна.
             ]
         }
 
         // ==================== JavaScript / TypeScript ====================
         "nextjs" => vec![
             cmd_i("nextjs_create", "Create Next.js app", "Scaffold Next.js project",
-                "npx", vec!["create-next-app@latest", project_name, "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm"],
+                "npx", vec!["create-next-app@latest", project_name, "--typescript", "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm", "--skip-install"],
                 vec![
                     InteractiveEntry {
                         trigger: "Would you like to use TypeScript?".into(),
@@ -1749,6 +1828,12 @@ if __name__ == "__main__":
                     InteractiveEntry {
                         trigger: "Would you like to customize the import alias".into(),
                         response_type: ResponseType::Confirm(false),
+                    },
+                    // create-next-app . внутри существующей папки спрашивает
+                    // разрешение — подтверждаем (движок создаёт сегмент сам)
+                    InteractiveEntry {
+                        trigger: "Is it ok to proceed?".into(),
+                        response_type: ResponseType::Confirm(true),
                     },
                 ]),
         ],
@@ -1871,7 +1956,7 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
             let rn_name = project_name.replace('-', "_");
             vec![
                 cmd_i("rn_init", "Init React Native", "Create React Native project",
-                    "npx", vec!["@react-native-community/cli", "init", &rn_name],
+                    "npx", vec!["@react-native-community/cli", "init", &rn_name, "--skip-install"],
                     vec![
                         InteractiveEntry {
                             trigger: "Do you want to install CocoaPods dependencies?".into(),
@@ -1893,7 +1978,7 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
             };
             vec![
                 cmd_i("expo_init", "Init Expo", "Create Expo project",
-                    "npx", vec!["create-expo-app", project_name],
+                    "npx", vec!["create-expo-app", project_name, "--no-install"],
                     vec![
                         InteractiveEntry {
                             trigger: "What is your app named?".into(),
@@ -1939,8 +2024,11 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
         ],
 
         "nest" => vec![
+            // --skip-install: зависимости корня ставятся ОДИН раз в финальной
+            // фазе пайплайна (steps_for_finalize), а не сразу в каркасе —
+            // иначе node_modules плодятся на каждом шаге.
             cmd_i("nest_new", "Create NestJS project", "Scaffold NestJS application",
-                "npx", vec!["@nestjs/cli", "new", ".", "--package-manager", "npm"],
+                "npx", vec!["@nestjs/cli", "new", ".", "--package-manager", "npm", "--skip-install"],
                 vec![
                     InteractiveEntry {
                         trigger: "Which package manager would you love to use".into(),
@@ -2031,8 +2119,13 @@ func main() {{
                 ("cmd/main.go", "cobra_main", "Create CLI entry")
             };
             vec![
+                // Устаревший `go get github.com/spf13/cobra/cobra` больше не
+                // работает (пакет разделён): генератор ставится как отдельный
+                // бинарь cobra-cli, а проект инициализируется его командой.
+                cmd("cobra_install", "Install Cobra CLI", "Install cobra-cli generator",
+                    "go", vec!["install", "github.com/spf13/cobra-cli@latest"]),
                 cmd("cobra_init", "Init Cobra CLI", "Initialize Cobra CLI project",
-                    "go", vec!["get", "github.com/spf13/cobra/cobra"]),
+                    "cobra-cli", vec!["init"]),
                 write_file(cli_id, cli_label, cli_path,
                     &format!(r#"package main
 
@@ -2060,6 +2153,12 @@ func main() {{
             // Spring Boot создаётся через Spring Initializr: скачиваем
             // starter.zip и распаковываем. Зависимости собираем из
             // выбранных БД/инструментов (web всегда).
+            //
+            // Вся работа идёт через генератор "spring-boot" (Rust): он
+            // проверяет HTTP-ответ Initializr (status + тело ошибки) и
+            // останавливает генерацию с реальной причиной («Несовместимые
+            // модули» и т.п.), а не падает на распаковке мусорного
+            // project.zip (раньше туда писался HTML/JSON ошибки).
             let mut deps: Vec<&str> = vec!["web"];
             for tool in &context.tools {
                 match tool.as_str() {
@@ -2077,20 +2176,20 @@ func main() {{
                 }
             }
             let deps_str = deps.join(",");
-            vec![
-                cmd("spring_init", "Generate Spring Boot project",
-                    "Download Spring Boot starter from Initializr",
-                    "curl", vec![
-                        "-fsL", &format!("https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies={}", project_name, project_name, deps_str),
-                        "-o", "project.zip",
-                    ]),
-                cmd("unzip_spring", "Extract Spring Boot", "Unzip the generated project",
-                    if cfg!(target_os = "windows") { "tar" } else { "unzip" },
-                    if cfg!(target_os = "windows") { vec!["-xf", "project.zip"] } else { vec!["-o", "project.zip"] }),
-                cmd("cleanup_zip", "Clean up zip", "Remove project.zip",
-                    if cfg!(target_os = "windows") { "del" } else { "rm" },
-                    vec!["project.zip"]),
-            ]
+            vec![Step::Generate {
+                id: "spring_init".into(),
+                label: "Generate Spring Boot project".into(),
+                description: "Download Spring Boot starter from Initializr (validates HTTP response)".into(),
+                generator_id: "spring-boot".into(),
+                generator_config: serde_json::json!({
+                    "project_name": project_name,
+                    "dependencies": deps_str,
+                }),
+                condition: None,
+                // HTTP-ошибка Initializr (400 «Несовместимые модули» и т.п.)
+                // обязана остановить пайплайн и показать причину в UI.
+                on_error: ErrorMode::Abort,
+            }]
         }
 
         "android" => vec![
@@ -2366,6 +2465,18 @@ pub fn main() !void {{
 }
 
 
+/// Путь к бинарю внутри venv проекта (относительно корня проекта):
+/// `venv/bin/<name>` на unix, `venv\Scripts\<name>.exe` на Windows.
+/// Используется для шагов, требующих установленного в venv пакета
+/// (alembic init, pip install) — системный бинарь может отсутствовать.
+fn python_venv_bin(name: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("venv\\Scripts\\{}.exe", name)
+    } else {
+        format!("venv/bin/{}", name)
+    }
+}
+
 fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let tools = &context.tools;
     let mut steps = Vec::new();
@@ -2383,6 +2494,42 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
             on_error: ErrorMode::Skip,
         }
     };
+
+    // Python-инструменты (alembic) требуют установленных зависимостей в
+    // ОКРУЖЕНИИ: `alembic init` падает с «command not found», если пакет
+    // не установлен в venv. Поэтому для Python-проектов с alembic сначала
+    // создаётся venv и выполняется pip install -r requirements.txt —
+    // строго ДО шагов инструментов (порядок в steps гарантирован).
+    let has_python = context.languages.iter().any(|l| l == "python");
+    let needs_python_venv = has_python && tools.iter().any(|t| t == "alembic");
+    if needs_python_venv {
+        steps.push(Step::Command {
+            id: "py_venv_create".into(),
+            label: "Create Python virtual environment".into(),
+            description: "Run python -m venv venv".into(),
+            command: "python".into(),
+            args: vec!["-m".into(), "venv".into(), "venv".into()],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(120),
+            condition: None,
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        });
+        steps.push(Step::Command {
+            id: "py_pip_install".into(),
+            label: "Install Python dependencies".into(),
+            description: "Run pip install -r requirements.txt inside venv".into(),
+            command: python_venv_bin("pip"),
+            args: vec!["install".into(), "-r".into(), "requirements.txt".into()],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(600),
+            condition: None,
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        });
+    }
 
     for tool_id in tools {
         match tool_id.as_str() {
@@ -2413,12 +2560,15 @@ def get_db():
                 steps.push(Step::Command {
                     id: "alembic_init".into(),
                     label: "Init Alembic".into(),
-                    description: "Initialize Alembic migrations".into(),
-                    command: "alembic".into(),
+                    description: "Initialize Alembic migrations (inside project venv)".into(),
+                    // Вызывается строго через бинарь виртуального окружения:
+                    // системный `alembic` не найден, если зависимости не
+                    // установлены глобально (см. py_venv_create/py_pip_install).
+                    command: python_venv_bin("alembic"),
                     args: vec!["init".into(), "migrations".into()],
                     working_dir: Some(project_path.to_string()),
                     env: None,
-                    timeout_secs: Some(30),
+                    timeout_secs: Some(60),
                     condition: None,
                     on_error: ErrorMode::Skip,
                     interactive: vec![],
@@ -2430,6 +2580,11 @@ def get_db():
                 // database») и повисает на вводе. Провайдер передаётся
                 // флагом --datasource-provider, npx — с --yes, а CI=1
                 // проставляется executor'ом для всех команд.
+                //
+                // Новые версии Prisma (6.16+) после init разворачивают в
+                // проекте каталог AI-навыков (.agents/, .claude/,
+                // .windsurf/ + skills-lock.json — десятки тысяч файлов).
+                // --no-skills отключает установку.
                 let provider = if context.tools.iter().any(|t| t == "postgresql") {
                     "postgresql"
                 } else if context.tools.iter().any(|t| t == "mysql") {
@@ -2450,6 +2605,7 @@ def get_db():
                         "init".into(),
                         "--datasource-provider".into(),
                         provider.into(),
+                        "--no-skills".into(),
                     ],
                     working_dir: Some(project_path.to_string()),
                     env: None,
@@ -2457,6 +2613,22 @@ def get_db():
                     condition: None,
                     on_error: ErrorMode::Skip,
                     interactive: vec![],
+                });
+                // Подстраховка для версий Prisma без флага --no-skills
+                // (или если флаг проигнорирован): движок на Rust принудительно
+                // удаляет агентные артефакты из корня проекта. Папки
+                // удаляются только при наличии маркера skills-lock.json —
+                // пользовательские .claude/.windsurf не трогаются.
+                steps.push(Step::Generate {
+                    id: "prisma_cleanup".into(),
+                    label: "Clean up Prisma AI skills".into(),
+                    description: "Remove Prisma agent skill directories (.agents, .claude, .windsurf, skills-lock.json)".into(),
+                    generator_id: "fs-cleanup".into(),
+                    generator_config: serde_json::json!({
+                        "paths": [".agents", ".claude", ".windsurf", "skills-lock.json"]
+                    }),
+                    condition: None,
+                    on_error: ErrorMode::Skip,
                 });
             }
             "drizzle" => {
@@ -2680,26 +2852,15 @@ fn steps_for_docker(context: &WizardContext, _project_path: &str, project_name: 
     result
 }
 
-fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str) -> Vec<Step> {
+/// Фаза 4: git init. Выполняется ДО шаблонизации (фаза 5) — чтобы
+/// README/конфиги, написанные позже, попали в стартовый коммит.
+fn steps_for_git_init(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let mut steps = Vec::new();
-    
+
     if !context.git_init {
         return steps;
     }
-    
-    // .gitignore с контентом под все языки проекта
-    let gitignore = content::gitignore_content(&context.languages);
-    steps.push(Step::WriteFile {
-        id: "gitignore".into(),
-        label: "Create .gitignore".into(),
-        description: "Generate .gitignore for project languages".into(),
-        path: ".gitignore".into(),
-        content: gitignore,
-        overwrite: true,
-        condition: None,
-        on_error: ErrorMode::Skip,
-    });
-    
+
     // Генераторы (create-electron-app, flutter create и т.п.) часто сами
     // инициализируют git во вложенных каталогах — `git add .` потом падает
     // с «'dir' does not have a commit checked out». Убираем вложенные .git,
@@ -2736,7 +2897,77 @@ fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str
         on_error: ErrorMode::Skip,
         interactive: vec![],
     });
-    
+
+    steps
+}
+
+/// Фаза 5 (часть): .gitignore пишется в самой поздней фазе шаблонизации,
+/// ПОСЛЕ всех CLI-фреймворков (create-next-app создаёт свой .gitignore —
+/// наш шаблон обязан перезаписать его, overwrite=true).
+fn steps_for_gitignore(context: &WizardContext, _project_path: &str) -> Vec<Step> {
+    let mut steps = Vec::new();
+
+    if !context.git_init {
+        return steps;
+    }
+
+    let gitignore = content::gitignore_content(&context.languages);
+    steps.push(Step::WriteFile {
+        id: "gitignore".into(),
+        label: "Create .gitignore".into(),
+        description: "Generate .gitignore for project languages".into(),
+        path: ".gitignore".into(),
+        content: gitignore,
+        overwrite: true,
+        condition: None,
+        on_error: ErrorMode::Skip,
+    });
+
+    steps
+}
+
+/// Фаза 6: финализация — самый конец пайплайна.
+///   1. npm install: РОВНО один раз на каждый JS-каталог проекта (корень,
+///      сегменты, подпапки фронтенд-каркасов). Скаффолдеры запускались с
+///      --skip-install/--no-install, поэтому node_modules не плодятся на
+///      каждом шаге генерации.
+///   2. git add + git commit: README/конфиги уже записаны (фаза 5) и
+///      попадают в стартовый коммит.
+fn steps_for_finalize(context: &WizardContext, js_dirs: &[String], project_path: &str, project_name: &str) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    for (i, dir) in js_dirs.iter().enumerate() {
+        // "." = корень проекта; остальные каталоги — относительные пути,
+        // которые разрешаются от project_path (как vite_install раньше)
+        let wd = if dir == "." {
+            project_path.to_string()
+        } else {
+            format!("{}/{}", project_path.trim_end_matches(['/', '\\']), dir)
+        };
+        if seen.contains(&wd) {
+            continue;
+        }
+        seen.push(wd.clone());
+        steps.push(Step::Command {
+            id: format!("npm_install_{}", i),
+            label: format!("Install npm dependencies ({})", wd),
+            description: "Run npm install once, after all scaffolding".into(),
+            command: "npm".into(),
+            args: vec!["install".into()],
+            working_dir: Some(wd),
+            env: None,
+            timeout_secs: Some(600),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        });
+    }
+
+    if !context.git_init {
+        return steps;
+    }
+
     // git add + commit (опционально)
     steps.push(Step::Command {
         id: "git_add".into(),
@@ -2751,16 +2982,16 @@ fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str
         on_error: ErrorMode::Skip,
         interactive: vec![],
     });
-    
+
     steps.push(Step::Command {
         id: "git_commit".into(),
         label: "Create initial commit".into(),
         description: "Run git commit with initial message".into(),
         command: "git".into(),
         args: vec![
-            "commit".into(), 
-            "-m".into(), 
-            format!("Initial commit: {} project", project_name)
+            "commit".into(),
+            "-m".into(),
+            format!("Initial commit: {} project", project_name),
         ],
         working_dir: Some(project_path.to_string()),
         env: None,
@@ -2769,7 +3000,7 @@ fn steps_for_git(context: &WizardContext, project_path: &str, project_name: &str
         on_error: ErrorMode::Skip,
         interactive: vec![],
     });
-    
+
     steps
 }
 
@@ -2826,7 +3057,10 @@ fn steps_for_readme(context: &WizardContext, _project_path: &str, project_name: 
         description: "Generate README.md with project info".into(),
         path: "README.md".into(),
         content: readme,
-        overwrite: false,
+        // Шаг идёт в финальной фазе шаблонизации ПОСЛЕ всех CLI-фреймворков
+        // и обязан перезаписать README, созданный самим CLI (create-next-app,
+        // nest new...) — иначе наш шаблон молча теряется.
+        overwrite: true,
         condition: None,
         on_error: ErrorMode::Skip,
     }]
@@ -2964,7 +3198,7 @@ mod tests {
             ("sveltekit", "sveltekit_create"),
             ("solidjs", "solid_init"),
         ] {
-            let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context(), None);
+            let steps = steps_for_framework(fw_id, "C:\\dev\\myapp", "myapp", &context(), None, false);
             let create = steps.iter().find(|s| s.id() == create_id)
                 .unwrap_or_else(|| panic!("{fw_id}: шаг {create_id} должен быть в плане"));
             let args = cmd_args(create);
@@ -2982,11 +3216,11 @@ mod tests {
         ctx.languages = vec!["typescript".into(), "python".into()];
         ctx.frameworks = vec!["nextjs".into(), "fastapi".into()];
 
-        let next_steps = steps_for_framework("nextjs", "C:\\dev\\myapp", "myapp", &ctx, Some("frontend"));
+        let next_steps = steps_for_framework("nextjs", "C:\\dev\\myapp", "myapp", &ctx, Some("frontend"), false);
         let args = cmd_args(&next_steps[0]);
         assert!(args.contains(&"frontend".to_string()), "nextjs должен создаваться в frontend/: {args:?}");
 
-        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, Some("backend"));
+        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, Some("backend"), false);
         assert!(
             api_steps.iter().any(|s| matches!(s, Step::WriteFile { path, .. } if path == "backend/src/main.py")),
             "fastapi должен писать в backend/src/main.py"
@@ -3000,7 +3234,7 @@ mod tests {
         ctx.languages = vec!["python".into()];
         ctx.frameworks = vec!["fastapi".into()];
 
-        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, None);
+        let api_steps = steps_for_framework("fastapi", "C:\\dev\\myapp", "myapp", &ctx, None, false);
         assert!(
             api_steps.iter().any(|s| matches!(s, Step::WriteFile { path, .. } if path == "src/main.py")),
             "fastapi без фронтенда пишет в корень"
@@ -3189,6 +3423,10 @@ mod tests {
     fn root_scaffold_runs_first_no_segments() {
         // Строгая очередь фаз: 1. Root CLI (django) → 2. Subdir (react) →
         // 3. Инструменты (prisma) → 4. Конфиги (docker-compose).
+        //
+        // Корнем владеет django — react получает собственный сегмент
+        // frontend/ (движок создаёт папку, vite работает ВНУТРИ с "."),
+        // иначе create-vite создал бы вложенную папку myapp/ — матрёшка.
         let mut ctx = context();
         ctx.languages = vec!["python".into(), "typescript".into()];
         ctx.backend_languages = vec!["python".into()];
@@ -3198,11 +3436,17 @@ mod tests {
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
 
-        // Root-скаффолд отключает сегменты backend//frontend/
+        // backend/ сегмент НЕ создаётся: корнем владеет django
         assert!(
             !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
-                if path == "backend" || path == "frontend")),
-            "при django (root) не должно быть сегментов"
+                if path == "backend")),
+            "при django (root) не должно быть backend/ — корнем владеет CLI"
+        );
+        // react (side=frontend) сегментируется: движок создаёт frontend/
+        assert!(
+            recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
+                if path == "frontend")),
+            "компаньон root-скаффолда должен получить frontend/"
         );
 
         let idx = |id: &str| recipe.steps.iter().position(|s| s.id() == id)
@@ -3224,6 +3468,160 @@ mod tests {
             recipe.steps.iter().any(|s| s.id() == "vite_create"),
             "django не поглощает react — vite-скаффолд остаётся"
         );
+
+        // НЕТ матрёшки: create-vite выполняется ВНУТРИ frontend/ с "." —
+        // а не создаёт вложенную папку myapp/ в корне django
+        let vite = &recipe.steps[idx("vite_create")];
+        match vite {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(args.get(1).map(String::as_str), Some("."),
+                    "vite должен работать в текущей папке сегмента: {args:?}");
+                assert_eq!(working_dir.as_deref(), Some("frontend"),
+                    "vite выполняется внутри frontend/");
+            }
+            _ => panic!("vite_create — Command"),
+        }
+
+        // npm install ровно один раз — ВНУТРИ frontend/, в финальной фазе
+        let installs: Vec<_> = recipe.steps.iter()
+            .filter(|s| s.id().starts_with("npm_install"))
+            .collect();
+        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
+        match installs[0] {
+            Step::Command { working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+            }
+            _ => panic!("npm_install — Command"),
+        }
+        assert!(idx("npm_install_0") > idx("readme"), "npm install — в финальной фазе, после шаблонизации");
+    }
+
+    #[test]
+    fn nest_plus_nextjs_has_no_matryoshka() {
+        // P1: NestJS + Next.js создавали testapp2/testapp2 — nest скаффолдил
+        // корень, а create-next-app внутри него ещё и вложенную папку с
+        // именем проекта. Теперь: движок создаёт frontend/, nextjs выполняется
+        // ВНУТРИ него с "."; оба CLI идут с --skip-install, npm install —
+        // ровно 2 раза в финальной фазе (корень nest + frontend).
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["nest".into(), "nextjs".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        // frontend/ создаётся движком ДО запуска nextjs
+        let create_idx = recipe.steps.iter().position(|s| matches!(s, Step::CreateDirectory { path, .. }
+            if path == "frontend"))
+            .expect("frontend/ должен создаваться движком");
+        let next_idx = recipe.steps.iter().position(|s| s.id() == "nextjs_create")
+            .expect("nextjs_create должен быть в плане");
+        assert!(create_idx < next_idx, "frontend/ создаётся до запуска nextjs");
+
+        // НЕТ матрёшки: create-next-app работает ВНУТРИ frontend/ с "."
+        let next = &recipe.steps[next_idx];
+        let next_args = match next {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(args.get(1).map(String::as_str), Some("."),
+                    "nextjs должен создаваться в текущей папке: {args:?}");
+                assert_eq!(working_dir.as_deref(), Some("frontend"));
+                args.clone()
+            }
+            _ => panic!("nextjs_create — Command"),
+        };
+        assert!(next_args.contains(&"--skip-install".to_string()), "{next_args:?}");
+
+        // nest: "." + --skip-install, в корне
+        let nest = recipe.steps.iter().find(|s| s.id() == "nest_new")
+            .expect("nest_new должен быть в плане");
+        match nest {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(args.get(2).map(String::as_str), Some("."), "{args:?}");
+                assert!(args.contains(&"--skip-install".to_string()), "{args:?}");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"), "nest работает в корне");
+            }
+            _ => panic!("nest_new — Command"),
+        }
+
+        // npm install ровно 2 раза: корень (nest) + frontend (nextjs)
+        let installs: Vec<_> = recipe.steps.iter()
+            .filter(|s| s.id().starts_with("npm_install"))
+            .collect();
+        assert_eq!(installs.len(), 2, "install-шагов должно быть 2: {installs:?}");
+        match (&installs[0], &installs[1]) {
+            (Step::Command { working_dir: w0, .. }, Step::Command { working_dir: w1, .. }) => {
+                assert_eq!(w0.as_deref(), Some("C:\\dev\\myapp"), "nest-корень ставится первым");
+                assert_eq!(w1.as_deref(), Some("C:\\dev\\myapp/frontend"), "nextjs ставится вторым");
+            }
+            _ => panic!("npm_install — Command"),
+        }
+    }
+
+    #[test]
+    fn templating_runs_last_and_overwrites_cli_files() {
+        // P4: README.md/.gitignore/docker-compose пишутся ПОСЛЕ всех
+        // CLI-фреймворков и с overwrite=true — иначе create-next-app/nest new
+        // перезаписывают/удаляют наш шаблон.
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["nextjs".into()];
+        ctx.git_init = true;
+        ctx.docker = true;
+        // postgres нужен, чтобы docker-compose сгенерировался (без сервисов
+        // compose-шага в плане нет — это отдельный инвариант)
+        ctx.tools = vec!["postgresql".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let idx = |id: &str| recipe.steps.iter().position(|s| s.id() == id)
+            .unwrap_or_else(|| panic!("{id} должен быть в плане"));
+
+        // Шаблонизация ПОСЛЕ скаффолдинга...
+        assert!(idx("nextjs_create") < idx("readme"), "README пишется после CLI");
+        assert!(idx("nextjs_create") < idx("gitignore"), ".gitignore пишется после CLI");
+        assert!(idx("nextjs_create") < idx("docker_compose"), "docker-compose пишется после CLI");
+        // ...но до git add/commit и npm install
+        assert!(idx("git_init") < idx("readme"), "git init до шаблонизации — README в коммите");
+        assert!(idx("readme") < idx("git_add"), "README до стартового коммита");
+        assert!(idx("readme") < idx("npm_install_0"), "npm install — после шаблонизации");
+
+        for id in ["readme", "gitignore", "docker_compose"] {
+            match &recipe.steps[idx(id)] {
+                Step::WriteFile { overwrite, .. } => {
+                    assert!(*overwrite, "{id} должен перезаписывать файлы CLI");
+                }
+                _ => panic!("{id} — WriteFile"),
+            }
+        }
+    }
+
+    #[test]
+    fn spring_boot_generation_goes_through_generator() {
+        // P3: Spring Boot НЕ качается curl'ом в project.zip (ошибка
+        // Initializr писалась в файл и падала на распаковке с «Error opening
+        // archive») — вместо этого Step::Generate с генератором
+        // "spring-boot", который проверяет HTTP-статус и останавливает
+        // пайплайн (Abort) с реальной причиной.
+        let mut ctx = context();
+        ctx.languages = vec!["java".into()];
+        ctx.frameworks = vec!["spring-boot".into()];
+        ctx.tools = vec!["postgresql".into(), "redis".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let gen = recipe.steps.iter().find(|s| s.id() == "spring_init")
+            .expect("spring_init должен быть в плане");
+        match gen {
+            Step::Generate { generator_id, generator_config, on_error, .. } => {
+                assert_eq!(generator_id, "spring-boot");
+                assert_eq!(on_error, &ErrorMode::Abort);
+                let deps = generator_config.get("dependencies").and_then(|d| d.as_str());
+                assert_eq!(deps, Some("web,data-jpa,postgresql,data-redis"), "зависимости собираются из tools");
+                let name = generator_config.get("project_name").and_then(|n| n.as_str());
+                assert_eq!(name, Some("myapp"));
+            }
+            _ => panic!("spring_init — Generate"),
+        }
+        // Никаких curl/unzip шагов с project.zip
+        assert!(!recipe.steps.iter().any(|s| s.id() == "unzip_spring"));
+        assert!(!recipe.steps.iter().any(|s| s.id() == "cleanup_zip"));
     }
 
     #[test]
@@ -3243,9 +3641,28 @@ mod tests {
                 let provider = args.iter().position(|a| a == "--datasource-provider")
                     .map(|i| args[i + 1].as_str());
                 assert_eq!(provider, Some("postgresql"), "{args:?}");
+                // Prisma 6.16+ разворачивает AI-навыки (.agents/.claude/...,
+                // десятки тысяч файлов) — отключаем флагом
+                assert!(args.contains(&"--no-skills".to_string()), "prisma init без --no-skills: {args:?}");
             }
             _ => panic!("prisma_init — Command"),
         }
+
+        // Подстраховка: Rust-генератор принудительно чистит агентные папки
+        let cleanup = recipe.steps.iter().find(|s| s.id() == "prisma_cleanup")
+            .expect("prisma_cleanup должен быть в плане");
+        match cleanup {
+            Step::Generate { generator_id, generator_config, on_error, .. } => {
+                assert_eq!(generator_id, "fs-cleanup");
+                assert_eq!(on_error, &ErrorMode::Skip);
+                let paths = generator_config.get("paths").and_then(|p| p.as_array());
+                assert!(paths.is_some_and(|p| p.iter().any(|v| v == ".agents")));
+            }
+            _ => panic!("prisma_cleanup — Generate"),
+        }
+        let cleanup_idx = recipe.steps.iter().position(|s| s.id() == "prisma_cleanup").unwrap();
+        let init_idx = recipe.steps.iter().position(|s| s.id() == "prisma_init").unwrap();
+        assert!(init_idx < cleanup_idx, "очистка идёт после init");
     }
 
     #[test]
@@ -3306,7 +3723,7 @@ mod tests {
             ("axum", vec!["axum_main"]),
             ("flask", vec!["flask_app", "flask_requirements"]),
         ] {
-            let steps = steps_for_framework(fw, "C:\\dev\\myapp", "myapp", &context(), None);
+            let steps = steps_for_framework(fw, "C:\\dev\\myapp", "myapp", &context(), None, false);
             for id in &entry_ids {
                 let step = steps.iter().find(|s| s.id() == id.to_string())
                     .unwrap_or_else(|| panic!("{fw}: шаг {id} должен существовать"));
@@ -3354,15 +3771,19 @@ mod tests {
             _ => panic!("vite_create — Command"),
         }
 
-        // npm install выполняется ВНУТРИ созданной vite-папки
-        let install = recipe.steps.iter().find(|s| s.id() == "vite_install")
-            .expect("vite_install должен быть в плане");
-        match install {
+        // npm install выполняется РОВНО один раз в финальной фазе пайплайна —
+        // ВНУТРИ созданной vite-папки (vite_install из середины пайплайна убран,
+        // зависимости больше не плодятся на каждом шаге)
+        let installs: Vec<_> = recipe.steps.iter()
+            .filter(|s| s.id().starts_with("npm_install"))
+            .collect();
+        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
+        match installs[0] {
             Step::Command { working_dir, args, .. } => {
                 assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/myapp"));
                 assert_eq!(args, &vec!["install".to_string()]);
             }
-            _ => panic!("vite_install — Command"),
+            _ => panic!("npm_install — Command"),
         }
 
         // fastapi (inplace): entry-файлы в корне проекта
@@ -3488,6 +3909,122 @@ mod tests {
                 !services.is_empty(),
                 "requires_docker-инструмент {tool} не создаёт сервис в docker-compose"
             );
+        }
+    }
+
+    #[test]
+    fn alembic_init_runs_after_venv_setup_via_venv_binary() {
+        // Проблема: `alembic init` вызывался ДО создания venv и pip install —
+        // системная команда не находилась. Порядок обязан быть таким:
+        // py_venv_create → py_pip_install → alembic_init, и сам alembic
+        // вызывается строго через бинарь виртуального окружения.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+        ctx.tools = vec!["alembic".into(), "sqlalchemy".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        let idx = |id: &str| {
+            recipe
+                .steps
+                .iter()
+                .position(|s| s.id() == id)
+                .unwrap_or_else(|| panic!("{id} должен быть в плане"))
+        };
+
+        assert!(idx("py_venv_create") < idx("py_pip_install"), "venv создаётся до pip install");
+        assert!(
+            idx("py_pip_install") < idx("alembic_init"),
+            "pip install обязан идти ДО alembic init"
+        );
+
+        let alembic = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "alembic_init")
+            .expect("alembic_init должен быть в плане");
+        match alembic {
+            Step::Command { command, .. } => {
+                assert!(
+                    command.contains("venv"),
+                    "alembic должен вызываться из venv, а не системно: {command}"
+                );
+            }
+            _ => panic!("alembic_init — Command"),
+        }
+    }
+
+    #[test]
+    fn venv_steps_are_only_created_for_python_with_alembic() {
+        // Без alembic (или без Python) venv-шаги не плодятся.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+        ctx.tools = vec!["sqlalchemy".into()];
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        assert!(
+            recipe.steps.iter().all(|s| s.id() != "py_venv_create"),
+            "venv не нужен без alembic"
+        );
+
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["nextjs".into()];
+        ctx.tools = vec!["alembic".into()];
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+        assert!(
+            recipe.steps.iter().all(|s| s.id() != "py_venv_create"),
+            "venv не нужен без Python"
+        );
+    }
+
+    #[test]
+    fn qt_webengine_stack_generates_webengine_files() {
+        // qt-webengine + react: main.cpp обязан содержать QWebEngineView-
+        // бойлерплейт, CMakeLists.txt — WebEngineWidgets (не заглушки).
+        let mut ctx = context();
+        ctx.languages = vec!["cpp".into()];
+        ctx.frameworks = vec!["qt".into(), "qt-webengine".into(), "react".into()];
+        ctx.answers.insert("qt_ui".into(), vec!["qt-webengine".into()]);
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        let main_cpp = recipe
+            .steps
+            .iter()
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "src/main.cpp"))
+            .unwrap_or_else(|| panic!("qt должен писать src/main.cpp"));
+        match main_cpp {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("#include <QWebEngineView>"), "{content}");
+                assert!(content.contains("QWebEngineView view;"), "{content}");
+                assert!(content.contains("qrc:/web/index.html"), "{content}");
+                assert!(
+                    content.contains("QApplication app(argc, argv)"),
+                    "нужен <QApplication> бойлерплейт: {content}"
+                );
+            }
+            _ => panic!("qt_main — WriteFile"),
+        }
+
+        let cmake = recipe
+            .steps
+            .iter()
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "CMakeLists.txt"))
+            .unwrap_or_else(|| panic!("qt должен писать CMakeLists.txt"));
+        match cmake {
+            Step::WriteFile { content, .. } => {
+                assert!(
+                    content.contains("find_package(Qt6 REQUIRED COMPONENTS WebEngineWidgets)"),
+                    "{content}"
+                );
+                assert!(
+                    content.contains("target_link_libraries(myapp Qt6::WebEngineWidgets)"),
+                    "{content}"
+                );
+                assert!(content.contains("qt_add_resources"), "{content}");
+            }
+            _ => panic!("qt_cmake — WriteFile"),
         }
     }
 }

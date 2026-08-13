@@ -12,7 +12,7 @@ import {
   validateProjectStack,
   getProjectExecutionSnapshot,
 } from "$lib/modules/project_creator/api";
-import { validateStack, firstError } from "$lib/modules/project_creator/rules";
+import { validateStack, firstError, renderWarningPairText } from "$lib/modules/project_creator/rules";
 import {
   loadCreateSession,
   saveCreateSession,
@@ -90,6 +90,31 @@ let stackIssues = $derived<StackIssue[]>(
     : [],
 );
 let stackError = $derived(firstError(stackIssues));
+
+/** Тип проекта, у которого есть серверная сторона (browser-extension — нет):
+ *  шаги «Backend Language» и «Backend Framework» для него скрываются. */
+let hasBackend = $derived(selectedType?.has_backend ?? true);
+
+/** Автоочистка backend-состояния, если текущий тип проекта без бэкенда
+ *  (переключение типа, восстановление снапшота, пресет). */
+$effect(() => {
+  const t = tree;
+  if (!t || !selectedType || (selectedType.has_backend ?? true)) return;
+  const backendFws = selectedFrameworks.filter((id) => {
+    const f = t.frameworks.find((x) => x.id === id);
+    return !!f && f.side === "backend";
+  });
+  if (backendFws.length > 0 || manualBackendLangs.length > 0) {
+    if (backendFws.length > 0) {
+      selectedFrameworks = selectedFrameworks.filter((id) => !backendFws.includes(id));
+      const next = { ...fwLangs };
+      for (const id of backendFws) delete next[id];
+      fwLangs = next;
+    }
+    manualBackendLangs = [];
+    recomputeSideLangs();
+  }
+});
 
 // ---- Project name & folder ----
 let projectName = $state("");
@@ -665,13 +690,18 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
   return null;
 }
 
-/** Предупреждение (не блокировка): Phoenix LiveView + тяжёлый SPA */
+/** Предупреждение (не блокировка): Phoenix LiveView + тяжёлый SPA,
+ *  два full-stack фреймворка, backend + Electron (warning_pairs).
+ *  Плейсхолдеры {a}/{b}/{a_lang} подставляются label'ами. */
 function frameworkWarnReason(fwId: string): string | null {
   const t = tree;
   if (!t || !selectedFrameworks.includes(fwId)) return null;
   for (const wp of t.warning_pairs ?? []) {
     if ((wp.b === fwId && selectedFrameworks.includes(wp.a)) || (wp.a === fwId && selectedFrameworks.includes(wp.b))) {
-      return wp.reason;
+      const a = t.frameworks.find((f) => f.id === wp.a);
+      const b = t.frameworks.find((f) => f.id === wp.b);
+      if (!a || !b) continue;
+      return renderWarningPairText(t, wp.reason, a, b);
     }
   }
   return null;
@@ -793,16 +823,25 @@ function langLabel(id: string): string {
   return tree?.languages.find((l) => l.id === id)?.label ?? id;
 }
 
-/** Языки, доступные для «чистого» backend-выбора (без фреймворка) */
+/** Языки, доступные для «чистого» backend-выбора (без фреймворка).
+ *  Ограничены project_language_map выбранного типа проекта: язык должен
+ *  входить в разрешённый список (browser-extension → только TS/JS, без Go). */
 function backendCandidates(): LanguageDef[] {
   if (!tree) return [];
-  return tree.languages.filter((l) => l.category === "backend");
+  const allowed = selectedType ? tree.project_language_map[selectedType.id] : null;
+  let langs = tree.languages.filter((l) => l.category === "backend");
+  if (allowed) langs = langs.filter((l) => allowed.includes(l.id));
+  return langs;
 }
 
-/** Языки для «чистого» frontend-выбора (включая чистый HTML/CSS/JS) */
+/** Языки для «чистого» frontend-выбора (включая чистый HTML/CSS/JS).
+ *  Ограничены project_language_map выбранного типа проекта. */
 function frontendCandidates(): LanguageDef[] {
   if (!tree) return [];
-  return tree.languages.filter((l) => l.category === "frontend" || l.category === "static");
+  const allowed = selectedType ? tree.project_language_map[selectedType.id] : null;
+  let langs = tree.languages.filter((l) => l.category === "frontend" || l.category === "static");
+  if (allowed) langs = langs.filter((l) => allowed.includes(l.id));
+  return langs;
 }
 
 /** Причина, по которой чистый язык нельзя выбрать (сторона уже занята) */
@@ -2439,7 +2478,7 @@ function resetAll() {
               </section>
             {/snippet}
 
-            {#if backendFws.length > 0}
+            {#if hasBackend && backendFws.length > 0}
               {@render territory(
                 "backend",
                 "Backend territory",
@@ -2466,6 +2505,12 @@ function resetAll() {
                 [],
               )}
             {/if}
+            {#if !hasBackend}
+              <p class="hint backendless-note">
+                This project type has no backend — the «Backend Language» and «Backend Framework»
+                steps are skipped. Only client-side technologies apply.
+              </p>
+            {/if}
             {#if fws.length === 0}
               <p class="muted">No frameworks available for this project type.</p>
             {/if}
@@ -2484,59 +2529,68 @@ function resetAll() {
               </header>
               <div class="territory-body">
                 <div class="lang-sides">
-                  <div class="lang-side">
-                    <p class="lang-side-title">Backend language</p>
-                    <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
-                    <div class="card-grid lang-grid">
-                      {#each backendCandidates() as lang}
-                        {@const blockedReason = languageBlockReason(lang)}
-                        <button
-                          class="card"
-                          class:selected={backendLangs.includes(lang.id)}
-                          class:blocked={blockedReason !== null}
-                          disabled={blockedReason !== null}
-                          onclick={() => toggleLang("backend", lang.id)}
-                        >
-                          <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
-                          <h3>{lang.label}</h3>
-                          {#if backendLangs.includes(lang.id)}
-                            <span class="fw-lang-chip selected">✓ active</span>
-                          {/if}
-                          {#if blockedReason}
-                            <span class="conflict-badge">{blockedReason}</span>
-                          {/if}
-                        </button>
-                      {/each}
+                  {#if hasBackend && backendCandidates().length > 0}
+                    <div class="lang-side">
+                      <p class="lang-side-title">Backend language</p>
+                      <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                      <div class="card-grid lang-grid">
+                        {#each backendCandidates() as lang}
+                          {@const blockedReason = languageBlockReason(lang)}
+                          <button
+                            class="card"
+                            class:selected={backendLangs.includes(lang.id)}
+                            class:blocked={blockedReason !== null}
+                            disabled={blockedReason !== null}
+                            onclick={() => toggleLang("backend", lang.id)}
+                          >
+                            <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
+                            <h3>{lang.label}</h3>
+                            {#if backendLangs.includes(lang.id)}
+                              <span class="fw-lang-chip selected">✓ active</span>
+                            {/if}
+                            {#if blockedReason}
+                              <span class="conflict-badge">{blockedReason}</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
                     </div>
-                  </div>
-                  <div class="lang-side">
-                    <p class="lang-side-title">Frontend language</p>
-                    <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
-                    <div class="card-grid lang-grid">
-                      {#each frontendCandidates() as lang}
-                        {@const blockedReason = languageBlockReason(lang)}
-                        <button
-                          class="card"
-                          class:selected={frontendLangs.includes(lang.id)}
-                          class:blocked={blockedReason !== null}
-                          disabled={blockedReason !== null}
-                          onclick={() => toggleLang("frontend", lang.id)}
-                        >
-                          <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
-                          <h3>{lang.label}</h3>
-                          {#if lang.category === "static"}
-                            <p>Plain HTML, CSS & JS</p>
-                          {/if}
-                          {#if frontendLangs.includes(lang.id)}
-                            <span class="fw-lang-chip selected">✓ active</span>
-                          {/if}
-                          {#if blockedReason}
-                            <span class="conflict-badge">{blockedReason}</span>
-                          {/if}
-                        </button>
-                      {/each}
+                  {/if}
+                  {#if frontendCandidates().length > 0}
+                    <div class="lang-side">
+                      <p class="lang-side-title">Frontend language</p>
+                      <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                      <div class="card-grid lang-grid">
+                        {#each frontendCandidates() as lang}
+                          {@const blockedReason = languageBlockReason(lang)}
+                          <button
+                            class="card"
+                            class:selected={frontendLangs.includes(lang.id)}
+                            class:blocked={blockedReason !== null}
+                            disabled={blockedReason !== null}
+                            onclick={() => toggleLang("frontend", lang.id)}
+                          >
+                            <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
+                            <h3>{lang.label}</h3>
+                            {#if lang.category === "static"}
+                              <p>Plain HTML, CSS & JS</p>
+                            {/if}
+                            {#if frontendLangs.includes(lang.id)}
+                              <span class="fw-lang-chip selected">✓ active</span>
+                            {/if}
+                            {#if blockedReason}
+                              <span class="conflict-badge">{blockedReason}</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
                     </div>
-                  </div>
+                  {/if}
+                  {#if !hasBackend}
+                    <p class="hint backendless-note">
+                      Backend language selection is skipped for this project type — it has no server side.
+                    </p>
+                  {/if}
                 </div>
               </div>
             </section>
@@ -2753,8 +2807,14 @@ function resetAll() {
             </div>
             <div class="ctx-row">
               <span class="ctx-label">Backend</span>
-              <span class="ctx-value">{backendLangs.length > 0 ? backendLangs.join(", ") : "None"}</span>
-              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              <span class="ctx-value">
+                {hasBackend
+                  ? (backendLangs.length > 0 ? backendLangs.join(", ") : "None")
+                  : "N/A (no backend)"}
+              </span>
+              {#if hasBackend}
+                <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              {/if}
             </div>
             <div class="ctx-row">
               <span class="ctx-label">Frontend</span>
@@ -2819,6 +2879,7 @@ function resetAll() {
 .mode-btn.active { background: #2d2d5e; color: #fff; font-weight: 600; }
 .prompt { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.4rem; }
 .hint { color: #888; margin-bottom: 1.5rem; font-size: 0.95rem; }
+.backendless-note { border-left: 3px solid #6c5ce7; padding: 0.35rem 0.75rem; background: #1a1a2e; margin: 0.75rem 0; }
 
 /* ---- Конструктор: две колонки ---- */
 .builder { display: grid; grid-template-columns: 1fr 320px; gap: 1.5rem; align-items: start; }

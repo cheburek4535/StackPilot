@@ -16,7 +16,8 @@
 //      Побочные (aiogram, telegraf) и универсальные (tauri, qt) этим
 //      правилом не ограничены.
 //   5. Язык(и) стороны совместимы с фреймворком (side + languages).
-//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA).
+//   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA, два
+//      full-stack фреймворка, backend + Electron).
 
 import type {
   WizardTreeData,
@@ -54,6 +55,24 @@ function conflictNote(
 
 function platformOk(fw: FrameworkDef, os: string): boolean {
   return !fw.platforms?.length || fw.platforms.some((p) => p === os);
+}
+
+/** Подстановка плейсхолдеров в текстах warning_pairs:
+ *  {a} — label фреймворка a, {b} — label фреймворка b,
+ *  {a_lang} — label рекомендованного языка фреймворка a. */
+export function renderWarningPairText(
+  tree: WizardTreeData,
+  text: string,
+  a: FrameworkDef,
+  b: FrameworkDef,
+): string {
+  const aLangLabel =
+    tree.languages.find((l) => l.id === a.recommended_language)?.label ??
+    a.recommended_language;
+  return text
+    .replaceAll("{a_lang}", aLangLabel)
+    .replaceAll("{a}", a.label)
+    .replaceAll("{b}", b.label);
 }
 
 export function validateStack(
@@ -133,14 +152,17 @@ export function validateStack(
     }
   }
 
-  // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA):
-  //    не блокируют, но объясняют концептуальный конфликт и советуют альтернативу.
+  // 6. Предупреждения из warning_pairs (Phoenix LiveView + тяжёлый SPA,
+  //    Laravel/Spring Boot + Next/Nuxt, backend + Electron...): не блокируют,
+  //    но объясняют концептуальный конфликт и советуют альтернативу.
   for (const wp of tree.warning_pairs) {
     const a = selected.find((f) => f.id === wp.a);
     const b = selected.find((f) => f.id === wp.b);
     if (a && b) {
-      let message = `«${a.label}» и «${b.label}» — спорная связка. ${wp.reason}`;
-      if (wp.alternative) message += ` Альтернатива: ${wp.alternative}.`;
+      const reason = renderWarningPairText(tree, wp.reason, a, b);
+      const alternative = renderWarningPairText(tree, wp.alternative, a, b);
+      let message = `«${a.label}» и «${b.label}» — спорная связка. ${reason}`;
+      if (alternative) message += ` Альтернатива: ${alternative}.`;
       issues.push({ severity: "Warning", message });
     }
   }

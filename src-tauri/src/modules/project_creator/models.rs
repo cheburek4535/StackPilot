@@ -51,6 +51,14 @@ pub struct ProjectTypeDef {
     pub icon: Option<String>,
     pub tags: Vec<String>,
     pub allow_custom_stack: bool,
+    /// Есть ли у типа проекта серверная сторона. false (browser-extension) —
+    /// фронтенд скрывает шаги «Backend Language» и «Backend Framework».
+    #[serde(default = "default_has_backend")]
+    pub has_backend: bool,
+}
+
+fn default_has_backend() -> bool {
+    true
 }
 
 /// Пара-предупреждение: совместный выбор `a` и `b` не блокируется, но
@@ -550,7 +558,7 @@ pub enum StepCondition {
     FeatureEnabled { feature: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ErrorMode {
     Abort,
     Skip,
