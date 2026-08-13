@@ -753,12 +753,17 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 /// "\\", "~" или Windows drive letter (C:\...). Только именованные тома можно
 /// объявлять в глобальной секции `volumes:` docker-compose.yaml — bind-mount
 /// обязан жить исключительно внутри сервиса.
+///
+/// Жёсткое правило шаблонизатора: в глобальный блок volumes: попадают ТОЛЬКО
+/// элементы, host-часть которых не содержит разделителей пути "/" или "\\"
+/// (имя именованного тома не может содержать слэши). Относительные пути без
+/// "./"-префикса ("dags/data:/opt/app/data") — тоже bind-mounts.
 fn is_named_volume(volume: &str) -> bool {
     if volume.is_empty() {
         return false;
     }
     // Windows drive letter: "C:\data:/data" — двоеточие внутри host-пути
-    // (проверяем по всей строке, до split по ':')
+    // (проверяем по всей строке, до split по ':').
     let bytes = volume.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return false;
@@ -769,6 +774,12 @@ fn is_named_volume(volume: &str) -> bool {
     }
     let first = host_part.as_bytes()[0];
     if matches!(first, b'.' | b'/' | b'\\' | b'~') {
+        return false;
+    }
+    // Имя именованного тома не содержит слэшей; любой "/" или "\\" в
+    // host-части означает локальный путь хоста — в глобальный volumes: ему
+    // нельзя (Docker Compose: «Property is not allowed»).
+    if host_part.contains('/') || host_part.contains('\\') {
         return false;
     }
     true
@@ -1474,6 +1485,30 @@ mod tests {
         assert!(!is_named_volume("~/data:/data"));
         assert!(!is_named_volume(r"C:\data:/data"));
         assert!(!is_named_volume(r"\\server\share:/data"));
+        // Относительный путь БЕЗ "./": host-часть содержит "/" — тоже
+        // bind-mount, в глобальный volumes: ему нельзя.
+        assert!(!is_named_volume("dags/data:/opt/app/data"));
         assert!(is_named_volume("postgres_data:/var/lib/postgresql/data"));
+    }
+
+    #[test]
+    fn relative_bind_mounts_stay_out_of_global_volumes_block() {
+        // host-часть не начинается с "./", но содержит "/" (например,
+        // "dags/data:...") — глобальный блок volumes: объявлять такие
+        // элементы не должен.
+        let services = vec![DockerService {
+            name: "app".into(),
+            image: "custom-app:latest".into(),
+            ports: vec![],
+            environment: vec![],
+            volumes: vec!["dags/data:/opt/app/data".into()],
+            depends_on: vec![],
+        }];
+        let compose = generate_docker_compose(&services, "myproj", "3000");
+        assert!(compose.contains("- dags/data:/opt/app/data"), "{compose}");
+        assert!(
+            !compose.contains("\nvolumes:"),
+            "относительный bind-mount не объявляется глобально: {compose}"
+        );
     }
 }

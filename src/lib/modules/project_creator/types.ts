@@ -128,6 +128,11 @@ export type WizardTreeData = {
   allowed_main_pairs: string[][];
   /** Фреймворки, не занимающие лимит «одного главного на сторону» (zig-cli) */
   main_limit_exempt: string[];
+  /** Мобильные/десктопные «клиентские оболочки» (expo, react-native, plasmo,
+   *  electron, tauri): серверная сторона для них имеет смысл только как
+   *  разделённый REST API. Шаги Backend Language/Framework скрываются,
+   *  бэкенд-фреймворки без rest-api в project_types блокируются. */
+  client_shell_frameworks: string[];
   /** Нежёсткие предупреждения для концептуально спорных связок (Phoenix + SPA) */
   warning_pairs: WarningPair[];
   project_types: ProjectTypeDef[];

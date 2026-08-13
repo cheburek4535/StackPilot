@@ -42,6 +42,7 @@ import {
   listenCheckProgress,
   getNewSecrets,
   getInstallStatus,
+  getToolchainMetadata,
 } from "$lib/modules/toolchain/api";
 import type {
   EnvironmentCheck,
@@ -95,11 +96,24 @@ let stackError = $derived(firstError(stackIssues));
  *  шаги «Backend Language» и «Backend Framework» для него скрываются. */
 let hasBackend = $derived(selectedType?.has_backend ?? true);
 
-/** Автоочистка backend-состояния, если текущий тип проекта без бэкенда
- *  (переключение типа, восстановление снапшота, пресет). */
+/** Выбрана ли «клиентская оболочка» (expo, react-native, plasmo, electron,
+ *  tauri): standalone-клиент, для которого серверная сторона имеет смысл
+ *  только как разделённый REST API. Шаги Backend Language/Framework
+ *  скрываются, бэкенд-фреймворки без rest-api блокируются. */
+let hasClientShell = $derived(
+  (tree?.client_shell_frameworks ?? []).some((id) => selectedFrameworks.includes(id)),
+);
+
+/** Серверная сторона доступна для выбора: тип проекта не безбэкендовый
+ *  И не выбрана клиентская оболочка. */
+let backendSelectable = $derived(hasBackend && !hasClientShell);
+
+/** Автоочистка backend-состояния, если серверная сторона недоступна
+ *  (переключение типа проекта без бэкенда, выбор клиентской оболочки —
+ *  expo/electron/tauri..., восстановление снапшота, пресет). */
 $effect(() => {
   const t = tree;
-  if (!t || !selectedType || (selectedType.has_backend ?? true)) return;
+  if (!t || !selectedType || backendSelectable) return;
   const backendFws = selectedFrameworks.filter((id) => {
     const f = t.frameworks.find((x) => x.id === id);
     return !!f && f.side === "backend";
@@ -165,6 +179,10 @@ let envSelectedIds = $state<Set<string>>(new Set());
  * локальной установки вместо docker-compose. Наполняется кнопкой
  * «Install locally» в опциональной секции экрана окружения. */
 let envLocalInfra = $state<Set<string>>(new Set());
+/** Общий стейт приложения: инструменты, уже установленные локально
+ *  (state.json toolchain). Панды окружения показывают их «уже готовыми»
+ *  и предлагают «Связать с локальным» вместо повторной установки. */
+let installedTools = $state<Set<string>>(new Set());
 
 function startTick() {
   if (tickTimer) return;
@@ -437,6 +455,7 @@ onMount(async () => {
     })(),
   ]);
   await reSyncLiveSessions();
+  await refreshInstalledTools();
   persistReady = true;
 });
 
@@ -495,20 +514,35 @@ const FW_LEVELS = [
 
 /** Пересчёт языков сторон: ручной выбор + языки выбранных фреймворков.
  *  Языки, добавленные только фреймворком, исчезают при его снятии —
- *  ручные остаются всегда. */
+ *  ручные остаются всегда.
+ *
+ *  Жёсткая консистентность: сторона с выбранным фреймворком НЕ хранит
+ *  ручных языков — фреймворк диктует свой язык. Это инвариант чинится
+ *  здесь же, поэтому пресеты и восстановленные снапшоты со старым
+ *  (битым) состоянием (JS + TS на одной стороне) автоматически
+ *  приводятся к консистентному виду. */
 function recomputeSideLangs() {
   const t = tree;
   if (!t) return;
   const backend = new Set(manualBackendLangs);
   const frontend = new Set(manualFrontendLangs);
+  let backendHasFw = false;
+  let frontendHasFw = false;
   for (const id of selectedFrameworks) {
     const fw = t.frameworks.find((f) => f.id === id);
     if (!fw) continue;
     const lang = fwLangs[id] ?? fw.recommended_language;
     if (!lang) continue;
-    if (fw.side === "frontend") frontend.add(lang);
-    else backend.add(lang);
+    if (fw.side === "frontend") {
+      frontendHasFw = true;
+      frontend.add(lang);
+    } else {
+      backendHasFw = true;
+      backend.add(lang);
+    }
   }
+  if (frontendHasFw && manualFrontendLangs.length > 0) manualFrontendLangs = [];
+  if (backendHasFw && manualBackendLangs.length > 0) manualBackendLangs = [];
   backendLangs = [...backend];
   frontendLangs = [...frontend];
 }
@@ -624,6 +658,20 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
     }
   }
 
+  // 2b. «Клиентская оболочка» (expo, react-native, plasmo, electron, tauri):
+  //     standalone-клиент — серверная сторона для него имеет смысл только
+  //     как разделённый REST API. Бэкенд-фреймворки без rest-api
+  //     (cli, боты, инструменты) жёстко блокируются.
+  const shellId = selectedFrameworks.find((id) => tree?.client_shell_frameworks.includes(id));
+  if (shellId && fw.side === "backend" && !(fw.project_types ?? []).includes("rest-api")) {
+    const shellFw = tree?.frameworks.find((f) => f.id === shellId);
+    return {
+      message: "Не REST API — несовместим с клиентом",
+      detail: `«${shellFw?.label ?? shellId}» — мобильный/десктопный клиент: связка возможна только через разделённую (API + Client) архитектуру. Выберите REST-API-бэкенд или уберите серверную сторону.`,
+      alternatives: frameworkAlternatives(fw),
+    };
+  }
+
   // 3. Универсальные (tauri/electron) против конкретной стороны
   const hasSpecific = selectedFrameworks.some((id) => {
     const f = tree?.frameworks.find((x) => x.id === id);
@@ -707,6 +755,21 @@ function frameworkWarnReason(fwId: string): string | null {
   return null;
 }
 
+/** Жёсткий сброс ручных языков стороны при выборе фреймворка: у стороны
+ *  теперь есть привязанный язык фреймворка, поэтому старый массив
+ *  (frontend_lang/backend_lang) очищается ДО записи нового — в стейте
+ *  никогда не окажется двух языков одной стороны (JS + TS из-за Vue). */
+function resetSideLangsForFramework(fw: FrameworkDef) {
+  if (fw.side === "frontend") {
+    manualFrontendLangs = [];
+  } else if (fw.side === "backend") {
+    manualBackendLangs = [];
+  } else {
+    manualFrontendLangs = [];
+    manualBackendLangs = [];
+  }
+}
+
 /** Клик по карточке фреймворка: выбрать (или открыть настройки, если выбран).
  *  Мультиязычные фреймворки открывают попап выбора языка; однозназычные —
  *  выбираются сразу с их языком; повторный клик снимает одиночные. */
@@ -742,6 +805,7 @@ function clickFramework(id: string) {
   }
   selectedFrameworks = [...selectedFrameworks.filter((f) => !dropConflicts.includes(f)), id];
   fwLangs = { ...fwLangs, [id]: fwLangs[id] ?? fw.recommended_language };
+  resetSideLangsForFramework(fw);
   recomputeSideLangs();
   if (fw.languages.length > 1 || companionOptions(fw).length > 0) {
     openFwPopup(id);
@@ -1378,6 +1442,7 @@ async function goToEnvironment() {
   envCheckProgress = [];
   if (unlistenTcCheck) unlistenTcCheck();
   unlistenTcCheck = await listenCheckProgress(handleCheckProgress);
+  await refreshInstalledTools();
   await runEnvironmentCheck();
 }
 
@@ -1408,6 +1473,29 @@ function selectAllEnvTools() {
   envSelectedIds = new Set(allMissingTools().map((r) => r.tool_id));
 }
 
+/** Общий стейт приложения: какие инструменты уже установлены локально
+ *  (state.json toolchain). Панды окружения читают его, чтобы не предлагать
+ *  «Install locally» для уже установленных тулов. */
+async function refreshInstalledTools() {
+  try {
+    const meta = await getToolchainMetadata();
+    installedTools = new Set(Object.keys(meta.tools));
+  } catch {
+    // стейт недоступен — считаем, что ничего не установлено
+  }
+}
+
+/** Инструмент установлен локально: заявлен в общем стейте приложения
+ *  (state.json) или только что подтверждён текущей проверкой окружения. */
+function isLocallyInstalled(toolId: string): boolean {
+  if (installedTools.has(toolId)) return true;
+  return (
+    envCheck?.requirements.some(
+      (r) => r.tool_id === toolId && statusKind(r.status) === "ok",
+    ) ?? false
+  );
+}
+
 /** Опциональный docker-инструмент (postgresql, redis, ...) пользователь
  * решил ставить ЛОКАЛЬНО вместо docker-compose: добавляем его в
  * envLocalInfra и перезапускаем проверку — теперь тул обычное требование
@@ -1415,6 +1503,16 @@ function selectAllEnvTools() {
 async function optInLocalInfra(toolId: string) {
   const next = new Set(envLocalInfra);
   next.add(toolId);
+  envLocalInfra = next;
+  await recheckEnvironment();
+}
+
+/** Вернуть docker-инструмент обратно в docker-compose (отменить выбор
+ *  локальной установки): убираем из envLocalInfra и перезапускаем
+ *  проверку — тул снова станет опциональным (RunInDocker). */
+async function revertLocalInfra(toolId: string) {
+  const next = new Set(envLocalInfra);
+  next.delete(toolId);
   envLocalInfra = next;
   await recheckEnvironment();
 }
@@ -1491,6 +1589,9 @@ function handleInstallDone(plan: InstallPlan) {
   stopTick();
   const installedCount = plan.tasks.filter((t) => taskStateKind(t.state) === "success").length;
   if (installedCount > 0) envRestartHint = true;
+  // Обновляем «уже установлено локально» — только что поставленные тулы
+  // сразу уходят в общий стейт и перестают предлагаться к установке.
+  refreshInstalledTools();
   persistNow();
   fetchNewSecrets();
 }
@@ -1995,13 +2096,48 @@ function resetAll() {
                   and excluded from docker-compose.
                 </p>
                 {#each envCheck.optional_requirements ?? [] as req}
-                  <div class="env-row broken">
+                  {@const installedHere = isLocallyInstalled(req.tool_id)}
+                  <div class="env-row" class:ok={installedHere}>
                     <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
                     <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
                     <span class="env-name">{req.display}</span>
-                    <span class="env-source">Docker (docker-compose.yaml)</span>
-                    <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
-                      Install locally
+                    <span class="env-source">
+                      {installedHere ? "Running locally on this machine" : "Docker (docker-compose.yaml)"}
+                    </span>
+                    {#if installedHere}
+                      <span class="env-status ok">✓ Уже установлено локально</span>
+                      <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
+                        Связать с локальным / Отключить Docker
+                      </button>
+                    {:else}
+                      <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
+                        Install locally
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            {#if envLocalInfra.size > 0}
+              <div class="env-optional env-optional-local">
+                <p class="group-label">Локально вместо Docker</p>
+                <p class="hint">
+                  These tools were switched to a local install and are excluded
+                  from docker-compose. Switch them back to containers if needed.
+                </p>
+                {#each [...envLocalInfra] as toolId}
+                  {@const req = envCheck.requirements.find((r) => r.tool_id === toolId)}
+                  <div class="env-row ok">
+                    <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
+                    <span class="env-icon"><TechIcon icon={req?.icon ?? toolIcon(toolId)} alt={req?.display ?? toolId} size="sm" /></span>
+                    <span class="env-name">{req?.display ?? toolId}</span>
+                    <span class="env-source">
+                      {statusKind(req?.status ?? "Missing") === "ok" ? "Installed locally" : "Local install pending"}
+                    </span>
+                    <span class="env-status ok">✓ Локально</span>
+                    <button class="btn-secondary" onclick={() => revertLocalInfra(toolId)}>
+                      Вернуть в Docker
                     </button>
                   </div>
                 {/each}
@@ -2506,10 +2642,18 @@ function resetAll() {
               )}
             {/if}
             {#if !hasBackend}
-              <p class="hint backendless-note">
-                This project type has no backend — the «Backend Language» and «Backend Framework»
-                steps are skipped. Only client-side technologies apply.
-              </p>
+              {#if hasClientShell}
+                <p class="hint backendless-note">
+                  A client shell (mobile/desktop app) is selected — it talks to servers only
+                  through a separated REST API. The «Backend Language» and «Backend Framework»
+                  steps are hidden; only REST-API backends could join such a stack.
+                </p>
+              {:else}
+                <p class="hint backendless-note">
+                  This project type has no backend — the «Backend Language» and «Backend Framework»
+                  steps are skipped. Only client-side technologies apply.
+                </p>
+              {/if}
             {/if}
             {#if fws.length === 0}
               <p class="muted">No frameworks available for this project type.</p>
@@ -3271,6 +3415,9 @@ function resetAll() {
 .env-optional { margin-bottom: 1rem; padding: 0.75rem 1rem; border: 1px dashed #e74c3c; border-radius: 10px; background: rgba(231, 76, 60, 0.06); }
 .env-optional .group-label { color: #e74c3c; margin: 0 0 0.35rem; }
 .env-optional .env-row { background: #1c1420; }
+.env-optional .env-row.ok { border-left-color: #00b894; background: #12211a; }
+.env-optional-local { border-color: #00b894; background: rgba(0, 184, 148, 0.06); }
+.env-optional-local .group-label { color: #00b894; }
 .env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .env-select input { accent-color: #6c5ce7; cursor: pointer; width: 15px; height: 15px; }
 .manual-badge { cursor: help; font-size: 0.95rem; }

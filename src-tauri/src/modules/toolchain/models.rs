@@ -138,14 +138,47 @@ pub struct InstallSource {
     /// (пароль PostgreSQL генерируется в рантайме, его нельзя хранить в JSON)
     #[serde(default)]
     pub dynamic_args: bool,
-    /// Куда распаковывать zip-архив (gradle, maven). Без этого поля
-    /// zip-источник считается некорректным и не запускается.
+    /// Куда распаковывать zip-архив (gradle, maven) или клонировать
+    /// git-репозиторий. Без этого поля zip-источник считается
+    /// некорректным и не запускается.
     #[serde(default)]
     pub install_dir: Option<String>,
     /// Переопределение needs_admin для конкретного источника (zip-распаковка
     /// не требует UAC, даже если у инструмента в целом needs_admin=true).
     #[serde(default)]
     pub needs_admin: Option<bool>,
+    /// Способ исполнения источника (см. ExecutionKind). По умолчанию
+    /// (None) движок определяет его автоматически: по URL (.git →
+    /// git clone) и расширению скачанного файла (.phar → php,
+    /// .ps1/.sh → интерпретатор, .zip/.tgz → распаковка, иначе exe).
+    /// Явное значение нужно для файлов без расширения (composer-installer)
+    /// и для жёсткой гарантии поведения.
+    #[serde(default)]
+    pub execution: Option<ExecutionKind>,
+}
+
+/// Способ исполнения скачанного источника: чем движок «запускает» файл.
+/// Поле InstallSource.execution; Auto — автоматическое определение
+/// (правила в installer.rs::resolve_execution).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionKind {
+    /// Git-репозиторий: `git clone <url> <каталог>`. Файл НЕ скачивается
+    /// и НЕ запускается — иначе «%1 не является приложением Win32»
+    /// (os error 193), как было с flutter.git.
+    GitClone,
+    /// Бинарь/инсталлятор (.exe, .msi, .msix): запускается напрямую
+    /// (msi/msix — через свои механизмы).
+    Exe,
+    /// Скрипт интерпретатора: .ps1 → `powershell -File`, .sh → `bash`.
+    Script,
+    /// PHP-скрипт (.phar — composer и т.п.): `php <файл>` — CreateProcess
+    /// phar не понимает (os error 193).
+    Phar,
+    /// Архив (.zip/.tgz): распаковывается в install_dir, а не запускается.
+    Archive,
+    /// Автоопределение по URL/расширению (значение по умолчанию).
+    Auto,
 }
 
 /// Чем ставим: менеджером пакетов ОС, официальным установщиком или скриптом.

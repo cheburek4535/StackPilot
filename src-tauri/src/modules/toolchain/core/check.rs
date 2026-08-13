@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::process::Command as TokioCommand;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use crate::modules::toolchain::models::*;
@@ -38,10 +39,47 @@ use super::discovery;
 /// по уже собранным данным — проверка НИКОГДА не висит бесконечно.
 const CHECK_DEADLINE: Duration = Duration::from_secs(90);
 
+/// Лимит на `dotnet workload install maui` — MAUI-набор большой,
+/// ставится дольше всех проб; 20 минут с запасом.
+const MAUI_WORKLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
 /// Callback прогресса: вызывается после проверки каждого инструмента
 /// (см. CheckProgressEvent). Ядро не знает про Tauri — команда оборачивает
 /// callback в app.emit, тесты собирают события в вектор.
 pub type ProgressFn = Arc<dyn Fn(CheckProgressEvent) + Send + Sync>;
+
+/// Гарантирует установку workload .NET MAUI перед завершением проверки
+/// окружения: наличие SDK не даёт шаблон `dotnet new maui` («Не найдены
+/// шаблоны... выполните dotnet new search maui»), пока не установлен
+/// workload. Сбой не блокирует отчёт: шаблоны проверятся в момент
+/// генерации, workload повторится при следующей проверке.
+async fn ensure_maui_workload() {
+    let result = timeout(
+        MAUI_WORKLOAD_TIMEOUT,
+        TokioCommand::new("dotnet")
+            .args(["workload", "install", "maui"])
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(out)) if out.status.success() => {
+            eprintln!("[toolchain] .NET MAUI workload установлен");
+        }
+        Ok(Ok(out)) => {
+            eprintln!(
+                "[toolchain] dotnet workload install maui завершился с кодом {}",
+                out.status.code().unwrap_or(-1)
+            );
+        }
+        Ok(Err(e)) => {
+            eprintln!("[toolchain] не удалось запустить dotnet workload install maui: {e}");
+        }
+        Err(_) => {
+            eprintln!("[toolchain] dotnet workload install maui превысил лимит времени");
+        }
+    }
+}
 
 /// Полная проверка окружения под требования проекта.
 /// `requested` — упорядоченный список id (из requirements::resolve),
@@ -175,8 +213,24 @@ pub async fn run_check(
 
     temp_requirements.sort_by_key(|pair| pair.0);
 
-    
     let requirements: Vec<ToolRequirement> = temp_requirements.into_iter().map(|pair| pair.1).collect();
+
+    // .NET MAUI: SDK без workload не даёт шаблон `dotnet new maui`.
+    // Если проекту нужен dotnet (язык csharp, фреймворк maui, CSharpRepl),
+    // ставим workload ДО завершения health-check'а — иначе генерация
+    // проекта упадёт с «Не найдены шаблоны...».
+    if requested.iter().any(|id| id == "dotnet")
+        && requirements.iter().any(|r| {
+            r.tool_id == "dotnet"
+                && matches!(
+                    r.status,
+                    ToolStatus::Installed { .. } | ToolStatus::UpdateAvailable { .. }
+                )
+        })
+    {
+        ensure_maui_workload().await;
+    }
+
     // ManualInstall — предупреждение, а не блокировка: проект можно создавать.
     let all_ready = requirements.iter().all(|r| {
         r.status.is_ok() || matches!(r.status, ToolStatus::ManualInstall { .. })
@@ -275,6 +329,7 @@ mod tests {
                     install_dir: None,
                     needs_admin: None,
                     file_name: None,
+                    execution: None,
                 }],
                 linux: vec![],
                 macos: vec![],

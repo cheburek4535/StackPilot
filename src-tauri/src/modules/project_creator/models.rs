@@ -18,6 +18,13 @@ pub struct WizardTreeData {
     /// (zig-cli: std-CLI не является каркасом приложения).
     #[serde(default)]
     pub main_limit_exempt: Vec<String>,
+    /// «Клиентские оболочки»: мобильные/десктопные фреймворки, которые
+    /// создают standalone-клиент (expo, react-native, plasmo, electron,
+    /// tauri). Для них серверная сторона имеет смысл только как разделённый
+    /// REST API: конструктор скрывает шаги Backend Language/Framework и
+    /// жёстко блокирует бэкенд-фреймворки, не поддерживающие тип rest-api.
+    #[serde(default)]
+    pub client_shell_frameworks: Vec<String>,
     /// Нежёсткие предупреждения для сочетаний, которые «не ломают», но
     /// противоречат концепции (Phoenix LiveView + тяжёлый SPA). Warning.
     #[serde(default)]

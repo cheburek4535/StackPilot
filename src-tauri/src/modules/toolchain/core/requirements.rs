@@ -85,7 +85,12 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         // (CLI-first, см. engine/mod.rs) — cargo-подкоманда tauri-cli
         // больше не нужна, хватает rust + node/npm.
         "tauri" => &["rust", "node"],
-        "flutter" => &["flutter"],
+        // Flutter SDK ставится `git clone`-ом — git обязателен, иначе
+        // источник установки не сработает (git: команда не найдена).
+        "flutter" => &["flutter", "git"],
+        // MAUI — C#-стек: сам SDK (dotnet) обязателен, а workload maui
+        // доставляет движок при установке/проверке окружения.
+        "maui" => &["dotnet"],
         // PHP-фреймворки: генерация проекта идёт через composer
         // (`composer create-project symfony/skeleton`, `laravel/laravel`),
         // поэтому php и composer обязаны попасть в требования даже
