@@ -2,7 +2,7 @@ pub mod content;
 pub mod executor;
 pub mod template;
 use std::collections::HashMap;
-use std::path::{Path};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::Arc;
 use std::time::Instant;
@@ -899,10 +899,14 @@ fn language_side_infer(lang: &str) -> Option<&'static str> {
 // node_modules, файлы бэкенда в глобальном корне.
 // ============================================================================
 
-/// Есть ли у контекста ОБЕ стороны (backend + frontend)? Стороны берутся
-/// из явных назначений мастера (backend_languages/frontend_languages), а для
-/// старых сессий — выводятся из category языка.
-fn context_has_both_sides(context: &WizardContext) -> bool {
+/// Стороны проекта по контексту: явные назначения мастера
+/// (backend_languages/frontend_languages), вывод по category языков — и side
+/// фреймворков из wizard_tree.json. Фреймворк с жёсткой стороной (side=
+/// "backend"/"frontend") — полноценная сторона: nest (backend) + nextjs
+/// (frontend) включают сегментацию, даже если в контексте единственный язык
+/// (typescript) или он не назначен бэкенд-стороне (aspnetcore + maui — оба
+/// на csharp).
+fn context_sides(context: &WizardContext) -> (bool, bool) {
     let mut lang_side: HashMap<String, &'static str> = HashMap::new();
     for l in &context.backend_languages {
         lang_side.insert(l.clone(), "backend");
@@ -915,8 +919,23 @@ fn context_has_both_sides(context: &WizardContext) -> bool {
             .entry(l.clone())
             .or_insert_with(|| language_side_infer(l).unwrap_or("backend"));
     }
-    let has_backend = lang_side.values().any(|s| *s == "backend");
-    let has_frontend = lang_side.values().any(|s| *s == "frontend");
+    let mut has_backend = lang_side.values().any(|s| *s == "backend");
+    let mut has_frontend = lang_side.values().any(|s| *s == "frontend");
+    for fw in &context.frameworks {
+        match framework_def(fw).map(|def| def.side.as_str()) {
+            Some("backend") => has_backend = true,
+            Some("frontend") => has_frontend = true,
+            _ => {}
+        }
+    }
+    (has_backend, has_frontend)
+}
+
+/// Есть ли у контекста ОБЕ стороны (backend + frontend)? Стороны берутся
+/// из явных назначений мастера (backend_languages/frontend_languages),
+/// выводятся из category языка и из side фреймворков (см. context_sides).
+fn context_has_both_sides(context: &WizardContext) -> bool {
+    let (has_backend, has_frontend) = context_sides(context);
     has_backend && has_frontend
 }
 
@@ -1019,8 +1038,11 @@ impl SegLayout {
         }
         // Забытые языки (в списке языка нет, а сторона заявлена) — не важны.
 
-        let has_backend = lang_side.values().any(|s| *s == "backend");
-        let has_frontend = lang_side.values().any(|s| *s == "frontend");
+        // Стороны определяются так же, как в context_has_both_sides: и
+        // языки, и side фреймворков. Без этого aspnetcore + maui (оба на
+        // csharp, категория "both") или nest + nextjs (только typescript)
+        // не включили бы сегментацию и столкнулись бы файлами в корне.
+        let (has_backend, has_frontend) = context_sides(context);
         if has_backend && has_frontend {
             SegLayout {
                 frontend: Some("frontend".into()),
@@ -1728,6 +1750,31 @@ fn tauri_layout(seg: Option<&str>) -> (String, String, String) {
     }
 }
 
+/// Шаг «scaffold» через Composer: command/args резолвятся через
+/// composer_launch() — глобальный `composer` или `php <абс. composer.phar>`,
+/// поэтому name_arg вычисляется по фактическому положению плейсхолдера.
+fn composer_scaffold_step(
+    id: &str,
+    label: &str,
+    desc: &str,
+    package: &str,
+) -> Step {
+    let (command, prefix) = composer_launch();
+    let mut args: Vec<String> = prefix;
+    args.extend([
+        "create-project".to_string(),
+        package.to_string(),
+        SCAFFOLD_TARGET.to_string(),
+        "--no-interaction".to_string(),
+        "--prefer-dist".to_string(),
+    ]);
+    let name_arg = args
+        .iter()
+        .position(|a| a == SCAFFOLD_TARGET)
+        .expect("SCAFFOLD_TARGET всегда в args composer create-project");
+    scaffold_step(id, label, desc, &command, args.iter().map(String::as_str).collect(), name_arg, ".")
+}
+
 /// Шаг «scaffold»: CLI-генератор, который сам создаёт папку проекта.
 /// ScaffoldGenerator разбирается с каталогом сам (см. generators/mod.rs):
 /// ВСЕГДА temp-to-target — CLI выполняется во временной папке temp_<target>,
@@ -2143,6 +2190,77 @@ include(":app")
 "#)),
         wf("android_main", "Create MainActivity", &main_path, main_content),
     ]
+}
+
+/// Раскрывает %VAR% в пути через переменные текущего процесса
+/// (неизвестная переменная остаётся как есть).
+fn expand_env_path(raw: &str) -> PathBuf {
+    let mut out = raw.to_string();
+    let mut guard = 0;
+    while let Some(start) = out.find('%') {
+        if guard > 10 {
+            break;
+        }
+        guard += 1;
+        let Some(end_rel) = out[start + 1..].find('%') else {
+            break;
+        };
+        let end = start + 1 + end_rel;
+        let name = &out[start + 1..end];
+        if let Ok(value) = std::env::var(name) {
+            out.replace_range(start..=end, &value);
+        } else {
+            break;
+        }
+    }
+    PathBuf::from(out)
+}
+
+/// Есть ли команда в PATH (where/which)?
+fn command_on_path(name: &str) -> bool {
+    let (prog, arg) = if cfg!(target_os = "windows") {
+        ("where", name)
+    } else {
+        ("which", name)
+    };
+    std::process::Command::new(prog)
+        .arg(arg)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Способ запуска Composer: (команда, префикс аргументов).
+///
+/// 1. Глобальный `composer` в PATH — используем его напрямую.
+/// 2. Иначе — абсолютный путь к скачанному composer.phar в Toolchain store
+///    (`%LOCALAPPDATA%\StackPilot\tools\php\composer.phar`) или в каталогах
+///    установки (`%APPDATA%\Composer`, `%LOCALAPPDATA%\Programs\php`) и
+///    запуск через `php <абсолютный путь>`.
+///
+/// Относительный `composer.phar` НЕ используется никогда: `php composer.phar`
+/// ищет файл в рабочем каталоге и падает с «Could not open input file:
+/// composer.phar» (движок выполняет CLI во временной папке, где phar нет).
+fn composer_launch() -> (String, Vec<String>) {
+    if command_on_path("composer") {
+        return ("composer".to_string(), Vec::new());
+    }
+    for dir in [
+        "%LOCALAPPDATA%\\StackPilot\\tools\\php",
+        "%APPDATA%\\Composer",
+        "%LOCALAPPDATA%\\Programs\\php",
+    ] {
+        let phar = expand_env_path(dir).join("composer.phar");
+        if phar.is_file() {
+            return ("php".to_string(), vec![phar.to_string_lossy().into_owned()]);
+        }
+    }
+    // Ничего не нашли — честный fallback: php с абсолютным путём в Toolchain
+    // store (ошибка установки будет явной, а не «Could not open input file»).
+    let phar = expand_env_path("%LOCALAPPDATA%\\StackPilot\\tools\\php").join("composer.phar");
+    ("php".to_string(), vec![phar.to_string_lossy().into_owned()])
 }
 
 fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
@@ -2798,14 +2916,17 @@ func main() {{
         },
 
         // ==================== C# ====================
+        // -o .: проект создаётся НЕ в вложенной папке <project_name>/,
+        // а прямо в рабочей директории (backend/ или frontend/ при
+        // сегментации) — иначе aspnetcore + maui давали test16/test16.
         "aspnetcore" => vec![
             cmd("aspnet_new", "Create ASP.NET Core Web API", "Scaffold Web API project",
-                "dotnet", vec!["new", "webapi", "-n", project_name, "--force"]),
+                "dotnet", vec!["new", "webapi", "-n", project_name, "-o", ".", "--force"]),
         ],
 
         "maui" => vec![
             cmd("maui_new", "Create MAUI app", "Scaffold .NET MAUI project",
-                "dotnet", vec!["new", "maui", "-n", project_name, "--force"]),
+                "dotnet", vec!["new", "maui", "-n", project_name, "-o", ".", "--force"]),
         ],
 
         // ==================== C++ / Qt ====================
@@ -2873,26 +2994,28 @@ fun main() {{
         ],
 
         // ==================== PHP ====================
-        "laravel" => vec![
+        "laravel" => {
             // CLI Override (PHP Composer): НИКАКОГО npm. npm-путь
             // (@laravel/installer) падал с «npm error 404 Not Found».
-            // Явный вызов `php composer.phar create-project laravel/laravel
-            // <target>` — target подставляет ScaffoldGenerator (temp+move):
-            // временная папка → программный перенос в backend/ или корень.
-            scaffold_step("laravel_new", "Create Laravel project",
+            // Composer запускается с АБСОЛЮТНЫМ путём (composer_launch):
+            // глобальный `composer` в PATH или `php <абс. путь к
+            // composer.phar> в Toolchain store» — относительный composer.phar
+            // не существует в рабочем каталоге CLI. Target подставляет
+            // ScaffoldGenerator (temp+move): временная папка → программный
+            // перенос в backend/ или корень.
+            vec![composer_scaffold_step("laravel_new", "Create Laravel project",
                 "Scaffold Laravel application via PHP Composer",
-                "php", vec!["composer.phar", "create-project", "laravel/laravel", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
-                3, "."),
-        ],
+                "laravel/laravel")]
+        },
 
-        "symfony" => vec![
+        "symfony" => {
             // CLI Override (PHP Composer): локальный бинарь symfony не
-            // требуется, npm не используется — только php composer.phar.
-            scaffold_step("symfony_new", "Create Symfony project",
+            // требуется, npm не используется — только composer с
+            // абсолютным путём (см. composer_launch).
+            vec![composer_scaffold_step("symfony_new", "Create Symfony project",
                 "Scaffold Symfony application via PHP Composer",
-                "php", vec!["composer.phar", "create-project", "symfony/skeleton", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
-                3, "."),
-        ],
+                "symfony/skeleton")]
+        },
 
         // ==================== Swift ====================
         "swiftui" => vec![
@@ -3091,25 +3214,30 @@ fn python_segment_dir(context: &WizardContext) -> String {
     ".".to_string()
 }
 
-/// Путь к бинарю внутри venv проекта, ОТНОСИТЕЛЬНО КОРНЯ проекта:
-/// `venv\Scripts\<name>.exe` на Windows, `venv/bin/<name>` на unix.
-/// В моно-репозитории venv живёт в каталоге python-сегмента
-/// (`backend\venv\Scripts\alembic.exe` / `backend/venv/bin/alembic`),
-/// а не в корне.
+/// АБСОЛЮТНЫЙ путь к бинарю внутри venv проекта:
+/// `<project_path>\venv\Scripts\<name>.exe` на Windows,
+/// `<project_path>/venv/bin/<name>` на unix. В моно-репозитории venv живёт
+/// в каталоге python-сегмента (`<project_path>\backend\venv\Scripts\alembic.exe`
+/// / `<project_path>/backend/venv/bin/alembic`), а не в корне.
 ///
 /// Правило движка: Python-утилиты (alembic, pip) вызываются ТОЛЬКО через
 /// бинарники виртуального окружения — глобальный `alembic` не используется.
-fn python_venv_bin(python_dir: &str, name: &str) -> String {
-    let dir = if python_dir.is_empty() || python_dir == "." {
-        "venv".to_string()
+/// Путь обязан быть АБСОЛЮТНЫМ: относительный `<project>/backend/venv/...`
+/// зависел бы от рабочего каталога процесса (executor запускает команды из
+/// project_path, но venv создаётся ВНУТРИ каталога python-сегмента).
+fn python_venv_bin(project_path: &str, python_dir: &str, name: &str) -> String {
+    let base = PathBuf::from(project_path);
+    let venv = if python_dir.is_empty() || python_dir == "." {
+        base.join("venv")
     } else {
-        python_dir.trim_end_matches(['/', '\\']).to_string()
+        base.join(python_dir).join("venv")
     };
-    if cfg!(target_os = "windows") {
-        format!("{}\\venv\\Scripts\\{}.exe", dir, name)
+    let bin = if cfg!(target_os = "windows") {
+        venv.join("Scripts").join(format!("{}.exe", name))
     } else {
-        format!("{}/venv/bin/{}", dir, name)
-    }
+        venv.join("bin").join(name)
+    };
+    bin.to_string_lossy().into_owned()
 }
 
 fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
@@ -3143,22 +3271,28 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     // вне блока — нужен и шагам alembic ниже.
     let python_dir = python_segment_dir(context);
     if needs_python_venv {
+        // Абсолютный путь к venv: python -m venv выполняется из project_path,
+        // но каталог окружения обязан лежать ТОЧНО внутри python-сегмента
+        // (backend/venv или ./venv) — относительный путь в шаге + другой
+        // working_dir давали venv не там, где его ищут pip/alembic.
         let venv_path = if python_dir == "." {
-            "venv".to_string()
+            PathBuf::from(project_path).join("venv")
         } else {
-            format!("{}/venv", python_dir)
+            PathBuf::from(project_path).join(&python_dir).join("venv")
         };
+        let venv_str = venv_path.to_string_lossy().into_owned();
         let req_path = if python_dir == "." {
-            "requirements.txt".to_string()
+            PathBuf::from(project_path).join("requirements.txt")
         } else {
-            format!("{}/requirements.txt", python_dir)
+            PathBuf::from(project_path).join(&python_dir).join("requirements.txt")
         };
+        let req_str = req_path.to_string_lossy().into_owned();
         steps.push(Step::Command {
             id: "py_venv_create".into(),
             label: "Create Python virtual environment".into(),
-            description: format!("Run python -m venv {}", venv_path),
+            description: format!("Run python -m venv {}", venv_str),
             command: "python".into(),
-            args: vec!["-m".into(), "venv".into(), venv_path],
+            args: vec!["-m".into(), "venv".into(), venv_str],
             working_dir: Some(project_path.to_string()),
             env: None,
             timeout_secs: Some(120),
@@ -3173,8 +3307,10 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
             // Только бинарь venv; alembic ставится явно, даже если
             // requirements.txt его не содержит (requirements_txt создаётся
             // пустым, а fastapi/flask перезаписывают только своими пакетами).
-            command: python_venv_bin(&python_dir, "pip"),
-            args: vec!["install".into(), "-r".into(), req_path, "alembic".into()],
+            // Абсолютный путь: команда исполняется из project_path, но venv
+            // живёт внутри python-сегмента (backend/venv).
+            command: python_venv_bin(project_path, &python_dir, "pip"),
+            args: vec!["install".into(), "-r".into(), req_str, "alembic".into()],
             working_dir: Some(project_path.to_string()),
             env: None,
             timeout_secs: Some(600),
@@ -3215,10 +3351,11 @@ def get_db():
                     label: "Init Alembic".into(),
                     description: "Initialize Alembic migrations (inside project venv)".into(),
                     // Вызывается строго через бинарь виртуального окружения
-                    // (venv\Scripts\alembic.exe / venv/bin/alembic внутри
-                    // python-сегмента): py_pip_install (с гарантированным
-                    // alembic) отрабатывает ДО этого шага — см. выше.
-                    command: python_venv_bin(&python_dir, "alembic"),
+                    // (абсолютный путь: <project>\backend\venv\Scripts\alembic.exe
+                    // / <project>/backend/venv/bin/alembic внутри python-
+                    // сегмента): py_pip_install (с гарантированным alembic)
+                    // отрабатывает ДО этого шага — см. выше.
+                    command: python_venv_bin(project_path, &python_dir, "alembic"),
                     args: vec!["init".into(), "migrations".into()],
                     working_dir: Some(project_path.to_string()),
                     env: None,
@@ -4199,6 +4336,90 @@ mod tests {
     }
 
     #[test]
+    fn aspnetcore_plus_maui_isolated_in_segments_no_matryoshka() {
+        // ASP.NET Core (backend) + MAUI (frontend): оба на csharp (category
+        // "both"), стороны дают side фреймворков (aspnetcore=backend,
+        // maui=frontend). dotnet new webapi/maui выполняются ВНУТРИ своих
+        // сегментов с -o . — проект ложится прямо в backend/ или frontend/,
+        // без вложенной папки test16/test16.
+        let mut ctx = context();
+        ctx.languages = vec!["csharp".into()];
+        ctx.frameworks = vec!["aspnetcore".into(), "maui".into()];
+
+        let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
+
+        // Обе стороны: backend/ и frontend/ создаются движком
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "aspnetcore обязан получить backend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "maui обязан получить frontend/: {mkdirs:?}");
+
+        // dotnet new webapi: работает в backend/ с -o . — без вложенной папки
+        let asp = recipe.steps.iter().find(|s| s.id() == "aspnet_new")
+            .expect("aspnet_new должен быть в плане");
+        match asp {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "webapi обязан работать внутри ./backend");
+                assert!(args.contains(&"-o".to_string()) && args.contains(&".".to_string()),
+                    "webapi обязан идти с -o . (проект прямо в backend/, без test16/test16): {args:?}");
+                assert!(args.contains(&"-n".to_string()), "{args:?}");
+            }
+            _ => panic!("aspnet_new — Command"),
+        }
+
+        // dotnet new maui: работает в frontend/ с -o .
+        let maui = recipe.steps.iter().find(|s| s.id() == "maui_new")
+            .expect("maui_new должен быть в плане");
+        match maui {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"),
+                    "maui обязан работать внутри ./frontend");
+                assert!(args.contains(&"-o".to_string()) && args.contains(&".".to_string()),
+                    "maui обязан идти с -o . (проект прямо в frontend/, без test16/test16): {args:?}");
+            }
+            _ => panic!("maui_new — Command"),
+        }
+
+        // Generic csharp-скаффолд (dotnet new console) подавлен обоими
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "dotnet_new"),
+            "dotnet new console не нужен: каркасы создают aspnetcore/maui"
+        );
+    }
+
+    #[test]
+    fn django_sanitizes_name_and_isolates_in_backend() {
+        // Django-фикс: django-admin startproject получает санитизированное
+        // имя (дефис → подчёркивание — Python-пакет), а при обеих сторонах
+        // работает в backend/ с "." — manage.py не появляется в корне.
+        let mut ctx = context();
+        ctx.project_name = Some("my-test-app".into());
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.frameworks = vec!["django".into(), "react".into()];
+
+        let recipe = compose_recipe(&ctx, "my-test-app").expect("recipe must build");
+
+        let django = recipe.steps.iter().find(|s| s.id() == "django_start")
+            .expect("django_start должен быть в плане");
+        match django {
+            Step::Command { args, working_dir, .. } => {
+                assert!(args.contains(&"my_test_app".to_string()),
+                    "имя проекта санитизируется (дефис → подчёркивание): {args:?}");
+                assert!(args.contains(&".".to_string()),
+                    "startproject создаёт проект в текущем каталоге: {args:?}");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "django стартует в backend/ (Strict Subdir Mandate)");
+            }
+            _ => panic!("django_start — Command"),
+        }
+    }
+
+    #[test]
     fn tauri_pipeline_scaffolds_frontend_init_and_patches_config() {
         // Strict Subdir Mandate: rust (backend) + typescript (frontend) — обе
         // стороны, tauri (scaffold="root" в JSON) принудительно работает как
@@ -4498,29 +4719,56 @@ mod tests {
     }
 
     #[test]
-    fn nest_plus_nextjs_has_no_matryoshka() {
-        // P1: NestJS + Next.js создавали testapp2/testapp2 — nest скаффолдил
-        // корень, а create-next-app внутри него ещё и вложенную папку с
-        // именем проекта. Теперь: движок создаёт frontend/, nextjs выполняется
-        // ВНУТРИ него с "."; оба CLI идут с --skip-install, npm install —
-        // ровно 2 раза в финальной фазе (корень nest + frontend).
+    fn nest_plus_nextjs_decoupled_twin_isolates_backend_and_frontend() {
+        // Strict Decoupled Twin Rule: nest (backend, scaffold="root" в JSON) +
+        // nextjs (frontend) — обе стороны (nest = side=backend, nextjs =
+        // side=frontend даже при единственном языке typescript), поэтому
+        // nest принудительно работает как subdir: бэкенд целиком в backend/
+        // (nest-cli.json, tsconfig.build.json, package.json — только там),
+        // фронтенд — в frontend/. В корне нет package.json и node_modules —
+        // только оркестрационные файлы движка.
         let mut ctx = context();
         ctx.languages = vec!["typescript".into()];
         ctx.frameworks = vec!["nest".into(), "nextjs".into()];
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
 
-        // frontend/ создаётся движком ДО запуска nextjs
-        let create_idx = recipe.steps.iter().position(|s| matches!(s, Step::CreateDirectory { path, .. }
-            if path == "frontend"))
-            .expect("frontend/ должен создаваться движком");
-        let next_idx = recipe.steps.iter().position(|s| s.id() == "nextjs_create")
-            .expect("nextjs_create должен быть в плане");
-        assert!(create_idx < next_idx, "frontend/ создаётся до запуска nextjs");
+        // Мандат: backend/ И frontend/ создаются движком ДО запуска CLI
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "nest обязан получить backend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "nextjs обязан получить frontend/: {mkdirs:?}");
+        let create_idx = |p: &str| recipe.steps.iter()
+            .position(|s| matches!(s, Step::CreateDirectory { path, .. } if path == p))
+            .unwrap_or_else(|| panic!("{p}/ должен создаваться движком"));
+        let nest_idx = recipe.steps.iter().position(|s| s.id() == "nest_new")
+            .expect("nest_new должен быть в плане");
+        assert!(create_idx("backend") < nest_idx, "backend/ создаётся до запуска nest");
+        assert!(create_idx("frontend") < recipe.steps.iter().position(|s| s.id() == "nextjs_create").unwrap(),
+            "frontend/ создаётся до запуска nextjs");
 
-        // НЕТ матрёшки: ScaffoldGenerator выполняет create-next-app ВНУТРИ
-        // frontend/ с "." (--skip-install — зависимости в финальной фазе)
-        let next = &recipe.steps[next_idx];
+        // nest: "." + --skip-install + --skip-git, работает ВНУТРИ backend/
+        let nest = recipe.steps.iter().find(|s| s.id() == "nest_new")
+            .expect("nest_new должен быть в плане");
+        match nest {
+            Step::Command { args, working_dir, .. } => {
+                assert_eq!(args.get(2).map(String::as_str), Some("."), "{args:?}");
+                assert!(args.contains(&"--skip-install".to_string()), "{args:?}");
+                assert!(args.contains(&"--skip-git".to_string()), "git инициализирует движок: {args:?}");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "nest обязан работать в backend/, а не в корне (Decoupled Twin)");
+            }
+            _ => panic!("nest_new — Command"),
+        }
+
+        // nextjs: ScaffoldGenerator выполняет create-next-app ВНУТРИ frontend/
+        // (--skip-install — зависимости в финальной фазе)
+        let next = recipe.steps.iter().find(|s| s.id() == "nextjs_create")
+            .expect("nextjs_create должен быть в плане");
         match next {
             Step::Generate { generator_config, on_error, .. } => {
                 assert_eq!(
@@ -4539,31 +4787,26 @@ mod tests {
             _ => panic!("nextjs_create — Generate"),
         }
 
-        // nest: "." + --skip-install + --skip-git, в корне
-        let nest = recipe.steps.iter().find(|s| s.id() == "nest_new")
-            .expect("nest_new должен быть в плане");
-        match nest {
-            Step::Command { args, working_dir, .. } => {
-                assert_eq!(args.get(2).map(String::as_str), Some("."), "{args:?}");
-                assert!(args.contains(&"--skip-install".to_string()), "{args:?}");
-                assert!(args.contains(&"--skip-git".to_string()), "git инициализирует движок: {args:?}");
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"), "nest работает в корне");
-            }
-            _ => panic!("nest_new — Command"),
-        }
-
-        // npm install ровно 2 раза: корень (nest) + frontend (nextjs)
+        // npm install ровно 2 раза: backend (nest) + frontend (nextjs) —
+        // корневой install НЕ появляется (в корне нет package.json)
         let installs: Vec<_> = recipe.steps.iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
         assert_eq!(installs.len(), 2, "install-шагов должно быть 2: {installs:?}");
         match (&installs[0], &installs[1]) {
             (Step::Command { working_dir: w0, .. }, Step::Command { working_dir: w1, .. }) => {
-                assert_eq!(w0.as_deref(), Some("C:\\dev\\myapp"), "nest-корень ставится первым");
-                assert_eq!(w1.as_deref(), Some("C:\\dev\\myapp/frontend"), "nextjs ставится вторым");
+                assert_eq!(w0.as_deref(), Some("C:\\dev\\myapp/backend"), "nest-бэкенд ставится первым");
+                assert_eq!(w1.as_deref(), Some("C:\\dev\\myapp/frontend"), "nextjs-фронтенд ставится вторым");
             }
             _ => panic!("npm_install — Command"),
         }
+
+        // В корне нет generic js-скаффолда: package.json пишется только
+        // nest'ом (в backend/) и nextjs (в frontend/)
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "package_json"),
+            "package.json не должен создаваться в корне"
+        );
     }
 
     #[test]
@@ -4746,10 +4989,11 @@ mod tests {
     }
 
     #[test]
-    fn complex_monolith_builds_full_recipe() {
-        // Сложный монолит: python + typescript на одной стороне (без
-        // сегментов), fastapi (inplace) + react (vite-подпапка) + airflow
-        // + postgres. Всё создаётся в корне проекта.
+    fn complex_dual_side_stack_segments_backend_and_frontend() {
+        // python + typescript на бэкенд-стороне + react (frontend-фреймворк,
+        // side=frontend) — обе стороны, поэтому сегментация ВКЛЮЧЕНА:
+        // fastapi живёт в backend/, vite-скаффолд — в frontend/. Корневые
+        // файлы оркестрации (dags/, docker-compose, .env.example) — в корне.
         let mut ctx = context();
         ctx.languages = vec!["python".into(), "typescript".into()];
         ctx.backend_languages = vec!["python".into(), "typescript".into()];
@@ -4760,12 +5004,15 @@ mod tests {
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
 
-        // Монолит: без backend/ и frontend/ сегментов
-        assert!(
-            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
-                if path == "backend" || path == "frontend")),
-            "в монолите не должно быть сегментов"
-        );
+        // react (frontend-фреймворк) даёт обе стороны → backend/ и frontend/
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "fastapi должен получить backend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "react должен получить frontend/: {mkdirs:?}");
 
         // react: ScaffoldGenerator кладёт vite-проект в frontend/
         let vite = recipe.steps.iter().find(|s| s.id() == "vite_create")
@@ -4779,14 +5026,13 @@ mod tests {
                 assert_eq!(args.get(3).and_then(|v| v.as_str()), Some("react-ts"),
                     "typescript → react-ts шаблон: {args:?}");
                 assert_eq!(generator_config.get("target_dir").and_then(|v| v.as_str()), Some("frontend"),
-                    "в монолите vite-проект живёт в frontend/: {generator_config}");
+                    "vite-проект живёт в frontend/: {generator_config}");
             }
             _ => panic!("vite_create — Generate"),
         }
 
         // npm install выполняется РОВНО один раз в финальной фазе пайплайна —
-        // ВНУТРИ frontend/ (vite_install из середины пайплайна убран,
-        // зависимости больше не плодятся на каждом шаге)
+        // ВНУТРИ frontend/
         let installs: Vec<_> = recipe.steps.iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
@@ -4799,15 +5045,15 @@ mod tests {
             _ => panic!("npm_install — Command"),
         }
 
-        // fastapi (inplace): entry-файлы в корне проекта
+        // fastapi (inplace): entry-файлы в backend/
         let main = recipe.steps.iter().find(|s| s.id() == "fastapi_main")
             .expect("fastapi_main должен быть в плане");
         match main {
-            Step::WriteFile { path, .. } => assert_eq!(path, "src/main.py"),
+            Step::WriteFile { path, .. } => assert_eq!(path, "backend/src/main.py"),
             _ => panic!("fastapi_main — WriteFile"),
         }
 
-        // airflow: dags/ директория + пример DAG
+        // airflow: dags/ директория + пример DAG — в корне (оркестрация)
         assert!(
             recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. } if path == "dags")),
             "airflow должен создать dags/"
@@ -5050,8 +5296,9 @@ mod tests {
 
     #[test]
     fn python_venv_bin_resolves_inside_segment() {
-        // Корень проекта: venv\Scripts\alembic.exe (Win) / venv/bin/alembic.
-        let root_bin = python_venv_bin(".", "alembic");
+        // Корень проекта: <project>\venv\Scripts\alembic.exe (Win) /
+        // <project>/venv/bin/alembic.
+        let root_bin = python_venv_bin("C:\\dev\\myapp", ".", "alembic");
         assert!(
             root_bin.contains("venv") && !root_bin.contains("backend"),
             "корневой venv без сегмента: {root_bin}"
@@ -5060,12 +5307,20 @@ mod tests {
             root_bin.ends_with("alembic.exe") || root_bin.ends_with("/alembic"),
             "имя бинаря на конце: {root_bin}"
         );
-        // Моно-репозиторий: backend/venv/Scripts/alembic.exe (Win) /
-        // backend/venv/bin/alembic (unix).
-        let seg_bin = python_venv_bin("backend", "alembic");
         assert!(
-            seg_bin.starts_with("backend") && seg_bin.contains("venv"),
+            root_bin.starts_with("C:\\dev\\myapp"),
+            "путь АБСОЛЮТНЫЙ (не зависит от рабочего каталога): {root_bin}"
+        );
+        // Моно-репозиторий: <project>\backend\venv\Scripts\alembic.exe (Win)
+        // / <project>/backend/venv/bin/alembic.
+        let seg_bin = python_venv_bin("C:\\dev\\myapp", "backend", "alembic");
+        assert!(
+            seg_bin.contains("backend") && seg_bin.contains("venv"),
             "бинарь внутри backend/venv: {seg_bin}"
+        );
+        assert!(
+            seg_bin.starts_with("C:\\dev\\myapp"),
+            "путь АБСОЛЮТНЫЙ: {seg_bin}"
         );
         assert!(
             seg_bin.ends_with("alembic.exe") || seg_bin.ends_with("/alembic"),
@@ -5099,8 +5354,10 @@ mod tests {
 
     #[test]
     fn qt_webengine_stack_generates_webengine_files() {
-        // qt-webengine + react: main.cpp обязан содержать QWebEngineView-
-        // бойлерплейт, CMakeLists.txt — WebEngineWidgets (не заглушки).
+        // qt-webengine + react: react (side=frontend) + cpp (backend) — обе
+        // стороны, поэтому qt (side=either, язык cpp → backend/) живёт в
+        // backend/. main.cpp обязан содержать QWebEngineView-бойлерплейт,
+        // CMakeLists.txt — WebEngineWidgets (не заглушки).
         let mut ctx = context();
         ctx.languages = vec!["cpp".into()];
         ctx.frameworks = vec!["qt".into(), "qt-webengine".into(), "react".into()];
@@ -5111,8 +5368,8 @@ mod tests {
         let main_cpp = recipe
             .steps
             .iter()
-            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "src/main.cpp"))
-            .unwrap_or_else(|| panic!("qt должен писать src/main.cpp"));
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "backend/src/main.cpp"))
+            .unwrap_or_else(|| panic!("qt должен писать backend/src/main.cpp"));
         match main_cpp {
             Step::WriteFile { content, .. } => {
                 assert!(content.contains("#include <QWebEngineView>"), "{content}");
@@ -5129,8 +5386,8 @@ mod tests {
         let cmake = recipe
             .steps
             .iter()
-            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "CMakeLists.txt"))
-            .unwrap_or_else(|| panic!("qt должен писать CMakeLists.txt"));
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "backend/CMakeLists.txt"))
+            .unwrap_or_else(|| panic!("qt должен писать backend/CMakeLists.txt"));
         match cmake {
             Step::WriteFile { content, .. } => {
                 assert!(
@@ -5151,8 +5408,12 @@ mod tests {
     fn laravel_and_symfony_use_composer_not_npm() {
         // P-баг: @laravel/installer падал с «npm error 404 Not Found», а
         // бинарь symfony не установлен. PHP-фреймворки создаются через
-        // `php composer.phar create-project ... --no-interaction --prefer-dist`
-        // (дистрибутив composer скачивается движком в temp — dot-режим).
+        // `composer create-project ... --no-interaction --prefer-dist`:
+        // запускается глобальный `composer` из PATH ИЛИ `php <АБСОЛЮТНЫЙ
+        // путь к composer.phar>` (composer_launch — Toolchain store
+        // %LOCALAPPDATA%\StackPilot\tools\php, %APPDATA%\Composer...).
+        // Относительный `composer.phar` запрещён: php ищет его в рабочем
+        // каталоге CLI и падает с «Could not open input file: composer.phar».
         for (fw_id, step_id, package) in [
             ("laravel", "laravel_new", "laravel/laravel"),
             ("symfony", "symfony_new", "symfony/skeleton"),
@@ -5173,17 +5434,46 @@ mod tests {
                 Step::Generate { generator_id, generator_config, on_error, .. } => {
                     assert_eq!(generator_id, "scaffold");
                     assert_eq!(on_error, &ErrorMode::Skip);
-                    assert_eq!(generator_config.get("command").and_then(|v| v.as_str()), Some("php"),
-                        "создаёт php, а не npm-клиент: {generator_config}");
+                    let command = generator_config.get("command").and_then(|v| v.as_str())
+                        .expect("command обязан быть");
+                    assert!(
+                        command == "composer" || command == "php",
+                        "composer запускается как composer или php, а не npm-клиент: {generator_config}"
+                    );
                     let args = generator_config.get("args").and_then(|a| a.as_array())
                         .cloned().unwrap_or_default();
-                    assert_eq!(args.get(0).and_then(|v| v.as_str()), Some("composer.phar"), "{args:?}");
-                    assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("create-project"), "{args:?}");
-                    assert_eq!(args.get(2).and_then(|v| v.as_str()), Some(package), "{args:?}");
+                    let name_arg = generator_config.get("name_arg").and_then(|v| v.as_u64())
+                        .expect("name_arg обязан быть") as usize;
+
+                    // create-project идёт сразу после префикса (путь к phar
+                    // в режиме php, ничего в режиме composer), за ним —
+                    // пакет, а плейсхолдер target стоит на name_arg.
+                    let cp_idx = args.iter().position(|a| a.as_str() == Some("create-project"))
+                        .expect("create-project обязан быть в args");
+                    if command == "php" {
+                        let phar = args.get(0).and_then(|v| v.as_str()).unwrap_or_default();
+                        assert!(
+                            phar.ends_with("composer.phar"),
+                            "php-режим: первым аргументом — АБСОЛЮТНЫЙ путь к composer.phar: {args:?}"
+                        );
+                        assert_ne!(
+                            phar, "composer.phar",
+                            "относительный composer.phar запрещён (рабочий каталог CLI ≠ каталог phar): {args:?}"
+                        );
+                        assert_eq!(cp_idx, 1, "php <phar> create-project ...: {args:?}");
+                    } else {
+                        assert_eq!(cp_idx, 0, "composer create-project ...: {args:?}");
+                    }
+                    assert_eq!(cp_idx + 2, name_arg,
+                        "имя проекта — аргумент сразу после пакета create-project: {generator_config}");
+                    assert_eq!(
+                        args.get(name_arg).and_then(|v| v.as_str()), Some("__TARGET__"),
+                        "плейсхолдер стоит на name_arg: {generator_config}"
+                    );
+                    assert_eq!(args.get(cp_idx + 1).and_then(|v| v.as_str()), Some(package),
+                        "пакет сразу после create-project: {generator_config}");
                     assert!(args.iter().any(|a| a == "--no-interaction"), "{args:?}");
                     assert!(args.iter().any(|a| a == "--prefer-dist"), "{args:?}");
-                    assert_eq!(generator_config.get("name_arg").and_then(|v| v.as_u64()), Some(3),
-                        "имя проекта — 3-й аргумент composer create-project: {generator_config}");
                     assert_eq!(generator_config.get("target_dir").and_then(|v| v.as_str()), Some("."),
                         "в монолите PHP-фреймворк живёт в корне");
                 }

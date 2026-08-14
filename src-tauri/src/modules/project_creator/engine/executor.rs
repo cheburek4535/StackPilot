@@ -5,7 +5,7 @@ use chrono::Local;
 use std::sync::Arc;
 use std::time::Duration;
 use crate::modules::project_creator::engine::ExecutionPlan;
-use crate::modules::project_creator::generators::GeneratorRegistry;
+use crate::modules::project_creator::generators::{GeneratorRegistry, sh_quote, win_command_line};
 use crate::modules::project_creator::models::*;
 
 /// Стандартные fallback-триггеры на все случаи, когда step‑специфичных нет.
@@ -259,12 +259,15 @@ impl StepExecutor {
                 }
                 ps_cmd
             } else {
+                // cmd /S /C с правильно кавычкуемой строкой: команда может
+                // быть АБСОЛЮТНЫМ путём с пробелами (venv\Scripts\pip.exe),
+                // аргументы — путями и URL. Внешняя пара кавычек обязательна:
+                // без неё cmd снимает первую кавычку и режет команду по
+                // пробелам.
                 let mut win_cmd = tokio::process::Command::new("cmd");
+                win_cmd.arg("/S");
                 win_cmd.arg("/C");
-                win_cmd.arg(command);
-                if !args.is_empty() {
-                    win_cmd.args(args);
-                }
+                win_cmd.arg(win_command_line(command, &args));
                 win_cmd
             }
         }
@@ -274,13 +277,7 @@ impl StepExecutor {
             let mut shell_cmd = String::from(command);
             for arg in args.iter() {
                 shell_cmd.push(' ');
-                if arg.contains(' ') {
-                    shell_cmd.push('"');
-                    shell_cmd.push_str(arg);
-                    shell_cmd.push('"');
-                } else {
-                    shell_cmd.push_str(arg);
-                }
+                shell_cmd.push_str(&sh_quote(arg));
             }
             unix_cmd.arg(shell_cmd);
             unix_cmd

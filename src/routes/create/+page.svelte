@@ -98,9 +98,10 @@ let hasBackend = $derived(selectedType?.has_backend ?? true);
 
 /** Активная «клиентская оболочка» (expo, react-native, plasmo, electron,
  *  tauri): standalone-клиент, для которого серверная сторона имеет смысл
- *  только как разделённый REST API. Пока оболочка выбрана — весь выбор
- *  Backend Language/Framework визуально блокируется с объяснением
- *  (не «молча некликабельно»). */
+ *  только как разделённый REST API. Пока оболочка выбрана — бэкенд-фреймворки
+ *  без rest-api в project_types визуально блокируются с объяснением
+ *  (не «молча некликабельно»); REST-API-бэкенды (FastAPI, Express, Gin...)
+ *  остаются доступными — это легальная разделённая (API + Client) связка. */
 let clientShellFw = $derived<FrameworkDef | null>(
   tree
     ? (selectedFrameworks
@@ -110,35 +111,93 @@ let clientShellFw = $derived<FrameworkDef | null>(
 );
 let hasClientShell = $derived(clientShellFw !== null);
 
+/** Бэкенд-фреймворк способен выступать чистым REST API (есть в project_types) */
+function isRestApiFramework(fw: FrameworkDef): boolean {
+  return (fw.project_types ?? []).includes("rest-api");
+}
+
 /** Текст блокировки серверной стороны при выбранной «клиентской оболочке»:
  *  подпись/тултип на заблокированных бэкенд-карточках. */
 function clientShellBlockText(): string {
-  return `Not available when using a Client Shell like ${clientShellFw?.label ?? "this app"}. You must build a decoupled API.`;
+  return "Unavailable with mobile/desktop client shells. Choose a REST API framework (e.g., FastAPI, Express, Gin).";
 }
 
-/** Серверная сторона доступна для выбора: тип проекта не безбэкендовый
- *  И не выбрана клиентская оболочка. */
-let backendSelectable = $derived(hasBackend && !hasClientShell);
+/** Архитектурный режим выбранного стека для баннера:
+ *  "integrated" — единая структура проекта (Tauri + Svelte, Qt + C++,
+ *  Go + Cobra, Electron + React...), "decoupled" — два независимых проекта
+ *  ./backend + ./frontend через REST/GraphQL API (NestJS + Next.js,
+ *  Django + Vue, Expo + FastAPI...). null — стек ещё не определён. */
+let archMode = $derived.by<"integrated" | "decoupled" | null>(() => {
+  const t = tree;
+  if (!t || selectedFrameworks.length === 0) return null;
+  const fws = selectedFrameworks
+    .map((id) => t.frameworks.find((f) => f.id === id))
+    .filter((f): f is FrameworkDef => !!f);
+
+  // Легальные связки главных фреймворков (gin+cobra, axum+clap,
+  // android+jetpack-compose, electron+react/vue/svelte) — единый каркас.
+  if (
+    t.allowed_main_pairs.some(
+      (p) => selectedFrameworks.includes(p[0]) && selectedFrameworks.includes(p[1]),
+    )
+  ) {
+    return "integrated";
+  }
+
+  // Универсальные фреймворки (tauri, qt) сами создают всё приложение.
+  if (fws.some((f) => f.side === "either")) return "integrated";
+
+  const hasBackendFw = fws.some((f) => f.side === "backend");
+  const hasFrontendFw = fws.some((f) => f.side === "frontend");
+  if (!hasBackendFw || !hasFrontendFw) return null;
+
+  // Фронтенд — привязанный компаньон клиентской оболочки (electron→react,
+  // tauri→svelte): один проект, а не два независимых.
+  const linked = new Set(Object.values(linkedCompanions));
+  if (fws.some((f) => f.side === "frontend" && linked.has(f.id))) return "integrated";
+
+  return "decoupled";
+});
 
 /** Автоочистка backend-состояния, если серверная сторона недоступна
- *  (переключение типа проекта без бэкенда, выбор клиентской оболочки —
- *  expo/electron/tauri..., восстановление снапшота, пресет). */
+ *  (переключение типа проекта без бэкенда) или выбрана «клиентская оболочка»
+ *  (expo/electron/...): снимаются только не-REST бэкенд-фреймворки и ручные
+ *  backend-языки — REST-API-бэкенды остаются (легальная связка). */
 $effect(() => {
   const t = tree;
-  if (!t || !selectedType || backendSelectable) return;
-  const backendFws = selectedFrameworks.filter((id) => {
-    const f = t.frameworks.find((x) => x.id === id);
-    return !!f && f.side === "backend";
-  });
-  if (backendFws.length > 0 || manualBackendLangs.length > 0) {
-    if (backendFws.length > 0) {
-      selectedFrameworks = selectedFrameworks.filter((id) => !backendFws.includes(id));
-      const next = { ...fwLangs };
-      for (const id of backendFws) delete next[id];
-      fwLangs = next;
+  if (!t || !selectedType) return;
+  if (!hasBackend) {
+    const backendFws = selectedFrameworks.filter((id) => {
+      const f = t.frameworks.find((x) => x.id === id);
+      return !!f && f.side === "backend";
+    });
+    if (backendFws.length > 0 || manualBackendLangs.length > 0) {
+      if (backendFws.length > 0) {
+        selectedFrameworks = selectedFrameworks.filter((id) => !backendFws.includes(id));
+        const next = { ...fwLangs };
+        for (const id of backendFws) delete next[id];
+        fwLangs = next;
+      }
+      manualBackendLangs = [];
+      recomputeSideLangs();
     }
-    manualBackendLangs = [];
-    recomputeSideLangs();
+    return;
+  }
+  if (hasClientShell) {
+    const nonRestBackend = selectedFrameworks.filter((id) => {
+      const f = t.frameworks.find((x) => x.id === id);
+      return !!f && f.side === "backend" && !isRestApiFramework(f);
+    });
+    if (nonRestBackend.length > 0 || manualBackendLangs.length > 0) {
+      if (nonRestBackend.length > 0) {
+        selectedFrameworks = selectedFrameworks.filter((id) => !nonRestBackend.includes(id));
+        const next = { ...fwLangs };
+        for (const id of nonRestBackend) delete next[id];
+        fwLangs = next;
+      }
+      manualBackendLangs = [];
+      recomputeSideLangs();
+    }
   }
 });
 
@@ -158,6 +217,7 @@ let analyzedPath = $state<string | null>(null);
 
 // ---- Execution ----
 let execPlan = $state<ExecutionPlan | null>(null);
+let execProjectPath = $state<string | null>(null);
 let execStatuses = $state<Map<number, { name: string; status: StepStatus; logs: string[] }>>(new Map());
 let execOverallStatus = $state<string>("pending");
 let execResult = $state<{ duration: number; status: string } | null>(null);
@@ -238,7 +298,11 @@ let persistReady = $state(false);
 let restoredTypeId: string | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Сериализуемое состояние вкладки (без транзиентных полей: тултипы, попапы) */
+/** Сериализуемое состояние вкладки. ТОЛЬКО лёгкие поля мастера: тип проекта,
+ *  языки, фреймворки, инструменты, текущий шаг + мелкие строки/булевы.
+ *  Тяжёлые данные (логи, execution_events, env-снапшоты) здесь не живут —
+ *  они на бэкенде и восстанавливаются reSyncLiveSessions(). Это же
+ *  гарантирует createSession.saveCreateSession (whitelist). */
 function buildSnapshot(): Record<string, unknown> {
   return {
     v: 1,
@@ -262,29 +326,12 @@ function buildSnapshot(): Record<string, unknown> {
     selectedFolder,
     conflictResolvedFolder,
     folderExists,
-    analysisResult,
-    analysisError,
-    analyzedPath,
-    execPlan,
-    execStatuses: [...execStatuses.entries()],
-    execOverallStatus,
-    execResult,
-    execError,
-    execLogs,
-    envCheck,
-    envPlan,
-    envLogs,
-    envTaskStates: [...envTaskStates.entries()],
-    envRestartHint,
-    envInstallDone,
-    envErrors,
-    envDownload: [...envDownload.entries()],
-    envPhaseStart: [...envPhaseStart.entries()],
-    envSelectedIds: [...envSelectedIds],
     envLocalInfra: [...envLocalInfra],
-    envCheckProgress,
-    newSecrets,
+    envSelectedIds: [...envSelectedIds],
     envInstalling,
+    envInstallDone,
+    execOverallStatus,
+    execProjectPath: execPlan?.project_path ?? null,
   };
 }
 
@@ -330,6 +377,7 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   analysisError = str(s.analysisError) || null;
   analyzedPath = str(s.analyzedPath) || null;
   execPlan = (s.execPlan as ExecutionPlan | null) ?? null;
+  execProjectPath = str(s.execProjectPath) || null;
   execStatuses = new Map(
     Array.isArray(s.execStatuses)
       ? (s.execStatuses as [number, { name: string; status: StepStatus; logs: string[] }][])
@@ -378,9 +426,13 @@ function persistNow() {
 }
 
 /** Синхронизация «живых» сессий (установка окружения / генерация проекта),
- *  которые могли завершиться на бэкенде, пока вкладка была неактивна. */
+ *  которые могли завершиться на бэкенде, пока вкладка была неактивна.
+ *  Тяжёлые данные в sessionStorage не хранятся (см. createSession.ts) —
+ *  после восстановления лёгкого снапшота состояние пересобирается отсюда:
+ *  установочная сессия с бэкенда, генерация из EXECUTION_SNAPSHOT,
+ *  либо обычная проверка окружения заново. */
 async function reSyncLiveSessions() {
-  if (phase === 5 && envPlan && !envInstallDone) {
+  if (phase === 5) {
     try {
       const session = await getInstallStatus();
       if (session) {
@@ -401,12 +453,26 @@ async function reSyncLiveSessions() {
             newSecrets = session.secrets;
           }
         }
+      } else if (envInstalling) {
+        envInstalling = false;
+        stopTick();
       }
     } catch {
       // сессия недоступна — оставляем состояние из снапшота
     }
+    if (!envInstalling) {
+      // Свежая проверка: restored envCheck мог быть пустым или устаревшим.
+      try {
+        if (!unlistenTcCheck) {
+          unlistenTcCheck = await listenCheckProgress(handleCheckProgress);
+        }
+      } catch {
+        // ignore
+      }
+      await runEnvironmentCheck(true);
+    }
   }
-  if (phase === 6 && execOverallStatus === "running") {
+  if (phase === 6 && execOverallStatus !== "pending") {
     try {
       const snap = await getProjectExecutionSnapshot();
       if (snap) {
@@ -656,11 +722,12 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
 
   // 1b. «Клиентская оболочка» (expo, react-native, plasmo, electron, tauri):
   //      standalone-клиент — серверная сторона для него имеет смысл только
-  //      как разделённый REST API (API + Client). Пока оболочка выбрана,
-  //      весь бэкенд-выбор блокируется с объяснением.
-  if (hasClientShell && fw.side === "backend") {
+  //      как разделённый REST API. Пока оболочка выбрана, бэкенд-фреймворки
+  //      без rest-api в project_types блокируются с объяснением; REST-API-
+  //      бэкенды (FastAPI, Express, Gin...) остаются доступными.
+  if (hasClientShell && fw.side === "backend" && !isRestApiFramework(fw)) {
     return {
-      message: "Not available — Client Shell selected",
+      message: "Client Shell: REST API only",
       detail: clientShellBlockText(),
       alternatives: [],
     };
@@ -926,7 +993,7 @@ function frontendCandidates(): LanguageDef[] {
  *  выбрана «клиентская оболочка» — серверная сторона недоступна). */
 function languageBlockReason(lang: LanguageDef): string | null {
   const side = lang.category === "static" ? "frontend" : lang.category;
-  if (hasClientShell && side !== "frontend") return "Not available — Client Shell selected";
+  if (hasClientShell && side !== "frontend") return "Client Shell: REST API only";
   const active = side === "frontend" ? frontendLangs : backendLangs;
   if (active.includes(lang.id)) return null;
   if (active.length > 0) return `Already ${active.map((l) => langLabel(l)).join(", ")} on this side`;
@@ -1783,6 +1850,7 @@ async function doCreateProject() {
 
   phase = 6;
   execPlan = null;
+  execProjectPath = path;
   execStatuses = new Map();
   execLogs = [];
   execOverallStatus = "running";
@@ -1873,6 +1941,7 @@ function resetAll() {
   git = true;
   vscode = true;
   tooltipData = null;
+  execProjectPath = null;
   envCheck = null;
   envPlan = null;
   envLogs = [];
@@ -2122,15 +2191,41 @@ function resetAll() {
               {/each}
             </div>
 
-            {#if (envCheck.optional_requirements ?? []).length > 0}
-              <div class="env-optional">
+            {#if (envCheck.optional_requirements ?? []).length > 0 || envLocalInfra.size > 0}
+              <div class="env-optional" class:env-optional-local={envLocalInfra.size > 0}>
                 <p class="group-label">Optional — run in Docker</p>
                 <p class="hint">
-                  These tools are deployed as Docker containers with the project.
-                  Choose <strong>Install locally</strong> to set them up on this machine
-                  instead — they will be checked and installed like the requirements above,
-                  and excluded from docker-compose.
+                  These tools are deployed as Docker containers with the project by default.
+                  Switch a tool to <strong>Use Host Machine</strong> to install and run it on
+                  this machine instead — it is checked and installed like the requirements
+                  above, excluded from docker-compose, and its local setup is documented
+                  in <code>LOCAL_INFRA.md</code>.
                 </p>
+                {#snippet infraToggle(toolId: string, onHost: boolean)}
+                  <span class="infra-toggle" role="group" aria-label="Run in Docker or on the host machine">
+                    <button
+                      class="infra-toggle-opt"
+                      class:active={!onHost}
+                      title="Deploy as a Docker container with the project (docker-compose.yaml)"
+                      onclick={() => {
+                        if (onHost) revertLocalInfra(toolId);
+                      }}
+                    >
+                      Run in Docker
+                    </button>
+                    <button
+                      class="infra-toggle-opt"
+                      class:active={onHost}
+                      class:host={onHost}
+                      title="Install and run on this machine — excluded from docker-compose, see LOCAL_INFRA.md"
+                      onclick={() => {
+                        if (!onHost) optInLocalInfra(toolId);
+                      }}
+                    >
+                      Use Host Machine
+                    </button>
+                  </span>
+                {/snippet}
                 {#each envCheck.optional_requirements ?? [] as req}
                   {@const installedHere = isLocallyInstalled(req.tool_id)}
                   <div class="env-row" class:ok={installedHere}>
@@ -2141,44 +2236,25 @@ function resetAll() {
                       {installedHere ? "Running locally on this machine" : "Docker (docker-compose.yaml)"}
                     </span>
                     {#if installedHere}
-                      <span class="env-status ok">✓ Уже установлено локально</span>
-                      <button
-                        class="btn-secondary"
-                        title="Exclude this tool from docker-compose and use the local installation"
-                        onclick={() => optInLocalInfra(req.tool_id)}
-                      >
-                        Use Local (Exclude from Docker)
-                      </button>
-                    {:else}
-                      <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
-                        Install locally
-                      </button>
+                      <span class="env-status ok">✓ Installed Locally (Host)</span>
                     {/if}
+                    {@render infraToggle(req.tool_id, false)}
                   </div>
                 {/each}
-              </div>
-            {/if}
-
-            {#if envLocalInfra.size > 0}
-              <div class="env-optional env-optional-local">
-                <p class="group-label">Локально вместо Docker</p>
-                <p class="hint">
-                  These tools were switched to a local install and are excluded
-                  from docker-compose. Switch them back to containers if needed.
-                </p>
                 {#each [...envLocalInfra] as toolId}
                   {@const req = envCheck.requirements.find((r) => r.tool_id === toolId)}
+                  {@const installedHere = isLocallyInstalled(toolId)}
                   <div class="env-row ok">
                     <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
                     <span class="env-icon"><TechIcon icon={req?.icon ?? toolIcon(toolId)} alt={req?.display ?? toolId} size="sm" /></span>
                     <span class="env-name">{req?.display ?? toolId}</span>
                     <span class="env-source">
-                      {statusKind(req?.status ?? "Missing") === "ok" ? "Installed locally" : "Local install pending"}
+                      {installedHere ? "Running locally on this machine" : "Local install pending"}
                     </span>
-                    <span class="env-status ok">✓ Локально</span>
-                    <button class="btn-secondary" onclick={() => revertLocalInfra(toolId)}>
-                      Вернуть в Docker
-                    </button>
+                    {#if installedHere}
+                      <span class="env-status ok">✓ Installed Locally (Host)</span>
+                    {/if}
+                    {@render infraToggle(toolId, true)}
                   </div>
                 {/each}
               </div>
@@ -2344,7 +2420,7 @@ function resetAll() {
           {:else if execOverallStatus === "done"}
             <div class="exec-finished">
               <p>✅ Project generated in {execResult?.duration ?? 0}ms</p>
-              <p class="exec-plan-path">Location: {execPlan?.project_path}</p>
+              <p class="exec-plan-path">Location: {execPlan?.project_path ?? execProjectPath}</p>
             </div>
             <div class="btn-row">
               <button class="btn-secondary" onclick={openInVSCode}>Open in VS Code</button>
@@ -2380,6 +2456,30 @@ function resetAll() {
             {/each}
           </div>
 
+          {#snippet archBanner()}
+            {#if archMode}
+              <div class="arch-banner arch-{archMode}" role="status">
+                <div class="arch-body">
+                  <p class="arch-title">
+                    {archMode === "integrated"
+                      ? "Integrated App Mode"
+                      : "Decoupled Architecture Mode"}
+                  </p>
+                  <p class="arch-text">
+                    {archMode === "integrated"
+                      ? "Single integrated project structure."
+                      : "Generates two independent projects in ./backend and ./frontend connected via REST/GraphQL API."}
+                  </p>
+                  <p class="arch-examples">
+                    {archMode === "integrated"
+                      ? "e.g., Tauri + Svelte, Qt + C++, Go + Cobra"
+                      : "e.g., NestJS + Next.js, Django + Vue, Expo + FastAPI"}
+                  </p>
+                </div>
+              </div>
+            {/if}
+          {/snippet}
+
           <!-- Phase 0: Project Type -->
           {#if phase === 0}
             <p class="prompt">What are you building?</p>
@@ -2402,7 +2502,7 @@ function resetAll() {
             {@const eitherFws = fws.filter((f) => f.side === "either")}
 
             {#snippet fwCard(fw: FrameworkDef)}
-              {@const shellBlocked = hasClientShell && fw.side === "backend"}
+              {@const shellBlocked = hasClientShell && fw.side === "backend" && !isRestApiFramework(fw)}
               {@const reason = frameworkBlockReason(fw.id)}
               {@const altInfo = reason !== null ? frameworkBlockInfo(fw.id) : null}
               {@const warnReason = frameworkWarnReason(fw.id)}
@@ -2412,7 +2512,7 @@ function resetAll() {
                   class="card"
                   class:selected={selectedFrameworks.includes(fw.id)}
                   class:blocked={reason !== null}
-                  class:opacity-50={shellBlocked}
+                  class:opacity-40={shellBlocked}
                   class:grayscale={shellBlocked}
                   class:cursor-not-allowed={shellBlocked}
                   disabled={shellBlocked}
@@ -2433,7 +2533,10 @@ function resetAll() {
                   {#if warnReason !== null}
                     <span class="warn-badge" title={warnReason}>⚠ {warnReason}</span>
                   {/if}
-                  {#if reason}
+                  {#if shellBlocked}
+                    <span class="shell-lock-note">{clientShellBlockText()}</span>
+                  {/if}
+                  {#if reason && !shellBlocked}
                     <span class="conflict-badge">{reason}</span>
                     {#if altInfo?.detail}
                       <span class="conflict-detail">{altInfo.detail}</span>
@@ -2578,6 +2681,7 @@ function resetAll() {
             {/snippet}
 
             <p class="prompt">Stack & Tools</p>
+            {@render archBanner()}
             {#if selectedFrameworks.length > 0 || selectedTools.length > 0}
               <button
                 class="btn-clear-stack"
@@ -2918,6 +3022,7 @@ function resetAll() {
           <!-- Phase 2: Review -->
           {#if phase === 2}
             <p class="prompt">Review & Create</p>
+            {@render archBanner()}
 
             <div class="project-name-section">
               <label class="pn-label" for="project-name">Project Name</label>
@@ -3110,6 +3215,26 @@ function resetAll() {
 /* ---- Стороны (Stack) ---- */
 .side-section { min-width: 0; }
 
+/* ---- Баннер архитектуры (Integrated / Decoupled) ---- */
+.arch-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  border: 1px solid #2c2c46;
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  margin: 0 0 1rem;
+  background: rgba(24, 24, 44, 0.6);
+}
+.arch-integrated { border-color: rgba(0, 184, 148, 0.45); background: rgba(0, 184, 148, 0.07); }
+.arch-decoupled { border-color: rgba(108, 92, 231, 0.5); background: rgba(108, 92, 231, 0.08); }
+.arch-body { flex: 1; min-width: 0; }
+.arch-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: #eee; }
+.arch-integrated .arch-title { color: #5fd4b4; }
+.arch-decoupled .arch-title { color: #a99bf7; }
+.arch-text { margin: 0; font-size: 0.82rem; color: #ccc; line-height: 1.35; }
+.arch-examples { margin: 0.2rem 0 0; font-size: 0.72rem; color: #888; }
+
 /* ---- Уровни фреймворков (сворачиваемые колонки) ---- */
 .fw-level {
   border: 1px solid #2c2c46;
@@ -3161,9 +3286,11 @@ function resetAll() {
 /* Утилиты блокировки (клиентская оболочка): карточка видна, но явно
    недоступна — «не молча некликабельна», с подписью и тултипом. */
 .opacity-50 { opacity: 0.5; }
+.opacity-40 { opacity: 0.4; }
 .grayscale { filter: grayscale(1); }
 .cursor-not-allowed { cursor: not-allowed; }
 .opacity-50:hover,
+.opacity-40:hover,
 .grayscale:hover { border-color: #333; background: #1a1a2e; }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: #888; }
@@ -3176,6 +3303,8 @@ function resetAll() {
 .fw-grid .card .conflict-badge { margin-top: 0.3rem; }
 .conflict-badge { display: block; font-size: 0.7rem; color: #e74c3c; margin-top: 0.25rem; }
 .conflict-detail { display: block; font-size: 0.68rem; color: #b08c8c; margin-top: 0.15rem; line-height: 1.25; }
+/* Явная подпись под приглушённой карточкой бэкенда при «клиентской оболочке» */
+.shell-lock-note { display: block; font-size: 0.68rem; color: #b08c8c; margin-top: 0.3rem; line-height: 1.3; }
 .warn-badge { display: block; font-size: 0.68rem; color: #e6a23c; background: #3a2f12; border: 1px solid #6b541a; border-radius: 6px; padding: 0.1rem 0.45rem; margin-top: 0.25rem; }
 .conflict-alts { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; margin-top: 0.35rem; }
 .conflict-alts-label { font-size: 0.68rem; color: #999; }
@@ -3484,6 +3613,30 @@ function resetAll() {
 .env-optional .env-row.ok { border-left-color: #00b894; background: #12211a; }
 .env-optional-local { border-color: #00b894; background: rgba(0, 184, 148, 0.06); }
 .env-optional-local .group-label { color: #00b894; }
+.infra-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 0 auto;
+  border: 1px solid #444;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #15152e;
+}
+.infra-toggle-opt {
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.infra-toggle-opt:hover { color: #ddd; background: rgba(108, 92, 231, 0.12); }
+.infra-toggle-opt.active { background: #6c5ce7; color: #fff; }
+.infra-toggle-opt.active.host { background: #00b894; }
 .env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .env-select input { accent-color: #6c5ce7; cursor: pointer; width: 15px; height: 15px; }
 .manual-badge { cursor: help; font-size: 0.95rem; }

@@ -3937,15 +3937,12 @@
     ],
     "telegram-bot": [
       "python",
-      "typescript",
       "java",
       "kotlin"
     ],
     "library": [
       "rust",
       "python",
-      "typescript",
-      "javascript",
       "java",
       "csharp",
       "cpp",

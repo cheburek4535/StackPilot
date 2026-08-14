@@ -924,7 +924,7 @@
     "sources": {
       "windows": [
         { "kind": "PkgManager", "id": "Oracle.MySQL", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
-        { "kind": "Official", "id": "mysql-msi", "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9-winx64.msi", "args": ["/quiet"], "extra_args": [], "dynamic_args": false }
+        { "kind": "Official", "id": "mysql-msi", "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9-winx64.msi", "args": ["/qn", "/norestart", "ALLUSERS=1"], "extra_args": [], "dynamic_args": false }
       ],
       "linux": [{ "kind": "PkgManager", "id": "mysql-server", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "mysql", "args": [], "extra_args": [], "dynamic_args": false }]
@@ -934,7 +934,7 @@
     "path_entries": ["C:\\Program Files\\MySQL\\*\\bin"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; при сбое — используйте Docker-вариант из каркаса проекта."
+    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; MSI ставится с /qn /norestart ALLUSERS=1 (без тихих флагов exit code 1), winget — со всеми --accept флагами; при сбое — используйте Docker-вариант из каркаса проекта."
   },
   {
     "id": "sqlite",

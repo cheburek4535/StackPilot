@@ -190,12 +190,7 @@ impl Generator for SpringBootGenerator {
             .map(String::from)
             .unwrap_or_else(|| "web".to_string());
 
-        let url = format!(
-            "https://start.spring.io/starter.zip?name={}&groupId=com.example&artifactId={}&dependencies={}",
-            urlencode(&project_name),
-            urlencode(&project_name),
-            urlencode(&deps)
-        );
+        let url = spring_starter_url(&project_name, &deps);
         // При сегментации (Strict Subdir Mandate) starter распаковывается
         // ВНУТРИ сегмента (backend/), а не в корне проекта.
         let target_dir = config
@@ -1035,6 +1030,12 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
 /// Любой сбой (HTTP 400 от Initializr, таймаут, недоступный хост) даёт
 /// ошибку вида «Spring Initializr отказал: <причина>» — генерация
 /// прерывается до попытки распаковать сломанный архив.
+///
+/// curl запускается НАПРЯМУЮ (без cmd/sh-обёртки): query-параметры URL
+/// percent-кодируются (urlencode — пробелы, кавычки, &, %), а шелл
+/// (особенно cmd) раскрывает %VAR%-пары и пережёвывает спецсимволы —
+/// строка `?name=a%20b&deps=web` в кавычках cmd даст `?name=a20b`. Прямой
+/// spawn передаёт аргумент curl'у байт-в-байт.
 async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
     let zip_str = zip_path.to_string_lossy().to_string();
     let args: Vec<String> = vec![
@@ -1049,7 +1050,8 @@ async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
         "-o".into(),
         zip_str,
     ];
-    let mut cmd = spawn_command("curl", &args);
+    let mut cmd = TokioCommand::new("curl");
+    cmd.args(&args);
     cmd.current_dir(zip_path.parent().unwrap_or(Path::new(".")));
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -1158,6 +1160,20 @@ fn truncate(text: &str, max_chars: usize) -> String {
     format!("{}…", &text[..end])
 }
 
+/// URL к Spring Initializr. ВСЕ query-параметры (name, groupId, artifactId,
+/// dependencies) percent-кодируются через urlencode: пробелы, кавычки и `&`
+/// внутри значений не ломают ни сам запрос, ни передачу URL в командную
+/// строку curl.
+fn spring_starter_url(project_name: &str, deps: &str) -> String {
+    format!(
+        "https://start.spring.io/starter.zip?name={}&groupId={}&artifactId={}&dependencies={}",
+        urlencode(project_name),
+        urlencode("com.example"),
+        urlencode(project_name),
+        urlencode(deps)
+    )
+}
+
 /// Percent-кодирование для query-параметров URL.
 fn urlencode(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -1170,6 +1186,50 @@ fn urlencode(input: &str) -> String {
         }
     }
     out
+}
+
+/// Параметр в командную строку cmd.exe: кавычки нужны при пробелах или
+/// cmd-метасимволах (включая % — cmd раскрывает %VAR% даже в кавычках,
+/// поэтому такие аргументы обязаны быть в кавычках и не содержать валидных
+/// %VAR% пар). Внутренние кавычки удваиваются (cmd-эскейп "" внутри строки).
+fn win_quote_arg(arg: &str) -> String {
+    let needs_quote = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || "&()[]{}<>@^|%!\"".contains(c));
+    if !needs_quote {
+        arg.to_string()
+    } else {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    }
+}
+
+/// Командная строка для `cmd /S /C`: каждый токен кавычкуется по
+/// необходимости, вся строка оборачивается во ВНЕШНИЕ кавычки — cmd снимает
+/// внешнюю пару, внутренние кавычки сохраняются. Без внешней обёртки
+/// команда-путь с пробелами ломается: cmd снимает первую кавычку и режет
+/// токен по пробелу («C:\Users\John» → «Doe\pip.exe» отдельным аргументом).
+pub fn win_command_line(command: &str, args: &[String]) -> String {
+    let mut line = win_quote_arg(command);
+    for arg in args {
+        line.push(' ');
+        line.push_str(&win_quote_arg(arg));
+    }
+    format!("\"{}\"", line)
+}
+
+/// Параметр для `sh -c`: одинарные кавычки с экранированием '\'' —
+/// защищает пробелы и метасимволы (&, ;, |, $, `, ", ...).
+pub fn sh_quote(arg: &str) -> String {
+    let needs_quote = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || "&;|<>()$`\\\"'*?[]~#!{}".contains(c));
+    if !needs_quote {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
 }
 
 /// Кроссплатформенный запуск команды (как в executor::run_command).
@@ -1189,7 +1249,7 @@ fn spawn_command(command: &str, args: &[String]) -> TokioCommand {
                 cmd
             } else {
                 let mut cmd = TokioCommand::new("cmd");
-                cmd.arg("/C").arg(command).args(args);
+                cmd.arg("/S").arg("/C").arg(win_command_line(command, args));
                 cmd
             }
         }
@@ -1197,13 +1257,7 @@ fn spawn_command(command: &str, args: &[String]) -> TokioCommand {
             let mut shell_cmd = String::from(command);
             for arg in args {
                 shell_cmd.push(' ');
-                if arg.contains(' ') {
-                    shell_cmd.push('"');
-                    shell_cmd.push_str(arg);
-                    shell_cmd.push('"');
-                } else {
-                    shell_cmd.push_str(arg);
-                }
+                shell_cmd.push_str(&sh_quote(arg));
             }
             let mut cmd = TokioCommand::new("sh");
             cmd.arg("-c").arg(shell_cmd);
@@ -1275,6 +1329,51 @@ mod tests {
     fn urlencode_keeps_query_safe_chars() {
         assert_eq!(urlencode("my-app"), "my-app");
         assert_eq!(urlencode("a b"), "a%20b");
+    }
+
+    #[test]
+    fn spring_url_escapes_all_query_params() {
+        // Пробелы, запятые и спецсимволы в name/dependencies не попадают в
+        // URL сырыми: каждый параметр percent-кодируется.
+        let url = spring_starter_url("my app", "web,dev-tools");
+        assert!(url.contains("name=my%20app"), "{url}");
+        assert!(url.contains("artifactId=my%20app"), "{url}");
+        assert!(url.contains("dependencies=web%2Cdev-tools"), "{url}");
+        assert!(url.contains("groupId=com.example"), "{url}");
+        assert!(!url.contains(' '), "URL без сырых пробелов: {url}");
+        // Кавычки и амперсанд в имени проекта — тоже под urlencode.
+        let url2 = spring_starter_url("a\"b&c", "web");
+        assert!(url2.contains("name=a%22b%26c"), "{url2}");
+    }
+
+    #[test]
+    fn win_command_line_quotes_spaces_and_metachars() {
+        // Команда-путь с пробелами (venv\Scripts\pip.exe) оборачивается во
+        // внешние кавычки: cmd /S /C снимает внешнюю пару, внутренние
+        // кавычки сохраняются — токен не режется по пробелу.
+        let line = win_command_line(
+            "C:\\Users\\John Doe\\app\\venv\\Scripts\\pip.exe",
+            &["install".into(), "-r".into(), "C:\\req file.txt".into(), "alembic".into()],
+        );
+        assert_eq!(
+            line,
+            "\"\"C:\\Users\\John Doe\\app\\venv\\Scripts\\pip.exe\" install -r \"C:\\req file.txt\" alembic\""
+        );
+        // Простая команда: внешняя обёртка есть, лишних кавычек внутри нет.
+        let plain = win_command_line("php", &["--version".into()]);
+        assert_eq!(plain, "\"php --version\"");
+        // %: cmd раскрывает %VAR%, поэтому аргумент обязан быть в кавычках.
+        let curl = win_command_line("curl", &["-w".into(), "%{http_code}".into()]);
+        assert_eq!(curl, "\"curl -w \"%{http_code}\"\"");
+    }
+
+    #[test]
+    fn sh_quote_protects_metachars() {
+        assert_eq!(sh_quote("plain"), "plain");
+        assert_eq!(sh_quote("a b"), "'a b'");
+        assert_eq!(sh_quote("a&b;c"), "'a&b;c'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(sh_quote("$HOME"), "'$HOME'");
     }
 
     #[test]
