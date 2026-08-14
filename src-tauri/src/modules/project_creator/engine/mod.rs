@@ -291,27 +291,23 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
     // Фаза 1: Root Scaffolding. Root-фреймворки выполняются до ВСЕГО
     // остального в корне проекта (см. SegLayout::compute — присутствие
     // хотя бы одного scaffold="root" отключает сегментацию backend/frontend).
+    // Strict Subdir Mandate: при обеих сторонах (backend + frontend)
+    // scaffold="root" принудительно работает как "subdir" — фреймворк
+    // попадает в rest_frameworks и сегментируется в ./backend или ./frontend.
     let layout = SegLayout::compute(context);
-    let root_present = context.frameworks.iter().any(|fw| {
-        framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
-    });
+    let root_present = context.frameworks.iter().any(|fw| is_root_scaffold(fw, context));
     let mut rest_frameworks: Vec<String> = Vec::new();
     // Каталоги, в которых после всех CLI-каркасов нужен РОВНО ОДИН npm install
     // ("." = корень проекта). Скаффолдеры запускаются с --skip-install/
     // --no-install, поэтому node_modules не плодятся на каждом шаге.
     let mut js_dirs: Vec<String> = Vec::new();
     for fw in &context.frameworks {
-        if framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root")) {
+        if is_root_scaffold(fw, context) {
             steps.extend(steps_for_framework(fw, project_path, project_name, context, None, false));
             // Root-JS-фреймворк (nest): работает в корне с --skip-install,
             // его package.json ставится один раз в финальной фазе.
             if is_js_framework(fw) {
                 push_unique(&mut js_dirs, ".".to_string());
-            }
-            // tauri: фронтенд живёт в frontend/ (компаньон react/vue/svelte
-            // или vite-vanilla без компаньона) — npm install выполняется там.
-            if fw == "tauri" {
-                push_unique(&mut js_dirs, "frontend".to_string());
             }
         } else {
             rest_frameworks.push(fw.clone());
@@ -399,6 +395,10 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         }
     }
 
+    // Tauri-шаги откладываются в конец фазы Subdir Scaffolding: пайплайн
+    // tauri обязан выполнять фронтенд-генератор ПЕРВЫМ (vite в frontend/ →
+    // npm install → cargo tauri init), иначе init опережает каркас фронтенда.
+    let mut deferred_tauri: Vec<Step> = Vec::new();
     for fw in rest_frameworks {
         let seg = if root_present {
             root_rest_seg(&fw)
@@ -418,8 +418,15 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
             };
             push_unique(&mut js_dirs, dir);
         }
-        steps.extend(fw_steps);
+        if fw == "tauri" {
+            // tauri инициализируется ПОСЛЕ всех фронтенд-каркасов
+            // (см. выше: фронтенд-генератор FIRST → npm install → tauri init).
+            deferred_tauri = fw_steps;
+        } else {
+            steps.extend(fw_steps);
+        }
     }
+    steps.extend(deferred_tauri);
 
     // Фаза 3: установка инструментов (prisma init требует существующий
     // package.json — выполняется строго после каркасов).
@@ -438,6 +445,20 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
     steps.extend(steps_for_ci(context, project_path, project_name));
     steps.extend(steps_for_readme(context, project_path, project_name));
     steps.extend(steps_for_vscode(context));
+
+    // Слияние вложенных .vscode (frontend/.vscode, backend/.vscode) в корневой
+    // .vscode/ с удалением вложенных папок — ПОСЛЕ всех CLI-скаффолдеров и
+    // vscode-merge, чтобы конфиги CLI (typescript.tsdk и т.п.) не потерялись.
+    // Генератор "vscode-folders" — no-op, если вложенных .vscode нет.
+    steps.push(Step::Generate {
+        id: "merge_inner_vscode".into(),
+        label: "Merge inner .vscode folders".into(),
+        description: "Merge frontend/.vscode and backend/.vscode into the root .vscode/".into(),
+        generator_id: "vscode-folders".into(),
+        generator_config: serde_json::json!({}),
+        condition: None,
+        on_error: ErrorMode::Skip,
+    });
 
     // Фаза 6: финализация — единственная установка зависимостей в самом
     // конце (npm install ровно один раз на JS-каталог) и стартовый
@@ -869,6 +890,54 @@ fn language_side_infer(lang: &str) -> Option<&'static str> {
     }
 }
 
+// ============================================================================
+// Strict Subdir Mandate: если в WizardContext есть И бэкенд, И фронтенд,
+// любой scaffold="root" из wizard_tree.json принудительно работает как
+// "subdir" — бэкенд живёт строго в ./backend, фронтенд строго в ./frontend.
+// Без этого nest/django/spring-boot скаффолдили корень, а CLI-компаньоны
+// (nextjs и т.п.) падали поверх них: testapp/testapp-инцепция, двойные
+// node_modules, файлы бэкенда в глобальном корне.
+// ============================================================================
+
+/// Есть ли у контекста ОБЕ стороны (backend + frontend)? Стороны берутся
+/// из явных назначений мастера (backend_languages/frontend_languages), а для
+/// старых сессий — выводятся из category языка.
+fn context_has_both_sides(context: &WizardContext) -> bool {
+    let mut lang_side: HashMap<String, &'static str> = HashMap::new();
+    for l in &context.backend_languages {
+        lang_side.insert(l.clone(), "backend");
+    }
+    for l in &context.frontend_languages {
+        lang_side.insert(l.clone(), "frontend");
+    }
+    for l in &context.languages {
+        lang_side
+            .entry(l.clone())
+            .or_insert_with(|| language_side_infer(l).unwrap_or("backend"));
+    }
+    let has_backend = lang_side.values().any(|s| *s == "backend");
+    let has_frontend = lang_side.values().any(|s| *s == "frontend");
+    has_backend && has_frontend
+}
+
+/// Эффективный режим скаффолдинга фреймворка (Strict Subdir Mandate):
+///   - если в контексте есть обе стороны (backend + frontend), любой
+///     scaffold="root" из wizard_tree.json считается "subdir";
+///   - иначе — значение из wizard_tree.json как есть.
+fn effective_scaffold(fw: &str, context: &WizardContext) -> Option<&'static str> {
+    let def = framework_def(fw)?;
+    if def.scaffold.as_deref() == Some("root") && context_has_both_sides(context) {
+        return Some("subdir");
+    }
+    def.scaffold.as_deref()
+}
+
+/// Фреймворк всё ещё владеет корнем проекта (root-скаффолд, и мандат
+/// обеих сторон не перевёл его в subdir-режим)?
+fn is_root_scaffold(fw: &str, context: &WizardContext) -> bool {
+    effective_scaffold(fw, context) == Some("root")
+}
+
 /// Generic-скаффолд языка подавляется, если выбран фреймворк, который сам
 /// создаёт каркас проекта для этого языка (aspnetcore вместо `dotnet new
 /// console`, nextjs вместо js-скаффолда, spring-boot вместо maven archetype
@@ -921,9 +990,13 @@ impl SegLayout {
         // «внутри» предварительно созданных backend//frontend/ сегментов —
         // они либо падают, либо тащат каркас в корень. Сегментация
         // отключается целиком: никаких eager-папок frontend/backend.
-        if context.frameworks.iter().any(|fw| {
-            framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
-        }) {
+        //
+        // Исключение — Strict Subdir Mandate: когда в контексте есть ОБЕ
+        // стороны (backend + frontend), root-скаффолды принудительно
+        // переводятся в subdir-режим (effective_scaffold) и сегментация
+        // backend//frontend/ ВКЛЮЧАЕТСЯ — бэкенд обязан лежать в ./backend,
+        // фронтенд — в ./frontend.
+        if context.frameworks.iter().any(|fw| is_root_scaffold(fw, context)) {
             return SegLayout {
                 frontend: None,
                 backend: None,
@@ -1074,6 +1147,12 @@ fn into_segment(steps: Vec<Step>, dir: &str, cli_inplace: bool) -> Vec<Step> {
                         // генератор сам создаст подпапку — рабочая директория остаётся корневой
                         Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
                     }
+                } else if id.starts_with("tauri_web_") {
+                    // Веб-часть tauri живёт в frontend/ независимо от сегмента
+                    // самого tauri (backend/ в моно-репозитории) — рабочая
+                    // директория уже относительна корня проекта, сегментация
+                    // её НЕ трогает.
+                    Step::Command { id, label, description, command, args, working_dir, env, timeout_secs, condition, on_error, interactive }
                 } else {
                     Step::Command {
                         id, label, description, command, args,
@@ -1098,8 +1177,15 @@ fn into_segment(steps: Vec<Step>, dir: &str, cli_inplace: bool) -> Vec<Step> {
             }
             // Scaffold-генератор (Step::Generate "scaffold") сам кладёт проект
             // в target_dir: при сегментации каталогом становится сегмент.
+            // Исключение — веб-скаффолд tauri (tauri_web_scaffold): его
+            // каталог ВСЕГДА frontend/ (веб-часть рядом с сегментом tauri).
+            // Spring Boot (генератор "spring-boot") распаковывает starter
+            // внутри сегмента — каталог передаётся через target_dir.
             Step::Generate { id, label, description, generator_id, mut generator_config, condition, on_error } => {
-                if generator_id == "scaffold" {
+                if generator_id == "scaffold" && id != "tauri_web_scaffold" {
+                    generator_config["target_dir"] = serde_json::Value::String(dir.to_string());
+                }
+                if generator_id == "spring-boot" {
                     generator_config["target_dir"] = serde_json::Value::String(dir.to_string());
                 }
                 Step::Generate { id, label, description, generator_id, generator_config, condition, on_error }
@@ -1170,20 +1256,20 @@ fn package_name_patch_step(id: &str, label: &str, workdir: Option<&str>, project
     }
 }
 
-/// Root-фреймворк (scaffold="root") со своим CLI скаффолдит своих
-/// frontend-компаньонов сам (create-tauri-app → react-ts).
+/// Root-фреймворк (scaffold="root" ПОСЛЕ Strict Subdir Mandate) со своим CLI
+/// скаффолдит своих frontend-компаньонов сам (create-tauri-app → react-ts).
 /// Шаги такого компаньона подавляются: второй фронтенд (лишняя vite-папка)
 /// поверх каркаса root-фреймворка не нужен.
 ///
 /// Исключение — tauri: с новым пайплайном (frontend/ + tauri init --ci)
 /// компаньон react/vue/svelte скаффолдится ОТДЕЛЬНО в frontend/ и не
-/// подавляется.
+/// подавляется. При обеих сторонах (мандат) root-фреймворки тоже не
+/// поглощают компаньонов — каждый сегмент живёт сам по себе.
 fn root_scaffold_consumes_companion(fw: &str, context: &WizardContext) -> bool {
     context.frameworks.iter().any(|root| {
         root != "tauri"
-            && framework_def(root).is_some_and(|def| {
-                def.scaffold.as_deref() == Some("root") && def.companions.iter().any(|c| c == fw)
-            })
+            && is_root_scaffold(root, context)
+            && framework_def(root).is_some_and(|def| def.companions.iter().any(|c| c == fw))
     })
 }
 
@@ -1194,7 +1280,7 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
         return Vec::new();
     }
 
-    let mut steps = steps_for_framework_impl(fw, project_path, project_name, context);
+    let mut steps = steps_for_framework_impl(fw, project_path, project_name, context, seg);
 
     // Inplace-фреймворки (scaffold не задан: express, fastapi, gin, clap...)
     // дописывают файлы в каркас, созданный language-скаффолдом. Их файлы —
@@ -1238,7 +1324,8 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
     // Пост-шаг примешивается ПОСЛЕ сегментации — его рабочая директория
     // должна указывать на фактическое место package.json.
     if let Some(def) = framework_def(fw) {
-        if def.scaffold.is_some() && PACKAGE_JSON_SCAFFOLDS.contains(&fw) {
+        let scaffold = effective_scaffold(fw, context);
+        if scaffold.is_some() && PACKAGE_JSON_SCAFFOLDS.contains(&fw) {
             let workdir: Option<String> = if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw) {
                 // package.json лежит в каталоге, куда скаффолдер положил проект
                 Some(scaffold_target_dir(fw, seg))
@@ -1246,7 +1333,7 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
                 // Новый пайплайн tauri: фронтенд живёт в frontend/ — package.json там
                 Some("frontend".to_string())
             } else {
-                match def.scaffold.as_deref() {
+                match scaffold {
                     // root-скаффолдеры (nest) создают package.json в корне проекта
                     Some("root") => None,
                     // subdir-скаффолдеры — внутри созданной подпапки (сегмент
@@ -1282,9 +1369,7 @@ pub fn duplicate_framework_write_paths(context: &WizardContext) -> Vec<String> {
         .clone()
         .unwrap_or_else(|| "app".to_string());
     let layout = SegLayout::compute(context);
-    let root_present = context.frameworks.iter().any(|fw| {
-        framework_def(fw).is_some_and(|def| def.scaffold.as_deref() == Some("root"))
-    });
+    let root_present = context.frameworks.iter().any(|fw| is_root_scaffold(fw, context));
     let mut by_path: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for fw in &context.frameworks {
         // Тот же путь сегмента, что в compose_recipe: при root-скаффолде
@@ -1620,10 +1705,35 @@ fn tauri_identifier(project_name: &str) -> String {
     format!("com.{}", base)
 }
 
+/// Раскладка tauri-путей в зависимости от сегмента:
+///   - seg=None (root-режим, tauri в корне): src-tauri/tauri.conf.json рядом
+///     с frontend/ — frontendDist "../frontend/dist", npm --prefix frontend;
+///   - seg=Some("backend") (Strict Subdir Mandate): tauri живёт в backend/,
+///     конфиг лежит в backend/src-tauri/ — frontendDist "../../frontend/dist",
+///     команды npm --prefix ../frontend (cwd tauri-корня = backend/).
+/// Возвращает (frontend_dist, before_dev_command, before_build_command).
+fn tauri_layout(seg: Option<&str>) -> (String, String, String) {
+    if seg == Some("backend") {
+        (
+            "../../frontend/dist".to_string(),
+            "npm --prefix ../frontend run dev".to_string(),
+            "npm --prefix ../frontend run build".to_string(),
+        )
+    } else {
+        (
+            "../frontend/dist".to_string(),
+            "npm --prefix frontend run dev".to_string(),
+            "npm --prefix frontend run build".to_string(),
+        )
+    }
+}
+
 /// Шаг «scaffold»: CLI-генератор, который сам создаёт папку проекта.
 /// ScaffoldGenerator разбирается с каталогом сам (см. generators/mod.rs):
-/// dot-capable CLI работают с "." внутри target_dir, остальные — временная
-/// папка + программный перенос содержимого. Матрёшек testapp/testapp нет.
+/// ВСЕГДА temp-to-target — CLI выполняется во временной папке temp_<target>,
+/// содержимое (включая скрытые файлы) программно переносится в target_dir,
+/// временная папка удаляется. Матрёшек testapp/testapp и пустых каркасов
+/// без node_modules нет.
 #[allow(clippy::too_many_arguments)]
 fn scaffold_step(
     id: &str,
@@ -1633,7 +1743,6 @@ fn scaffold_step(
     args: Vec<&str>,
     name_arg: usize,
     target_dir: &str,
-    dot_capable: bool,
 ) -> Step {
     Step::Generate {
         id: id.to_string(),
@@ -1645,14 +1754,398 @@ fn scaffold_step(
             "args": args,
             "name_arg": name_arg,
             "target_dir": target_dir,
-            "dot_capable": dot_capable,
         }),
         condition: None,
         on_error: ErrorMode::Skip,
     }
 }
 
-fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext) -> Vec<Step> {
+/// CRC-32 (IEEE 802.3): poly 0x04C11DB7 (отражённый 0xEDB88320),
+/// init/xorout 0xFFFFFFFF — тот же алгоритм, что у std.hash.Crc32 в Zig.
+/// Используется для поля `.fingerprint` в build.zig.zon (Zig 0.14+):
+/// верхние 32 бита обязаны равняться crc32(имя_пакета).
+fn crc32(data: &[u8]) -> u32 {
+    const POLY: u32 = 0xEDB88320;
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ POLY
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// Ключевые слова Zig — их нельзя использовать как имя пакета (`.name = .fn`
+/// не распарсится). Зарезервированные слова, отсутствующие в этом списке,
+/// в имя попасть не могут (список полный для 0.14).
+const ZIG_KEYWORDS: &[&str] = &[
+    "addrspace", "align", "allowzero", "and", "anyframe", "anytype", "asm",
+    "async", "await", "break", "callconv", "catch", "comptime", "const",
+    "continue", "defer", "else", "enum", "errdefer", "error", "export",
+    "extern", "fn", "for", "if", "inline", "noalias", "noinline", "nosuspend",
+    "opaque", "or", "orelse", "packed", "pub", "resume", "return",
+    "linksection", "struct", "suspend", "switch", "test", "threadlocal",
+    "try", "union", "unreachable", "usingnamespace", "var", "volatile",
+    "while",
+];
+
+/// Валидное имя пакета Zig из имени проекта: нижний регистр, не-буквенно-
+/// цифровые символы → '_', ≤32 байт (ограничение build.zig.zon), не ключевое
+/// слово (иначе enum-literal `.name = .<keyword>` не распарсится).
+fn zig_package_name(project_name: &str) -> String {
+    let mut name: String = project_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // обрезаем по байтам (имена пакетов — ASCII после санитизации)
+    name.truncate(32);
+    if name.trim_matches('_').is_empty() {
+        name = "app".to_string();
+    }
+    if name.as_bytes()[0].is_ascii_digit() {
+        name.insert(0, '_');
+    }
+    if ZIG_KEYWORDS.contains(&name.as_str()) {
+        name.push('_');
+    }
+    name
+}
+
+/// Экранирование для строковых литералов Java/Kotlin в генерируемом коде
+/// (кавычки, бэкслеш, `$` — шаблоны Kotlin).
+fn string_literal_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Экранирование для XML-атрибутов (android:label в манифесте).
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Полный каркас Android-приложения (Gradle + MainActivity). Может
+/// создаваться фреймворком "android" (java/kotlin, с Compose при связке
+/// с jetpack-compose) или самим "jetpack-compose" (kotlin + Compose).
+/// Все пути относительны — сегментация (frontend/) применяется движком.
+fn android_steps(project_name: &str, compose: bool, java_lang: bool) -> Vec<Step> {
+    // Compose доступен только в Kotlin-модуле; при java-языке — обычный
+    // Activity (связка android+compose+java не возникает в мастере).
+    let compose = compose && !java_lang;
+    let safe_name: String = project_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    let label = xml_escape(project_name);
+    let text = string_literal_escape(project_name);
+
+    let wf = |id: &str, label: &str, path: &str, content: String| -> Step {
+        Step::WriteFile {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: format!("Create {}", path),
+            path: path.to_string(),
+            content,
+            overwrite: false,
+            condition: None,
+            on_error: ErrorMode::Skip,
+        }
+    };
+
+    // Корневой build.gradle.kts: AGP + Kotlin (и Compose-плагин при
+    // compose-проекте). Всё с apply false — приложения подключают плагины
+    // в app/build.gradle.kts.
+    let root_build = if compose {
+        r#"plugins {
+    id("com.android.application") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+}
+"#
+        .to_string()
+    } else {
+        r#"plugins {
+    id("com.android.application") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+}
+"#
+        .to_string()
+    };
+
+    let app_build = if compose {
+        r#"plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.example.app"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.example.app"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+}
+"#
+        .to_string()
+    } else if java_lang {
+        r#"plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace = "com.example.app"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.example.app"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+"#
+        .to_string()
+    } else {
+        r#"plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.example.app"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.example.app"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+"#
+        .to_string()
+    };
+
+    // MainActivity: Compose-проект — ComponentActivity + setContent; иначе —
+    // обычный Activity с TextView (без внешних зависимостей).
+    let (main_path, main_content) = if compose {
+        (
+            "app/src/main/kotlin/com/example/app/MainActivity.kt".to_string(),
+            format!(r#"package com.example.app
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+
+class MainActivity : ComponentActivity() {{
+    override fun onCreate(savedInstanceState: Bundle?) {{
+        super.onCreate(savedInstanceState)
+        setContent {{
+            MaterialTheme {{
+                Surface(modifier = Modifier.fillMaxSize()) {{
+                    Box(contentAlignment = Alignment.Center) {{
+                        Text("Hello from {text}!")
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}
+"#),
+        )
+    } else if java_lang {
+        (
+            "app/src/main/java/com/example/app/MainActivity.java".to_string(),
+            format!(r#"package com.example.app;
+
+import android.app.Activity;
+import android.os.Bundle;
+import android.widget.TextView;
+
+public class MainActivity extends Activity {{
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {{
+        super.onCreate(savedInstanceState);
+        TextView textView = new TextView(this);
+        textView.setText("Hello from {text}!");
+        setContentView(textView);
+    }}
+}}
+"#),
+        )
+    } else {
+        (
+            "app/src/main/kotlin/com/example/app/MainActivity.kt".to_string(),
+            format!(r#"package com.example.app
+
+import android.app.Activity
+import android.os.Bundle
+import android.widget.TextView
+
+class MainActivity : Activity() {{
+    override fun onCreate(savedInstanceState: Bundle?) {{
+        super.onCreate(savedInstanceState)
+        val textView = TextView(this)
+        textView.text = "Hello from {text}!"
+        setContentView(textView)
+    }}
+}}
+"#),
+        )
+    };
+
+    vec![
+        wf("android_settings", "Create settings.gradle.kts", "settings.gradle.kts",
+            format!(r#"pluginManagement {{
+    repositories {{
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }}
+}}
+
+dependencyResolutionManagement {{
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {{
+        google()
+        mavenCentral()
+    }}
+}}
+
+rootProject.name = "{safe_name}"
+include(":app")
+"#)),
+        wf("android_root_build", "Create build.gradle.kts", "build.gradle.kts", root_build),
+        wf("android_gradle_props", "Create gradle.properties", "gradle.properties",
+            "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nandroid.nonTransitiveRClass=true\nkotlin.code.style=official\n".to_string()),
+        wf("android_app_build", "Create app/build.gradle.kts", "app/build.gradle.kts", app_build),
+        wf("android_manifest", "Create AndroidManifest.xml", "app/src/main/AndroidManifest.xml",
+            format!(r#"<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:label="{label}"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+"#)),
+        wf("android_main", "Create MainActivity", &main_path, main_content),
+    ]
+}
+
+fn steps_for_framework_impl(fw: &str, project_path: &str, project_name: &str, context: &WizardContext, seg: Option<&str>) -> Vec<Step> {
     let has_typescript = context.languages.iter().any(|l| l == "typescript");
     let has_javascript = context.languages.iter().any(|l| l == "javascript");
 
@@ -1723,17 +2216,21 @@ async fn main() {{
         ],
 
         "tauri" => {
-            // Новый пайплайн: create-tauri-app НЕ используется — он скаффолдил
-            // фронтенд ПО ШАБЛОНУ в корне проекта (структура была пустой без
-            // node_modules/.svelte-kit и т.п.). Теперь фронтенд живёт в
-            // frontend/ и скаффолдится отдельно (компаньон react/vue/svelte
-            // или vite-vanilla без компаньона), а в корне выполняется
-            // tauri init --ci + Rust-патч tauri.conf.json (см. генератор
-            // "tauri-config") — пути на frontend/ и dev-сервер Vite.
+            // Пайплайн tauri (порядок шагов гарантируется движком):
+            //   1. Фронтенд-генератор ПЕРВЫМ: vite скаффолдит frontend/
+            //      (компаньон react/vue/svelte или vanilla-ts без компаньона).
+            //   2. npm install внутри frontend/ — до tauri init (явный шаг
+            //      только когда фронтенд скаффолдит сам tauri; при компаньоне
+            //      установку делает финальная фаза после его каркаса).
+            //   3. cargo tauri init — frontendDist указывает на frontend/dist
+            //      (../frontend/dist из корня, ../../frontend/dist из backend/).
+            // create-tauri-app НЕ используется: он скаффолдил фронтенд по
+            // шаблону в корне (структура была пустой без node_modules).
             let identifier = tauri_identifier(project_name);
             let has_companion = context.frameworks.iter().any(|f| {
                 framework_def("tauri").is_some_and(|def| def.companions.iter().any(|c| c == f))
             });
+            let (frontend_dist, dev_cmd, build_cmd) = tauri_layout(seg);
             let mut steps: Vec<Step> = Vec::new();
             if !has_companion {
                 // Компаньон (react/vue/svelte) уже скаффолдит frontend/ —
@@ -1747,18 +2244,30 @@ async fn main() {{
                     vec!["create-vite@latest", SCAFFOLD_TARGET, "--template", template],
                     1,
                     "frontend",
-                    true,
                 ));
+                // npm install внутри frontend/ — до tauri init.
+                steps.push(Step::Command {
+                    id: "tauri_web_install".into(),
+                    label: "Install Tauri frontend dependencies".into(),
+                    description: "Run npm install inside frontend/".into(),
+                    command: "npm".into(),
+                    args: vec!["install".into()],
+                    working_dir: Some("frontend".into()),
+                    env: None,
+                    timeout_secs: Some(600),
+                    condition: None,
+                    on_error: ErrorMode::Skip,
+                    interactive: vec![],
+                });
             }
-            // tauri init --ci: неинтерактивно, все пути — на frontend/.
+            // cargo tauri init --ci: неинтерактивно, все пути — на frontend/dist.
             steps.push(Step::Command {
                 id: "tauri_init".into(),
                 label: "Initialize Tauri shell".into(),
-                description: "Run tauri init (non-interactive, --ci)".into(),
-                command: "npx".into(),
+                description: "Run cargo tauri init (non-interactive, --ci)".into(),
+                command: "cargo".into(),
                 args: vec![
-                    "--yes".into(),
-                    "@tauri-apps/cli@latest".into(),
+                    "tauri".into(),
                     "init".into(),
                     "--ci".into(),
                     "--app-name".into(),
@@ -1766,13 +2275,13 @@ async fn main() {{
                     "--window-title".into(),
                     project_name.into(),
                     "--frontend-dist".into(),
-                    "../frontend/dist".into(),
+                    frontend_dist.clone().into(),
                     "--dev-url".into(),
                     "http://localhost:5173".into(),
                     "--before-dev-command".into(),
-                    "npm --prefix frontend run dev".into(),
+                    dev_cmd.clone().into(),
                     "--before-build-command".into(),
-                    "npm --prefix frontend run build".into(),
+                    build_cmd.clone().into(),
                 ],
                 working_dir: Some(project_path.to_string()),
                 env: None,
@@ -1789,9 +2298,11 @@ async fn main() {{
                 generator_id: "tauri-config".into(),
                 generator_config: serde_json::json!({
                     "frontend_dir": "frontend",
+                    "tauri_dir": seg.unwrap_or(""),
+                    "frontend_dist": frontend_dist,
                     "dev_url": "http://localhost:5173",
-                    "before_dev_command": "npm --prefix frontend run dev",
-                    "before_build_command": "npm --prefix frontend run build",
+                    "before_dev_command": dev_cmd,
+                    "before_build_command": build_cmd,
                     "identifier": identifier,
                 }),
                 condition: None,
@@ -1921,7 +2432,8 @@ if __name__ == "__main__":
 
         // ==================== Vite: React / Vue / Svelte ====================
         // create-vite с --template работает без интерактива; каталог проекта
-        // (frontend/) выбирает ScaffoldGenerator (dot-режим с "."); npm install
+        // (frontend/) выбирает ScaffoldGenerator (temp+move: CLI выполняется
+        // во временной папке, содержимое переносится в frontend/); npm install
         // выполняется один раз в финальной фазе (steps_for_finalize).
         "react" | "vue" | "svelte" => {
             let template = match (fw.to_lowercase().as_str(), has_typescript) {
@@ -1935,7 +2447,7 @@ if __name__ == "__main__":
             vec![
                 scaffold_step("vite_create", &format!("Create {fw} app"), "Scaffold Vite project",
                     "npx", vec!["create-vite@latest", SCAFFOLD_TARGET, "--template", template],
-                    1, "frontend", true),
+                    1, "frontend"),
             ]
         }
 
@@ -1943,12 +2455,13 @@ if __name__ == "__main__":
         "nextjs" => {
             // create-next-app с --yes работает без интерактива (--typescript/
             // --javascript фиксируют язык, остальное — флагами). Каталог
-            // frontend/ выбирает ScaffoldGenerator (dot-режим с ".").
+            // frontend/ выбирает ScaffoldGenerator (temp+move: скаффолд во
+            // временной папке, программный перенос в frontend/).
             let ts_flag = if has_typescript { "--typescript" } else { "--javascript" };
             vec![
                 scaffold_step("nextjs_create", "Create Next.js app", "Scaffold Next.js project",
                     "npx", vec!["create-next-app@latest", SCAFFOLD_TARGET, ts_flag, "--tailwind", "--eslint", "--app", "--no-src-dir", "--import-alias", "@/*", "--use-npm", "--skip-install", "--yes"],
-                    1, "frontend", true),
+                    1, "frontend"),
             ]
         }
 
@@ -1967,7 +2480,7 @@ if __name__ == "__main__":
             }
             vec![
                 scaffold_step("sveltekit_create", "Create SvelteKit app", "Scaffold SvelteKit project",
-                    "npx", sv_args, 2, "frontend", true),
+                    "npx", sv_args, 2, "frontend"),
             ]
         },
 
@@ -1978,7 +2491,7 @@ if __name__ == "__main__":
             vec![
                 scaffold_step("nuxt_create", "Create Nuxt app", "Scaffold Nuxt project",
                     "npx", vec!["--yes", "nuxi@latest", "init", SCAFFOLD_TARGET, "--packageManager", "npm", "--gitInit", "false", "--no-install"],
-                    3, "frontend", true),
+                    3, "frontend"),
             ]
         },
 
@@ -2069,9 +2582,9 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
         },
 
         "expo" => {
-            // create-expo-app НЕ принимает "." в качестве имени проекта
-            // (dot_capable=false): ScaffoldGenerator скаффолдит во временную
-            // папку и программно переносит содержимое в frontend/.
+            // create-expo-app НЕ принимает "." в качестве имени проекта —
+            // ScaffoldGenerator (temp+move) скаффолдит во временную папку и
+            // программно переносит содержимое в frontend/.
             let expo_template = if has_typescript {
                 "blank-typescript"
             } else {
@@ -2080,7 +2593,7 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
             vec![
                 scaffold_step("expo_init", "Init Expo", "Create Expo project",
                     "npx", vec!["create-expo-app", SCAFFOLD_TARGET, "--yes", "--no-install", "--template", expo_template],
-                    1, "frontend", false),
+                    1, "frontend"),
             ]
         },
 
@@ -2273,13 +2786,16 @@ func main() {{
             }]
         }
 
-        "android" => vec![
-            // Android Studio — это GUI, CLI создать сложно
-            // Оставляем как команду-заглушку
-            cmd("android_studio_hint", "Open in Android Studio",
-                "Hint: open this project in Android Studio",
-                "echo", vec!["Open this project in Android Studio to complete setup"]),
-        ],
+        "android" => {
+            // Настоящий компилируемый каркас Android-приложения (Gradle +
+            // MainActivity), а не заглушка. В связке с jetpack-compose
+            // android генерирует compose-проект, а jetpack-compose отдаёт
+            // пустой план (иначе два фреймворка писали бы одни файлы —
+            // duplicate_framework_write_paths).
+            let compose = context.frameworks.iter().any(|f| f == "jetpack-compose");
+            let java_lang = context.languages.iter().any(|l| l == "java");
+            android_steps(project_name, compose, java_lang)
+        },
 
         // ==================== C# ====================
         "aspnetcore" => vec![
@@ -2321,11 +2837,16 @@ func main() {{
         }
 
         // ==================== Kotlin ====================
-        "jetpack-compose" => vec![
-            cmd("compose_hint", "Jetpack Compose hint",
-                "Jetpack Compose projects are created through Android Studio",
-                "echo", vec!["Create this project through Android Studio with Jetpack Compose template"]),
-        ],
+        "jetpack-compose" => {
+            // С android-фреймворком compose-проект генерирует сам android
+            // (см. «android»); standalone — Jetpack Compose — создаёт
+            // полноценный compose-проект (kotlin) без Android-фреймворка.
+            if context.frameworks.iter().any(|f| f == "android") {
+                vec![]
+            } else {
+                android_steps(project_name, true, false)
+            }
+        },
 
         "ktor" => vec![
             // Пишем В Application.kt, а в Main.kt: kotlin language-скаффолд
@@ -2353,22 +2874,24 @@ fun main() {{
 
         // ==================== PHP ====================
         "laravel" => vec![
-            // Официальный путь — composer create-project (npm-пакет
-            // @laravel/installer падал: «npm error 404 Not Found»). Работает
-            // без интерактива: --no-interaction + --prefer-dist.
+            // CLI Override (PHP Composer): НИКАКОГО npm. npm-путь
+            // (@laravel/installer) падал с «npm error 404 Not Found».
+            // Явный вызов `php composer.phar create-project laravel/laravel
+            // <target>` — target подставляет ScaffoldGenerator (temp+move):
+            // временная папка → программный перенос в backend/ или корень.
             scaffold_step("laravel_new", "Create Laravel project",
-                "Scaffold Laravel application via composer",
-                "composer", vec!["create-project", "laravel/laravel", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
-                2, ".", true),
+                "Scaffold Laravel application via PHP Composer",
+                "php", vec!["composer.phar", "create-project", "laravel/laravel", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
+                3, "."),
         ],
 
         "symfony" => vec![
-            // Symfony: composer create-project symfony/skeleton (без
-            // интерактива; локальный бинарь symfony не требуется).
+            // CLI Override (PHP Composer): локальный бинарь symfony не
+            // требуется, npm не используется — только php composer.phar.
             scaffold_step("symfony_new", "Create Symfony project",
-                "Scaffold Symfony application via composer",
-                "composer", vec!["create-project", "symfony/skeleton", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
-                2, ".", true),
+                "Scaffold Symfony application via PHP Composer",
+                "php", vec!["composer.phar", "create-project", "symfony/skeleton", SCAFFOLD_TARGET, "--no-interaction", "--prefer-dist"],
+                3, "."),
         ],
 
         // ==================== Swift ====================
@@ -2475,17 +2998,58 @@ pub fn main() !void {{
 }}
 "#, project_name)
             };
+            // Имя пакета — валидный zig-идентификатор (enum literal в zon).
+            // Фингерпринт (Zig 0.14+): верхние 32 бита = crc32(имя_пакета),
+            // нижние — произвольный id из (0, 0xffffffff). Без совпадающего
+            // crc32 `zig build`/`zig fetch` отвергает zon («invalid
+            // fingerprint»), а без поля fingerprint вовсе — «missing top-level
+            // 'fingerprint' field».
+            let pkg_name = zig_package_name(project_name);
+            let fingerprint = (u64::from(crc32(pkg_name.as_bytes())) << 32) | 0xCAFE_BABE;
             vec![
                 write_file("zap_zon", "Create build.zig.zon", "build.zig.zon",
-                    r#".{
-    .name = .my_app,
+                    &format!(r#".{{
+    .name = .{pkg_name},
     .version = "0.1.0",
     .minimum_zig_version = "0.14.0",
-    .dependencies = .{},
-}
-"#),
+    .paths = .{{""}},
+    .fingerprint = 0x{fingerprint:016x},
+    .dependencies = .{{}},
+}}
+"#)),
+                // `zig init` оставляет build.zig без модуля zap — проект с
+                // @import("zap") в main.zig не собрался бы. Переписываем
+                // build.zig (inplace-фреймворк → overwrite=true) с
+                // подключением зависимости.
+                write_file("zap_build", "Create build.zig", "build.zig",
+                    &format!(r#"const std = @import("std");
+
+pub fn build(b: *std.Build) !void {{
+    const target = b.standardTargetOptions(.{{}});
+    const optimize = b.standardOptimizeOption(.{{}});
+
+    const zap = b.dependency("zap", .{{
+        .target = target,
+        .optimize = optimize,
+    }});
+
+    const exe = b.addExecutable(.{{
+        .name = "{}",
+        .root_module = b.createModule(.{{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{{
+                .{{ .name = "zap", .module = zap.module("zap") }},
+            }},
+        }}),
+    }});
+
+    b.installArtifact(exe);
+}}
+"#, project_name)),
                 cmd("zap_fetch", "Add Zap dependency", "Fetch zap and save to build.zig.zon",
-                    "zig", vec!["fetch", "--save", "https://github.com/zigzap/zap/archive/refs/tags/v0.4.0.tar.gz"]),
+                    "zig", vec!["fetch", "--save", "https://github.com/zigzap/zap/archive/refs/tags/v0.10.1.tar.gz"]),
                 write_file("zap_main", "Create Zap server entry", "src/main.zig", &main_zig),
             ]
         },
@@ -3279,6 +3843,172 @@ mod tests {
     }
 
     #[test]
+    fn crc32_matches_zig_std_hash() {
+        // Значения сверены с `std.hash.Crc32.hash(...)` (Zig 0.16.0) — те же,
+        // что Zig использует для fingerprint в build.zig.zon.
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b"my_app"), 0x542B_89B0);
+        assert_eq!(crc32(b"other_name"), 0x3767_28D4);
+        assert_eq!(crc32(b"ziginit"), 0x36AD_9EBC);
+    }
+
+    #[test]
+    fn zig_package_name_is_valid_identifier() {
+        assert_eq!(zig_package_name("my-app"), "my_app");
+        assert_eq!(zig_package_name("My App"), "my_app");
+        assert_eq!(zig_package_name("myApp"), "myapp");
+        // имя-ключевое слово получает суффикс (`.name = .fn` не парсится)
+        assert_eq!(zig_package_name("fn"), "fn_");
+        assert_eq!(zig_package_name("switch"), "switch_");
+        // не начинается с цифры, не пустое, не длиннее 32 байт
+        assert_eq!(zig_package_name("123"), "_123");
+        assert_eq!(zig_package_name("!!!"), "app");
+        let long = zig_package_name(&"a".repeat(50));
+        assert!(long.len() <= 32, "{long}");
+    }
+
+    #[test]
+    fn zap_zon_has_valid_fingerprint_and_paths() {
+        // Зон с interpolated-именем: fingerprint обязан содержать crc32 имени
+        // в верхних 32 битах (Zig 0.14+), paths — присутствовать.
+        let steps = steps_for_framework("zap", "C:\\dev\\myapp", "my_app", &context(), None, false);
+        let zon = steps
+            .iter()
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "build.zig.zon"))
+            .unwrap_or_else(|| panic!("должен быть шаг записи build.zig.zon"));
+        match zon {
+            Step::WriteFile { content, .. } => {
+                let pkg_name = zig_package_name("my_app");
+                let expected = format!(
+                    ".name = .{pkg_name},\n    .version = \"0.1.0\",\n    .minimum_zig_version = \"0.14.0\",\n    .paths = .{{\"\"}},\n    .fingerprint = 0x{:016x},",
+                    (u64::from(crc32(pkg_name.as_bytes())) << 32) | 0xCAFE_BABE
+                );
+                assert!(content.contains(&expected), "zon: {content}");
+            }
+            other => panic!("ожидался WriteFile, получили {:?}", other.id()),
+        }
+    }
+
+    #[test]
+    fn zap_fetch_uses_zap_v0101() {
+        let steps = steps_for_framework("zap", "C:\\dev\\myapp", "my_app", &context(), None, false);
+        let fetch = steps
+            .iter()
+            .find(|s| matches!(s, Step::Command { id, .. } if id == "zap_fetch"))
+            .unwrap_or_else(|| panic!("должен быть шаг zap_fetch"));
+        let args = cmd_args(fetch);
+        assert!(
+            args.iter().any(|a| a.contains("v0.10.1.tar.gz")),
+            "zap_fetch должен ссылаться на v0.10.1 (старые теги не парсятся Zig 0.13+): {args:?}"
+        );
+    }
+
+    fn android_context(frameworks: &[&str], languages: &[&str]) -> WizardContext {
+        WizardContext {
+            project_name: Some("myapp".into()),
+            project_path: Some("C:\\dev\\myapp".into()),
+            languages: languages.iter().map(|s| s.to_string()).collect(),
+            frameworks: frameworks.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn write_paths(steps: &[Step]) -> Vec<&str> {
+        steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::WriteFile { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn write_content<'a>(steps: &'a [Step], path: &str) -> &'a str {
+        steps
+            .iter()
+            .find_map(|s| match s {
+                Step::WriteFile { path: p, content, .. } if p == path => Some(content.as_str()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("нет шага записи {path}"))
+    }
+
+    #[test]
+    fn android_generates_full_gradle_project() {
+        let ctx = android_context(&["android"], &["kotlin"]);
+        let steps = steps_for_framework("android", "C:\\dev\\myapp", "myapp", &ctx, None, false);
+        for expected in [
+            "settings.gradle.kts",
+            "build.gradle.kts",
+            "gradle.properties",
+            "app/build.gradle.kts",
+            "app/src/main/AndroidManifest.xml",
+            "app/src/main/kotlin/com/example/app/MainActivity.kt",
+        ] {
+            assert!(write_paths(&steps).contains(&expected), "нет файла {expected}");
+        }
+        // без jetpack-compose — никакого compose-плагина и compose-импортов
+        assert!(!write_content(&steps, "build.gradle.kts").contains("plugin.compose"));
+        let main = write_content(&steps, "app/src/main/kotlin/com/example/app/MainActivity.kt");
+        assert!(!main.contains("androidx.compose"), "{main}");
+        assert!(main.contains("android.app.Activity"), "{main}");
+        // манифест: метка проекта экранирована, тема — платформенная (без res/)
+        let manifest = write_content(&steps, "app/src/main/AndroidManifest.xml");
+        assert!(manifest.contains("android:label=\"myapp\""), "{manifest}");
+    }
+
+    #[test]
+    fn android_with_java_language_generates_java_activity() {
+        let ctx = android_context(&["android"], &["java"]);
+        let steps = steps_for_framework("android", "C:\\dev\\myapp", "myapp", &ctx, None, false);
+        let main = write_content(&steps, "app/src/main/java/com/example/app/MainActivity.java");
+        assert!(main.contains("public class MainActivity extends Activity"), "{main}");
+        let app_build = write_content(&steps, "app/build.gradle.kts");
+        assert!(!app_build.contains("org.jetbrains.kotlin"), "{app_build}");
+    }
+
+    #[test]
+    fn android_with_jetpack_compose_generates_compose_project() {
+        let ctx = android_context(&["android", "jetpack-compose"], &["kotlin"]);
+        let steps = steps_for_framework("android", "C:\\dev\\myapp", "myapp", &ctx, None, false);
+        let root = write_content(&steps, "build.gradle.kts");
+        assert!(root.contains("org.jetbrains.kotlin.plugin.compose"), "{root}");
+        let main = write_content(&steps, "app/src/main/kotlin/com/example/app/MainActivity.kt");
+        assert!(main.contains("setContent"), "{main}");
+        assert!(main.contains("androidx.compose.material3"), "{main}");
+        // jetpack-compose рядом с android не пишет свои файлы (иначе —
+        // дубликаты путей, см. duplicate_framework_write_paths)
+        let compose_steps = steps_for_framework("jetpack-compose", "C:\\dev\\myapp", "myapp", &ctx, None, false);
+        assert!(compose_steps.is_empty(), "{compose_steps:?}");
+    }
+
+    #[test]
+    fn jetpack_compose_standalone_generates_full_project() {
+        let ctx = android_context(&["jetpack-compose"], &["kotlin"]);
+        let steps = steps_for_framework("jetpack-compose", "C:\\dev\\myapp", "myapp", &ctx, None, false);
+        assert!(write_paths(&steps).contains(&"app/build.gradle.kts"));
+        assert!(write_content(&steps, "build.gradle.kts").contains("plugin.compose"));
+        let main = write_content(&steps, "app/src/main/kotlin/com/example/app/MainActivity.kt");
+        assert!(main.contains("setContent"), "{main}");
+    }
+
+    #[test]
+    fn android_files_escape_user_text() {
+        let ctx = WizardContext {
+            project_name: Some("My \"App\" $v1".into()),
+            project_path: Some("C:\\dev\\myapp".into()),
+            languages: vec!["kotlin".into()],
+            frameworks: vec!["android".into()],
+            ..Default::default()
+        };
+        let steps = steps_for_framework("android", "C:\\dev\\myapp", "My \"App\" $v1", &ctx, None, false);
+        let manifest = write_content(&steps, "app/src/main/AndroidManifest.xml");
+        assert!(manifest.contains("android:label=\"My &quot;App&quot; $v1\""), "{manifest}");
+        let main = write_content(&steps, "app/src/main/kotlin/com/example/app/MainActivity.kt");
+        assert!(main.contains("Hello from My \\\"App\\\" \\$v1!"), "{main}");
+    }
+
+    #[test]
     fn frontend_frameworks_use_project_subfolder() {
         // Фронтенды скаффолдятся в frontend/ (ScaffoldGenerator), а не в
         // корне: иначе они перезапишут package.json бэкенда (express+nextjs
@@ -3470,12 +4200,17 @@ mod tests {
 
     #[test]
     fn tauri_pipeline_scaffolds_frontend_init_and_patches_config() {
-        // tauri (scaffold="root") НЕ поглощает компаньонов: react скаффолдится
-        // в frontend/ отдельным scaffold-шагом, затем tauri init --ci в корне,
-        // затем Rust-патч tauri.conf.json. create-tauri-app убран из
-        // пайплайна (его фронтенд-каркас в корне был пустым без node_modules).
+        // Strict Subdir Mandate: rust (backend) + typescript (frontend) — обе
+        // стороны, tauri (scaffold="root" в JSON) принудительно работает как
+        // subdir. React скаффолдится в frontend/ отдельным scaffold-шагом,
+        // tauri живёт в backend/; затем cargo tauri init (пути на
+        // ../../frontend/dist) и Rust-патч backend/src-tauri/tauri.conf.json.
+        // create-tauri-app убран из пайплайна (его фронтенд-каркас в корне
+        // был пустым без node_modules).
         let mut ctx = context();
         ctx.languages = vec!["rust".into(), "typescript".into()];
+        ctx.backend_languages = vec!["rust".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
         ctx.frameworks = vec!["tauri".into(), "react".into()];
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
@@ -3490,13 +4225,15 @@ mod tests {
             !recipe.steps.iter().any(|s| s.id() == "tauri_create"),
             "create-tauri-app убран из пайплайна"
         );
-        // Segment-папка backend/ при root-скаффолде не создаётся; frontend/
-        // создаёт движок ДО скаффолда компаньона (CLI работает с "." внутри)
-        assert!(
-            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
-                if path == "backend")),
-            "root-скаффолд не должен создавать backend/"
-        );
+        // Мандат: backend/ И frontend/ создаются движком
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "нужны backend/ и frontend/: {mkdirs:?}");
         let frontend_dir_idx = recipe.steps.iter().position(|s| matches!(s, Step::CreateDirectory { path, .. }
             if path == "frontend"))
             .expect("frontend/ должен создаваться движком");
@@ -3516,25 +4253,29 @@ mod tests {
             _ => panic!("vite_create — Generate"),
         }
 
-        // tauri — root-фреймворк: его шаги идут в фазе 1, ДО компаньонов.
-        // tauri init только пишет конфиг (фронтенд ему не нужен), поэтому
-        // порядок «init → vite-скаффолд компаньона» корректен.
+        // Фронтенд-генератор выполняется ПЕРВЫМ — tauri init откладывается
+        // в конец фазы скаффолдинга (движок откладывает tauri-шаги).
+        let vite_idx = recipe.steps.iter().position(|s| s.id() == "vite_create").unwrap();
         let init_idx = recipe.steps.iter().position(|s| s.id() == "tauri_init")
             .expect("tauri_init должен быть в плане");
+        assert!(vite_idx < init_idx, "фронтенд скаффолдится ДО tauri init");
         match &recipe.steps[init_idx] {
             Step::Command { command, args, working_dir, .. } => {
-                assert_eq!(command, "npx");
-                assert!(args.iter().any(|a| a == "--yes"), "{args:?}");
-                assert!(args.iter().any(|a| a == "@tauri-apps/cli@latest"), "{args:?}");
+                assert_eq!(command, "cargo");
+                assert!(args.iter().any(|a| a == "tauri"), "{args:?}");
                 assert!(args.iter().any(|a| a == "--ci"), "init должен быть неинтерактивным: {args:?}");
-                assert!(args.iter().any(|a| a == "--frontend-dist"), "{args:?}");
+                let dist_idx = args.iter().position(|a| a == "--frontend-dist")
+                    .expect("--frontend-dist обязан быть в args");
+                assert_eq!(args[dist_idx + 1], "../../frontend/dist",
+                    "из backend/ путь на frontend/dist — ../../frontend/dist: {args:?}");
                 assert!(args.iter().any(|a| a == "--before-dev-command"), "{args:?}");
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"), "tauri init работает в корне");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "tauri init работает в backend/ (Strict Subdir Mandate)");
             }
             _ => panic!("tauri_init — Command"),
         }
 
-        // Rust-патч tauri.conf.json — сразу после tauri init
+        // Rust-патч tauri.conf.json — сразу после tauri init, внутри backend/
         let patch_idx = recipe.steps.iter().position(|s| s.id() == "tauri_config_patch")
             .expect("tauri_config_patch должен быть в плане");
         assert!(init_idx < patch_idx, "патч конфига идёт после tauri init");
@@ -3544,14 +4285,22 @@ mod tests {
                 assert_eq!(on_error, &ErrorMode::Skip);
                 assert_eq!(generator_config.get("identifier").and_then(|v| v.as_str()), Some("com.myapp"));
                 assert_eq!(generator_config.get("frontend_dir").and_then(|v| v.as_str()), Some("frontend"));
+                assert_eq!(generator_config.get("tauri_dir").and_then(|v| v.as_str()), Some("backend"),
+                    "конфиг живёт в backend/src-tauri/: {generator_config}");
+                assert_eq!(generator_config.get("frontend_dist").and_then(|v| v.as_str()), Some("../../frontend/dist"),
+                    "frontendDist из backend/ — ../../frontend/dist: {generator_config}");
             }
             _ => panic!("tauri_config_patch — Generate"),
         }
 
-        // При компаньоне vite-vanilla-скаффолд tauri не нужен
+        // При компаньоне vite-vanilla-скаффолд и явный npm install tauri не нужны
         assert!(
             !recipe.steps.iter().any(|s| s.id() == "tauri_web_scaffold"),
             "компаньон сам скаффолдит frontend/"
+        );
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "tauri_web_install"),
+            "компаньон: npm install делает финальная фаза"
         );
 
         // npm install ровно один раз — ВНУТРИ frontend/, в финальной фазе
@@ -3586,8 +4335,10 @@ mod tests {
     #[test]
     fn tauri_without_companion_scaffolds_vanilla_frontend() {
         // tauri без react/vue/svelte: vite (vanilla-ts) скаффолдит frontend/,
-        // tauri init идёт следом. Generic js/ts-скаффолд в корне подавлен
-        // (его заглушки конфликтовали бы с tauri-каркасом).
+        // npm install внутри frontend/, затем cargo tauri init в backend/
+        // (rust+typescript — обе стороны, Strict Subdir Mandate). Generic
+        // js/ts-скаффолд в корне подавлен (его заглушки конфликтовали бы
+        // с tauri-каркасом).
         let mut ctx = context();
         ctx.languages = vec!["rust".into(), "typescript".into()];
         ctx.frameworks = vec!["tauri".into()];
@@ -3610,21 +4361,54 @@ mod tests {
             _ => panic!("tauri_web_scaffold — Generate"),
         }
 
-        let scaffold_idx = recipe.steps.iter().position(|s| s.id() == "tauri_web_scaffold").unwrap();
-        let init_idx = recipe.steps.iter().position(|s| s.id() == "tauri_init").unwrap();
-        assert!(scaffold_idx < init_idx, "фронтенд скаффолдится до tauri init");
+        // npm install — явный шаг внутри frontend/ (компаньона нет, финальная
+        // фаза про tauri-фронтенд не знает)
+        let install = recipe.steps.iter().find(|s| s.id() == "tauri_web_install")
+            .expect("tauri_web_install должен быть в плане");
+        match install {
+            Step::Command { working_dir, command, .. } => {
+                assert_eq!(command, "npm");
+                assert_eq!(working_dir.as_deref(), Some("frontend"),
+                    "install работает внутри frontend/ без join-сегмента: {working_dir:?}");
+            }
+            _ => panic!("tauri_web_install — Command"),
+        }
 
-        // npm install ровно один раз — ВНУТРИ frontend/, в финальной фазе
+        // Фронтенд-генератор → npm install → tauri init → патч конфига
+        let idx = |id: &str| recipe.steps.iter().position(|s| s.id() == id)
+            .unwrap_or_else(|| panic!("{id} должен быть в плане"));
+        assert!(idx("tauri_web_scaffold") < idx("tauri_web_install"), "скаффолд до install");
+        assert!(idx("tauri_web_install") < idx("tauri_init"), "install до tauri init");
+
+        match &recipe.steps[idx("tauri_init")] {
+            Step::Command { command, args, working_dir, .. } => {
+                assert_eq!(command, "cargo");
+                let dist_idx = args.iter().position(|a| a == "--frontend-dist")
+                    .expect("--frontend-dist обязан быть в args");
+                assert_eq!(args[dist_idx + 1], "../../frontend/dist",
+                    "из backend/ путь на frontend/dist — ../../frontend/dist: {args:?}");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "tauri init работает в backend/ (Strict Subdir Mandate)");
+            }
+            _ => panic!("tauri_init — Command"),
+        }
+
+        match &recipe.steps[idx("tauri_config_patch")] {
+            Step::Generate { generator_id, generator_config, on_error, .. } => {
+                assert_eq!(generator_id, "tauri-config");
+                assert_eq!(on_error, &ErrorMode::Skip);
+                assert_eq!(generator_config.get("tauri_dir").and_then(|v| v.as_str()), Some("backend"));
+                assert_eq!(generator_config.get("frontend_dist").and_then(|v| v.as_str()), Some("../../frontend/dist"));
+            }
+            _ => panic!("tauri_config_patch — Generate"),
+        }
+
+        // Финальная фаза про tauri-фронтенд не знает: install уже сделан
+        // явным шагом, новых npm_install в финале нет
         let installs: Vec<_> = recipe.steps.iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
-        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
-        match installs[0] {
-            Step::Command { working_dir, .. } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
-            }
-            _ => panic!("npm_install — Command"),
-        }
+        assert_eq!(installs.len(), 0, "фронтенд tauri ставится явным шагом, финальных npm_install быть не должно");
 
         // Патч имени package.json для tauri — в frontend/
         let patch = recipe.steps.iter().find(|s| s.id() == "tauri_pkg_name")
@@ -3638,13 +4422,13 @@ mod tests {
     }
 
     #[test]
-    fn root_scaffold_runs_first_no_segments() {
-        // Строгая очередь фаз: 1. Root CLI (django) → 2. Subdir (react) →
-        // 3. Инструменты (prisma) → 4. Конфиги (docker-compose).
-        //
-        // Корнем владеет django — react получает собственный сегмент
-        // frontend/ (движок создаёт папку, vite работает ВНУТРИ с "."),
-        // иначе create-vite создал бы вложенную папку myapp/ — матрёшка.
+    fn root_scaffold_forced_to_subdir_still_runs_first() {
+        // Strict Subdir Mandate: python (backend) + typescript (frontend) —
+        // обе стороны, поэтому django (scaffold="root" в wizard_tree.json)
+        // принудительно работает как subdir: бэкенд в backend/, фронтенд в
+        // frontend/. Порядок фаз сохраняется: 1. Root CLI (django) →
+        // 2. Subdir (react) → 3. Инструменты (prisma) → 4. Конфиги
+        // (docker-compose).
         let mut ctx = context();
         ctx.languages = vec!["python".into(), "typescript".into()];
         ctx.backend_languages = vec!["python".into()];
@@ -3654,18 +4438,15 @@ mod tests {
 
         let recipe = compose_recipe(&ctx, "myapp").expect("recipe must build");
 
-        // backend/ сегмент НЕ создаётся: корнем владеет django
-        assert!(
-            !recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
-                if path == "backend")),
-            "при django (root) не должно быть backend/ — корнем владеет CLI"
-        );
-        // react (side=frontend) сегментируется: движок создаёт frontend/
-        assert!(
-            recipe.steps.iter().any(|s| matches!(s, Step::CreateDirectory { path, .. }
-                if path == "frontend")),
-            "компаньон root-скаффолда должен получить frontend/"
-        );
+        // Мандат: backend/ И frontend/ создаются движком
+        let mkdirs: Vec<String> = recipe.steps.iter()
+            .filter_map(|s| match s {
+                Step::CreateDirectory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(mkdirs.contains(&"backend".to_string()), "django (root→subdir) получает backend/: {mkdirs:?}");
+        assert!(mkdirs.contains(&"frontend".to_string()), "react получает frontend/: {mkdirs:?}");
 
         let idx = |id: &str| recipe.steps.iter().position(|s| s.id() == id)
             .unwrap_or_else(|| panic!("{id} должен быть в плане"));
@@ -3673,10 +4454,11 @@ mod tests {
         assert!(idx("vite_create") < idx("prisma_init"), "subdir-скаффолд идёт до инструментов");
         assert!(idx("prisma_init") < idx("docker_compose"), "инструменты идут до конфигов");
 
-        // django-admin startproject работает в корне проекта, а не в backend/
+        // django-admin startproject работает в backend/, а не в корне
         match &recipe.steps[idx("django_start")] {
             Step::Command { working_dir, .. } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp"), "django стартует в корне");
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/backend"),
+                    "django стартует в backend/ (Strict Subdir Mandate)");
             }
             _ => panic!("django_start — Command"),
         }
@@ -4369,7 +5151,8 @@ mod tests {
     fn laravel_and_symfony_use_composer_not_npm() {
         // P-баг: @laravel/installer падал с «npm error 404 Not Found», а
         // бинарь symfony не установлен. PHP-фреймворки создаются через
-        // composer create-project --no-interaction (dot-режим в корне).
+        // `php composer.phar create-project ... --no-interaction --prefer-dist`
+        // (дистрибутив composer скачивается движком в temp — dot-режим).
         for (fw_id, step_id, package) in [
             ("laravel", "laravel_new", "laravel/laravel"),
             ("symfony", "symfony_new", "symfony/skeleton"),
@@ -4390,12 +5173,17 @@ mod tests {
                 Step::Generate { generator_id, generator_config, on_error, .. } => {
                     assert_eq!(generator_id, "scaffold");
                     assert_eq!(on_error, &ErrorMode::Skip);
-                    assert_eq!(generator_config.get("command").and_then(|v| v.as_str()), Some("composer"));
+                    assert_eq!(generator_config.get("command").and_then(|v| v.as_str()), Some("php"),
+                        "создаёт php, а не npm-клиент: {generator_config}");
                     let args = generator_config.get("args").and_then(|a| a.as_array())
                         .cloned().unwrap_or_default();
-                    assert_eq!(args.get(0).and_then(|v| v.as_str()), Some("create-project"));
-                    assert_eq!(args.get(1).and_then(|v| v.as_str()), Some(package), "{args:?}");
+                    assert_eq!(args.get(0).and_then(|v| v.as_str()), Some("composer.phar"), "{args:?}");
+                    assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("create-project"), "{args:?}");
+                    assert_eq!(args.get(2).and_then(|v| v.as_str()), Some(package), "{args:?}");
                     assert!(args.iter().any(|a| a == "--no-interaction"), "{args:?}");
+                    assert!(args.iter().any(|a| a == "--prefer-dist"), "{args:?}");
+                    assert_eq!(generator_config.get("name_arg").and_then(|v| v.as_u64()), Some(3),
+                        "имя проекта — 3-й аргумент composer create-project: {generator_config}");
                     assert_eq!(generator_config.get("target_dir").and_then(|v| v.as_str()), Some("."),
                         "в монолите PHP-фреймворк живёт в корне");
                 }

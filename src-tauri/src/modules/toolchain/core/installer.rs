@@ -21,7 +21,7 @@
 // Windows-first: Linux/macOS-задачи помечаются Skipped —
 // их установка появится позже (sudo/brew обёртки).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -863,6 +863,232 @@ async fn install_maui_workload(
     }
 }
 
+/// Обязательные строки php.ini: (имя директивы, каноническая строка).
+/// extension_dir — CRITICAL: без него PHP не находит dll в ext/,
+/// и composer падает с «The zip extension and unzip/7z commands
+/// are both missing». Остальные — HTTPS-скачивания composer
+/// (openssl, curl), zip-архивы пакетов (zip), фреймворки
+/// Laravel/Symfony (mbstring) и БД (pdo_sqlite).
+const PHP_INI_REQUIRED: [(&str, &str); 6] = [
+    ("extension_dir", "extension_dir = \"ext\""),
+    ("zip", "extension=zip"),
+    ("openssl", "extension=openssl"),
+    ("curl", "extension=curl"),
+    ("mbstring", "extension=mbstring"),
+    ("pdo_sqlite", "extension=pdo_sqlite"),
+];
+
+/// Каталог установки PHP: первый реально существующий из path_entries
+/// (%LOCALAPPDATA%/Programs/php или C:/Program Files/php).
+fn php_install_dir(def: &ToolDefinition) -> Option<PathBuf> {
+    def.path_entries
+        .iter()
+        .map(|e| PathBuf::from(path_service::expand_env_vars(e)))
+        .find(|p| p.is_dir())
+}
+
+/// Приводит строку php.ini к каноническому виду обязательной директивы.
+/// Распознаёт как активные, так и закомментированные строки
+/// (`;extension_dir = "ext"`, `;extension=php_zip.dll`) и нормализует
+/// их (раскомментирование + каноническое имя). Возвращает None, если
+/// строка не про эту директиву.
+fn canonical_php_ini_line(line: &str, key: &str) -> Option<&'static str> {
+    let trimmed = line.trim();
+    let bare = trimmed.strip_prefix(';').unwrap_or(trimmed).trim();
+    let Some((directive, value)) = bare.split_once('=') else {
+        return None;
+    };
+    let directive = directive.trim().to_ascii_lowercase();
+
+    if key == "extension_dir" {
+        return (directive == "extension_dir").then_some(PHP_INI_REQUIRED[0].1);
+    }
+    if directive != "extension" {
+        return None;
+    }
+
+    // extension=zip / extension=php_zip.dll / extension=zip.dll
+    let raw = value.trim().to_ascii_lowercase();
+    let dll = raw.strip_suffix(".dll").unwrap_or(&raw);
+    let name = dll.strip_prefix("php_").unwrap_or(dll);
+    if name != key {
+        return None;
+    }
+    PHP_INI_REQUIRED
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, canonical)| *canonical)
+}
+
+/// Строгая настройка php.ini локальной установки PHP на Windows
+/// (этап после подтверждённой установки). Действия:
+///   1. php.ini создаётся из php.ini-development (если ещё нет);
+///   2. extension_dir = "ext" — без него PHP не видит ext/*.dll;
+///   3. раскомментированы extension=zip/openssl/curl/mbstring/pdo_sqlite.
+/// Идемпотентно: повторные запуски ничего не меняют. Сбой не валит
+/// установку PHP — php.ini поправится при следующей проверке окружения.
+async fn configure_php_ini(
+    def: &ToolDefinition,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    sink: &Arc<dyn EventSink>,
+) {
+    let Some(php_dir) = php_install_dir(def) else {
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: "tc:warn php.ini: каталог PHP не найден по path_entries — расширения не включены".to_string(),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
+        return;
+    };
+
+    let ini = php_dir.join("php.ini");
+    if !ini.exists() {
+        let dev = php_dir.join("php.ini-development");
+        let create_result = if dev.exists() {
+            std::fs::copy(&dev, &ini).map(|_| ()).map_err(|e| e.to_string())
+        } else {
+            std::fs::write(&ini, "; Created by StackPilot Toolchain\r\n")
+                .map_err(|e| e.to_string())
+        };
+        if let Err(e) = create_result {
+            sink.emit(console::event(
+                ToolchainEventType::TaskProgress {
+                    line: format!("tc:warn php.ini: не удалось создать из php.ini-development: {e}"),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+            ));
+            return;
+        }
+    }
+
+    // Идемпотентное переписывание: каждая директива нормализуется один
+    // раз (первое вхождение), отсутствующие дописываются в конец.
+    let Ok(content) = std::fs::read_to_string(&ini) else {
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!("tc:warn php.ini: не читается {}", ini.display()),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
+        return;
+    };
+
+    let mut satisfied: HashSet<&str> = HashSet::new();
+    let mut out_lines: Vec<String> = Vec::with_capacity(content.lines().count() + 2);
+    for line in content.lines() {
+        let mut rewritten: Option<String> = None;
+        for (key, _) in PHP_INI_REQUIRED {
+            if satisfied.contains(key) {
+                continue;
+            }
+            if let Some(canonical) = canonical_php_ini_line(line, key) {
+                rewritten = Some(canonical.to_string());
+                satisfied.insert(key);
+                break;
+            }
+        }
+        out_lines.push(rewritten.unwrap_or_else(|| line.to_string()));
+    }
+    let mut appended = false;
+    for (key, canonical) in PHP_INI_REQUIRED {
+        if !satisfied.contains(key) {
+            out_lines.push(canonical.to_string());
+            satisfied.insert(key);
+            appended = true;
+        }
+    }
+
+    let new_content = out_lines.join("\r\n") + "\r\n";
+    if new_content == content {
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!("tc:info php.ini уже настроен ({})", ini.display()),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
+        return;
+    }
+    if let Err(e) = std::fs::write(&ini, &new_content) {
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!("tc:warn php.ini: не удалось записать {}: {e}", ini.display()),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
+        return;
+    }
+    sink.emit(console::event(
+        ToolchainEventType::TaskProgress {
+            line: if appended {
+                format!(
+                    "tc:ok php.ini настроен: extension_dir=ext, включены zip/openssl/curl/mbstring/pdo_sqlite ({})",
+                    ini.display()
+                )
+            } else {
+                format!("tc:ok php.ini настроен (директивы приведены к каноническому виду: {})", ini.display())
+            },
+        },
+        index,
+        total,
+        task_id,
+        tool_id,
+    ));
+}
+
+/// Создаёт composer.bat-шим рядом с composer.phar: phar — не исполняемый
+/// файл (CreateProcess даёт os error 193), а без .bat-шима verify не
+/// найдёт команду `composer`. Работает только с phar-источником
+/// (getcomposer.org/installer с --install-dir), где установщик
+/// composer.bat не создаёт.
+async fn ensure_composer_bat_shim(
+    source: &InstallSource,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    sink: &Arc<dyn EventSink>,
+) {
+    let Some(dir_arg) = source.args.iter().find_map(|a| a.strip_prefix("--install-dir=")) else {
+        return;
+    };
+    let dir = path_service::expand_env_vars(dir_arg);
+    let phar = Path::new(&dir).join("composer.phar");
+    let shim = Path::new(&dir).join("composer.bat");
+    if !phar.is_file() || shim.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::write(&shim, "@echo off\r\nphp \"%~dp0composer.phar\" %*\r\n") {
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!("tc:warn composer.bat: не удалось создать шим: {e}"),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+        ));
+    }
+}
+
 /// Пытается установить инструмент ОДНИМ источником.
 /// Возвращает Ok((версия, пароль)) при подтверждённой установке
 /// или Err(описание) — источник не сработал, пробуем следующий.
@@ -1077,6 +1303,13 @@ async fn try_install_source(
         eprintln!("[toolchain] не удалось обновить PATH процесса: {e}");
     }
 
+    // composer.phar (phar-источник) не является исполняемым файлом —
+    // рядом с ним создаётся composer.bat-шим, иначе verify не найдёт
+    // команду `composer` («%1 не является приложением Win32»).
+    if matches!(exec, ExecutionKind::Phar) && def.id == "composer" {
+        ensure_composer_bat_shim(source, index, total, task_id, tool_id, sink).await;
+    }
+
     // Проверка: пересканируем инструмент тем же discovery. Проба
     // known_paths умеет находить бинарь и без PATH (postgres).
     sink.emit(console::event(
@@ -1092,6 +1325,12 @@ async fn try_install_source(
             // нужен workload. Ставим сразу после подтверждённой установки.
             if def.id == "dotnet" {
                 install_maui_workload(index, total, task_id, tool_id, sink, Arc::clone(abort)).await;
+            }
+            // PHP на Windows: без настроенного php.ini composer падает
+            // («The zip extension and unzip/7z commands are both missing»).
+            // Строгая конфигурация после подтверждённой установки.
+            if def.id == "php" {
+                configure_php_ini(def, index, total, task_id, tool_id, sink).await;
             }
             Ok((version, password))
         }
@@ -1386,6 +1625,80 @@ mod tests {
                 cmd.args
             );
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn php_ini_canonical_line_uncomments() {
+        // Закомментированные директивы php.ini-development приводятся
+        // к каноническому активному виду.
+        assert_eq!(
+            canonical_php_ini_line(";extension_dir = \"ext\"", "extension_dir"),
+            Some("extension_dir = \"ext\"")
+        );
+        assert_eq!(
+            canonical_php_ini_line(";extension=zip", "zip"),
+            Some("extension=zip")
+        );
+        assert_eq!(
+            canonical_php_ini_line(";extension=php_openssl.dll", "openssl"),
+            Some("extension=openssl")
+        );
+        assert_eq!(
+            canonical_php_ini_line("extension=mbstring", "mbstring"),
+            Some("extension=mbstring")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn php_ini_canonical_line_ignores_others() {
+        // Чужие строки и чужие расширения не трогаются.
+        assert_eq!(canonical_php_ini_line(";extension=gd", "zip"), None);
+        assert_eq!(canonical_php_ini_line(";error_log = php_errors.log", "zip"), None);
+        assert_eq!(canonical_php_ini_line("[PHP]", "extension_dir"), None);
+        assert_eq!(canonical_php_ini_line("", "zip"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn configure_php_ini_creates_and_enables_extensions() {
+        // php.ini создаётся из php.ini-development, extension_dir и
+        // обязательные расширения включаются (раскомментирование),
+        // посторонние строки сохраняются.
+        let dir = std::env::temp_dir().join(format!("tc-php-ini-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("php.ini-development"),
+            "; Start\r\n;extension_dir = \"ext\"\r\nextension=gd\r\n;extension=zip\r\n;extension=curl\r\n[PHP]\r\n; End\r\n",
+        )
+        .unwrap();
+
+        let mut def = bare_def();
+        def.id = "php".to_string();
+        def.path_entries = vec![dir.to_string_lossy().into_owned()];
+
+        let sink = Arc::new(TestSink::default());
+        let trait_sink: Arc<dyn EventSink> = sink.clone();
+        configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
+
+        let ini = std::fs::read_to_string(dir.join("php.ini")).unwrap();
+        assert!(ini.contains("extension_dir = \"ext\""), "extension_dir: {ini}");
+        assert!(ini.contains("extension=zip"), "zip: {ini}");
+        assert!(ini.contains("extension=openssl"), "openssl: {ini}");
+        assert!(ini.contains("extension=curl"), "curl: {ini}");
+        assert!(ini.contains("extension=mbstring"), "mbstring: {ini}");
+        assert!(ini.contains("extension=pdo_sqlite"), "pdo_sqlite: {ini}");
+        assert!(ini.contains("extension=gd"), "gd сохранился: {ini}");
+        assert!(!ini.contains(";extension="), "нет закомментированных: {ini}");
+
+        // Идемпотентность: повторный запуск не меняет содержимое.
+        configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
+        let again = std::fs::read_to_string(dir.join("php.ini")).unwrap();
+        assert_eq!(again, ini, "повторный прогон обязан быть идемпотентным");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(target_os = "windows")]

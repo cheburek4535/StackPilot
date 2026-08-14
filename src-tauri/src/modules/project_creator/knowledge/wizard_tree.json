@@ -1,12 +1,33 @@
 {
   "allowed_main_pairs": [
-    ["gin", "cobra"],
-    ["axum", "clap"],
-    ["android", "jetpack-compose"],
-    ["zig-cli", "zap"],
-    ["electron", "react"],
-    ["electron", "vue"],
-    ["electron", "svelte"]
+    [
+      "gin",
+      "cobra"
+    ],
+    [
+      "axum",
+      "clap"
+    ],
+    [
+      "android",
+      "jetpack-compose"
+    ],
+    [
+      "zig-cli",
+      "zap"
+    ],
+    [
+      "electron",
+      "react"
+    ],
+    [
+      "electron",
+      "vue"
+    ],
+    [
+      "electron",
+      "svelte"
+    ]
   ],
   "main_limit_exempt": [
     "zig-cli"
@@ -337,17 +358,6 @@
       "allow_custom_stack": false
     },
     {
-      "id": "empty-project",
-      "label": "Empty Project",
-      "description": "Start from scratch with configuration",
-      "icon": "empty-project.png",
-      "tags": [
-        "empty",
-        "minimal"
-      ],
-      "allow_custom_stack": true
-    },
-    {
       "id": "custom",
       "label": "Custom Stack",
       "description": "Build your own recipe from scratch",
@@ -393,7 +403,7 @@
     },
     {
       "id": "javascript",
-      "label": "JavaScript / Node.js",
+      "label": "JavaScript",
       "icon": "node.svg",
       "color": "#F7DF1E",
       "category": "frontend",
@@ -508,8 +518,7 @@
         "web-app",
         "telegram-bot",
         "data-pipeline",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "flask",
@@ -536,8 +545,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "fastapi",
@@ -566,8 +574,7 @@
         "rest-api",
         "web-app",
         "telegram-bot",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "fastapi",
@@ -595,8 +602,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "axum",
@@ -620,8 +626,7 @@
       "project_types": [
         "desktop-app",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "electron",
@@ -668,8 +673,7 @@
       "project_types": [
         "cli-tool",
         "library",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "clap",
@@ -693,8 +697,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "gin",
@@ -718,8 +721,7 @@
       "project_types": [
         "cli-tool",
         "library",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "cobra",
@@ -743,8 +745,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "sveltekit",
@@ -788,8 +789,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -833,8 +833,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -884,8 +883,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nest",
@@ -916,8 +914,7 @@
       "project_types": [
         "desktop-app",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "tauri",
@@ -959,8 +956,7 @@
         "telegram-bot",
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "flask"
@@ -988,8 +984,7 @@
         "telegram-bot",
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "express",
@@ -1018,8 +1013,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "ktor"
@@ -1049,8 +1043,7 @@
       "recommended_language": "kotlin",
       "project_types": [
         "mobile-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "android",
@@ -1074,8 +1067,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "aspnetcore",
@@ -1100,8 +1092,7 @@
       "project_types": [
         "desktop-app",
         "mobile-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "maui",
@@ -1126,8 +1117,7 @@
       "project_types": [
         "desktop-app",
         "embedded",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "tauri"
@@ -1193,8 +1183,7 @@
       "project_types": [
         "desktop-app",
         "embedded",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
@@ -1218,8 +1207,7 @@
       "project_types": [
         "desktop-app",
         "embedded",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
@@ -1242,8 +1230,7 @@
       "recommended_language": "cpp",
       "project_types": [
         "desktop-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
@@ -1271,8 +1258,7 @@
       "project_types": [
         "desktop-app",
         "embedded",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
@@ -1297,8 +1283,7 @@
         "mobile-app",
         "desktop-app",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "expo",
@@ -1327,8 +1312,7 @@
       "project_types": [
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "symfony"
@@ -1355,8 +1339,7 @@
       "project_types": [
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "laravel"
@@ -1382,8 +1365,7 @@
       "recommended_language": "kotlin",
       "project_types": [
         "mobile-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "jetpack-compose",
@@ -1407,8 +1389,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "spring-boot"
@@ -1436,8 +1417,7 @@
       "project_types": [
         "mobile-app",
         "desktop-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "swiftui",
@@ -1464,8 +1444,7 @@
       "project_types": [
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "vapor",
@@ -1493,8 +1472,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "mobile-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "expo",
@@ -1533,8 +1511,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "browser-extension",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -1571,8 +1548,7 @@
       "recommended_language": "zig",
       "project_types": [
         "cli-tool",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "zig-cli",
@@ -1596,8 +1572,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "zap",
@@ -1621,8 +1596,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "mobile-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "react-native",
@@ -1661,8 +1635,7 @@
       "project_types": [
         "web-app",
         "rest-api",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [],
       "knowledge_key": "phoenix",
@@ -1688,8 +1661,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "express",
@@ -1725,8 +1697,7 @@
       "project_types": [
         "rest-api",
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "express",
@@ -1756,8 +1727,7 @@
       "recommended_language": "typescript",
       "project_types": [
         "web-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -1798,8 +1768,7 @@
       "project_types": [
         "web-app",
         "desktop-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -1837,8 +1806,7 @@
       "project_types": [
         "web-app",
         "desktop-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -1876,8 +1844,7 @@
       "project_types": [
         "web-app",
         "desktop-app",
-        "custom",
-        "empty-project"
+        "custom"
       ],
       "conflicts": [
         "nextjs",
@@ -2626,28 +2593,6 @@
       }
     },
     {
-      "id": "empty-project",
-      "label": "Empty Project",
-      "description": "Start from scratch — no languages or frameworks",
-      "icon": "empty-project.png",
-      "tags": [
-        "empty"
-      ],
-      "stack": {
-        "project_type": "empty-project",
-        "backend_lang": null,
-        "frontend_lang": null,
-        "frameworks": [],
-        "tools": [],
-        "features": {
-          "testing": false,
-          "git": true,
-          "vscode": true,
-          "docker": false
-        }
-      }
-    },
-    {
       "id": "etl-pipeline",
       "label": "ETL Pipeline",
       "description": "Kafka → ClickHouse/PG с Airflow-оркестрацией",
@@ -2731,6 +2676,1214 @@
           "docker": false
         }
       }
+    },
+    {
+      "id": "ms-axum",
+      "label": "Axum REST API",
+      "description": "High-performance Rust API with PostgreSQL",
+      "icon": null,
+      "tags": [
+        "rust",
+        "api",
+        "microservice"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "rust",
+        "frontend_lang": null,
+        "frameworks": [
+          "axum"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "ms-gin",
+      "label": "Gin REST API",
+      "description": "Fast Go API with Redis cache and PostgreSQL",
+      "icon": "gin.svg",
+      "tags": [
+        "go",
+        "api",
+        "microservice"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "go",
+        "frontend_lang": null,
+        "frameworks": [
+          "gin"
+        ],
+        "tools": [
+          "postgresql",
+          "redis",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "ms-nest",
+      "label": "NestJS REST API",
+      "description": "Structured TypeScript service with OpenTelemetry",
+      "icon": "nestjs.svg",
+      "tags": [
+        "typescript",
+        "api",
+        "microservice"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "typescript",
+        "frontend_lang": null,
+        "frameworks": [
+          "nest"
+        ],
+        "tools": [
+          "postgresql",
+          "docker",
+          "opentelemetry"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "ms-ktor",
+      "label": "Ktor REST API",
+      "description": "Async Kotlin API on the JVM",
+      "icon": "ktor.svg",
+      "tags": [
+        "kotlin",
+        "api",
+        "microservice"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "kotlin",
+        "frontend_lang": null,
+        "frameworks": [
+          "ktor"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "ms-zap",
+      "label": "Zap REST API",
+      "description": "High-performance Zig web service",
+      "icon": "zap.png",
+      "tags": [
+        "zig",
+        "api",
+        "microservice"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "zig",
+        "frontend_lang": null,
+        "frameworks": [
+          "zap"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "evt-spring-kafka",
+      "label": "Spring Boot + Kafka",
+      "description": "Event-driven Java service with Kafka",
+      "icon": "spring-boot.svg",
+      "tags": [
+        "java",
+        "kafka",
+        "events"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "java",
+        "frontend_lang": null,
+        "frameworks": [
+          "spring-boot"
+        ],
+        "tools": [
+          "kafka",
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "evt-ktor-kafka",
+      "label": "Ktor + Kafka",
+      "description": "Event-driven Kotlin service with Kafka",
+      "icon": "ktor.svg",
+      "tags": [
+        "kotlin",
+        "kafka",
+        "events"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "kotlin",
+        "frontend_lang": null,
+        "frameworks": [
+          "ktor"
+        ],
+        "tools": [
+          "kafka",
+          "redis",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "evt-nest-kafka",
+      "label": "NestJS + Kafka",
+      "description": "Event-driven TypeScript service with Kafka",
+      "icon": "nestjs.svg",
+      "tags": [
+        "typescript",
+        "kafka",
+        "events"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "typescript",
+        "frontend_lang": null,
+        "frameworks": [
+          "nest"
+        ],
+        "tools": [
+          "kafka",
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "evt-fastapi-kafka",
+      "label": "FastAPI + Kafka",
+      "description": "Async Python event producer and consumer",
+      "icon": "fastapi.svg",
+      "tags": [
+        "python",
+        "kafka",
+        "events"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "fastapi"
+        ],
+        "tools": [
+          "kafka",
+          "redis",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "ext-plasmo-ts",
+      "label": "Browser Extension (Plasmo)",
+      "description": "TypeScript extension for Chrome and Firefox",
+      "icon": null,
+      "tags": [
+        "browser",
+        "extension",
+        "typescript"
+      ],
+      "stack": {
+        "project_type": "browser-extension",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "plasmo"
+        ],
+        "tools": [
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-tauri-svelte",
+      "label": "Tauri + Svelte Desktop",
+      "description": "Lightweight native desktop app with Svelte UI",
+      "icon": "tauri.svg",
+      "tags": [
+        "rust",
+        "desktop",
+        "svelte"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "rust",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "tauri",
+          "svelte"
+        ],
+        "tools": [
+          "npm",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-tauri-vue",
+      "label": "Tauri + Vue Desktop",
+      "description": "Lightweight native desktop app with Vue UI",
+      "icon": "tauri.svg",
+      "tags": [
+        "rust",
+        "desktop",
+        "vue"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "rust",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "tauri",
+          "vue"
+        ],
+        "tools": [
+          "npm",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-tauri-react",
+      "label": "Tauri + React Desktop",
+      "description": "Lightweight native desktop app with React UI",
+      "icon": "tauri.svg",
+      "tags": [
+        "rust",
+        "desktop",
+        "react"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "rust",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "tauri",
+          "react"
+        ],
+        "tools": [
+          "npm",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-electron-react",
+      "label": "Electron + React Desktop",
+      "description": "Cross-platform desktop app with React",
+      "icon": "electron.webp",
+      "tags": [
+        "typescript",
+        "desktop",
+        "electron"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "typescript",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "electron",
+          "react"
+        ],
+        "tools": [
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-electron-vue",
+      "label": "Electron + Vue Desktop",
+      "description": "Cross-platform desktop app with Vue",
+      "icon": "electron.webp",
+      "tags": [
+        "typescript",
+        "desktop",
+        "electron"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "typescript",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "electron",
+          "vue"
+        ],
+        "tools": [
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-electron-svelte",
+      "label": "Electron + Svelte Desktop",
+      "description": "Cross-platform desktop app with Svelte",
+      "icon": "electron.webp",
+      "tags": [
+        "typescript",
+        "desktop",
+        "electron"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "typescript",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "electron",
+          "svelte"
+        ],
+        "tools": [
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-qt-widgets",
+      "label": "Qt Widgets Desktop",
+      "description": "Classic C++ desktop app with Qt Widgets",
+      "icon": "qt.svg",
+      "tags": [
+        "cpp",
+        "desktop",
+        "qt"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "cpp",
+        "frontend_lang": null,
+        "frameworks": [
+          "qt",
+          "qt-widgets"
+        ],
+        "tools": [
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "desk-qt-webengine",
+      "label": "Qt WebEngine + React",
+      "description": "Chromium-based UI inside Qt with React",
+      "icon": "qt.svg",
+      "tags": [
+        "cpp",
+        "desktop",
+        "qt",
+        "react"
+      ],
+      "stack": {
+        "project_type": "desktop-app",
+        "backend_lang": "cpp",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "qt",
+          "qt-webengine",
+          "react"
+        ],
+        "tools": [
+          "npm",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-laravel",
+      "label": "Laravel Web App",
+      "description": "PHP full-stack application with PostgreSQL",
+      "icon": "laravel.svg",
+      "tags": [
+        "php",
+        "web",
+        "monolith"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "php",
+        "frontend_lang": null,
+        "frameworks": [
+          "laravel"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-laravel-react",
+      "label": "Laravel + React",
+      "description": "PHP API with React SPA frontend",
+      "icon": "laravel.svg",
+      "tags": [
+        "php",
+        "web",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "php",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "laravel",
+          "react"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-symfony",
+      "label": "Symfony Web App",
+      "description": "Modular PHP application with PostgreSQL",
+      "icon": "symfony.svg",
+      "tags": [
+        "php",
+        "web",
+        "monolith"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "php",
+        "frontend_lang": null,
+        "frameworks": [
+          "symfony"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-phoenix",
+      "label": "Phoenix Web App",
+      "description": "Real-time Elixir app with LiveView",
+      "icon": "phoenix-framework.svg",
+      "tags": [
+        "elixir",
+        "web",
+        "realtime"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "elixir",
+        "frontend_lang": null,
+        "frameworks": [
+          "phoenix"
+        ],
+        "tools": [
+          "postgresql",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-nest-next",
+      "label": "NestJS + Next.js",
+      "description": "TypeScript full-stack monolith",
+      "icon": "nestjs.svg",
+      "tags": [
+        "typescript",
+        "web",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": "typescript",
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "nest",
+          "nextjs"
+        ],
+        "tools": [
+          "postgresql",
+          "docker",
+          "npm"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-nuxt",
+      "label": "Nuxt Web App",
+      "description": "Vue full-stack application",
+      "icon": "nuxt.png",
+      "tags": [
+        "vue",
+        "web",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "nuxt"
+        ],
+        "tools": [
+          "postgresql",
+          "docker",
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mono-sveltekit",
+      "label": "SvelteKit Web App",
+      "description": "Svelte full-stack application",
+      "icon": "svelte.svg",
+      "tags": [
+        "svelte",
+        "web",
+        "fullstack"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "sveltekit"
+        ],
+        "tools": [
+          "postgresql",
+          "docker",
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "data-ml-api",
+      "label": "ML Model API",
+      "description": "FastAPI service serving trained ML models",
+      "icon": "fastapi.svg",
+      "tags": [
+        "python",
+        "ml",
+        "api"
+      ],
+      "stack": {
+        "project_type": "rest-api",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "fastapi"
+        ],
+        "tools": [
+          "postgresql",
+          "redis",
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "data-airflow-etl",
+      "label": "Airflow ETL",
+      "description": "Python ETL jobs with Airflow orchestration",
+      "icon": "airflow.svg",
+      "tags": [
+        "data",
+        "etl",
+        "airflow"
+      ],
+      "stack": {
+        "project_type": "data-pipeline",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [
+          "docker",
+          "airflow",
+          "postgresql"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": true
+        }
+      }
+    },
+    {
+      "id": "data-dbt-clickhouse",
+      "label": "dbt + ClickHouse",
+      "description": "SQL transformations into ClickHouse with dbt",
+      "icon": "dbt.svg",
+      "tags": [
+        "data",
+        "etl",
+        "clickhouse"
+      ],
+      "stack": {
+        "project_type": "data-pipeline",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [
+          "docker",
+          "clickhouse",
+          "dbt",
+          "postgresql"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": true
+        }
+      }
+    },
+    {
+      "id": "data-kafka-stream",
+      "label": "Kafka Stream Pipeline",
+      "description": "Streaming pipeline with Kafka and Airflow",
+      "icon": "kafka.svg",
+      "tags": [
+        "data",
+        "kafka",
+        "streaming"
+      ],
+      "stack": {
+        "project_type": "data-pipeline",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [
+          "docker",
+          "kafka",
+          "airflow"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": true
+        }
+      }
+    },
+    {
+      "id": "emb-qt",
+      "label": "Qt Embedded",
+      "description": "C++ embedded UI on Qt",
+      "icon": "qt.svg",
+      "tags": [
+        "embedded",
+        "cpp",
+        "qt"
+      ],
+      "stack": {
+        "project_type": "embedded",
+        "backend_lang": "cpp",
+        "frontend_lang": null,
+        "frameworks": [
+          "qt"
+        ],
+        "tools": [
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "emb-qt-qml",
+      "label": "Qt Quick Embedded",
+      "description": "Declarative QML UI for embedded devices",
+      "icon": "qt.svg",
+      "tags": [
+        "embedded",
+        "cpp",
+        "qt"
+      ],
+      "stack": {
+        "project_type": "embedded",
+        "backend_lang": "cpp",
+        "frontend_lang": null,
+        "frameworks": [
+          "qt",
+          "qt-qml"
+        ],
+        "tools": [
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "emb-zig",
+      "label": "Zig Embedded",
+      "description": "Bare-metal Zig firmware for microcontrollers",
+      "icon": "zig.svg",
+      "tags": [
+        "embedded",
+        "zig"
+      ],
+      "stack": {
+        "project_type": "embedded",
+        "backend_lang": "zig",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mobile-android-compose",
+      "label": "Android + Jetpack Compose",
+      "description": "Native Kotlin app with Compose UI",
+      "icon": "android.svg",
+      "tags": [
+        "android",
+        "kotlin",
+        "mobile"
+      ],
+      "stack": {
+        "project_type": "mobile-app",
+        "backend_lang": null,
+        "frontend_lang": "kotlin",
+        "frameworks": [
+          "android",
+          "jetpack-compose"
+        ],
+        "tools": [
+          "gradle"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mobile-expo",
+      "label": "Expo Mobile App",
+      "description": "React Native with managed Expo tooling",
+      "icon": "expo.svg",
+      "tags": [
+        "mobile",
+        "react-native"
+      ],
+      "stack": {
+        "project_type": "mobile-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "expo"
+        ],
+        "tools": [
+          "npm",
+          "firebase"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "mobile-react-native",
+      "label": "React Native App",
+      "description": "Cross-platform TypeScript mobile app",
+      "icon": "reactnative.svg",
+      "tags": [
+        "mobile",
+        "react-native"
+      ],
+      "stack": {
+        "project_type": "mobile-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "react-native"
+        ],
+        "tools": [
+          "npm"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "cli-rust",
+      "label": "CLI Tool (Rust + Clap)",
+      "description": "Native command-line tool with Clap",
+      "icon": "clap.svg",
+      "tags": [
+        "rust",
+        "cli"
+      ],
+      "stack": {
+        "project_type": "cli-tool",
+        "backend_lang": "rust",
+        "frontend_lang": null,
+        "frameworks": [
+          "clap"
+        ],
+        "tools": [],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "cli-zig",
+      "label": "CLI Tool (Zig)",
+      "description": "Small native CLI built with Zig std",
+      "icon": "zig.svg",
+      "tags": [
+        "zig",
+        "cli"
+      ],
+      "stack": {
+        "project_type": "cli-tool",
+        "backend_lang": "zig",
+        "frontend_lang": null,
+        "frameworks": [
+          "zig-cli"
+        ],
+        "tools": [],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "cli-go-plus-api",
+      "label": "Go CLI + Gin API",
+      "description": "Cobra CLI with an embedded Gin HTTP server",
+      "icon": "gin.svg",
+      "tags": [
+        "go",
+        "cli",
+        "api"
+      ],
+      "stack": {
+        "project_type": "custom",
+        "backend_lang": "go",
+        "frontend_lang": null,
+        "frameworks": [
+          "gin",
+          "cobra"
+        ],
+        "tools": [
+          "docker"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "bot-python-api",
+      "label": "Telegram Bot + FastAPI",
+      "description": "Aiogram bot with a FastAPI webhook API",
+      "icon": "fastapi.svg",
+      "tags": [
+        "python",
+        "bot",
+        "api"
+      ],
+      "stack": {
+        "project_type": "telegram-bot",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [
+          "fastapi",
+          "aiogram"
+        ],
+        "tools": [
+          "redis",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "web-vue",
+      "label": "Vue Web App",
+      "description": "Vite + Vue with TypeScript",
+      "icon": "vue.svg",
+      "tags": [
+        "vue",
+        "frontend"
+      ],
+      "stack": {
+        "project_type": "web-app",
+        "backend_lang": null,
+        "frontend_lang": "typescript",
+        "frameworks": [
+          "vue"
+        ],
+        "tools": [
+          "npm",
+          "docker"
+        ],
+        "features": {
+          "testing": false,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "lib-rust",
+      "label": "Rust Library",
+      "description": "Reusable Rust crate with a demo CLI",
+      "icon": "clap.svg",
+      "tags": [
+        "rust",
+        "library"
+      ],
+      "stack": {
+        "project_type": "library",
+        "backend_lang": "rust",
+        "frontend_lang": null,
+        "frameworks": [
+          "clap"
+        ],
+        "tools": [],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
+    },
+    {
+      "id": "lib-python",
+      "label": "Python Library",
+      "description": "Reusable Python package with pytest",
+      "icon": "python.svg",
+      "tags": [
+        "python",
+        "library"
+      ],
+      "stack": {
+        "project_type": "library",
+        "backend_lang": "python",
+        "frontend_lang": null,
+        "frameworks": [],
+        "tools": [
+          "pytest",
+          "ruff"
+        ],
+        "features": {
+          "testing": true,
+          "git": true,
+          "vscode": true,
+          "docker": false
+        }
+      }
     }
   ],
   "project_language_map": {
@@ -2801,24 +3954,6 @@
       "php",
       "swift",
       "zig"
-    ],
-    "empty-project": [
-      "python",
-      "rust",
-      "go",
-      "typescript",
-      "javascript",
-      "java",
-      "csharp",
-      "cpp",
-      "dart",
-      "kotlin",
-      "php",
-      "swift",
-      "zig",
-      "elixir",
-      "gleam",
-      "html"
     ],
     "custom": [
       "python",
@@ -3212,9 +4347,6 @@
       "docker"
     ],
     "custom": [
-      "docker"
-    ],
-    "empty-project": [
       "docker"
     ]
   },

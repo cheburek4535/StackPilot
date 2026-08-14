@@ -96,13 +96,25 @@ let stackError = $derived(firstError(stackIssues));
  *  шаги «Backend Language» и «Backend Framework» для него скрываются. */
 let hasBackend = $derived(selectedType?.has_backend ?? true);
 
-/** Выбрана ли «клиентская оболочка» (expo, react-native, plasmo, electron,
+/** Активная «клиентская оболочка» (expo, react-native, plasmo, electron,
  *  tauri): standalone-клиент, для которого серверная сторона имеет смысл
- *  только как разделённый REST API. Шаги Backend Language/Framework
- *  скрываются, бэкенд-фреймворки без rest-api блокируются. */
-let hasClientShell = $derived(
-  (tree?.client_shell_frameworks ?? []).some((id) => selectedFrameworks.includes(id)),
+ *  только как разделённый REST API. Пока оболочка выбрана — весь выбор
+ *  Backend Language/Framework визуально блокируется с объяснением
+ *  (не «молча некликабельно»). */
+let clientShellFw = $derived<FrameworkDef | null>(
+  tree
+    ? (selectedFrameworks
+        .map((id) => tree!.frameworks.find((f) => f.id === id))
+        .find((f) => f && (tree!.client_shell_frameworks ?? []).includes(f.id)) ?? null)
+    : null,
 );
+let hasClientShell = $derived(clientShellFw !== null);
+
+/** Текст блокировки серверной стороны при выбранной «клиентской оболочке»:
+ *  подпись/тултип на заблокированных бэкенд-карточках. */
+function clientShellBlockText(): string {
+  return `Not available when using a Client Shell like ${clientShellFw?.label ?? "this app"}. You must build a decoupled API.`;
+}
 
 /** Серверная сторона доступна для выбора: тип проекта не безбэкендовый
  *  И не выбрана клиентская оболочка. */
@@ -642,6 +654,18 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
     };
   }
 
+  // 1b. «Клиентская оболочка» (expo, react-native, plasmo, electron, tauri):
+  //      standalone-клиент — серверная сторона для него имеет смысл только
+  //      как разделённый REST API (API + Client). Пока оболочка выбрана,
+  //      весь бэкенд-выбор блокируется с объяснением.
+  if (hasClientShell && fw.side === "backend") {
+    return {
+      message: "Not available — Client Shell selected",
+      detail: clientShellBlockText(),
+      alternatives: [],
+    };
+  }
+
   // 2. Взаимные конфликты (conflicts + conflict_notes)
   for (const selId of selectedFrameworks) {
     const sel = tree?.frameworks.find((f) => f.id === selId);
@@ -656,20 +680,6 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
         alternatives: frameworkAlternatives(fw),
       };
     }
-  }
-
-  // 2b. «Клиентская оболочка» (expo, react-native, plasmo, electron, tauri):
-  //     standalone-клиент — серверная сторона для него имеет смысл только
-  //     как разделённый REST API. Бэкенд-фреймворки без rest-api
-  //     (cli, боты, инструменты) жёстко блокируются.
-  const shellId = selectedFrameworks.find((id) => tree?.client_shell_frameworks.includes(id));
-  if (shellId && fw.side === "backend" && !(fw.project_types ?? []).includes("rest-api")) {
-    const shellFw = tree?.frameworks.find((f) => f.id === shellId);
-    return {
-      message: "Не REST API — несовместим с клиентом",
-      detail: `«${shellFw?.label ?? shellId}» — мобильный/десктопный клиент: связка возможна только через разделённую (API + Client) архитектуру. Выберите REST-API-бэкенд или уберите серверную сторону.`,
-      alternatives: frameworkAlternatives(fw),
-    };
   }
 
   // 3. Универсальные (tauri/electron) против конкретной стороны
@@ -888,12 +898,16 @@ function langLabel(id: string): string {
 }
 
 /** Языки, доступные для «чистого» backend-выбора (без фреймворка).
- *  Ограничены project_language_map выбранного типа проекта: язык должен
- *  входить в разрешённый список (browser-extension → только TS/JS, без Go). */
+ *  Категория "both" (kotlin, dart, csharp, swift) тоже доступна — вандальные
+ *  языки без фреймворка. Ограничены project_language_map выбранного типа
+ *  проекта: язык должен входить в разрешённый список (browser-extension →
+ *  только TS/JS, без Go). */
 function backendCandidates(): LanguageDef[] {
   if (!tree) return [];
   const allowed = selectedType ? tree.project_language_map[selectedType.id] : null;
-  let langs = tree.languages.filter((l) => l.category === "backend");
+  let langs = tree.languages.filter(
+    (l) => l.category === "backend" || l.category === "both",
+  );
   if (allowed) langs = langs.filter((l) => allowed.includes(l.id));
   return langs;
 }
@@ -908,12 +922,21 @@ function frontendCandidates(): LanguageDef[] {
   return langs;
 }
 
-/** Причина, по которой чистый язык нельзя выбрать (сторона уже занята) */
+/** Причина, по которой чистый язык нельзя выбрать (сторона уже занята или
+ *  выбрана «клиентская оболочка» — серверная сторона недоступна). */
 function languageBlockReason(lang: LanguageDef): string | null {
   const side = lang.category === "static" ? "frontend" : lang.category;
+  if (hasClientShell && side !== "frontend") return "Not available — Client Shell selected";
   const active = side === "frontend" ? frontendLangs : backendLangs;
   if (active.includes(lang.id)) return null;
   if (active.length > 0) return `Already ${active.map((l) => langLabel(l)).join(", ")} on this side`;
+  return null;
+}
+
+/** Развёрнутое объяснение блокировки чистого языка (подпись под бейджем) */
+function languageBlockDetail(lang: LanguageDef): string | null {
+  const side = lang.category === "static" ? "frontend" : lang.category;
+  if (hasClientShell && side !== "frontend") return clientShellBlockText();
   return null;
 }
 
@@ -999,6 +1022,14 @@ function applyFwPopup() {
   }
 
   if (popupLang && fw.languages.includes(popupLang)) {
+    // Смена языка фреймворка: старый язык стороны убирается ДО записи
+    // нового — в стейте никогда не окажется двух языков одной стороны
+    // (JS → Vue(JS) → TS: сначала снимаем JS, потом добавляем TS).
+    const prevLang = fwLangs[fw.id];
+    if (prevLang && prevLang !== popupLang) {
+      manualBackendLangs = manualBackendLangs.filter((l) => l !== prevLang);
+      manualFrontendLangs = manualFrontendLangs.filter((l) => l !== prevLang);
+    }
     fwLangs = { ...fwLangs, [fw.id]: popupLang };
   }
   if (companionOptions(fw).length > 0) {
@@ -1018,6 +1049,11 @@ function applyFwPopup() {
     if (popupCompanion && popupCompanionLang) {
       const cfw = tree?.frameworks.find((f) => f.id === popupCompanion);
       if (cfw && cfw.languages.includes(popupCompanionLang)) {
+        const prevCompanionLang = fwLangs[popupCompanion];
+        if (prevCompanionLang && prevCompanionLang !== popupCompanionLang) {
+          manualBackendLangs = manualBackendLangs.filter((l) => l !== prevCompanionLang);
+          manualFrontendLangs = manualFrontendLangs.filter((l) => l !== prevCompanionLang);
+        }
         fwLangs = { ...fwLangs, [popupCompanion]: popupCompanionLang };
       }
     }
@@ -2106,8 +2142,12 @@ function resetAll() {
                     </span>
                     {#if installedHere}
                       <span class="env-status ok">✓ Уже установлено локально</span>
-                      <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
-                        Связать с локальным / Отключить Docker
+                      <button
+                        class="btn-secondary"
+                        title="Exclude this tool from docker-compose and use the local installation"
+                        onclick={() => optInLocalInfra(req.tool_id)}
+                      >
+                        Use Local (Exclude from Docker)
                       </button>
                     {:else}
                       <button class="btn-secondary" onclick={() => optInLocalInfra(req.tool_id)}>
@@ -2362,6 +2402,7 @@ function resetAll() {
             {@const eitherFws = fws.filter((f) => f.side === "either")}
 
             {#snippet fwCard(fw: FrameworkDef)}
+              {@const shellBlocked = hasClientShell && fw.side === "backend"}
               {@const reason = frameworkBlockReason(fw.id)}
               {@const altInfo = reason !== null ? frameworkBlockInfo(fw.id) : null}
               {@const warnReason = frameworkWarnReason(fw.id)}
@@ -2371,7 +2412,11 @@ function resetAll() {
                   class="card"
                   class:selected={selectedFrameworks.includes(fw.id)}
                   class:blocked={reason !== null}
-                  title={altInfo?.detail}
+                  class:opacity-50={shellBlocked}
+                  class:grayscale={shellBlocked}
+                  class:cursor-not-allowed={shellBlocked}
+                  disabled={shellBlocked}
+                  title={altInfo?.detail ?? (shellBlocked ? clientShellBlockText() : undefined)}
                   onclick={() => clickFramework(fw.id)}
                 >
                   <TechIcon icon={fw.icon} alt={fw.label} size="lg" />
@@ -2588,7 +2633,7 @@ function resetAll() {
               </details>
             {/snippet}
 
-            {#snippet territory(side: string, title: string, desc: string, items: FrameworkDef[], langs: string[])}
+            {#snippet territory(side: string, title: string, desc: string, items: FrameworkDef[], langs: string[], note?: string)}
               <section class="territory territory-{side}">
                 <header class="territory-head">
                   <TechIcon alt="" size="md" />
@@ -2603,6 +2648,9 @@ function resetAll() {
                     <span class="territory-count">{items.length}</span>
                   </div>
                 </header>
+                {#if note}
+                  <p class="hint backendless-note">{note}</p>
+                {/if}
                 <div class="territory-body">
                   {#each FW_LEVELS as lvl}
                     {@const lvlItems = items.filter((f) => fwLevelOf(f) === lvl.id)}
@@ -2621,6 +2669,7 @@ function resetAll() {
                 "Server-side: APIs, services, bots — goes into backend/",
                 backendFws,
                 backendLangs,
+                hasClientShell ? clientShellBlockText() : undefined,
               )}
             {/if}
             {#if frontendFws.length > 0}
@@ -2644,9 +2693,7 @@ function resetAll() {
             {#if !hasBackend}
               {#if hasClientShell}
                 <p class="hint backendless-note">
-                  A client shell (mobile/desktop app) is selected — it talks to servers only
-                  through a separated REST API. The «Backend Language» and «Backend Framework»
-                  steps are hidden; only REST-API backends could join such a stack.
+                  {clientShellBlockText()}
                 </p>
               {:else}
                 <p class="hint backendless-note">
@@ -2677,14 +2724,22 @@ function resetAll() {
                     <div class="lang-side">
                       <p class="lang-side-title">Backend language</p>
                       <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                      {#if hasClientShell}
+                        <p class="hint backendless-note">{clientShellBlockText()}</p>
+                      {/if}
                       <div class="card-grid lang-grid">
                         {#each backendCandidates() as lang}
                           {@const blockedReason = languageBlockReason(lang)}
+                          {@const blockedDetail = languageBlockDetail(lang)}
                           <button
                             class="card"
                             class:selected={backendLangs.includes(lang.id)}
                             class:blocked={blockedReason !== null}
+                            class:opacity-50={hasClientShell}
+                            class:grayscale={hasClientShell}
+                            class:cursor-not-allowed={hasClientShell}
                             disabled={blockedReason !== null}
+                            title={blockedDetail ?? undefined}
                             onclick={() => toggleLang("backend", lang.id)}
                           >
                             <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
@@ -2694,6 +2749,9 @@ function resetAll() {
                             {/if}
                             {#if blockedReason}
                               <span class="conflict-badge">{blockedReason}</span>
+                            {/if}
+                            {#if blockedDetail}
+                              <span class="conflict-detail">{blockedDetail}</span>
                             {/if}
                           </button>
                         {/each}
@@ -3099,6 +3157,14 @@ function resetAll() {
 .card.selected { border-color: #6c5ce7; background: #2d2d5e; box-shadow: 0 0 0 2px #6c5ce7; }
 .card.blocked { opacity: 0.55; cursor: not-allowed; border-color: #333; background: #15152e; }
 .card.blocked:hover { border-color: #333; background: #15152e; }
+
+/* Утилиты блокировки (клиентская оболочка): карточка видна, но явно
+   недоступна — «не молча некликабельна», с подписью и тултипом. */
+.opacity-50 { opacity: 0.5; }
+.grayscale { filter: grayscale(1); }
+.cursor-not-allowed { cursor: not-allowed; }
+.opacity-50:hover,
+.grayscale:hover { border-color: #333; background: #1a1a2e; }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: #888; }
 .type-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }

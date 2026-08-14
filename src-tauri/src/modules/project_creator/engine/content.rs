@@ -637,15 +637,18 @@ ENTRYPOINT ["./{project_name}"]"#))
         }
     },
         "zig" => {
-// --fetch подтягивает зависимости из build.zig.zon (нужно для zap).
-// Образ 0.14 — минимальная версия для zap v0.4 (minimum_zig_version).
+// Зависимости (zap) подтягиваются автоматически: `zig build` сам
+// выполняет fetch-фазу из build.zig.zon (флаг --fetch останавливается
+// ПОСЛЕ загрузки зависимостей и не собирает бинарь — zig-out/bin
+// остался бы пустым). Образ 0.14 — минимальная версия для zap v0.10.1
+// (в zon пишется minimum_zig_version = "0.14.0").
 Some(format!(r#"FROM ziglang/zig:0.14.0 AS build
 WORKDIR /app
 
 COPY build.zig build.zig.zon ./
 COPY src/ ./src/
 
-RUN zig build --fetch -Doptimize=ReleaseFast
+RUN zig build -Doptimize=ReleaseFast
 
 FROM scratch
 WORKDIR /

@@ -49,6 +49,7 @@ impl GeneratorRegistry {
         registry.register(Arc::new(ScaffoldGenerator));
         registry.register(Arc::new(TauriConfigGenerator));
         registry.register(Arc::new(VsCodeMergeGenerator));
+        registry.register(Arc::new(VsCodeFoldersMergeGenerator));
         registry
     }
 
@@ -195,30 +196,49 @@ impl Generator for SpringBootGenerator {
             urlencode(&project_name),
             urlencode(&deps)
         );
-        let zip_path = project_path.join("project.zip");
+        // При сегментации (Strict Subdir Mandate) starter распаковывается
+        // ВНУТРИ сегмента (backend/), а не в корне проекта.
+        let target_dir = config
+            .get("target_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+        let target = if target_dir == "." {
+            project_path.to_path_buf()
+        } else {
+            let target = project_path.join(target_dir);
+            std::fs::create_dir_all(&target).map_err(|e| {
+                format!(
+                    "SpringBootGenerator: failed to create target dir '{}': {}",
+                    target_dir, e
+                )
+            })?;
+            target
+        };
+        let zip_path = target.join("project.zip");
 
         // 1) Скачивание. --fail-with-body: тело HTTP-ошибки сохраняется в файл.
         download_starter(&url, &zip_path).await?;
 
         // 2) Проверка HTTP-статуса на Rust: настоящий ZIP или тело ошибки
         //    Initializr? Если ответ не архив (JSON с ключом message, HTML) —
-        //    генерация прерывается ДО сохранения/распаковки сломанного архива.
+        //    генерация прерывается, сломанный архив не сохраняется.
         let bytes = std::fs::read(&zip_path).map_err(|e| {
-            format!("Spring Initializr отказал: failed to read downloaded archive 'project.zip': {}", e)
+            format!("Spring Initializr error: failed to read downloaded archive 'project.zip': {}", e)
         })?;
         if !is_zip_archive(&bytes) {
             let reason = extract_error_text(&bytes);
-            return Err(format!("Spring Initializr отказал: {}", reason));
+            let _ = std::fs::remove_file(&zip_path);
+            return Err(format!("Spring Initializr error: {}", reason));
         }
 
-        // 3) Распаковка.
+        // 3) Распаковка (внутри сегмента, если он есть).
         let zip_str = zip_path.to_string_lossy().to_string();
         let (unzip_cmd, unzip_args) = if cfg!(target_os = "windows") {
             ("tar", vec!["-xf".to_string(), zip_str])
         } else {
             ("unzip", vec!["-o".to_string(), zip_str])
         };
-        run_cli(unzip_cmd, &unzip_args, project_path, None, 300).await?;
+        run_cli(unzip_cmd, &unzip_args, &target, None, 300).await?;
 
         // 4) Уборка.
         let _ = std::fs::remove_file(&zip_path);
@@ -333,16 +353,18 @@ impl Generator for FsCleanupGenerator {
 //
 // Проблема: create-vite/create-next-app/nuxi init и т.п. создают проект В
 // ПОДПАПКЕ с именем, переданным аргументом. Вызов из корня с именем проекта
-// даёт матрёшку (testapp13/testapp13), а с "." большинство CLI либо не умеет
-// работать в текущей папке (create-expo-app), либо спрашивает подтверждение.
+// даёт матрёшку (testapp13/testapp13), а "." большинство CLI либо не умеет
+// обрабатывать, либо требует подтверждения.
 //
-// Решение (режим выбирается флагом dot_capable):
-//   1. dot-capable: CLI умеет работать с "." — движок заранее создаёт
-//      target_dir (frontend/ и т.п.), CLI выполняется ВНУТРИ неё с ".".
-//   2. temp+move: CLI не принимает "." — проект скаффолдится во временную
-//      папку temp_<target>/ (имя генерируется уникальным), содержимое
-//      ПРОГРАММНО переносится в target_dir (рекурсивно, включая скрытые
-//      файлы), временная папка удаляется.
+// Решение — Temp-to-Target (используется ВСЕГДА, без dot-режима):
+//   1. CLI выполняется НЕ в финальном каталоге, а во временной папке
+//      temp_<target>/ в корне проекта (имя генерируется уникальным);
+//   2. после успешного завершения всё содержимое (рекурсивно, ВКЛЮЧАЯ
+//      скрытые файлы: .gitignore, .env и т.п.) ПРОГРАММНО переносится
+//      в target_dir (frontend/, backend/ или корень);
+//   3. временная папка удаляется.
+// Так CLI никогда не работает «внутри» финального frontend//backend/ —
+// «папка внутри папки» невозможна в принципе.
 //
 // Конфиг (Step::Generate.generator_config):
 //   {
@@ -350,7 +372,6 @@ impl Generator for FsCleanupGenerator {
 //     "args": ["create-vite@latest", "__TARGET__", "--template", "react-ts"],
 //     "name_arg": 1,             // позиция имени проекта в args (обязательно)
 //     "target_dir": "frontend",  // куда класть проект ("." = корень проекта)
-//     "dot_capable": true,       // CLI принимает "." в name_arg?
 //     "timeout_secs": 600        // опционально, по умолчанию 600
 //   }
 // ============================================================================
@@ -365,7 +386,7 @@ impl Generator for ScaffoldGenerator {
         "Smart Scaffold"
     }
     fn description(&self) -> &str {
-        "Runs a scaffolding CLI without creating nested project folders (dot or temp+move)"
+        "Runs a scaffolding CLI into a temp folder, then moves contents into the target dir"
     }
     async fn generate(
         &self,
@@ -395,10 +416,6 @@ impl Generator for ScaffoldGenerator {
             .get("target_dir")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "ScaffoldGenerator: missing 'target_dir' in config".to_string())?;
-        let dot_capable = config
-            .get("dot_capable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
         let timeout_secs = config
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
@@ -432,15 +449,8 @@ impl Generator for ScaffoldGenerator {
             target
         };
 
-        if dot_capable {
-            // CLI умеет работать в текущей папке: выполняется ВНУТРИ target с "."
-            args[name_arg] = ".".to_string();
-            let mut report = run_cli(command, &args, &target, None, timeout_secs).await?;
-            report.message = format!("Scaffold '{}' created in '{}'", command, target_dir);
-            return Ok(report);
-        }
-
-        // temp+move: временная папка в корне проекта → программный перенос в target.
+        // Temp-to-Target: CLI выполняется во временной папке, содержимое
+        // (включая скрытые файлы) переносится в target программно.
         let temp_name = unique_temp_name(project_path, target_dir);
         args[name_arg] = temp_name.clone();
         run_cli(command, &args, project_path, None, timeout_secs).await?;
@@ -477,15 +487,21 @@ impl Generator for ScaffoldGenerator {
 // ============================================================================
 // TauriConfigGenerator — Rust-патч src-tauri/tauri.conf.json после tauri init.
 //
-// `tauri init --ci` создаёт конфиг под фронтенд в корне приложения. Наш
-// фронтенд живёт в frontend/, поэтому конфиг правится ПРОГРАММНО (не
+// `cargo tauri init --ci` создаёт конфиг под фронтенд в корне приложения.
+// Наш фронтенд живёт в frontend/, поэтому конфиг правится ПРОГРАММНО (не
 // текстовыми заменами): build.beforeDevCommand / beforeBuildCommand / devUrl /
 // frontendDist указывают на frontend/, legacy build.distDir (v1) тоже
 // переписывается, если присутствует; identifier берётся из конфига.
 //
+// Strict Subdir Mandate: при сегментации tauri живёт в backend/, поэтому
+// конфиг лежит в backend/src-tauri/tauri.conf.json (tauri_dir="backend") и
+// frontendDist = "../../frontend/dist" (передаётся движком явно).
+//
 // Конфиг:
 //   {
 //     "frontend_dir": "frontend",
+//     "tauri_dir": "",            // каталог tauri-проекта ("backend" в моно-репо)
+//     "frontend_dist": "../frontend/dist",  // готовый путь (опционально)
 //     "dev_url": "http://localhost:5173",
 //     "before_dev_command": "npm --prefix frontend run dev",
 //     "before_build_command": "npm --prefix frontend run build",
@@ -515,6 +531,10 @@ impl Generator for TauriConfigGenerator {
             .get("frontend_dir")
             .and_then(|v| v.as_str())
             .unwrap_or("frontend");
+        let tauri_dir = config
+            .get("tauri_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let dev_url = config
             .get("dev_url")
             .and_then(|v| v.as_str())
@@ -531,8 +551,20 @@ impl Generator for TauriConfigGenerator {
             .get("identifier")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "TauriConfigGenerator: missing 'identifier' in config".to_string())?;
+        // Путь на dist передаёт движок целиком (отличается в root-режиме и
+        // при сегментации: ../frontend/dist против ../../frontend/dist).
+        let dist = config
+            .get("frontend_dist")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("../{}/dist", frontend_dir));
 
-        let config_path = project_path.join("src-tauri").join("tauri.conf.json");
+        let tauri_root = if tauri_dir.is_empty() {
+            project_path.to_path_buf()
+        } else {
+            project_path.join(tauri_dir)
+        };
+        let config_path = tauri_root.join("src-tauri").join("tauri.conf.json");
         let mut value = read_json(&config_path).map_err(|e| {
             format!("TauriConfigGenerator: {} (tauri init не создал конфиг?)", e)
         })?;
@@ -553,7 +585,6 @@ impl Generator for TauriConfigGenerator {
             serde_json::Value::String(before_build_command.to_string()),
         );
         build.insert("devUrl".into(), serde_json::Value::String(dev_url.to_string()));
-        let dist = format!("../{}/dist", frontend_dir);
         build.insert(
             "frontendDist".into(),
             serde_json::Value::String(dist.clone()),
@@ -567,9 +598,14 @@ impl Generator for TauriConfigGenerator {
         value["identifier"] = serde_json::Value::String(identifier.to_string());
 
         write_json(&config_path, &value)?;
+        let reported_path = if tauri_dir.is_empty() {
+            "src-tauri/tauri.conf.json".to_string()
+        } else {
+            format!("{}/src-tauri/tauri.conf.json", tauri_dir)
+        };
         Ok(GenerationReport {
             created_files: Vec::new(),
-            modified_files: vec!["src-tauri/tauri.conf.json".to_string()],
+            modified_files: vec![reported_path],
             skipped_files: Vec::new(),
             message: "Tauri configuration adapted to the frontend/ layout".to_string(),
         })
@@ -695,6 +731,42 @@ impl Generator for VsCodeMergeGenerator {
 }
 
 // ============================================================================
+// VsCodeFoldersMergeGenerator — слияние вложенных .vscode в корневой.
+//
+// CLI-скаффолдеры (create-next-app и т.п.) создают .vscode/ внутри своих
+// папок: frontend/.vscode, backend/.vscode. После того как все каркасы
+// собраны, вложенные .vscode СЛИВАЮТСЯ в корневой .vscode/ (settings.json —
+// глубокое слияние, extensions.json — объединение списков), а вложенные
+// папки удаляются. Конфиги CLI (typescript.tsdk и т.п.) побеждают при
+// конфликте — как в VsCodeMergeGenerator.
+//
+// Конфиг не требуется: каталоги frontend/ и backend/ сканируются
+// автоматически. No-op, если вложенных .vscode нет.
+// ============================================================================
+pub struct VsCodeFoldersMergeGenerator;
+
+#[async_trait]
+impl Generator for VsCodeFoldersMergeGenerator {
+    fn id(&self) -> &str {
+        "vscode-folders"
+    }
+    fn name(&self) -> &str {
+        "VS Code folders merge"
+    }
+    fn description(&self) -> &str {
+        "Merges frontend/.vscode and backend/.vscode into the root .vscode/"
+    }
+    async fn generate(
+        &self,
+        _context: &WizardContext,
+        project_path: &Path,
+        _config: &serde_json::Value,
+    ) -> Result<GenerationReport, String> {
+        merge_vscode_folders(project_path)
+    }
+}
+
+// ============================================================================
 // Общие помощники
 // ============================================================================
 
@@ -765,6 +837,77 @@ async fn run_cli(
         status.code().unwrap_or(-1),
         detail
     ))}
+
+/// Слить .vscode из frontend/ и backend/ в корневой .vscode/ и удалить
+/// вложенные папки (см. VsCodeFoldersMergeGenerator).
+///
+/// settings.json сливается глубоко (ключи вложенного .vscode побеждают —
+/// конфиги CLI не затираются), extensions.json объединяет recommendations
+/// без дубликатов. Папка с .vscode, но без файлов — просто удаляется.
+fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String> {
+    let mut merged_files: Vec<String> = Vec::new();
+    for dir in ["frontend", "backend"] {
+        let inner = project_path.join(dir).join(".vscode");
+        if !inner.exists() {
+            continue;
+        }
+        let root_vscode = project_path.join(".vscode");
+        std::fs::create_dir_all(&root_vscode).map_err(|e| {
+            format!(
+                "VsCodeFoldersMergeGenerator: failed to create root '.vscode': {}",
+                e
+            )
+        })?;
+
+        for file in ["settings.json", "extensions.json"] {
+            let inner_file = inner.join(file);
+            if !inner_file.exists() {
+                continue;
+            }
+            let root_file = root_vscode.join(file);
+            if root_file.exists() {
+                let root_value = read_json(&root_file)?;
+                let inner_value = read_json(&inner_file)?;
+                let merged = if file == "extensions.json" {
+                    merge_extensions(&inner_value, &root_value)
+                } else {
+                    merge_json(&inner_value, &root_value)
+                };
+                write_json(&root_file, &merged)?;
+            } else {
+                std::fs::copy(&inner_file, &root_file).map_err(|e| {
+                    format!(
+                        "VsCodeFoldersMergeGenerator: failed to copy {} → {}: {}",
+                        inner_file.display(),
+                        root_file.display(),
+                        e
+                    )
+                })?;
+            }
+            merged_files.push(format!("{}/.vscode/{}", dir, file));
+        }
+
+        std::fs::remove_dir_all(&inner).map_err(|e| {
+            format!(
+                "VsCodeFoldersMergeGenerator: failed to remove '{}': {}",
+                inner.display(),
+                e
+            )
+        })?;
+    }
+
+    let message = if merged_files.is_empty() {
+        "No inner .vscode folders found — nothing to merge".to_string()
+    } else {
+        format!("Merged inner .vscode into root: {}", merged_files.join(", "))
+    };
+    Ok(GenerationReport {
+        created_files: Vec::new(),
+        modified_files: merged_files,
+        skipped_files: Vec::new(),
+        message,
+    })
+}
 
 /// Уникальное имя временной папки для temp+move: `temp_<target>` + числовой
 /// суффикс, если папка с таким именем уже занята.
@@ -895,25 +1038,30 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
 async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
     let zip_str = zip_path.to_string_lossy().to_string();
     let args: Vec<String> = vec![
-        "--fail-with-body".into(),
         "-sSL".into(),
         "--max-time".into(),
         "120".into(),
+        // HTTP-статус пишется в stdout (единственный вывод -w), тело
+        // ответа — в project.zip (при ошибке там лежит JSON/HTML причины).
+        "-w".into(),
+        "%{http_code}".into(),
         url.to_string(),
         "-o".into(),
         zip_str,
     ];
     let mut cmd = spawn_command("curl", &args);
     cmd.current_dir(zip_path.parent().unwrap_or(Path::new(".")));
-    cmd.stdout(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn curl: {}", e))?;
+        .map_err(|e| format!("Spring Initializr отказал: failed to spawn curl: {}", e))?;
     let stderr = child.stderr.take().expect("stderr should be piped");
     let err_handle = tokio::spawn(async move { tail_lines(stderr).await });
+    let stdout = child.stdout.take().expect("stdout should be piped");
+    let out_handle = tokio::spawn(async move { tail_lines(stdout).await });
 
     let waited = tokio::time::timeout(Duration::from_secs(180), child.wait()).await;
     let status = match waited {
@@ -929,26 +1077,36 @@ async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
         }
     };
     let stderr_tail = err_handle.await.unwrap_or_default();
+    let stdout_tail = out_handle.await.unwrap_or_default();
 
-    if status.success() {
-        return Ok(());
+    // HTTP-статус от curl (-w "%{http_code}"): при любом HTTP-ответе
+    // (включая 4xx/5xx) процесс завершается успешно, статус — в stdout.
+    let http_code: u32 = stdout_tail.trim().parse().unwrap_or(0);
+
+    if !status.success() && http_code == 0 {
+        // curl не дождался HTTP-ответа (недоступный хост, обрыв соединения).
+        let tail = stderr_tail.trim();
+        let reason = if tail.is_empty() {
+            format!("HTTP request failed (exit code {})", status.code().unwrap_or(-1))
+        } else {
+            truncate(tail, 500)
+        };
+        return Err(format!("Spring Initializr отказал: {}", reason));
     }
 
-    // HTTP >= 400: --fail-with-body сохранил тело ошибки в project.zip.
-    // Извлекаем JSON-поле message (например, «Invalid dependency 'xyz'»)
-    // или сырой текст ответа.
-    let reason = match std::fs::read(zip_path) {
-        Ok(bytes) if !bytes.is_empty() => extract_error_text(&bytes),
-        _ => {
-            let tail = stderr_tail.trim();
-            if tail.is_empty() {
-                format!("HTTP request failed (exit code {})", status.code().unwrap_or(-1))
-            } else {
-                truncate(tail, 500)
-            }
-        }
-    };
-    Err(format!("Spring Initializr отказал: {}", reason))
+    if http_code != 200 {
+        // Статус != 200: в project.zip лежит тело ошибки Initializr
+        // (JSON с полем message или HTML). Извлекаем причину, НЕ сохраняем
+        // сломанный архив (удаляем) и прерываем генерацию.
+        let text = match std::fs::read(zip_path) {
+            Ok(bytes) if !bytes.is_empty() => extract_error_text(&bytes),
+            _ => format!("HTTP request failed with status {}", http_code),
+        };
+        let _ = std::fs::remove_file(zip_path);
+        return Err(format!("Spring Initializr error: {}", text));
+    }
+
+    Ok(())
 }
 
 /// Настоящий ZIP-архив? Проверяем магические байты (PK\x03\x04 — обычный
@@ -1384,6 +1542,122 @@ mod tests {
         });
         let res = tokio_test_block_on(gen.generate(&ctx, &dir, &cfg));
         assert!(res.is_err(), "без tauri.conf.json генератор обязан падать");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tauri_config_generator_honors_tauri_dir_and_frontend_dist_overrides() {
+        // Strict Subdir Mandate: конфиг лежит в backend/src-tauri/, dist —
+        // ../../frontend/dist (путь передаёт движок, генератор не считает сам)
+        let gen = TauriConfigGenerator;
+        let dir = temp_test_dir("tauri_config_seg");
+        let src_tauri = dir.join("backend").join("src-tauri");
+        std::fs::create_dir_all(&src_tauri).unwrap();
+        std::fs::write(
+            src_tauri.join("tauri.conf.json"),
+            r#"{
+  "identifier": "com.fallback",
+  "build": { "frontendDist": "../dist" }
+}"#,
+        )
+        .unwrap();
+
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "frontend_dir": "frontend",
+            "tauri_dir": "backend",
+            "frontend_dist": "../../frontend/dist",
+            "before_dev_command": "npm --prefix ../frontend run dev",
+            "before_build_command": "npm --prefix ../frontend run build",
+            "identifier": "com.myapp",
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("патч должен пройти");
+        assert_eq!(report.modified_files, vec!["backend/src-tauri/tauri.conf.json".to_string()]);
+
+        let patched: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(src_tauri.join("tauri.conf.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(patched["build"]["frontendDist"], "../../frontend/dist", "движок задаёт путь из backend/");
+        assert_eq!(patched["build"]["beforeDevCommand"], "npm --prefix ../frontend run dev");
+        assert_eq!(patched["identifier"], "com.myapp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vscode_folders_merge_merges_inner_into_root_and_deletes_inner() {
+        let gen = VsCodeFoldersMergeGenerator;
+        let dir = temp_test_dir("vscode_folders");
+        let root_vscode = dir.join(".vscode");
+        std::fs::create_dir_all(&root_vscode).unwrap();
+        std::fs::write(
+            root_vscode.join("settings.json"),
+            r#"{ "editor.tabSize": 4 }"#,
+        )
+        .unwrap();
+        // CLI-конфиг frontend/: typescript.tsdk должен ПОБЕДИТЬ (как в
+        // VsCodeMergeGenerator — конфиги CLI не затираются)
+        let front_vscode = dir.join("frontend").join(".vscode");
+        std::fs::create_dir_all(&front_vscode).unwrap();
+        std::fs::write(
+            front_vscode.join("settings.json"),
+            r#"{ "typescript.tsdk": "node_modules/typescript/lib", "editor.tabSize": 2 }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            front_vscode.join("extensions.json"),
+            r#"{ "recommendations": ["dbaeumer.vscode-eslint"] }"#,
+        )
+        .unwrap();
+        // backend/: только extensions.json
+        let back_vscode = dir.join("backend").join(".vscode");
+        std::fs::create_dir_all(&back_vscode).unwrap();
+        std::fs::write(
+            back_vscode.join("extensions.json"),
+            r#"{ "recommendations": ["rust-lang.rust-analyzer"] }"#,
+        )
+        .unwrap();
+
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &serde_json::json!({})))
+            .expect("merge должен пройти");
+
+        assert!(!front_vscode.exists(), "frontend/.vscode удаляется после слияния");
+        assert!(!back_vscode.exists(), "backend/.vscode удаляется после слияния");
+        assert!(report.modified_files.contains(&"frontend/.vscode/settings.json".to_string()), "{:?}", report.modified_files);
+        assert!(report.modified_files.contains(&"frontend/.vscode/extensions.json".to_string()), "{:?}", report.modified_files);
+        assert!(report.modified_files.contains(&"backend/.vscode/extensions.json".to_string()), "{:?}", report.modified_files);
+
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root_vscode.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings["typescript.tsdk"], "node_modules/typescript/lib", "конфиг CLI побеждает");
+        assert_eq!(settings["editor.tabSize"], 2, "глубокое слияние: ключ CLI поверх корневого");
+        assert!(
+            settings.get("editor.formatOnSave").is_none(),
+            "наши настройки не добавляются — это не VsCodeMergeGenerator: {settings}"
+        );
+
+        let exts: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root_vscode.join("extensions.json")).unwrap(),
+        )
+        .unwrap();
+        let recs = exts["recommendations"].as_array().unwrap();
+        assert!(recs.iter().any(|r| r == "dbaeumer.vscode-eslint"), "{recs:?}");
+        assert!(recs.iter().any(|r| r == "rust-lang.rust-analyzer"), "{recs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vscode_folders_merge_is_noop_without_inner_folders() {
+        let gen = VsCodeFoldersMergeGenerator;
+        let dir = temp_test_dir("vscode_folders_empty");
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &serde_json::json!({})))
+            .expect("no-op не должен падать");
+        assert!(report.modified_files.is_empty(), "{:?}", report.modified_files);
+        assert!(!dir.join(".vscode").exists(), "корневой .vscode без содержимого не создаётся");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
