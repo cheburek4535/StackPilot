@@ -61,6 +61,8 @@ let status = $state<string>("loading");
 let hostOs = $state<string>("windows");
 /** Краткое уведомление при авто-сбросе конфликтующих фреймворков */
 let dropNotice = $state<string | null>(null);
+/** Показывать ли отдельные карточки заблокированных фреймворков внутри уровня. */
+let showUnavailable = $state<Record<string, boolean>>({});
 
 // ---- Mode: Constructor | Templates | Analyze ----
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
@@ -532,9 +534,14 @@ onMount(async () => {
       }
     })(),
   ]);
-  await reSyncLiveSessions();
-  await refreshInstalledTools();
-  persistReady = true;
+  // Не задерживаем первый интерактивный кадр маршрута восстановлением живых
+  // сессий и проверкой toolchain: эти вызовы могут обращаться к Tauri долго.
+  // После отрисовки конструктора выполняем их в фоне.
+  queueMicrotask(async () => {
+    await reSyncLiveSessions();
+    await refreshInstalledTools();
+    persistReady = true;
+  });
 });
 
 onDestroy(() => {
@@ -658,6 +665,21 @@ function conflictNoteOf(fw: FrameworkDef, other: FrameworkDef): string | undefin
 /** Причина, по которой фреймворк нельзя выбрать (зеркало правил rules.ts) */
 function frameworkBlockReason(fwId: string): string | null {
   return frameworkBlockInfo(fwId)?.message ?? null;
+}
+
+function unavailableFrameworks(items: FrameworkDef[]): FrameworkDef[] {
+  return items.filter((fw) => frameworkBlockInfo(fw.id) !== null);
+}
+
+function availableFrameworksForDisplay(items: FrameworkDef[], levelKey: string): FrameworkDef[] {
+  const unavailable = unavailableFrameworks(items);
+  return showUnavailable[levelKey]
+    ? items
+    : items.filter((fw) => !unavailable.includes(fw));
+}
+
+function toggleUnavailable(levelKey: string) {
+  showUnavailable = { ...showUnavailable, [levelKey]: !showUnavailable[levelKey] };
 }
 
 type BlockInfo = {
@@ -2721,18 +2743,41 @@ function resetAll() {
               </div>
             {/if}
 
-            {#snippet fwLevel(title: string, items: FrameworkDef[], note: string)}
+            {#snippet fwLevel(title: string, items: FrameworkDef[], note: string, levelKey: string)}
+              {@const unavailable = unavailableFrameworks(items)}
+              {@const visibleItems = availableFrameworksForDisplay(items, levelKey)}
               <details class="fw-level" open>
                 <summary>
                   <TechIcon alt="" size="sm" />
                   <span class="fw-level-title">{title}</span>
                   <span class="fw-level-count">{items.length}</span>
                 </summary>
+                {#if unavailable.length > 0}
+                  <div class="fw-level-toolbar">
+                    <button
+                      type="button"
+                      class="fw-level-action"
+                      onclick={() => toggleUnavailable(levelKey)}
+                    >
+                      {showUnavailable[levelKey] ? "Hide unavailable" : "Show unavailable"}
+                    </button>
+                  </div>
+                {/if}
                 <p class="fw-level-note">{note}</p>
                 <div class="card-grid fw-grid">
-                  {#each items as fw}
+                  {#each visibleItems as fw}
                     {@render fwCard(fw)}
                   {/each}
+                  {#if unavailable.length > 0 && !showUnavailable[levelKey]}
+                    <button
+                      type="button"
+                      class="unavailable-summary"
+                      onclick={() => toggleUnavailable(levelKey)}
+                    >
+                      <strong>{unavailable.length} unavailable framework{unavailable.length === 1 ? "" : "s"}</strong>
+                      <span>Blocked by the current stack. Show them dimmed.</span>
+                    </button>
+                  {/if}
                 </div>
               </details>
             {/snippet}
@@ -2759,7 +2804,7 @@ function resetAll() {
                   {#each FW_LEVELS as lvl}
                     {@const lvlItems = items.filter((f) => fwLevelOf(f) === lvl.id)}
                     {#if lvlItems.length > 0}
-                      {@render fwLevel(lvl.title, lvlItems, lvl.note)}
+                      {@render fwLevel(lvl.title, lvlItems, lvl.note, `${side}-${lvl.id}`)}
                     {/if}
                   {/each}
                 </div>
@@ -3162,14 +3207,6 @@ function resetAll() {
             </div>
           </div>
 
-          <button
-            class="btn-primary ctx-create"
-            disabled={stackError !== null}
-            title={stackError ?? undefined}
-            onclick={() => goPhase(2)}
-          >
-            Review & Create →
-          </button>
         </aside>
       </div>
       {/if}
@@ -3198,7 +3235,6 @@ function resetAll() {
 .ctx-row:last-child { border-bottom: none; }
 .ctx-label { flex: 0 0 90px; font-weight: 600; color: #888; font-size: 0.8rem; }
 .ctx-value { flex: 1; font-size: 0.85rem; color: #ddd; overflow-wrap: anywhere; }
-.ctx-create { width: 100%; margin-top: 0.75rem; }
 .btn-change { background: none; border: 1px solid #444; color: #888; padding: 0.2rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.75rem; flex: 0 0 auto; }
 .btn-change:hover { border-color: #6c5ce7; color: #fff; }
 
@@ -3264,6 +3300,9 @@ function resetAll() {
 .fw-level[open] > summary { border-bottom-color: #2c2c46; }
 .fw-level > summary:hover { background: rgba(108, 92, 231, 0.08); }
 .fw-level-title { font-weight: 700; font-size: 0.9rem; color: #eee; }
+.fw-level-toolbar { display: flex; justify-content: flex-end; padding: 0.45rem 0.9rem 0; }
+.fw-level-action { margin-left: 0.5rem; border: 1px solid #45456a; border-radius: 6px; padding: 0.2rem 0.45rem; background: transparent; color: #aaa; cursor: pointer; font-size: 0.68rem; white-space: nowrap; }
+.fw-level-action:hover { border-color: #6c5ce7; color: #fff; }
 .fw-level-count {
   margin-left: auto;
   font-size: 0.72rem;
@@ -3298,6 +3337,10 @@ function resetAll() {
 .fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); grid-auto-rows: 1fr; align-items: stretch; }
 .fw-grid .card { min-height: 200px; height: 100%; box-sizing: border-box; }
 .fw-grid .card p { flex: 1; }
+.unavailable-summary { min-height: 200px; display: flex; flex-direction: column; justify-content: center; gap: 0.5rem; padding: 1rem; border: 1px dashed #555; border-radius: 10px; background: #15152e; color: #aaa; cursor: pointer; text-align: center; }
+.unavailable-summary:hover { border-color: #6c5ce7; color: #eee; background: #22224a; }
+.unavailable-summary strong { color: #ddd; font-size: 0.9rem; }
+.unavailable-summary span { color: #888; font-size: 0.75rem; }
 .fw-grid .card .fw-lang-chip,
 .fw-grid .card .fw-lang-multi,
 .fw-grid .card .conflict-badge { margin-top: 0.3rem; }
