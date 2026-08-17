@@ -395,6 +395,57 @@ fn compose_recipe(context: &WizardContext, folder_name: &str) -> Result<Recipe, 
         }
     }
 
+    // Django CLI должен запускаться из проектного Python-окружения. Раньше
+    // venv создавался только в фазе инструментов (из-за Alembic), то есть
+    // уже ПОСЛЕ `django-admin startproject`; на чистой машине команда тихо
+    // падала, а все последующие шаги продолжали работать с пустым backend/.
+    // Подготавливаем окружение сразу после записи requirements.txt и до
+    // любого Python-фреймворка. Полная установка requirements/Alembic
+    // выполняется позже, когда все framework-шаги уже записали зависимости.
+    if context.languages.iter().any(|l| l == "python")
+        && context.frameworks.iter().any(|f| f == "django")
+    {
+        let python_dir = python_segment_dir(context);
+        let base = std::path::PathBuf::from(project_path);
+        let venv_path = if python_dir == "." {
+            base.join("venv")
+        } else {
+            base.join(&python_dir).join("venv")
+        };
+        let venv_str = venv_path.to_string_lossy().into_owned();
+        steps.push(Step::Command {
+            id: "django_venv_create".into(),
+            label: "Create Python virtual environment".into(),
+            description: format!("Run python -m venv {}", venv_str),
+            command: "python".into(),
+            args: vec!["-m".into(), "venv".into(), venv_str],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(120),
+            condition: None,
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        });
+        // На этом этапе framework-specific шаги ещё не успели записать
+        // requirements.txt (aiogram и инструменты добавляют его позже),
+        // поэтому ставим только Django. Полная установка requirements и
+        // Alembic выполняется штатной фазой tools после всех scaffold-шагов.
+        let pip_args = vec!["install".into(), "django".into()];
+        steps.push(Step::Command {
+            id: "django_pip_install".into(),
+            label: "Install Django dependencies".into(),
+            description: "Install Python requirements in the project virtual environment".into(),
+            command: python_venv_bin(project_path, &python_dir, "pip"),
+            args: pip_args,
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(600),
+            condition: None,
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        });
+    }
+
     // Tauri-шаги откладываются в конец фазы Subdir Scaffolding: пайплайн
     // tauri обязан выполнять фронтенд-генератор ПЕРВЫМ (vite в frontend/ →
     // npm install → cargo tauri init), иначе init опережает каркас фронтенда.
@@ -2493,9 +2544,17 @@ if __name__ == "__main__":
             // django-admin startproject требует валидный Python-идентификатор:
             // «my-project» (дефис) не подходит — заменяем на подчёркивание.
             let safe_name = project_name.replace('-', "_");
+            // При наличии Python-проекта запускаем CLI из его venv. Это
+            // устраняет зависимость от глобальной установки Django и
+            // согласует команду с ранним django_pip_install в compose_recipe.
+            let django_command = if context.languages.iter().any(|l| l == "python") {
+                python_venv_bin(project_path, seg.unwrap_or("."), "django-admin")
+            } else {
+                "django-admin".to_string()
+            };
             vec![
                 cmd("django_start", "Start Django project", "Create Django project structure",
-                    "django-admin", vec!["startproject", &safe_name, "."]),
+                    &django_command, vec!["startproject", &safe_name, "."]),
             ]
         }
 
@@ -3265,6 +3324,11 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     // гарантированным alembic) — строго ДО шагов инструментов (порядок
     // в steps гарантирован: venv-шаги кладутся первыми в этот список).
     let has_python = context.languages.iter().any(|l| l == "python");
+    // Для Django базовый пакет ставится до CLI-скаффолда, но полная
+    // requirements-фаза всё равно нужна ПОСЛЕ framework-шагов: именно там
+    // aiogram/SQLAlchemy и прочие генераторы дописывают requirements.txt.
+    // Повторный вызов `python -m venv` безопасен и лишь переиспользует готовое
+    // окружение, зато устраняет гонку порядка шагов.
     let needs_python_venv = has_python && tools.iter().any(|t| t == "alembic");
     // Каталог python-кода (backend/ в моно-репозитории, иначе корень):
     // venv создаётся ВНУТРИ него, рядом с requirements.txt. Вычисляется

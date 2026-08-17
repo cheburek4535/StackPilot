@@ -1,0 +1,22 @@
+# Игнорируем скрипты очистки
+clean.py
+compresser.bat
+compresser.ps1
+rm-cleaner.bat
+repomix_clean.bat
+repomix_clean.ps1
+
+# Игнорируем временные файлы Repomix
+repomix-output.xml
+repomix-output.clean.xml
+repomix-output-clean.xml
+repomix.log
+
+# Игнорируем конфиги
+.repomixignore
+repomix.config.json
+repomix.config.js
+
+# Игнорируем папку с бэкапами
+.backup_original/
+*.tmp

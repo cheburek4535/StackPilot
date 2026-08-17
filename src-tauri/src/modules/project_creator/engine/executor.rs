@@ -5,7 +5,9 @@ use chrono::Local;
 use std::sync::Arc;
 use std::time::Duration;
 use crate::modules::project_creator::engine::ExecutionPlan;
-use crate::modules::project_creator::generators::{GeneratorRegistry, sh_quote, win_command_line};
+use crate::modules::project_creator::generators::{
+    is_windows_batch, windows_command_program, windows_shell_line, GeneratorRegistry, sh_quote,
+};
 use crate::modules::project_creator::models::*;
 
 /// Стандартные fallback-триггеры на все случаи, когда step‑специфичных нет.
@@ -259,15 +261,25 @@ impl StepExecutor {
                 }
                 ps_cmd
             } else {
-                // cmd /S /C с правильно кавычкуемой строкой: команда может
-                // быть АБСОЛЮТНЫМ путём с пробелами (venv\Scripts\pip.exe),
-                // аргументы — путями и URL. Внешняя пара кавычек обязательна:
-                // без неё cmd снимает первую кавычку и режет команду по
-                // пробелам.
-                let mut win_cmd = tokio::process::Command::new("cmd");
-                win_cmd.arg("/S");
-                win_cmd.arg("/C");
-                win_cmd.arg(win_command_line(command, &args));
+                // Обычные команды запускаем напрямую. `cmd /C` ломает
+                // вложенные кавычки в `node -e`, путях venv и Composer,
+                // из-за чего шаги завершаются кодом 1 без stderr. Batch-файлы
+                // npm/npx/composer разрешаются через .cmd/.bat в helper.
+                let program = windows_command_program(command);
+                let mut win_cmd = if is_windows_batch(&program) {
+                    let mut shell = tokio::process::Command::new("cmd");
+                    shell
+                        .arg("/D")
+                        .arg("/S")
+                        .arg("/C")
+                        .arg(windows_shell_line(&program, &args));
+                    shell
+                } else {
+                    tokio::process::Command::new(program)
+                };
+                if !is_windows_batch(command) {
+                    win_cmd.args(&args);
+                }
                 win_cmd
             }
         }

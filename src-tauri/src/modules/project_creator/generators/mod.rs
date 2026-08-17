@@ -775,13 +775,29 @@ async fn run_cli(
     env: Option<&HashMap<String, String>>,
     timeout_secs: u64,
 ) -> Result<GenerationReport, String> {
-    let mut cmd = spawn_command(command, args);
+    // npx без --yes пытается открыть интерактивное подтверждение установки
+    // пакета. У ScaffoldGenerator stdin отключён, поэтому такой процесс
+    // завершается с кодом 1 без полезного сообщения. Добавляем флаг здесь,
+    // в общем раннере, чтобы одинаково исправить Vite/Next/Svelte/Expo и
+    // любые будущие npx-скаффолдеры.
+    let mut effective_args = args.to_vec();
+    if command.eq_ignore_ascii_case("npx")
+        && !effective_args.iter().any(|a| a == "--yes" || a == "-y")
+    {
+        effective_args.insert(0, "--yes".to_string());
+    }
+
+    let mut cmd = spawn_command(command, &effective_args);
     cmd.current_dir(working_dir);
     if let Some(env) = env {
         cmd.envs(env);
     }
     // CI=1 заставляет npx/npm/create-* CLI пропускать интерактивные промпты.
     cmd.env("CI", "1");
+    // CI не во всех версиях npm отключает подтверждение установки пакета
+    // через npx; переменная npm гарантирует неинтерактивный режим.
+    cmd.env("NPM_CONFIG_YES", "true");
+    cmd.env("npm_config_yes", "true");
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
@@ -825,7 +841,10 @@ async fn run_cli(
     if detail.trim().is_empty() {
         detail = out_tail;
     }
-    let detail = truncate(detail.trim(), 500);
+    let mut detail = truncate(detail.trim(), 500);
+    if detail.is_empty() {
+        detail = "process exited without output (check that the CLI is installed and available in PATH)".to_string();
+    }
     Err(format!(
         "Command '{}' failed with exit code {}: {}",
         command,
@@ -1248,8 +1267,22 @@ fn spawn_command(command: &str, args: &[String]) -> TokioCommand {
                 cmd.arg("-Command").arg(command).args(args);
                 cmd
             } else {
-                let mut cmd = TokioCommand::new("cmd");
-                cmd.arg("/S").arg("/C").arg(win_command_line(command, args));
+                // Не прогоняем обычные CLI через `cmd /C`: вложенные кавычки
+                // (особенно у `node -e` и путей Composer) в таком режиме
+                // искажаются ещё до запуска процесса. Прямой запуск также
+                // корректно обрабатывает stdout/stderr и коды возврата.
+                let program = windows_command_program(command);
+                let batch = is_windows_batch(&program);
+                let mut cmd = if batch {
+                    let mut shell = TokioCommand::new("cmd");
+                    shell.arg("/D").arg("/S").arg("/C").arg(windows_shell_line(&program, args));
+                    shell
+                } else {
+                    TokioCommand::new(program)
+                };
+                if !batch {
+                    cmd.args(args);
+                }
                 cmd
             }
         }
@@ -1264,6 +1297,46 @@ fn spawn_command(command: &str, args: &[String]) -> TokioCommand {
             cmd
         }
     }
+}
+
+/// Имя исполняемого файла для прямого запуска на Windows. npm-экосистема
+/// устанавливает эти команды как batch-файлы; CreateProcess не умеет
+/// запускать `.cmd/.bat` без cmd.exe, поэтому явно добавляем расширение.
+/// Пути и уже расширенные имена оставляем без изменений.
+pub fn windows_command_program(command: &str) -> String {
+    let trimmed = command.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with(".cmd")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".exe")
+        || trimmed.contains('\\')
+        || trimmed.contains('/')
+    {
+        return trimmed.to_string();
+    }
+    match lower.as_str() {
+        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" => {
+            format!("{}.cmd", trimmed)
+        }
+        "composer" => "composer.bat".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+pub fn is_windows_batch(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.ends_with(".cmd") || lower.ends_with(".bat")
+}
+
+/// Безопасная строка для cmd /C: кавычки только вокруг отдельных токенов,
+/// без внешней пары, которая превращала `node -e "..."` в один аргумент.
+pub fn windows_shell_line(command: &str, args: &[String]) -> String {
+    let mut line = win_quote_arg(command);
+    for arg in args {
+        line.push(' ');
+        line.push_str(&win_quote_arg(arg));
+    }
+    line
 }
 
 /// Читает поток построчно, печатает в консоль и возвращает последние 8 строк.
