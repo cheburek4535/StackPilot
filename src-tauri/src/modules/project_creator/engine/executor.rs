@@ -126,6 +126,7 @@ impl StepExecutor {
         mut stdout: tokio::process::ChildStdout,
         mut stdin: tokio::process::ChildStdin,
         trigger_map: Vec<(String, ResponseType)>, // владеющие данные
+        stdout_tail: Arc<Mutex<Vec<String>>>,
         tx: mpsc::Sender<ExecutionEvent>,
         step_id: String,
         step_name: String,
@@ -149,6 +150,8 @@ impl StepExecutor {
                 Ok(Ok(0)) => break, // EOF — процесс закрыл stdout
                 Ok(Ok(n)) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]);
+
+                    capture_tail(&stdout_tail, &chunk);
 
                     // Печатаем в консоль для отладки
                     print!("{}", chunk);
@@ -234,13 +237,10 @@ impl StepExecutor {
         }
     };
 
-    // Подавление интерактивности: npx без --yes спрашивает «Ok to proceed?
-    // (y)» и ждёт ввода, убивая автоматическую генерацию. Флаг добавляется
-    // первым аргументом, если его ещё нет (npx --yes nuxt ... и т.п.).
-    let mut args: Vec<String> = raw_args.clone();
-    if command == "npx" && !args.iter().any(|a| a.starts_with("--yes")) {
-        args.insert(0, "--yes".into());
-    }
+    // Аргументы рецепта передаются без скрытых модификаций. В частности,
+    // рецепт сам отвечает за наличие `npx --yes`: глобальная инъекция меняет
+    // позицию/семантику аргументов отдельных CLI.
+    let args: Vec<String> = raw_args.clone();
 
     // Кроссплатформенный запуск через shell
     let mut cmd = match OS {
@@ -257,7 +257,7 @@ impl StepExecutor {
                 ps_cmd.arg("-Command");
                 ps_cmd.arg(command);
                 if !args.is_empty() {
-                    ps_cmd.args(args);
+                    ps_cmd.args(&args);
                 }
                 ps_cmd
             } else {
@@ -275,9 +275,9 @@ impl StepExecutor {
                         .arg(windows_shell_line(&program, &args));
                     shell
                 } else {
-                    tokio::process::Command::new(program)
+                    tokio::process::Command::new(&program)
                 };
-                if !is_windows_batch(command) {
+                if !is_windows_batch(&program) {
                     win_cmd.args(&args);
                 }
                 win_cmd
@@ -321,53 +321,26 @@ impl StepExecutor {
     let start = std::time::Instant::now();
     let total_steps = plan.step_count();
 
-    // Отправляем Started
-    tx.send(ExecutionEvent {
-        event_type: ExecutionEventType::StepStarted,
-        step_id: step_id(step),
-        step_index: index,
-        total_steps,
-        step_name: step_label(step),
-        step_description: step_description(step),
-        timestamp: local_time(),
-    })
-    .await
-    .ok();
-
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            let error_msg = format!("Failed to spawn command '{}': {}", command, e);
-            let status = StepStatus::Failed { error: error_msg };
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            tx.send(ExecutionEvent {
-                event_type: ExecutionEventType::StepCompleted {
-                    status: status.clone(),
-                    duration_ms,
-                },
-                step_id: step_id(step),
-                step_index: index,
-                total_steps,
-                step_name: step_label(step),
-                step_description: step_description(step),
-                timestamp: local_time(),
-            })
-            .await
-            .ok();
-
-            return StepResult {
-                step_id: step_id(step),
-                label: step_label(step),
-                status,
-                duration_ms,
-            };
+            return failed_result(
+                step,
+                start,
+                format_command_error(
+                    "failed to spawn",
+                    &command_display(command, &args),
+                    &full_working_dir,
+                    &e.to_string(),
+                ),
+            );
         }
     };
 
     let stdout = child.stdout.take().expect("stdout should be piped");
     let stderr = child.stderr.take().expect("stderr should be piped");
     let stdin = child.stdin.take().expect("stdin should be piped");
+    let stdout_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Строим карту триггеров из interactive-поля шага
@@ -378,12 +351,14 @@ impl StepExecutor {
     let step_id_out = step_id(step);
     let step_name_out = step_label(step);
     let step_desc_out = step_description(step);
+    let stdout_tail_capture = Arc::clone(&stdout_tail);
 
     let stdout_handle = tokio::spawn(async move {
         Self::read_stdout_loop(
             stdout,
             stdin,
             trigger_map,
+            stdout_tail_capture,
             tx_stdout,
             step_id_out,
             step_name_out,
@@ -408,12 +383,7 @@ impl StepExecutor {
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(mut tail) = stderr_tail_capture.lock() {
-                tail.push(line.clone());
-                if tail.len() > 12 {
-                    tail.remove(0);
-                }
-            }
+            capture_tail(&stderr_tail_capture, &line);
             tx_stderr
                 .send(ExecutionEvent {
                     event_type: ExecutionEventType::StepProgress {
@@ -432,79 +402,32 @@ impl StepExecutor {
         }
     });
 
-    // Ожидаем завершения процесса
-    let exit_status_result = if let Some(timeout_secs) = timeout_secs {
+    // Ожидаем завершения процесса, но в любом случае приводим его к единому
+    // результату: spawn/wait/timeout/ненулевой exit-код должны иметь одинаковый
+    // контекст и хвосты обоих потоков.
+    let wait_result: Result<std::process::ExitStatus, String> = if let Some(timeout_secs) = timeout_secs {
         let duration = std::time::Duration::from_secs(*timeout_secs);
 
         match tokio::time::timeout(duration, child.wait()).await {
-            Ok(Ok(status)) => Some(status),
+            Ok(Ok(status)) => Ok(status),
             Ok(Err(e)) => {
                 let _ = child.kill().await;
-
-                let error_msg = format!("Process wait error: {}", e);
-                let status = StepStatus::Failed { error: error_msg };
-                let duration_ms = start.elapsed().as_millis() as u64;
-
-                tx.send(ExecutionEvent {
-                    event_type: ExecutionEventType::StepCompleted {
-                        status: status.clone(),
-                        duration_ms,
-                    },
-                    step_id: step_id(step),
-                    step_index: index,
-                    total_steps,
-                    step_name: step_label(step),
-                    step_description: step_description(step),
-                    timestamp: local_time(),
-                })
-                .await
-                .ok();
-
-                return StepResult {
-                    step_id: step_id(step),
-                    label: step_label(step),
-                    status,
-                    duration_ms,
-                };
+                let _ = child.wait().await;
+                Err(format!("process wait failed: {e}"))
             }
-            Err(_elapsed) => {
+            Err(_) => {
                 let _ = child.kill().await;
-                None
+                let _ = child.wait().await;
+                Err(format!("timed out after {timeout_secs} seconds"))
             }
         }
     } else {
         match child.wait().await {
-            Ok(status) => Some(status),
+            Ok(status) => Ok(status),
             Err(e) => {
                 let _ = child.kill().await;
-                let _ = stdout_handle.await;
-                let _ = stderr_handle.await;
-
-                let error_msg = format!("Process wait error: {}", e);
-                let status = StepStatus::Failed { error: error_msg };
-                let duration_ms = start.elapsed().as_millis() as u64;
-
-                tx.send(ExecutionEvent {
-                    event_type: ExecutionEventType::StepCompleted {
-                        status: status.clone(),
-                        duration_ms,
-                    },
-                    step_id: step_id(step),
-                    step_index: index,
-                    total_steps,
-                    step_name: step_label(step),
-                    step_description: step_description(step),
-                    timestamp: local_time(),
-                })
-                .await
-                .ok();
-
-                return StepResult {
-                    step_id: step_id(step),
-                    label: step_label(step),
-                    status,
-                    duration_ms,
-                };
+                let _ = child.wait().await;
+                Err(format!("process wait failed: {e}"))
             }
         }
     };
@@ -512,57 +435,36 @@ impl StepExecutor {
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
 
-    let final_status = if let Some(exit_status) = exit_status_result {
-        if exit_status.success() {
-            StepStatus::Success {
-                message: format!("Command '{}' completed successfully", command),
-            }
-        } else {
-            let detail = stderr_tail
-                .lock()
-                .ok()
-                .map(|lines| lines.join("\\n"))
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| "no stderr output captured".to_string());
-            StepStatus::Failed {
-                error: format!(
-                    "Command '{}' failed with exit code: {}.\\n{}",
-                    command,
-                    exit_status.code().unwrap_or(-1),
-                    detail
-                ),
-            }
-        }
-    } else {
-        StepStatus::Failed {
-            error: format!(
-                "Command '{}' timed out after {} seconds",
-                command,
-                timeout_secs.unwrap_or(0)
+    let command_text = command_display(command, &args);
+    let stdout_detail = tail_text(&stdout_tail);
+    let stderr_detail = tail_text(&stderr_tail);
+    let status = match wait_result {
+        Ok(exit_status) if exit_status.success() => StepStatus::Success {
+            message: format!("Command '{command_text}' completed successfully"),
+        },
+        Ok(exit_status) => StepStatus::Failed {
+            error: format_command_error(
+                &format!("exited with status {}", exit_status_text(&exit_status)),
+                &command_text,
+                &full_working_dir,
+                &format_output_tails(&stdout_detail, &stderr_detail),
             ),
-        }
+        },
+        Err(reason) => StepStatus::Failed {
+            error: format_command_error(
+                &reason,
+                &command_text,
+                &full_working_dir,
+                &format_output_tails(&stdout_detail, &stderr_detail),
+            ),
+        },
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    tx.send(ExecutionEvent {
-        event_type: ExecutionEventType::StepCompleted {
-            status: final_status.clone(),
-            duration_ms,
-        },
-        step_id: step_id(step),
-        step_index: index,
-        total_steps,
-        step_name: step_label(step),
-        step_description: step_description(step),
-        timestamp: local_time(),
-    })
-    .await
-    .ok();
-
     StepResult {
         step_id: step_id(step),
         label: step_label(step),
-        status: final_status,
+        status,
         duration_ms,
     }
 }
@@ -595,18 +497,6 @@ impl StepExecutor {
                 }
             }
         };
-
-        tx.send(ExecutionEvent {
-            event_type: ExecutionEventType::StepStarted,
-            step_id: step_id(step),
-            step_index: index,
-            total_steps: plan.step_count(),
-            step_name: step_label(step),
-            step_description: step_description(step),
-            timestamp: local_time(),
-        })
-        .await
-        .ok();
 
         let start = std::time::Instant::now();
 
@@ -650,21 +540,6 @@ impl StepExecutor {
         .await
         .ok();
 
-        tx.send(ExecutionEvent {
-            event_type: ExecutionEventType::StepCompleted {
-                status: status.clone(),
-                duration_ms,
-            },
-            step_id: step_id(step),
-            step_index: index,
-            total_steps: plan.step_count(),
-            step_name: step_label(step),
-            step_description: step_description(step),
-            timestamp: local_time(),
-        })
-        .await
-        .ok();
-
         StepResult {
             step_id: step_id(step),
             label: step_label(step),
@@ -687,32 +562,12 @@ impl StepExecutor {
 
         if let Step::WriteFile {path, content, overwrite, ..} = step {
             
-            tx.send(ExecutionEvent { 
-                event_type: ExecutionEventType::StepStarted,
-                step_id: step_id(step), 
-                step_index: index, 
-                total_steps: plan.step_count(), 
-                step_name: step_label(step),
-                step_description: step_description(step), 
-                timestamp: local_time() 
-            }).await.ok();
-
             let project_path = &plan.project_path.join(path);
 
             let start = std::time::Instant::now();
 
             if let Some(parent) = project_path.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    tx.send(ExecutionEvent { 
-                    event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed { error: format!("Failed create all dirs to project root: {e}")}, duration_ms: start.elapsed().as_millis() as u64 },
-                    step_id: step_id(step), 
-                    step_index: index, 
-                    total_steps: plan.step_count(), 
-                    step_name: step_label(step),
-                    step_description: step_description(step), 
-                    timestamp: local_time() 
-                }).await.ok();
-
                     return StepResult {
                         step_id: step_id(step), 
                         label: step_label(step), 
@@ -748,16 +603,6 @@ impl StepExecutor {
             final_status = StepStatus::Failed { error: ("Incorrect step type, expected WriteFile".into()) };
             duration = 0;
         }
-
-        tx.send(ExecutionEvent { 
-                event_type: ExecutionEventType::StepCompleted { status: final_status.clone(), duration_ms: duration },
-                step_id: step_id(step), 
-                step_index: index, 
-                total_steps: plan.step_count(), 
-                step_name: step_label(step),
-                step_description: step_description(step), 
-                timestamp: local_time() 
-        }).await.ok();
 
         StepResult {
             step_id: step_id(step),
@@ -848,16 +693,6 @@ impl StepExecutor {
         index: usize,
     ) -> StepResult {
         if let Step::CreateDirectory { path, .. } = step {
-            tx.send(ExecutionEvent { 
-                event_type: ExecutionEventType::StepStarted,
-                step_id: step_id(step), 
-                step_index: index, 
-                total_steps: plan.step_count(), 
-                step_name: step_label(step),
-                step_description: step_description(step), 
-                timestamp: local_time() 
-            }).await.ok();
-
             let start = std::time::Instant::now();
 
             let full_path = plan.project_path.join(path);
@@ -873,16 +708,6 @@ impl StepExecutor {
                             timestamp: local_time() 
                         }).await.ok();
 
-                    tx.send(ExecutionEvent { 
-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Success {message: format!("Created {}", full_path.display())}, 
-                        duration_ms: start.elapsed().as_millis() as u64 },
-                        step_id: step_id(step), 
-                        step_index: index, 
-                        total_steps: plan.step_count(), 
-                        step_name: step_label(step),
-                        step_description: step_description(step), 
-                        timestamp: local_time() 
-                    }).await.ok();
                     StepResult {
                         step_id: step_id(step),
                         label: step_label(step),
@@ -893,19 +718,6 @@ impl StepExecutor {
                     }
                 },
                 Err(e) => { 
-                    tx.send(ExecutionEvent { 
-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed {
-                            error: format!("Failed to create directory {}: {}", full_path.display(), e),
-                        }, 
-                        duration_ms: start.elapsed().as_millis() as u64 },
-                        step_id: step_id(step), 
-                        step_index: index, 
-                        total_steps: plan.step_count(), 
-                        step_name: step_label(step),
-                        step_description: step_description(step), 
-                        timestamp: local_time() 
-                    }).await.ok();
-                    
                     StepResult {
                         step_id: step_id(step),
                         label: step_label(step),
@@ -917,18 +729,6 @@ impl StepExecutor {
                 },
             }
         } else {
-            tx.send(ExecutionEvent { 
-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed {
-                            error: "Expected CreateDirectory step".into(),
-                        }, 
-                        duration_ms: 0 },
-                        step_id: step_id(step), 
-                        step_index: index, 
-                        total_steps: plan.step_count(), 
-                        step_name: step_label(step),
-                        step_description: step_description(step), 
-                        timestamp: local_time() 
-                    }).await.ok();
             StepResult {
                 step_id: step_id(step),
                 label: step_label(step),
@@ -945,6 +745,63 @@ impl StepExecutor {
 fn step_id(step: &Step) -> String { step.id() }
 fn step_label(step: &Step) -> String { step.label() }
 fn step_description(step: &Step) -> String { step.description() }
+
+const OUTPUT_TAIL_LINES: usize = 12;
+
+fn capture_tail(tail: &Arc<Mutex<Vec<String>>>, text: &str) {
+    if let Ok(mut lines) = tail.lock() {
+        for line in text.lines() {
+            lines.push(line.to_string());
+            if lines.len() > OUTPUT_TAIL_LINES {
+                lines.remove(0);
+            }
+        }
+    }
+}
+
+fn tail_text(tail: &Arc<Mutex<Vec<String>>>) -> String {
+    tail.lock()
+        .map(|lines| lines.join("\n"))
+        .unwrap_or_default()
+}
+
+fn command_display(command: &str, args: &[String]) -> String {
+    let mut display = command.to_string();
+    for arg in args {
+        display.push(' ');
+        display.push_str(arg);
+    }
+    display
+}
+
+fn format_output_tails(stdout: &str, stderr: &str) -> String {
+    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
+    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
+    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
+}
+
+fn format_command_error(reason: &str, command: &str, working_dir: &std::path::Path, detail: &str) -> String {
+    format!(
+        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
+        working_dir.display()
+    )
+}
+
+fn exit_status_text(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => code.to_string(),
+        None => "terminated by signal".to_string(),
+    }
+}
+
+fn failed_result(step: &Step, start: std::time::Instant, error: String) -> StepResult {
+    StepResult {
+        step_id: step_id(step),
+        label: step_label(step),
+        status: StepStatus::Failed { error },
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
 
 fn local_time() -> String {
     // Получаем текущее локальное время

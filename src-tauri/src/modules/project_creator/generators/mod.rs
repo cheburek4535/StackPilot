@@ -775,19 +775,9 @@ async fn run_cli(
     env: Option<&HashMap<String, String>>,
     timeout_secs: u64,
 ) -> Result<GenerationReport, String> {
-    // npx без --yes пытается открыть интерактивное подтверждение установки
-    // пакета. У ScaffoldGenerator stdin отключён, поэтому такой процесс
-    // завершается с кодом 1 без полезного сообщения. Добавляем флаг здесь,
-    // в общем раннере, чтобы одинаково исправить Vite/Next/Svelte/Expo и
-    // любые будущие npx-скаффолдеры.
-    let mut effective_args = args.to_vec();
-    if command.eq_ignore_ascii_case("npx")
-        && !effective_args.iter().any(|a| a == "--yes" || a == "-y")
-    {
-        effective_args.insert(0, "--yes".to_string());
-    }
-
-    let mut cmd = spawn_command(command, &effective_args);
+    // Не модифицируем аргументы рецепта: отдельные CLI имеют собственный
+    // синтаксис и сами явно объявляют `--yes`, если он им нужен.
+    let mut cmd = spawn_command(command, args);
     cmd.current_dir(working_dir);
     if let Some(env) = env {
         cmd.envs(env);
@@ -804,7 +794,14 @@ async fn run_cli(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn command '{}': {}", command, e))?;
+        .map_err(|e| {
+            format!(
+                "Command failed (failed to spawn)\ncommand: {}\nworking directory: {}\nerror: {}",
+                command_display(command, args),
+                working_dir.display(),
+                e
+            )
+        })?;
     let stdout = child.stdout.take().expect("stdout should be piped");
     let stderr = child.stderr.take().expect("stderr should be piped");
     let out_handle = tokio::spawn(async move { tail_lines(stdout).await });
@@ -815,13 +812,26 @@ async fn run_cli(
         Ok(Ok(status)) => status,
         Ok(Err(e)) => {
             let _ = child.kill().await;
-            return Err(format!("Command '{}' process error: {}", command, e));
+            let _ = child.wait().await;
+            let out_tail = out_handle.await.unwrap_or_default();
+            let err_tail = err_handle.await.unwrap_or_default();
+            return Err(format_command_error(
+                &format!("process wait failed: {e}"),
+                &command_display(command, args),
+                working_dir,
+                &format_output_tails(&out_tail, &err_tail),
+            ));
         }
         Err(_) => {
             let _ = child.kill().await;
-            return Err(format!(
-                "Command '{}' timed out after {} seconds",
-                command, timeout_secs
+            let _ = child.wait().await;
+            let out_tail = out_handle.await.unwrap_or_default();
+            let err_tail = err_handle.await.unwrap_or_default();
+            return Err(format_command_error(
+                &format!("timed out after {timeout_secs} seconds"),
+                &command_display(command, args),
+                working_dir,
+                &format_output_tails(&out_tail, &err_tail),
             ));
         }
     };
@@ -833,24 +843,44 @@ async fn run_cli(
             created_files: Vec::new(),
             modified_files: Vec::new(),
             skipped_files: Vec::new(),
-            message: format!("Command '{}' completed successfully", command),
+            message: format!("Command '{}' completed successfully", command_display(command, args)),
         });
     }
 
-    let mut detail = err_tail;
-    if detail.trim().is_empty() {
-        detail = out_tail;
+    Err(format_command_error(
+        &format!("exited with status {}", exit_status_text(&status)),
+        &command_display(command, args),
+        working_dir,
+        &format_output_tails(&out_tail, &err_tail),
+    ))
+}
+
+fn command_display(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_output_tails(stdout: &str, stderr: &str) -> String {
+    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
+    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
+    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
+}
+
+fn format_command_error(reason: &str, command: &str, working_dir: &Path, detail: &str) -> String {
+    format!(
+        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
+        working_dir.display()
+    )
+}
+
+fn exit_status_text(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => code.to_string(),
+        None => "terminated by signal".to_string(),
     }
-    let mut detail = truncate(detail.trim(), 500);
-    if detail.is_empty() {
-        detail = "process exited without output (check that the CLI is installed and available in PATH)".to_string();
-    }
-    Err(format!(
-        "Command '{}' failed with exit code {}: {}",
-        command,
-        status.code().unwrap_or(-1),
-        detail
-    ))}
+}
 
 /// Слить .vscode из frontend/ и backend/ в корневой .vscode/ и удалить
 /// вложенные папки (см. VsCodeFoldersMergeGenerator).
@@ -1088,10 +1118,13 @@ async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
     let status = match waited {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             return Err(format!("Spring Initializr отказал: failed to run curl: {}", e));
         }
         Err(_) => {
             let _ = child.kill().await;
+            let _ = child.wait().await;
             return Err(
                 "Spring Initializr отказал: timed out after 180 seconds".to_string(),
             );

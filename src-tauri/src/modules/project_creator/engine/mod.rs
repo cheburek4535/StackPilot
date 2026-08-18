@@ -1560,7 +1560,7 @@ fn qt_step_write(id: &str, label: &str, path: &str, content: String) -> Step {
         content,
         overwrite: false,
         condition: None,
-        on_error: ErrorMode::Skip,
+        on_error: ErrorMode::Abort,
     }
 }
 
