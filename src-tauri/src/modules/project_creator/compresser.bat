@@ -6,6 +6,20 @@ echo   Repomix Clean Pipeline
 echo ============================================
 echo.
 
+:: Parse arguments
+set REMOVE_PRESETS=0
+for %%a in (%*) do (
+    if /i "%%a"=="-dp" set REMOVE_PRESETS=1
+    if /i "%%a"=="--dp" set REMOVE_PRESETS=1
+)
+
+if %REMOVE_PRESETS%==1 (
+    echo [MODE] Removing presets from wizard_tree.json
+) else (
+    echo [MODE] Keeping presets section
+)
+echo.
+
 :: Step 1: Remove old files
 echo [1/5] Removing old files...
 if exist "repomix-output.xml" del /q "repomix-output.xml"
@@ -13,12 +27,12 @@ if exist "repomix-output.clean.xml" del /q "repomix-output.clean.xml"
 echo        [OK] Old files removed
 echo.
 
-:: Step 2: Run Repomix
+:: Step 2: Run Repomix (без сжатия)
 echo [2/5] Running Repomix...
-echo        npx repomix --compress --remove-comments
+echo        npx repomix --remove-comments
 echo.
 
-call npx repomix --compress --remove-comments
+call npx repomix --remove-comments
 
 if %errorlevel% neq 0 (
     echo.
@@ -50,9 +64,15 @@ if not exist "clean.py" (
 echo        [OK] clean.py found
 echo.
 
-:: Step 4: Run Python script
+:: Step 4: Run Python script with optional presets flag
 echo [4/5] Cleaning tests from XML...
-python clean.py repomix-output.xml
+if %REMOVE_PRESETS%==1 (
+    echo        python clean.py repomix-output.xml -dp
+    python clean.py repomix-output.xml -dp
+) else (
+    echo        python clean.py repomix-output.xml
+    python clean.py repomix-output.xml
+)
 
 if %errorlevel% neq 0 (
     echo.

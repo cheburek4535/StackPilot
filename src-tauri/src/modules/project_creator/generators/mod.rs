@@ -1215,7 +1215,10 @@ fn win_quote_arg(arg: &str) -> String {
     let needs_quote = arg.is_empty()
         || arg
             .chars()
-            .any(|c| c.is_whitespace() || "&()[]{}<>@^|%!\"".contains(c));
+            // `@` is valid in npm package names (`@nestjs/cli`, `create-vite@latest`).
+            // Do not quote it by itself: cmd can pass the quotes through to npm,
+            // producing EINVALIDPACKAGENAME for otherwise valid packages.
+            .any(|c| c.is_whitespace() || "&()[]{}<>^|%!\"".contains(c));
     if !needs_quote {
         arg.to_string()
     } else {

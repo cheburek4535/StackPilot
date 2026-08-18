@@ -2,7 +2,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use chrono::Local;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use crate::modules::project_creator::engine::ExecutionPlan;
 use crate::modules::project_creator::generators::{
@@ -368,6 +368,7 @@ impl StepExecutor {
     let stdout = child.stdout.take().expect("stdout should be piped");
     let stderr = child.stderr.take().expect("stderr should be piped");
     let stdin = child.stdin.take().expect("stdin should be piped");
+    let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Строим карту триггеров из interactive-поля шага
     let trigger_map = Self::build_trigger_map(step);
@@ -398,6 +399,7 @@ impl StepExecutor {
     let step_id_err = step_id(step);
     let step_name_err = step_label(step);
     let step_desc_err = step_description(step);
+    let stderr_tail_capture = Arc::clone(&stderr_tail);
 
     let stderr_handle = tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -406,6 +408,12 @@ impl StepExecutor {
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(mut tail) = stderr_tail_capture.lock() {
+                tail.push(line.clone());
+                if tail.len() > 12 {
+                    tail.remove(0);
+                }
+            }
             tx_stderr
                 .send(ExecutionEvent {
                     event_type: ExecutionEventType::StepProgress {
@@ -510,11 +518,18 @@ impl StepExecutor {
                 message: format!("Command '{}' completed successfully", command),
             }
         } else {
+            let detail = stderr_tail
+                .lock()
+                .ok()
+                .map(|lines| lines.join("\\n"))
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| "no stderr output captured".to_string());
             StepStatus::Failed {
                 error: format!(
-                    "Command '{}' failed with exit code: {}",
+                    "Command '{}' failed with exit code: {}.\\n{}",
                     command,
-                    exit_status.code().unwrap_or(-1)
+                    exit_status.code().unwrap_or(-1),
+                    detail
                 ),
             }
         }

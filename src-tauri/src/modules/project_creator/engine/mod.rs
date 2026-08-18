@@ -996,6 +996,12 @@ fn context_has_both_sides(context: &WizardContext) -> bool {
 ///   - иначе — значение из wizard_tree.json как есть.
 fn effective_scaffold(fw: &str, context: &WizardContext) -> Option<&'static str> {
     let def = framework_def(fw)?;
+    // Tauri is an integrated desktop scaffold: its own frontend and
+    // `src-tauri/` shell must be laid out by the Tauri pipeline at the project
+    // root. Never reinterpret it as a backend subdirectory in a mixed stack.
+    if fw == "tauri" {
+        return def.scaffold.as_deref();
+    }
     if def.scaffold.as_deref() == Some("root") && context_has_both_sides(context) {
         return Some("subdir");
     }
@@ -1380,7 +1386,11 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
     // Scaffold-генераторы: into_segment не трогает Generate-шаги, поэтому
     // целевой каталог выставляется здесь — по сегменту или output_subdir.
     if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw) {
-        let target_dir = scaffold_target_dir(fw, seg);
+        let target_dir = if context.frameworks.iter().any(|f| f == "tauri") {
+            ".".to_string()
+        } else {
+            scaffold_target_dir(fw, seg)
+        };
         for step in &mut steps {
             if let Step::Generate { generator_id, generator_config, .. } = step {
                 if generator_id == "scaffold" {
@@ -1396,15 +1406,18 @@ fn steps_for_framework(fw: &str, project_path: &str, project_name: &str, context
     // пишут (frontend/ или корень), а не по project_name из WizardContext.
     // Пост-шаг примешивается ПОСЛЕ сегментации — его рабочая директория
     // должна указывать на фактическое место package.json.
-    if let Some(def) = framework_def(fw) {
+    if framework_def(fw).is_some() {
         let scaffold = effective_scaffold(fw, context);
         if scaffold.is_some() && PACKAGE_JSON_SCAFFOLDS.contains(&fw) {
             let workdir: Option<String> = if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw) {
                 // package.json лежит в каталоге, куда скаффолдер положил проект
-                Some(scaffold_target_dir(fw, seg))
+                Some(if context.frameworks.iter().any(|f| f == "tauri") {
+                    ".".to_string()
+                } else {
+                    scaffold_target_dir(fw, seg)
+                })
             } else if fw == "tauri" {
-                // Новый пайплайн tauri: фронтенд живёт в frontend/ — package.json там
-                Some("frontend".to_string())
+                Some(".".to_string())
             } else {
                 match scaffold {
                     // root-скаффолдеры (nest) создают package.json в корне проекта
@@ -1794,9 +1807,9 @@ fn tauri_layout(seg: Option<&str>) -> (String, String, String) {
         )
     } else {
         (
-            "../frontend/dist".to_string(),
-            "npm --prefix frontend run dev".to_string(),
-            "npm --prefix frontend run build".to_string(),
+        "dist".to_string(),
+        "npm run dev".to_string(),
+        "npm run build".to_string(),
         )
     }
 }
@@ -1817,7 +1830,10 @@ fn composer_scaffold_step(
         package.to_string(),
         SCAFFOLD_TARGET.to_string(),
         "--no-interaction".to_string(),
-        "--prefer-dist".to_string(),
+            // Composer's dist downloader requires PHP's zip extension (or
+            // unzip/7z). Prefer source so Laravel/Symfony still scaffold on
+            // minimal Windows PHP installations.
+            "--prefer-source".to_string(),
     ]);
     let name_arg = args
         .iter()
@@ -2434,9 +2450,14 @@ async fn main() {{
                 id: "tauri_init".into(),
                 label: "Initialize Tauri shell".into(),
                 description: "Run cargo tauri init (non-interactive, --ci)".into(),
-                command: "cargo".into(),
+                // Use the package-local/global npm CLI as a fallback instead
+                // of requiring `cargo-tauri` to be preinstalled. `npx --yes`
+                // downloads the official CLI when necessary and works on
+                // Windows where `cargo tauri` otherwise reports "no such
+                // command".
+                command: "npx".into(),
                 args: vec![
-                    "tauri".into(),
+                    "@tauri-apps/cli".into(),
                     "init".into(),
                     "--ci".into(),
                     "--app-name".into(),
