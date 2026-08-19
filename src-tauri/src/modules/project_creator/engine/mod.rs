@@ -11978,4 +11978,53 @@ match find_step(&recipe, "create_src") {
         }
 let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn execute_create_root_step_with_dot_path_succeeds() {
+        // Регрессия: первый шаг каждого рецепта — CreateDirectory path="."
+        // («Create project root»). paths::resolve_in_root(".") раньше
+        // возвращал None, и шаг падал с «escapes the project root» на
+        // любой генерации — проект даже не начинал создаваться.
+        let engine = DefaultRecipeEngine::new();
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_create_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let plan = ExecutionPlan {
+            recipe: Recipe {
+                id: "test".into(),
+                name: "Test recipe".into(),
+                description: String::new(),
+                tags: vec![],
+                steps: vec![],
+                dependencies: vec![],
+            },
+            context: WizardContext::default(),
+            project_path: dir.clone(),
+            steps: vec![Step::CreateDirectory {
+                id: "create_root".into(),
+                label: "Create project root".into(),
+                description: String::new(),
+                path: ".".into(),
+                condition: None,
+                on_error: ErrorMode::Abort,
+            }],
+            dependencies: vec![],
+            layout_summary: LayoutSummary {
+                class: "frontend-only".to_string(),
+                generated_directories: vec![],
+                root_owner: None,
+                framework_placement: vec![],
+            },
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.step_results[0].status, StepStatus::Success { .. }),
+            "CreateDirectory path='.' обязан успешно создать корень: {:?}",
+            result.step_results[0].status
+        );
+        assert!(dir.is_dir(), "корень проекта должен существовать");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

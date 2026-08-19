@@ -8,3 +8,5 @@ node_modules
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+# Repomix-дамп модуля project_creator (генерируется compresser.bat для LLM-контекста)
+src-tauri/src/modules/project_creator/repomix-output*.xml

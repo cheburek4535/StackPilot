@@ -5,16 +5,20 @@
 //! ОТНОСИТЕЛЬНЫЕ пути проекта и обязаны оставаться ВНУТРИ корня проекта:
 //!   - обратные слеши нормализуются в прямые (условие `backend\package.json`
 //!     работает на любой платформе);
-//!   - пути, выходящие за корень (`..`) или абсолютные (включая диски
-//!     `C:\...`), отвергаются — вернуть значение за пределы проекта нельзя;
+//!   - пути, выходящие за корень (ведущий `..`, `a/../..`), а также
+//!     абсолютные (включая диски `C:\...`) отвергаются — вернуть значение
+//!     за пределы проекта нельзя; безвредные `..` внутри корня (`a/../b`)
+//!     схлопываются в `b`;
 //!   - пробелы и прочие символы пути сохраняются как есть (PathBuf не
 //!     разбивает строки).
 
 use std::path::{Path, PathBuf};
 
-/// Нормализовать относительный путь проекта: `\` → `/`, схлопнуть пустые и
-/// `.`-сегменты. Возвращает `None`, если путь пустой, абсолютный
-/// (включая диски вида `C:`/`C:/...`), или содержит `..` (выход за корень).
+/// Нормализовать относительный путь проекта: `\` → `/`, схлопнуть пустые,
+/// `.`-сегменты и безвредные `..` (оставшиеся внутри корня). Возвращает
+/// `None`, если путь пустой, абсолютный (включая диски вида `C:`/`C:/...`),
+/// или выходит за корень (`..` с пустым остатком сегментов). Путь, полностью
+/// схлопнувшийся в корень (`.`, `a/..`) — `Some("")`.
 pub fn normalize_rel_path(path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
@@ -37,12 +41,15 @@ pub fn normalize_rel_path(path: &str) -> Option<String> {
     for raw_segment in path.split(['/', '\\']) {
         match raw_segment {
             "" | "." => {}
-            ".." => return None,
+            ".." => {
+                // Подняться выше корня нельзя: ведущий `..` или лишний `..`
+                // после схлопывания — выход за пределы проекта.
+                if normalized.pop().is_none() {
+                    return None;
+                }
+            }
             segment => normalized.push(segment.to_string()),
         }
-    }
-    if normalized.is_empty() {
-        return None;
     }
     let joined = normalized.join("/");
     let candidate = Path::new(&joined);
@@ -50,13 +57,21 @@ pub fn normalize_rel_path(path: &str) -> Option<String> {
     if candidate.is_absolute() || joined.starts_with('/') || joined.starts_with('\\') {
         return None;
     }
+    // Путь схлопнулся в корень (".", "./", "a/..") — это сам корень.
+    if normalized.is_empty() {
+        return Some(String::new());
+    }
     Some(joined)
 }
 
 /// Разрешить относительный путь строго внутри `root` (безопасно против
 /// выхода за корень и абсолютных путей). `None` — путь недопустим.
+/// `"."` (и аналогичные пути, нормализующиеся в корень) дают сам `root`.
 pub fn resolve_in_root(root: &Path, rel: &str) -> Option<PathBuf> {
     let normalized = normalize_rel_path(rel)?;
+    if normalized.is_empty() {
+        return Some(root.to_path_buf());
+    }
     Some(root.join(normalized))
 }
 
@@ -88,7 +103,28 @@ pub fn resolve_working_dir(root: &Path, wd: &str) -> Result<PathBuf, String> {
             (wd_norm, root_norm)
         };
         if wd_check == root_check || wd_check.starts_with(&format!("{}/", root_check)) {
-            return Ok(wd_path.to_path_buf());
+            // Текстовый префикс не гарантирует безопасность: `..`-сегменты
+            // могут вывести за корень (`C:\dev\myapp\..\evil`). Остаток
+            // пути нормализуем теми же правилами — выход за корень = ошибка.
+            let rel_str = wd_path
+                .strip_prefix(root)
+                .unwrap_or(Path::new(""))
+                .to_string_lossy()
+                .replace('\\', "/");
+            let normalized = if rel_str.is_empty() {
+                Some(String::new())
+            } else {
+                normalize_rel_path(&rel_str)
+            };
+            return match normalized.as_deref() {
+                Some("") => Ok(root.to_path_buf()),
+                Some(rel) => Ok(root.join(rel)),
+                None => Err(format!(
+                    "working directory '{}' escapes the project root '{}'",
+                    wd,
+                    root.display()
+                )),
+            };
         }
         return Err(format!(
             "working directory '{}' is outside the project root '{}'",
@@ -131,9 +167,21 @@ mod tests {
     fn normalize_rejects_traversal() {
         assert_eq!(normalize_rel_path(".."), None);
         assert_eq!(normalize_rel_path("../escape.txt"), None);
-        assert_eq!(normalize_rel_path("a/../b"), None);
-        assert_eq!(normalize_rel_path("a\\..\\b"), None);
+        assert_eq!(normalize_rel_path("a/../.."), None);
+        assert_eq!(normalize_rel_path("a\\..\\.."), None);
         assert_eq!(normalize_rel_path("..\\..\\Windows\\win.ini"), None);
+    }
+
+    #[test]
+    fn normalize_collapses_harmless_parent_segments() {
+        assert_eq!(normalize_rel_path("a/../b"), Some("b".into()));
+        assert_eq!(normalize_rel_path("a\\..\\b"), Some("b".into()));
+        assert_eq!(normalize_rel_path("a/b/../../c"), Some("c".into()));
+        assert_eq!(normalize_rel_path("a/.."), Some(String::new()));
+        assert_eq!(
+            normalize_rel_path("./src/../lib/file.json"),
+            Some("lib/file.json".into())
+        );
     }
 
     #[test]
@@ -147,6 +195,30 @@ mod tests {
     }
 
     #[test]
+    fn normalize_dot_resolves_to_root() {
+        assert_eq!(normalize_rel_path("."), Some(String::new()));
+        assert_eq!(normalize_rel_path("./"), Some(String::new()));
+        assert_eq!(normalize_rel_path("././."), Some(String::new()));
+        assert_eq!(normalize_rel_path(".."), None);
+    }
+
+    #[test]
+    fn resolve_in_root_collapses_parent_segments() {
+        let root = Path::new("C:\\dev\\myapp");
+        assert_eq!(
+            resolve_in_root(root, "backend/../frontend"),
+            Some(PathBuf::from("C:\\dev\\myapp\\frontend"))
+        );
+        assert_eq!(
+            resolve_in_root(root, "a/b/../../c"),
+            Some(PathBuf::from("C:\\dev\\myapp\\c"))
+        );
+        assert_eq!(resolve_in_root(root, "a/.."), Some(root.to_path_buf()));
+        assert!(resolve_in_root(root, "../a").is_none());
+        assert!(resolve_in_root(root, "a/../..").is_none());
+    }
+
+    #[test]
     fn resolve_in_root_stays_inside_root() {
         let root = Path::new("C:\\dev\\my app");
         assert_eq!(
@@ -156,6 +228,15 @@ mod tests {
         assert!(resolve_in_root(root, "../outside").is_none());
         assert!(resolve_in_root(root, "C:\\Windows").is_none());
         assert!(resolve_in_root(root, "").is_none());
+    }
+
+    #[test]
+    fn resolve_in_root_dot_is_project_root() {
+        let root = Path::new("C:\\dev\\myapp");
+        assert_eq!(resolve_in_root(root, "."), Some(root.to_path_buf()));
+        assert_eq!(resolve_in_root(root, "./"), Some(root.to_path_buf()));
+        assert_eq!(resolve_in_root(root, "./."), Some(root.to_path_buf()));
+        assert!(resolve_in_root(root, "..").is_none());
     }
 
     #[test]
@@ -174,6 +255,10 @@ mod tests {
             resolve_working_dir(root, "frontend").unwrap(),
             PathBuf::from("C:\\dev\\myapp\\frontend")
         );
+        assert_eq!(
+            resolve_working_dir(root, "backend/../frontend").unwrap(),
+            PathBuf::from("C:\\dev\\myapp\\frontend")
+        );
     }
 
     #[test]
@@ -182,5 +267,13 @@ mod tests {
         assert!(resolve_working_dir(root, "C:\\dev\\other").is_err());
         assert!(resolve_working_dir(root, "..\\other").is_err());
         assert!(resolve_working_dir(root, "C:\\").is_err());
+        // .. внутри абсолютного пути не должен выводить за корень
+        assert!(resolve_working_dir(root, "C:\\dev\\myapp\\..\\evil").is_err());
+        assert!(resolve_working_dir(root, "C:\\dev\\myapp\\a\\..\\..\\evil").is_err());
+        // .. внутри корня, оставаясь в корне — допустим
+        assert_eq!(
+            resolve_working_dir(root, "C:\\dev\\myapp\\backend\\..").unwrap(),
+            root.to_path_buf()
+        );
     }
 }
