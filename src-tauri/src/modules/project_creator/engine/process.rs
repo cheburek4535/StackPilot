@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 
@@ -121,6 +121,13 @@ pub enum ProcessErrorKind {
     Timeout { timeout_secs: u64 },
     /// Процесс завершился с ошибкой (ненулевой код / сигнал).
     Exit { code: String },
+    /// Ошибка чтения stdout/stderr процесса (пайп закрыт с ошибкой).
+    /// Ошибки ридеров не замалчиваются: даже при успешном exit-коде
+    /// ненадёжный вывод превращает результат в ошибку этого вида.
+    ReadOutput {
+        stream: &'static str,
+        source: String,
+    },
 }
 
 impl ProcessErrorKind {
@@ -132,16 +139,21 @@ impl ProcessErrorKind {
                 format!("timed out after {timeout_secs} seconds")
             }
             ProcessErrorKind::Exit { code } => format!("exited with status {code}"),
+            ProcessErrorKind::ReadOutput { stream, source } => {
+                format!("failed to read {stream}: {source}")
+            }
         }
     }
 }
 
-/// Ошибка выполнения процесса: причина, команда, рабочая директория и
-/// хвосты обоих потоков — всё, что нужно для StepResult/GenerationReport.
+/// Ошибка выполнения процесса: причина, команда и её аргументы, рабочая
+/// директория и хвосты обоих потоков — всё, что нужно для StepResult/
+/// GenerationReport.
 #[derive(Debug, Clone)]
 pub struct ProcessExecutionError {
     pub kind: ProcessErrorKind,
-    pub command_line: String,
+    pub command: String,
+    pub args: Vec<String>,
     pub working_dir: PathBuf,
     pub stdout_tail: String,
     pub stderr_tail: String,
@@ -152,12 +164,24 @@ impl ProcessExecutionError {
         self.kind.reason()
     }
 
-    /// Тот же формат, что исторически давали run_command/run_cli.
+    /// Командная строка «command arg1 arg2 ...» для сообщений об ошибках.
+    pub fn command_line(&self) -> String {
+        command_display(&self.command, &self.args)
+    }
+
+    /// Полное описание ошибки: точная причина (вид ошибки), команда и её
+    /// аргументы, рабочая директория, хвосты stdout/stderr.
     pub fn format_command_error(&self) -> String {
+        let args = if self.args.is_empty() {
+            "<none>".to_string()
+        } else {
+            self.args.join(" ")
+        };
         format!(
-            "Command failed ({})\ncommand: {}\nworking directory: {}\n{}",
+            "Command failed ({})\ncommand: {}\nargs: {}\nworking directory: {}\n{}",
             self.reason(),
-            self.command_line,
+            self.command,
+            args,
             self.working_dir.display(),
             format_output_tails(&self.stdout_tail, &self.stderr_tail),
         )
@@ -246,7 +270,8 @@ impl ProcessRunner {
         spec: ProcessSpec,
         sink: Option<&ExecutionEventSink>,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
-        let command_line = command_display(&spec.command, &spec.args);
+        let command = spec.command.clone();
+        let args = spec.args.clone();
         let working_dir = spec
             .working_dir
             .clone()
@@ -284,7 +309,8 @@ impl ProcessRunner {
                     kind: ProcessErrorKind::Spawn {
                         source: source.to_string(),
                     },
-                    command_line,
+                    command,
+                    args,
                     working_dir,
                     stdout_tail: String::new(),
                     stderr_tail: String::new(),
@@ -311,11 +337,28 @@ impl ProcessRunner {
         let stdout_tail_task = Arc::clone(&stdout_tail);
         let stderr_tail_task = Arc::clone(&stderr_tail);
 
+        // Ошибки ридеров stdout/stderr не замалчиваются: первая ошибка чтения
+        // попадает в общий слот и, если процесс в остальном завершился
+        // успешно, превращается в различимый ProcessErrorKind::ReadOutput.
+        let reader_error: Arc<Mutex<Option<(&'static str, String)>>> = Arc::new(Mutex::new(None));
+        let stdout_reader_error = Arc::clone(&reader_error);
+        let stderr_reader_error = Arc::clone(&reader_error);
+
         let stdout_task = tokio::spawn(async move {
-            read_stdout_loop(stdout, stdin, interactive, stdout_tail_task, sink_stdout).await;
+            if let Err(source) =
+                read_stdout_loop(stdout, stdin, interactive, stdout_tail_task, sink_stdout).await
+            {
+                if let Ok(mut slot) = stdout_reader_error.lock() {
+                    *slot = Some(("stdout", source));
+                }
+            }
         });
         let stderr_task = tokio::spawn(async move {
-            read_stderr_loop(stderr, stderr_tail_task, sink_stderr).await;
+            if let Err(source) = read_stderr_loop(stderr, stderr_tail_task, sink_stderr).await {
+                if let Ok(mut slot) = stderr_reader_error.lock() {
+                    *slot = Some(("stderr", source));
+                }
+            }
         });
 
         // Таймаут: убиваем процесс и возвращаем различимый Timeout-вид
@@ -353,28 +396,42 @@ impl ProcessRunner {
         let _ = stdout_task.await;
         let _ = stderr_task.await;
 
+        let reader_failure = reader_error.lock().ok().and_then(|slot| slot.clone());
+
         let duration_ms = start.elapsed().as_millis() as u64;
         let stdout_detail = tail_text(&stdout_tail);
         let stderr_detail = tail_text(&stderr_tail);
 
         match wait_result {
-            Ok(status) if status.success() => Ok(ProcessOutput {
-                stdout_tail: stdout_detail,
-                stderr_tail: stderr_detail,
-                duration_ms,
-            }),
+            Ok(status) if status.success() => match reader_failure {
+                Some((stream, source)) => Err(ProcessExecutionError {
+                    kind: ProcessErrorKind::ReadOutput { stream, source },
+                    command,
+                    args,
+                    working_dir,
+                    stdout_tail: stdout_detail,
+                    stderr_tail: stderr_detail,
+                }),
+                None => Ok(ProcessOutput {
+                    stdout_tail: stdout_detail,
+                    stderr_tail: stderr_detail,
+                    duration_ms,
+                }),
+            },
             Ok(status) => Err(ProcessExecutionError {
                 kind: ProcessErrorKind::Exit {
                     code: exit_status_text(&status),
                 },
-                command_line,
+                command,
+                args,
                 working_dir,
                 stdout_tail: stdout_detail,
                 stderr_tail: stderr_detail,
             }),
             Err(kind) => Err(ProcessExecutionError {
                 kind,
-                command_line,
+                command,
+                args,
                 working_dir,
                 stdout_tail: stdout_detail,
                 stderr_tail: stderr_detail,
@@ -385,14 +442,15 @@ impl ProcessRunner {
 
 /// Прочитать stdout побайтово: стриминг в sink, накопление хвоста,
 /// детекция триггеров и отправка ответов в stdin (если stdin piped),
-/// idle-fallback при молчании процесса.
+/// idle-fallback при молчании процесса. Ошибка чтения — Err (не
+/// замалчивается, как раньше, а становится ProcessErrorKind::ReadOutput).
 async fn read_stdout_loop(
     mut stdout: tokio::process::ChildStdout,
     mut stdin: Option<tokio::process::ChildStdin>,
     interactive: InteractiveRules,
     stdout_tail: Arc<Mutex<Vec<String>>>,
     sink: Option<ExecutionEventSink>,
-) {
+) -> Result<(), String> {
     // 256-байтовый буфер — не ждём \n, читаем как только данные появляются
     let mut buf = [0u8; 256];
     // Скользящее окно 2048 символов
@@ -431,8 +489,9 @@ async fn read_stdout_loop(
                     }
                 }
             }
-            // Ошибка чтения
-            Ok(Err(_)) => break,
+            // Ошибка чтения: фиксируем и завершаем цикл — ошибка не
+            // замалчивается (см. ReadOutput)
+            Ok(Err(source)) => return Err(source.to_string()),
             // Таймаут — процесс молчит, возможно ждёт ввода без триггера
             Err(_elapsed) => {
                 let Some(stdin) = &mut stdin else {
@@ -452,23 +511,33 @@ async fn read_stdout_loop(
             }
         }
     }
+    Ok(())
 }
 
-/// Прочитать stderr построчно: стриминг в sink и накопление хвоста.
+/// Прочитать stderr побайтово: стриминг в sink и накопление хвоста.
+/// Не-UTF-8 байты (Windows cmd пишет в OEM-кодировке) конвертируются
+/// lossy — это НЕ ошибка чтения; ошибкой считается только сбой самого
+/// пайпа (см. ReadOutput).
 async fn read_stderr_loop(
-    stderr: tokio::process::ChildStderr,
+    mut stderr: tokio::process::ChildStderr,
     stderr_tail: Arc<Mutex<Vec<String>>>,
     sink: Option<ExecutionEventSink>,
-) {
-    let reader = BufReader::new(stderr);
-    let mut lines = reader.lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        capture_tail(&stderr_tail, &line);
-        if let Some(sink) = &sink {
-            sink.emit_stderr(&line).await;
+) -> Result<(), String> {
+    let mut buf = [0u8; 256];
+    loop {
+        match stderr.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                capture_tail(&stderr_tail, &chunk);
+                if let Some(sink) = &sink {
+                    sink.emit_stderr(&chunk).await;
+                }
+            }
+            Err(source) => return Err(source.to_string()),
         }
     }
+    Ok(())
 }
 
 /// Отправить ответ в stdin процесса согласно ResponseType.
@@ -557,10 +626,14 @@ fn build_command(spec: &ProcessSpec) -> TokioCommand {
                 // npm/npx/composer разрешаются через .cmd/.bat в helper.
                 let program = windows_command_program(command);
                 if is_windows_batch(&program) {
+                    // БЕЗ /S: cmd /S при первом же кавычке-токене снимает
+                    // кавычки и режет команду по пробелу («C:\tools\abs
+                    // probe.cmd» → «C:\tools\abs»). Без /S строка из ровно
+                    // двух кавычек с пробелом внутри и именем исполняемого
+                    // файла сохраняет кавычки целиком (правило cmd).
                     let mut shell = TokioCommand::new("cmd");
                     shell
                         .arg("/D")
-                        .arg("/S")
                         .arg("/C")
                         .arg(windows_shell_line(&program, &spec.args));
                     shell
@@ -823,7 +896,8 @@ mod tests {
     fn timeout_error_is_distinguishable_and_formatted() {
         let err = ProcessExecutionError {
             kind: ProcessErrorKind::Timeout { timeout_secs: 42 },
-            command_line: "npx create-vite@latest my-app".into(),
+            command: "npx".into(),
+            args: vec!["create-vite@latest".into(), "my-app".into()],
             working_dir: PathBuf::from(r"C:\Projects\app"),
             stdout_tail: "fetching template...".into(),
             stderr_tail: String::new(),
@@ -838,10 +912,8 @@ mod tests {
             text.starts_with("Command failed (timed out after 42 seconds)"),
             "{text}"
         );
-        assert!(
-            text.contains("command: npx create-vite@latest my-app"),
-            "{text}"
-        );
+        assert!(text.contains("command: npx"), "{text}");
+        assert!(text.contains("args: create-vite@latest my-app"), "{text}");
         assert!(
             text.contains("working directory: C:\\Projects\\app"),
             "{text}"
@@ -857,7 +929,8 @@ mod tests {
     fn spawn_exit_wait_kinds_are_distinct() {
         let exit = ProcessExecutionError {
             kind: ProcessErrorKind::Exit { code: "22".into() },
-            command_line: "curl".into(),
+            command: "curl".into(),
+            args: vec![],
             working_dir: PathBuf::from("."),
             stdout_tail: String::new(),
             stderr_tail: String::new(),
@@ -868,7 +941,8 @@ mod tests {
             kind: ProcessErrorKind::Spawn {
                 source: "Access is denied".into(),
             },
-            command_line: "npm".into(),
+            command: "npm".into(),
+            args: vec![],
             working_dir: PathBuf::from("."),
             stdout_tail: String::new(),
             stderr_tail: String::new(),
@@ -879,12 +953,45 @@ mod tests {
             kind: ProcessErrorKind::Wait {
                 source: "broken pipe".into(),
             },
-            command_line: "npm".into(),
+            command: "npm".into(),
+            args: vec![],
             working_dir: PathBuf::from("."),
             stdout_tail: String::new(),
             stderr_tail: String::new(),
         };
         assert_eq!(wait.reason(), "process wait failed: broken pipe");
+
+        let read = ProcessExecutionError {
+            kind: ProcessErrorKind::ReadOutput {
+                stream: "stdout",
+                source: "broken pipe".into(),
+            },
+            command: "npm".into(),
+            args: vec![],
+            working_dir: PathBuf::from("."),
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        };
+        assert_eq!(read.reason(), "failed to read stdout: broken pipe");
+        let text = read.format_command_error();
+        assert!(
+            text.contains("failed to read stdout: broken pipe"),
+            "{text}"
+        );
+        assert!(text.contains("args: <none>"), "{text}");
+    }
+
+    #[test]
+    fn command_line_joins_command_and_args() {
+        let err = ProcessExecutionError {
+            kind: ProcessErrorKind::Exit { code: "1".into() },
+            command: "npm".into(),
+            args: vec!["install".into(), "react".into()],
+            working_dir: PathBuf::from("."),
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        };
+        assert_eq!(err.command_line(), "npm install react");
     }
 
     #[test]
@@ -965,6 +1072,112 @@ mod tests {
         }
         assert!(saw_out, "stdout обязан стримиться в события UI");
         assert!(saw_err, "stderr обязан стримиться в события UI");
+    }
+
+    #[tokio::test]
+    async fn runner_reports_exit_with_stderr_tail() {
+        // Команда пишет ТОЛЬКО в stderr и завершается ненулевым кодом:
+        // хвост stderr обязан дойти до ошибки, вид — различимый Exit.
+        let spec = if cfg!(target_os = "windows") {
+            ProcessSpec {
+                command: "cmd".into(),
+                args: vec!["/C".into(), "echo boom 1>&2 & exit /b 7".into()],
+                working_dir: None,
+                env: None,
+                timeout: Some(Duration::from_secs(30)),
+                stdin: StdinMode::Null,
+                ci_mode: false,
+            }
+        } else {
+            ProcessSpec {
+                command: "echo boom >&2; exit 7".into(),
+                args: vec![],
+                working_dir: None,
+                env: None,
+                timeout: Some(Duration::from_secs(30)),
+                stdin: StdinMode::Null,
+                ci_mode: false,
+            }
+        };
+
+        let err = ProcessRunner::run(spec, None).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, ProcessErrorKind::Exit { code } if code == "7"),
+            "{:?}",
+            err.kind
+        );
+        assert!(
+            err.stderr_tail.contains("boom"),
+            "stderr tail: {}",
+            err.stderr_tail
+        );
+        let text = err.format_command_error();
+        assert!(text.contains("exited with status 7"), "{text}");
+        assert!(text.contains("stdout tail:"), "{text}");
+        assert!(text.contains("stderr tail:\nboom"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn runner_reports_spawn_failure() {
+        // Windows-запуск несуществующей программы — различимый Spawn-вид.
+        // На Unix обёртка `sh -c` стартует всегда (команда упадёт в Exit 127),
+        // поэтому проверка ограничена Windows — основной платформой.
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        let spec = ProcessSpec::new("pc_runner_does_not_exist_xyz_98765");
+        let err = ProcessRunner::run(spec, None).await.unwrap_err();
+        assert!(
+            matches!(err.kind, ProcessErrorKind::Spawn { .. }),
+            "{:?}",
+            err.kind
+        );
+        assert!(
+            err.format_command_error().contains("failed to spawn"),
+            "{}",
+            err.format_command_error()
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_executes_absolute_executable_path() {
+        // Абсолютный путь к .cmd-файлу запускается через cmd.exe
+        // (CreateProcess batch-файлы не умеет) — команда не обязана быть
+        // в PATH. Примечание: имя файла без пробелов — cmd /C с кавычками
+        // в пути, содержащем пробелы, конфликтует с повторным кавычкованием
+        // аргументов Rust'ом (тройные кавычки режутся cmd по пробелу).
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_abs_cmd_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bat = dir.join("abs_probe.cmd");
+        std::fs::write(&bat, "@echo off\r\necho abs-path-ok\r\n").unwrap();
+        let spec = ProcessSpec {
+            command: bat.to_string_lossy().into_owned(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout: Some(Duration::from_secs(30)),
+            stdin: StdinMode::Null,
+            ci_mode: false,
+        };
+        let output = ProcessRunner::run(spec, None)
+            .await
+            .expect("absolute .cmd path must run");
+        assert!(
+            output.stdout_tail.contains("abs-path-ok"),
+            "stdout tail: {}",
+            output.stdout_tail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

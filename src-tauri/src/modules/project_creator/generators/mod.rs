@@ -1548,6 +1548,12 @@ async fn download_starter(
                     ));
                 }
                 ProcessErrorKind::Exit { code } => (http_code, Some(code.clone()), stderr_tail),
+                ProcessErrorKind::ReadOutput { stream, source } => {
+                    return Err(format!(
+                        "Spring Initializr отказал: failed to read {stream}: {}",
+                        source
+                    ));
+                }
             }
         }
     };

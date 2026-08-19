@@ -1,4 +1,4 @@
-﻿pub mod content;
+pub mod content;
 pub mod executor;
 pub mod paths;
 pub mod process;
@@ -135,11 +135,14 @@ impl RecipeEngine for DefaultRecipeEngine {
         let steps = flatten_and_filter(&recipe, context, project_path);
         // Явные предусловия: декларации рецепта сужаются до шагов, реально
         // оставшихся после фильтрации условий (ветки, отсечённые контекстом,
-        // не порождают «висячих» предшественников), затем план проверяется
-        // на циклы и порядок. Зависимости НЕ выводятся из порядка шагов —
-        // только из деклараций (Recipe.dependencies).
+        // не порождают «висячих» предшественников), затем план нормализуется
+        // стабильной топологической сортировкой: рецепт может декларировать
+        // шаги в любом порядке — предшественники всегда встают строго до
+        // зависимых, независимые шаги сохраняют порядок декларации. Зависимости
+        // НЕ выводятся из порядка шагов — только из деклараций
+        // (Recipe.dependencies).
         let dependencies = build_dependencies(&steps, &recipe.dependencies);
-        validate_dependencies(&steps, &dependencies)?;
+        let steps = topo_order_steps(&steps, &dependencies)?;
         Ok(ExecutionPlan {
             recipe,
             context: context.clone(),
@@ -269,32 +272,37 @@ impl RecipeEngine for DefaultRecipeEngine {
     ) -> ExecutionResult {
         plan.steps = flatten_steps(&plan.steps, &plan.context);
         // План может быть построен не через plan() (прямая конструкция
-        // ExecutionPlan). Гарантируем те же инварианты: циклические или
-        // рассинхронизированные зависимости не выполняются вовсе.
-        if let Err(err) = validate_dependencies(&plan.steps, &plan.dependencies) {
-            let result = ExecutionResult {
-                recipe_id: plan.recipe.id.clone(),
-                total_duration_ms: 0,
-                step_results: Vec::new(),
-                overall: OverallStatus::Aborted {
-                    last_step: None,
-                    reason: err.clone(),
-                },
-            };
-            let _ = tx
-                .send(ExecutionEvent {
-                    event_type: ExecutionEventType::AllCompleted {
-                        result: result.clone(),
+        // ExecutionPlan). Гарантируем те же инварианты: шаги нормализуются
+        // стабильной топологической сортировкой; планы с настоящими циклами,
+        // самозависимостями, дубликатами id или висячими предшественниками
+        // не выполняются вовсе.
+        match topo_order_steps(&plan.steps, &plan.dependencies) {
+            Ok(ordered) => plan.steps = ordered,
+            Err(err) => {
+                let result = ExecutionResult {
+                    recipe_id: plan.recipe.id.clone(),
+                    total_duration_ms: 0,
+                    step_results: Vec::new(),
+                    overall: OverallStatus::Aborted {
+                        last_step: None,
+                        reason: err.clone(),
                     },
-                    step_id: String::new(),
-                    step_index: plan.steps.len(),
-                    total_steps: plan.steps.len(),
-                    step_name: "Complete".into(),
-                    step_description: String::new(),
-                    timestamp: chrono_event_time(),
-                })
-                .await;
-            return result;
+                };
+                let _ = tx
+                    .send(ExecutionEvent {
+                        event_type: ExecutionEventType::AllCompleted {
+                            result: result.clone(),
+                        },
+                        step_id: String::new(),
+                        step_index: plan.steps.len(),
+                        total_steps: plan.steps.len(),
+                        step_name: "Complete".into(),
+                        step_description: String::new(),
+                        timestamp: chrono_event_time(),
+                    })
+                    .await;
+                return result;
+            }
         }
         let start = Instant::now();
         let total = plan.steps.len();
@@ -534,8 +542,9 @@ fn compose_recipe(
 
     // Фаза 1: Root Scaffolding. Корнем владеет ровно тот, кому это назначила
     // каноническая раскладка (ProjectLayout::owns_root):
-    //   - Integrated: tauri (его шаги ОТЛОЖЕНЫ — см. ниже, фронтенд обязан
-    //     скаффолдиться первым);
+    //   - Integrated: обёртки над проектом (tauri — ScaffoldOwnership
+    //     wraps_existing_project) — их шаги ОТЛОЖЕНЫ (см. deferred_wrappers
+    //     ниже: фронтенд обязан скаффолдиться первым);
     //   - BackendOnly/FrontendOnly: root-скаффолдер (django, nest, spring-boot).
     // В Split корнем не владеет никто — даже scaffold="root" работает внутри
     // своего сегмента (django/nest в backend/).
@@ -545,7 +554,7 @@ fn compose_recipe(
     let mut js_dirs: Vec<String> = Vec::new();
     let mut rest_frameworks: Vec<String> = Vec::new();
     for fw in &context.frameworks {
-        if layout.owns_root(fw) && fw != "tauri" {
+        if layout.owns_root(fw) && !ScaffoldOwnership::for_framework(fw).wraps_existing_project {
             steps.extend(steps_for_framework(
                 fw,
                 project_path,
@@ -685,9 +694,10 @@ fn compose_recipe(
         });
     }
 
-    // Tauri-шаги откладываются в конец фазы Subdir Scaffolding: пайплайн
-    // tauri обязан выполнять фронтенд-генератор ПЕРВЫМ (vite в frontend/ →
-    // npm install → cargo tauri init), иначе init опережает каркас фронтенда.
+    // Обёртки над проектом (ScaffoldOwnership::wraps_existing_project: tauri)
+    // откладываются в конец фазы Subdir Scaffolding: пайплайн обёртки обязан
+    // выполнять фронтенд-генератор ПЕРВЫМ (vite в frontend/ → npm install →
+    // tauri init), иначе init опережает каркас фронтенда.
     // Побочные фреймворки (kind="side": telegraf, aiogram...) выполняются
     // ПОСЛЕ главных (nest, django...): их шаги пишут поверх/патчат каркас
     // главного фреймворка (telegraf → dep-патч package.json, созданного
@@ -702,13 +712,33 @@ fn compose_recipe(
             main_fws.push(fw);
         }
     }
-    let mut deferred_tauri: Vec<Step> = Vec::new();
+    // Каркас с СОБСТВЕННЫМ фронтендом (electron/renderer, flutter/dart-ui):
+    // его UI встроен в каркас, поэтому универсальные UI-компаньоны
+    // (react/vue/svelte) рядом с ним не скаффолдятся отдельно — иначе
+    // получились бы два несвязанных фронтенда в frontend/ (запрещено).
+    // Обёртки (tauri) и C++-каркасы (qt) фронтенд НЕ создают — компаньоны
+    // для них скаффолдятся штатно.
+    let frontend_shell_present = context
+        .frameworks
+        .iter()
+        .any(|fw| creates_frontend_shell(fw));
+    let mut deferred_wrappers: Vec<Step> = Vec::new();
     for fw in main_fws.iter().chain(side_fws.iter()) {
+        let ownership = ScaffoldOwnership::for_framework(fw);
+        // UI-компаньоны подавляются только при наличии ЧУЖОГО владельца
+        // фронтенда: сам по себе react/vue/svelte — обычный каркас.
+        if frontend_shell_present && ownership.is_ui_companion {
+            continue;
+        }
         let fw_steps = steps_for_framework(fw, project_path, project_name, context, layout);
         if is_js_framework(fw) && !fw_steps.is_empty() {
-            // Scaffold-фреймворки кладут package.json в scaffold_target_dir
-            // (frontend/), остальные — в сегмент или подпапку <project_name>.
-            let dir = if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw.as_str()) {
+            // Scaffold-фреймворки (Step::Generate "scaffold") кладут
+            // package.json в scaffold_target_dir (frontend/), остальные —
+            // в сегмент или подпапку <project_name>. Проверка СТРУКТУРНАЯ:
+            // по фактическим шагам фреймворка, а не по списку id.
+            let dir = if fw_steps.iter().any(
+                |s| matches!(s, Step::Generate { generator_id, .. } if generator_id == "scaffold"),
+            ) {
                 scaffold_target_dir(fw, layout.framework_dir(fw).as_deref())
             } else {
                 layout
@@ -717,15 +747,15 @@ fn compose_recipe(
             };
             push_unique(&mut js_dirs, dir);
         }
-        if fw == "tauri" {
-            // tauri инициализируется ПОСЛЕ всех фронтенд-каркасов
-            // (см. выше: фронтенд-генератор FIRST → npm install → tauri init).
-            deferred_tauri = fw_steps;
+        if ownership.wraps_existing_project {
+            // Обёртка инициализируется ПОСЛЕ всех фронтенд-каркасов
+            // (см. выше: фронтенд-генератор FIRST → npm install → обёртка).
+            deferred_wrappers = fw_steps;
         } else {
             steps.extend(fw_steps);
         }
     }
-    steps.extend(deferred_tauri);
+    steps.extend(deferred_wrappers);
 
     // Фаза 3: установка инструментов (prisma init требует существующий
     // package.json — выполняется строго после каркасов).
@@ -782,8 +812,9 @@ fn compose_recipe(
 
     // ========================================================================
     // Явные предусловия шагов (см. StepDependency). Зависимости НЕ выводятся
-    // из порядка шагов — каждая пара декларируется явно и проверяется в
-    // plan() (validate_dependencies: циклы/нарушение порядка отклоняются).
+    // из порядка шагов — каждая пара декларируется явно; план нормализуется
+    // в plan() (topo_order_steps: стабильная топологическая сортировка,
+    // циклы/самозависимости/висячие предшественники отклоняются).
     // Присутствие пар фильтруется в build_dependencies по фактическому плану:
     // ветки, отсечённые контекстом (компаньон вместо tauri_web_scaffold,
     // отсутствующий nest и т.п.), не дают «висячих» предшественников.
@@ -1040,16 +1071,32 @@ fn build_dependencies(steps: &[Step], declared: &[StepDependency]) -> Vec<StepDe
         .collect()
 }
 
-/// Валидация плана: каждый предшественник обязан существовать в плане и
-/// идти СТРОГО до зависимого шага. Нарушение порядка (зависимость на шаг
-/// из будущего) эквивалентно циклу — такие планы отклоняются целиком
-/// (plan() → Err, execute() → Aborted), а не «лечатся» перестановкой.
-/// Зависимости НЕ выводятся из порядка шагов — только из деклараций.
-fn validate_dependencies(steps: &[Step], deps: &[StepDependency]) -> Result<(), String> {
-    let index: std::collections::HashMap<String, usize> =
-        steps.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
+/// Построить план в топологическом порядке: каждый предшественник (явное
+/// предусловие) идёт СТРОГО до зависимого шага. Сортировка СТАБИЛЬНА —
+/// независимые шаги сохраняют порядок декларации рецепта, поэтому рецепт
+/// может декларировать шаги в любом порядке. Отклоняются только
+/// по-настоящему невалидные планы: дубликаты id шагов, висячие
+/// предшественники, самозависимости и циклы (с полным путём цикла в
+/// ошибке). Зависимости НЕ выводятся из порядка шагов — только из
+/// деклараций (Recipe.dependencies).
+fn topo_order_steps(steps: &[Step], deps: &[StepDependency]) -> Result<Vec<Step>, String> {
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        if index.insert(step.id(), i).is_some() {
+            return Err(format!(
+                "Dependency plan error: duplicate step id '{}' in the plan",
+                step.id()
+            ));
+        }
+    }
+    // Граф «зависимый → предшественник». Чисто файловые предусловия
+    // (prereq_id пуст) порядок не определяют — они проверяются только
+    // в dependency_skip_reason во время выполнения.
+    let mut indegree = vec![0usize; steps.len()];
+    let mut prereqs_of: Vec<Vec<usize>> = vec![Vec::new(); steps.len()];
+    let mut dependents_of: Vec<Vec<usize>> = vec![Vec::new(); steps.len()];
     for dep in deps {
-        let dep_idx = index.get(&dep.step_id).copied().ok_or_else(|| {
+        let dep_idx = *index.get(&dep.step_id).ok_or_else(|| {
             format!(
                 "Dependency plan error: step '{}' is not in the plan",
                 dep.step_id
@@ -1058,20 +1105,108 @@ fn validate_dependencies(steps: &[Step], deps: &[StepDependency]) -> Result<(), 
         if dep.prereq_id.is_empty() {
             continue;
         }
-        let pre_idx = index.get(&dep.prereq_id).copied().ok_or_else(|| {
+        let pre_idx = *index.get(&dep.prereq_id).ok_or_else(|| {
             format!(
                 "Dependency plan error: prerequisite '{}' of '{}' is not in the plan",
                 dep.prereq_id, dep.step_id
             )
         })?;
-        if pre_idx >= dep_idx {
+        if pre_idx == dep_idx {
             return Err(format!(
-                "Dependency cycle or ordering violation: step '{}' requires prerequisite '{}' which is scheduled after it (or is itself)",
-                dep.step_id, dep.prereq_id
+                "Dependency plan error: step '{}' cannot depend on itself",
+                dep.step_id
             ));
         }
+        indegree[dep_idx] += 1;
+        prereqs_of[dep_idx].push(pre_idx);
+        dependents_of[pre_idx].push(dep_idx);
     }
-    Ok(())
+
+    // Стабильный алгоритм Кана: на каждом шаге берётся ПЕРВЫЙ (в порядке
+    // декларации) шаг без неудовлетворённых предшественников.
+    let mut remaining: Vec<usize> = (0..steps.len()).collect();
+    let mut ordered: Vec<Step> = Vec::with_capacity(steps.len());
+    while let Some(pos) = remaining.iter().position(|&i| indegree[i] == 0) {
+        let i = remaining.remove(pos);
+        ordered.push(steps[i].clone());
+        for &dependent in &dependents_of[i] {
+            indegree[dependent] -= 1;
+        }
+    }
+
+    if !remaining.is_empty() {
+        // Остались только шаги, чьи предшественники не были разблокированы:
+        // среди них гарантированно есть настоящий цикл. Извлекаем его полный
+        // путь и замыкаем на первом узле: «A -> B -> A».
+        let cycle = cycle_path(steps, &remaining, &prereqs_of);
+        let mut closed = cycle.clone();
+        if let Some(first) = cycle.first() {
+            closed.push(first.clone());
+        }
+        return Err(format!(
+            "Dependency cycle detected: {}",
+            closed.join(" -> ")
+        ));
+    }
+    Ok(ordered)
+}
+
+/// Найти фактический цикл среди оставшихся (не упорядоченных) шагов:
+/// глубина по рёбрам «зависимый → предшественник» до возврата в узел,
+/// уже находящийся на стеке. Возвращает путь цикла в порядке следования
+/// рёбер (без замыкания на первый узел).
+fn cycle_path(steps: &[Step], remaining: &[usize], prereqs_of: &[Vec<usize>]) -> Vec<String> {
+    let in_remaining: std::collections::HashSet<usize> = remaining.iter().copied().collect();
+    let mut state: Vec<u8> = vec![0; steps.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    fn dfs(
+        node: usize,
+        steps: &[Step],
+        prereqs_of: &[Vec<usize>],
+        in_remaining: &std::collections::HashSet<usize>,
+        state: &mut Vec<u8>,
+        stack: &mut Vec<usize>,
+    ) -> Option<Vec<usize>> {
+        state[node] = 1;
+        stack.push(node);
+        for &pre in &prereqs_of[node] {
+            if !in_remaining.contains(&pre) {
+                continue;
+            }
+            match state[pre] {
+                0 => {
+                    if let Some(cycle) = dfs(pre, steps, prereqs_of, in_remaining, state, stack) {
+                        return Some(cycle);
+                    }
+                }
+                1 => {
+                    let pos = stack.iter().position(|&x| x == pre).unwrap();
+                    return Some(stack[pos..].to_vec());
+                }
+                _ => {}
+            }
+        }
+        state[node] = 2;
+        stack.pop();
+        None
+    }
+    for &node in remaining {
+        if state[node] == 0 {
+            if let Some(cycle) = dfs(
+                node,
+                steps,
+                prereqs_of,
+                &in_remaining,
+                &mut state,
+                &mut stack,
+            ) {
+                return cycle.iter().map(|&i| steps[i].id()).collect();
+            }
+        }
+    }
+    // Недостижимо: раз сортировка не завершилась, среди оставшихся шагов
+    // гарантированно есть цикл.
+    remaining.iter().map(|&i| steps[i].id()).collect()
 }
 
 /// Причина пропуска шага из-за явных предусловий (dependency rules).
@@ -1100,8 +1235,14 @@ fn dependency_skip_reason(
         } else {
             results.iter().rev().find(|r| r.step_id == dep.prereq_id)
         };
-        let file_missing =
-            !dep.expects_file.is_empty() && !project_path.join(&dep.expects_file).exists();
+        // Файловое пост-условие проверяется по безопасному пути строго
+        // внутри корня проекта (те же правила, что у WriteFile/условий):
+        // недопустимый путь (абсолютный, `..` за корень) трактуется как
+        // отсутствующий файл — шаг пропускается.
+        let file_missing = !dep.expects_file.is_empty()
+            && !paths::resolve_in_root(project_path, &dep.expects_file)
+                .map(|p| p.exists())
+                .unwrap_or(false);
         match prereq_result {
             Some(r) => match &r.status {
                 StepStatus::Failed { error } => {
@@ -1617,8 +1758,7 @@ fn wizard_tree() -> &'static WizardTreeData {
     static TREE: OnceLock<WizardTreeData> = OnceLock::new();
     TREE.get_or_init(|| {
         let raw = include_str!("../knowledge/wizard_tree.json");
-        serde_json::from_str(raw)
-            .expect("wizard_tree.json должен быть корректным JSON")
+        serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON")
     })
 }
 
@@ -1971,15 +2111,15 @@ fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
 /// (индекс в args), а рабочая директория остаётся корнем проекта;
 /// остальные шаги (write_file, остальные команды) переносятся в сегмент.
 /// Фронтенд-скаффолдеры (create-vite, create-next-app, nuxi init, expo,
-/// laravel/symfony через composer, solidjs, flutter) из этого списка УБРАНЫ —
-/// их каталогом управляет ScaffoldGenerator (Step::Generate "scaffold",
-/// см. генератор), который знает способность каждого CLI.
+/// electron, laravel/symfony через composer, solidjs, flutter) из этого
+/// списка УБРАНЫ — их каталогом управляет ScaffoldGenerator
+/// (Step::Generate "scaffold", см. генератор), который знает способность
+/// каждого CLI.
 const FOLDER_MAKER_STEPS: &[(&str, usize)] = &[
-    ("electron_init", 1), // npx create-electron-app <имя>
-    ("rn_init", 2),       // npx @react-native-community/cli init <имя>
-    ("plasmo_init", 2),   // npx plasmo init <имя>
-    ("phoenix_new", 1),   // mix phx.new <имя>
-    ("vapor_new", 1),     // vapor new <имя>
+    ("rn_init", 2),     // npx @react-native-community/cli init <имя>
+    ("plasmo_init", 2), // npx plasmo init <имя>
+    ("phoenix_new", 1), // mix phx.new <имя>
+    ("vapor_new", 1),   // vapor new <имя>
 ];
 
 /// Степ-иды языковых инициализаций, чьи FileNotExists-маркеры
@@ -2142,17 +2282,10 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                 },
                 // Scaffold-генератор (Step::Generate "scaffold") сам кладёт проект
                 // в target_dir: при сегментации каталогом становится сегмент.
-                // Исключения:
-                //   - tauri_web_scaffold: каталог ВСЕГДА frontend/ (веб-часть
-                //     рядом с сегментом tauri);
-                //   - tauri_init: integrated-оболочка — CLI работает в корне
-                //     проекта (src-tauri/ в корне), target_dir остаётся ".";
-                //   - does_not_create_a_project: CLI не создаёт каталог проекта —
-                //     target_dir остаётся "." и валидация пост-условий идёт
-                //     относительно рабочей директории.
-                //   - generates_root_shell (zig init): CLI раскладывает shell в
-                //     ТЕКУЩЕМ каталоге — при сегментации это сегмент (backend/),
-                //     туда же валидируются пост-условия (build.zig + src/).
+                // Шаги с явным каталогом, не зависящим от раскладки, не трогаем
+                // (см. scaffold_lands_in_target_dir: tauri_web_scaffold —
+                // веб-часть всегда frontend/, tauri_init — оболочка в корне,
+                // does_not_create_a_project — CLI без каталога проекта).
                 // Spring Boot (генератор "spring-boot") распаковывает starter
                 // внутри сегмента — каталог передаётся через target_dir.
                 Step::Generate {
@@ -2165,14 +2298,7 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     condition,
                     on_error,
                 } => {
-                    let lands_in_target_dir = generator_id == "scaffold"
-                        && id != "tauri_web_scaffold"
-                        && id != "tauri_init"
-                        && generator_config
-                            .get("capability")
-                            .and_then(|v| v.as_str())
-                            .map_or(true, |c| c != "does_not_create_a_project");
-                    if generator_id == "scaffold" && lands_in_target_dir {
+                    if scaffold_lands_in_target_dir(&id, &generator_id, &generator_config) {
                         generator_config["target_dir"] = serde_json::Value::String(dir.to_string());
                     }
                     if generator_id == "spring-boot" {
@@ -2193,6 +2319,31 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
             }
         })
         .collect()
+}
+
+/// Scaffold-генератор кладёт проект в target_dir: при сегментации — сегмент
+/// (into_segment), в монолите — scaffold_target_dir (output_subdir фреймворка).
+/// ЕДИНСТВЕННОЕ правило, по которому движок решает, можно ли переопределять
+/// каталог scaffold-шага; используется и в into_segment, и в
+/// steps_for_framework (иначе логика расходится). Шаги с ЯВНЫМ каталогом,
+/// не зависящим от раскладки, не трогаются:
+///   - tauri_web_scaffold: веб-часть tauri ВСЕГДА в frontend/;
+///   - tauri_init: integrated-оболочка работает в корне (src-tauri/ в корне);
+///   - does_not_create_a_project: CLI не создаёт каталог проекта (zig init —
+///     раскладывает shell в текущем каталоге, пост-условия валидируются
+///     относительно рабочей директории).
+fn scaffold_lands_in_target_dir(
+    id: &str,
+    generator_id: &str,
+    generator_config: &serde_json::Value,
+) -> bool {
+    generator_id == "scaffold"
+        && id != "tauri_web_scaffold"
+        && id != "tauri_init"
+        && generator_config
+            .get("capability")
+            .and_then(|v| v.as_str())
+            .map_or(true, |c| c != "does_not_create_a_project")
 }
 
 /// Скаффолдеры, которые генерируют package.json и называют его по имени
@@ -2233,6 +2384,7 @@ const SCAFFOLD_GENERATOR_FRAMEWORKS: &[&str] = &[
     "expo",
     "solidjs",
     "flutter",
+    "electron",
     "laravel",
     "symfony",
 ];
@@ -2294,6 +2446,156 @@ fn package_name_patch_step(
 /// сегментация, целевые каталоги scaffold-генераторов и пост-патч имени
 /// package.json. Все каталоги берутся ТОЛЬКО из layout — никаких локальных
 /// эвристик (root_rest_seg и т.п. больше нет).
+/// Метаданные владения каркасом: что именно создаёт CLI-скаффолдер и как
+/// движок может с ним работать. ЕДИНСТВЕННАЯ таблица — поведение каждого
+/// скаффолдера описывается здесь, а не разрозненными проверками по id
+/// фреймворка в compose_recipe / steps_for_framework / into_segment.
+/// Проверки «fw == "tauri"», «fw == "electron"» вне этой таблицы — ошибка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScaffoldOwnership {
+    /// CLI создаёт полный каркас приложения (create-vite, create-electron-app,
+    /// flutter create, tauri init).
+    pub creates_app_shell: bool,
+    /// Каркас включает СОБСТВЕННЫЙ фронтенд (react/vite, electron/renderer,
+    /// flutter/dart-ui). UI-компаньоны (react/vue/svelte) рядом с таким
+    /// владельцем не скаффолдятся отдельно — их UI уже встроен в каркас.
+    pub creates_frontend: bool,
+    /// Встраиваемый UI-компаньон (react/vue/svelte): UI-библиотека, которую
+    /// мастера выбирают ПОД оболочку (tauri, electron, qt-webengine). Рядом
+    /// с каркасом, у которого есть собственный фронтенд, компаньон не
+    /// скаффолдится (compose_recipe) — его UI уже встроен в каркас.
+    pub is_ui_companion: bool,
+    /// CLI требует ПУСТОЙ каталог назначения: в существующем каталоге с
+    /// посторонними файлами CLI падает (create-next-app, create-expo-app).
+    pub requires_empty_dir: bool,
+    /// CLI умеет дописывать каркас в УЖЕ СУЩЕСТВУЮЩИЙ каталог (nest new .,
+    /// tauri init, zig init, flutter create .).
+    pub may_run_in_existing_dir: bool,
+    /// CLI может выполняться во временной папке (temp+move): созданный
+    /// каталог программно переносится в каталог назначения.
+    pub supports_staging_dir: bool,
+    /// Выход CLI можно программно слить с каталогом назначения.
+    pub output_mergeable: bool,
+    /// Гарантированные выходные пути (пост-условия валидации) относительно
+    /// каталога назначения.
+    pub expected_outputs: &'static [&'static str],
+    /// CLI — обёртка над другим проектом: требует уже существующий каркас
+    /// (tauri init поверх фронтенда). Шаги обёртки откладываются в конец
+    /// фазы скаффолдинга.
+    pub wraps_existing_project: bool,
+}
+
+impl ScaffoldOwnership {
+    pub const fn none() -> Self {
+        Self {
+            creates_app_shell: false,
+            creates_frontend: false,
+            is_ui_companion: false,
+            requires_empty_dir: false,
+            may_run_in_existing_dir: false,
+            supports_staging_dir: false,
+            output_mergeable: false,
+            expected_outputs: &[],
+            wraps_existing_project: false,
+        }
+    }
+
+    /// Каркас создаёт собственный фронтенд целиком (app shell + UI):
+    /// electron/renderer, flutter/dart-ui, react/vite...
+    pub fn creates_frontend_shell(&self) -> bool {
+        self.creates_app_shell && self.creates_frontend
+    }
+
+    /// Единственная таблица владения: id фреймворка → метаданные его
+    /// скаффолдера. Фреймворки без CLI-каркаса (inplace: express, fastapi,
+    /// axum...) — ScaffoldOwnership::none().
+    pub fn for_framework(fw: &str) -> Self {
+        match fw {
+            // Встраиваемые UI-компаньоны и веб-фреймворки: полный
+            // фронтенд-каркас в каталоге назначения.
+            "react" | "vue" | "svelte" | "nextjs" | "sveltekit" | "nuxt" | "expo" | "solidjs" => {
+                Self {
+                    creates_app_shell: true,
+                    creates_frontend: true,
+                    is_ui_companion: matches!(fw, "react" | "vue" | "svelte"),
+                    requires_empty_dir: true,
+                    may_run_in_existing_dir: false,
+                    supports_staging_dir: true,
+                    output_mergeable: true,
+                    expected_outputs: &["package.json"],
+                    wraps_existing_project: false,
+                }
+            }
+            // Electron: create-electron-app собирает ПОЛНЫЙ каркас
+            // (main + renderer) — собственный фронтенд, UI-компаньоны
+            // подавляются (см. compose_recipe). Forge init в непустом
+            // каталоге назначения падает (запрещено) — каркас собирается
+            // во временной папке (temp+move) и переносится программно.
+            "electron" => Self {
+                creates_app_shell: true,
+                creates_frontend: true,
+                is_ui_companion: false,
+                requires_empty_dir: false,
+                may_run_in_existing_dir: false,
+                supports_staging_dir: true,
+                output_mergeable: true,
+                expected_outputs: &["package.json"],
+                wraps_existing_project: false,
+            },
+            // Flutter: flutter create --project-name <имя> . работает
+            // ВНУТРИ каталога назначения (в существующем каталоге — dart-ui).
+            "flutter" => Self {
+                creates_app_shell: true,
+                creates_frontend: true,
+                is_ui_companion: false,
+                requires_empty_dir: false,
+                may_run_in_existing_dir: true,
+                supports_staging_dir: false,
+                output_mergeable: true,
+                expected_outputs: &["pubspec.yaml", "lib"],
+                wraps_existing_project: false,
+            },
+            // Tauri: tauri init раскладывает src-tauri/ shell В КОРНЕ
+            // существующего проекта — обёртка над фронтендом, который
+            // обязан существовать ДО init (компаньон или vite-vanilla).
+            "tauri" => Self {
+                creates_app_shell: true,
+                creates_frontend: false,
+                is_ui_companion: false,
+                requires_empty_dir: false,
+                may_run_in_existing_dir: true,
+                supports_staging_dir: false,
+                output_mergeable: false,
+                expected_outputs: &["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"],
+                wraps_existing_project: true,
+            },
+            // Qt: C++-каркас с собственным UI-стеком (QML/Widgets/WebEngine/
+            // Kirigami). Режим WebEngine встраивает веб-фронтенд
+            // (react/vue/svelte): qt-шаги сборки веб-части выполняются
+            // ПОСЛЕ фронтенд-скаффолда (явные зависимости в compose_recipe).
+            "qt" => Self {
+                creates_app_shell: true,
+                creates_frontend: false,
+                is_ui_companion: false,
+                requires_empty_dir: false,
+                may_run_in_existing_dir: true,
+                supports_staging_dir: false,
+                output_mergeable: false,
+                expected_outputs: &["CMakeLists.txt", "src/main.cpp"],
+                wraps_existing_project: false,
+            },
+            _ => Self::none(),
+        }
+    }
+}
+
+/// Каркас-владелец фронтенда (не-компаньон): electron, flutter, nextjs...
+/// Его наличие подавляет UI-компаньонов (react/vue/svelte) в compose_recipe.
+fn creates_frontend_shell(fw: &str) -> bool {
+    let o = ScaffoldOwnership::for_framework(fw);
+    o.creates_frontend_shell() && !o.is_ui_companion
+}
+
 fn steps_for_framework(
     fw: &str,
     project_path: &str,
@@ -2329,20 +2631,26 @@ fn steps_for_framework(
 
     // Scaffold-генераторы: into_segment не трогает Generate-шаги, поэтому
     // целевой каталог выставляется здесь — по сегменту или output_subdir.
-    if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw) {
-        let target_dir = if fw == "tauri" {
-            "frontend".to_string()
-        } else {
-            scaffold_target_dir(fw, seg.as_deref())
-        };
+    // Проверка СТРУКТУРНАЯ (по фактическим шагам фреймворка), а не по
+    // списку id: любой каркас, чей шаг — Step::Generate "scaffold",
+    // попадает под правило. Шаги с явным каталогом (tauri_init,
+    // tauri_web_scaffold, does_not_create_a_project) не трогаются —
+    // см. scaffold_lands_in_target_dir (та же логика, что в into_segment).
+    let has_scaffold_generate = steps.iter().any(|s| {
+        matches!(s, Step::Generate { id, generator_id, generator_config, .. }
+            if scaffold_lands_in_target_dir(id, generator_id, generator_config))
+    });
+    if has_scaffold_generate {
+        let target_dir = scaffold_target_dir(fw, seg.as_deref());
         for step in &mut steps {
             if let Step::Generate {
+                id,
                 generator_id,
                 generator_config,
                 ..
             } = step
             {
-                if generator_id == "scaffold" {
+                if scaffold_lands_in_target_dir(id, generator_id, generator_config) {
                     generator_config["target_dir"] = serde_json::Value::String(target_dir.clone());
                 }
             }
@@ -2361,23 +2669,22 @@ fn steps_for_framework(
         if (scaffold_root || framework_def(fw).is_some_and(|d| d.scaffold.is_some()))
             && PACKAGE_JSON_SCAFFOLDS.contains(&fw)
         {
-            let workdir: Option<String> = if SCAFFOLD_GENERATOR_FRAMEWORKS.contains(&fw) {
-                // package.json лежит в каталоге, куда скаффолдер положил проект
-                Some(if fw == "tauri" {
-                    "frontend".to_string()
+            let workdir: Option<String> =
+                if ScaffoldOwnership::for_framework(fw).wraps_existing_project {
+                    // Обёртка (tauri): package.json принадлежит встроенному
+                    // фронтенду (frontend/), а не оболочке.
+                    Some("frontend".to_string())
+                } else if has_scaffold_generate {
+                    // package.json лежит в каталоге, куда скаффолдер положил проект
+                    Some(scaffold_target_dir(fw, seg.as_deref()))
+                } else if scaffold_root {
+                    // root-скаффолдеры (nest, django) создают package.json в корне
+                    None
                 } else {
-                    scaffold_target_dir(fw, seg.as_deref())
-                })
-            } else if fw == "tauri" {
-                Some("frontend".to_string())
-            } else if scaffold_root {
-                // root-скаффолдеры (nest, django) создают package.json в корне
-                None
-            } else {
-                // subdir-скаффолдеры — внутри созданной подпапки (сегмент
-                // frontend/ в моно-репозитории или <project_name> в монолите)
-                Some(seg.unwrap_or_else(|| project_name.to_string()))
-            };
+                    // subdir-скаффолдеры — внутри созданной подпапки (сегмент
+                    // frontend/ в моно-репозитории или <project_name> в монолите)
+                    Some(seg.unwrap_or_else(|| project_name.to_string()))
+                };
             steps.push(package_name_patch_step(
                 &format!("{}_pkg_name", fw),
                 &format!("Fix package.json name for {}", fw),
@@ -4028,27 +4335,41 @@ app.listen(PORT, () => {{
             ),
         ],
 
-        "electron" => vec![cmd_i(
-            "electron_init",
-            "Init Electron",
-            "Create Electron app with electron-forge",
-            "npx",
-            vec!["create-electron-app", project_name],
-            vec![
-                InteractiveEntry {
-                    trigger: "Choose a template:".into(),
-                    response_type: if has_typescript {
-                        ResponseType::Text("TypeScript".to_string())
-                    } else {
-                        ResponseType::Text("Vite".to_string())
-                    },
-                },
-                InteractiveEntry {
-                    trigger: "Initialize a git repository?".into(),
-                    response_type: ResponseType::Confirm(false),
-                },
-            ],
-        )],
+        "electron" => {
+            // create-electron-app собирает ПОЛНЫЙ каркас Electron
+            // (main + renderer): собственный фронтенд, поэтому UI-компаньоны
+            // (react/vue/svelte) рядом с electron не скаффолдятся отдельно
+            // (см. compose_recipe — их UI уже встроен в каркас). Шаблон
+            // renderer'а фиксируется флагом --template (typescript —
+            // webpack+TS, vite — vanilla vite); CLI может задать вопрос про
+            // git-init — способность creates_project_and_may_prompt с явным
+            // ответом. Каркас собирается во ВРЕМЕННОЙ папке (temp+move):
+            // Forge init в непустом каталоге назначения падает (запрещено),
+            // стейджинг гарантирует пустой каталог. Пост-условие —
+            // package.json (без него шаг считается неуспешным).
+            let template = if has_typescript { "typescript" } else { "vite" };
+            vec![scaffold_step(
+                "electron_init",
+                "Init Electron",
+                "Create Electron app with electron-forge",
+                "npx",
+                vec![
+                    "create-electron-app",
+                    SCAFFOLD_TARGET,
+                    "--template",
+                    template,
+                ],
+                ScaffoldCapability::CreatesProjectAndMayPrompt,
+                "frontend",
+                ScaffoldExtras::default()
+                    .expects(&["package.json"])
+                    .policy(FilePolicy::SkipIfExists)
+                    .interact(vec![serde_json::json!({
+                        "trigger": "Initialize a git repository?",
+                        "response_type": "n",
+                    })]),
+            )]
+        }
 
         "telegraf" => {
             // Telegraf — побочный (kind="side") фреймворк: выполняется ПОСЛЕ
@@ -4552,19 +4873,37 @@ func main() {{
             // и пост-условие pubspec.yaml в каталоге назначения не
             // выполнялось. Результат валидируется пост-условиями
             // pubspec.yaml + lib/.
+            // Префлайт flutter --version ОБЯЗАТЕЛЕН (Abort): отсутствующий
+            // flutter останавливает пайплайн с понятной причиной, а не
+            // маскируется скипом каркаса («Скип не равно успех»).
             let safe_name = project_name.replace('-', "_");
-            vec![scaffold_step(
-                "flutter_create",
-                "Create Flutter project",
-                "Scaffold Flutter app",
-                "flutter",
-                vec!["create", "--project-name", &safe_name, SCAFFOLD_TARGET],
-                ScaffoldCapability::CreatesInCurrentDirectory,
-                "frontend",
-                ScaffoldExtras::default()
-                    .expects(&["pubspec.yaml", "lib"])
-                    .policy(FilePolicy::SkipIfExists),
-            )]
+            vec![
+                Step::Command {
+                    id: "flutter_preflight".into(),
+                    label: "Check Flutter SDK".into(),
+                    description: "Verify the Flutter SDK is installed (flutter --version) before scaffolding the app".into(),
+                    command: "flutter".into(),
+                    args: vec!["--version".into()],
+                    working_dir: Some(project_path.to_string()),
+                    env: None,
+                    timeout_secs: Some(60),
+                    condition: None,
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                },
+                scaffold_step(
+                    "flutter_create",
+                    "Create Flutter project",
+                    "Scaffold Flutter app",
+                    "flutter",
+                    vec!["create", "--project-name", &safe_name, SCAFFOLD_TARGET],
+                    ScaffoldCapability::CreatesInCurrentDirectory,
+                    "frontend",
+                    ScaffoldExtras::default()
+                        .expects(&["pubspec.yaml", "lib"])
+                        .policy(FilePolicy::SkipIfExists),
+                ),
+            ]
         }
 
         // ==================== Kotlin ====================
@@ -5877,10 +6216,7 @@ mod tests {
     fn cmd_args(step: &Step) -> Vec<String> {
         match step {
             Step::Command { args, .. } => args.clone(),
-            other => panic!(
-                "ожидался Command, получили {:?}",
-                other.id()
-            ),
+            other => panic!("ожидался Command, получили {:?}", other.id()),
         }
     }
 
@@ -5957,10 +6293,7 @@ mod tests {
                 );
                 assert!(content.contains(&expected), "zon: {content}");
             }
-            other => panic!(
-                "ожидался WriteFile, получили {:?}",
-                other.id()
-            ),
+            other => panic!("ожидался WriteFile, получили {:?}", other.id()),
         }
     }
 
@@ -6206,9 +6539,7 @@ mod tests {
         let create = steps
             .iter()
             .find(|s| s.id() == "solid_init")
-            .unwrap_or_else(|| {
-                panic!("solidjs: шаг solid_init должен быть в плане")
-            });
+            .unwrap_or_else(|| panic!("solidjs: шаг solid_init должен быть в плане"));
         match create {
             Step::Generate {
                 generator_config, ..
@@ -6660,10 +6991,7 @@ mod tests {
             .iter()
             .position(|s| s.id() == "tauri_init")
             .expect("tauri_init должен быть в плане");
-        assert!(
-            vite_idx < init_idx,
-            "фронтенд скаффолдится ДО tauri init"
-        );
+        assert!(vite_idx < init_idx, "фронтенд скаффолдится ДО tauri init");
         match &recipe.steps[init_idx] {
             Step::Generate {
                 generator_id,
@@ -6738,10 +7066,7 @@ mod tests {
             .iter()
             .position(|s| s.id() == "tauri_config_patch")
             .expect("tauri_config_patch должен быть в плане");
-        assert!(
-            init_idx < patch_idx,
-            "патч конфига идёт после tauri init"
-        );
+        assert!(init_idx < patch_idx, "патч конфига идёт после tauri init");
         match &recipe.steps[patch_idx] {
             Step::Generate {
                 generator_id,
@@ -6803,11 +7128,7 @@ mod tests {
             .iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
-        assert_eq!(
-            installs.len(),
-            1,
-            "должен быть ровно один npm install"
-        );
+        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
         match installs[0] {
             Step::Command { working_dir, .. } => {
                 assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
@@ -7426,11 +7747,7 @@ mod tests {
             .iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
-        assert_eq!(
-            installs.len(),
-            1,
-            "должен быть ровно один npm install"
-        );
+        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
         match installs[0] {
             Step::Command { working_dir, .. } => {
                 assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
@@ -7480,9 +7797,7 @@ mod tests {
                 .steps
                 .iter()
                 .position(|s| matches!(s, Step::CreateDirectory { path, .. } if path == p))
-                .unwrap_or_else(|| {
-                    panic!("{p}/ должен создаваться движком")
-                })
+                .unwrap_or_else(|| panic!("{p}/ должен создаваться движком"))
         };
         let nest_idx = recipe
             .steps
@@ -7661,10 +7976,7 @@ mod tests {
         for id in ["readme", "gitignore", "docker_compose"] {
             match &recipe.steps[idx(id)] {
                 Step::WriteFile { overwrite, .. } => {
-                    assert!(
-                        *overwrite,
-                        "{id} должен перезаписывать файлы CLI"
-                    );
+                    assert!(*overwrite, "{id} должен перезаписывать файлы CLI");
                 }
                 _ => panic!("{id} — WriteFile"),
             }
@@ -7780,10 +8092,7 @@ mod tests {
             .iter()
             .position(|s| s.id() == "prisma_init")
             .unwrap();
-        assert!(
-            init_idx < cleanup_idx,
-            "очистка идёт после init"
-        );
+        assert!(init_idx < cleanup_idx, "очистка идёт после init");
     }
 
     #[test]
@@ -7891,15 +8200,10 @@ mod tests {
                 let step = steps
                     .iter()
                     .find(|s| s.id() == id.to_string())
-                    .unwrap_or_else(|| {
-                        panic!("{fw}: шаг {id} должен существовать")
-                    });
+                    .unwrap_or_else(|| panic!("{fw}: шаг {id} должен существовать"));
                 match step {
                     Step::WriteFile { overwrite, .. } => {
-                        assert!(
-                            *overwrite,
-                            "{fw}: шаг {id} должен перезаписываться"
-                        )
+                        assert!(*overwrite, "{fw}: шаг {id} должен перезаписываться")
                     }
                     _ => panic!("{fw}: {id} — WriteFile"),
                 }
@@ -7985,11 +8289,7 @@ mod tests {
             .iter()
             .filter(|s| s.id().starts_with("npm_install"))
             .collect();
-        assert_eq!(
-            installs.len(),
-            1,
-            "должен быть ровно один npm install"
-        );
+        assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
         match installs[0] {
             Step::Command {
                 working_dir, args, ..
@@ -8075,10 +8375,7 @@ mod tests {
             ctx.frameworks = fws.into_iter().map(String::from).collect();
             ctx.languages = langs.into_iter().map(String::from).collect();
             let issues = duplicate_framework_write_paths(&ctx);
-            assert!(
-                issues.is_empty(),
-                "ошибки для легальной связки: {issues:?}"
-            );
+            assert!(issues.is_empty(), "ошибки для легальной связки: {issues:?}");
         }
     }
 
@@ -8107,10 +8404,7 @@ mod tests {
         ctx.frontend_languages = vec!["typescript".into()];
         ctx.frameworks = vec!["tauri".into(), "react".into()];
         let issues = duplicate_framework_write_paths(&ctx);
-        assert!(
-            issues.is_empty(),
-            "ложные срабатывания: {issues:?}"
-        );
+        assert!(issues.is_empty(), "ложные срабатывания: {issues:?}");
     }
 
     #[test]
@@ -8120,8 +8414,8 @@ mod tests {
         // (toolchain не требует его для проверки окружения), а
         // docker-compose.yaml — единственный способ его развернуть.
         let raw = include_str!("../knowledge/wizard_tree.json");
-        let tree: serde_json::Value = serde_json::from_str(raw)
-            .expect("wizard_tree.json должен быть корректным JSON");
+        let tree: serde_json::Value =
+            serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON");
         let docker_tools: Vec<String> = tree
             .get("tools")
             .and_then(|a| a.as_array())
@@ -8727,14 +9021,8 @@ mod tests {
         ));
         let merged: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("conf.json")).unwrap()).unwrap();
-        assert_eq!(
-            merged["a"], 1,
-            "существующий ключ сохраняется"
-        );
-        assert_eq!(
-            merged["b"], 2,
-            "недостающий ключ добавляется"
-        );
+        assert_eq!(merged["a"], 1, "существующий ключ сохраняется");
+        assert_eq!(merged["b"], 2, "недостающий ключ добавляется");
         assert_eq!(
             merged["nested"]["x"], 1,
             "вложенный существующий ключ сохраняется"
@@ -8893,10 +9181,7 @@ mod tests {
         let preview = engine.preview(&plan);
         assert_eq!(preview.total_steps, 1);
         let p = &preview.step_previews[0];
-        assert!(
-            p.existing_file,
-            "fs-статус: файл существует"
-        );
+        assert!(p.existing_file, "fs-статус: файл существует");
         assert_eq!(p.file_policy, Some(FilePolicy::SkipIfExists));
         assert!(
             !p.will_execute,
@@ -9620,7 +9905,72 @@ mod tests {
     }
 
     #[test]
-    fn validate_dependencies_rejects_cycles_and_order_violations() {
+    fn topo_order_sorts_reverse_declared_dependency_chain() {
+        // Рецепт декларирует шаги в ОБРАТНОМ порядке: сборка (C) → установка
+        // (B) → каркас (A). Топосортировка выстраивает цепочку правильно.
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let dep = |step: &str, prereq: &str| StepDependency {
+            step_id: step.into(),
+            prereq_id: prereq.into(),
+            expects_file: String::new(),
+        };
+        let steps = vec![cmd("C"), cmd("B"), cmd("A")];
+        let ordered = topo_order_steps(&steps, &[dep("C", "B"), dep("B", "A")]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn topo_order_keeps_declaration_order_for_independent_steps() {
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let dep = |step: &str, prereq: &str| StepDependency {
+            step_id: step.into(),
+            prereq_id: prereq.into(),
+            expects_file: String::new(),
+        };
+        // Без зависимостей — порядок декларации сохраняется полностью.
+        let steps = vec![cmd("X"), cmd("Y"), cmd("Z")];
+        let ordered = topo_order_steps(&steps, &[]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["X", "Y", "Z"]);
+        // Y зависит от X — независимый Z остаётся на своём месте.
+        let steps = vec![cmd("X"), cmd("Y"), cmd("Z")];
+        let ordered = topo_order_steps(&steps, &[dep("Y", "X")]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["X", "Y", "Z"]);
+        // Z зависит от X — Y (независимый) не переставляется.
+        let steps = vec![cmd("X"), cmd("Y"), cmd("Z")];
+        let ordered = topo_order_steps(&steps, &[dep("Z", "X")]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["X", "Y", "Z"]);
+    }
+
+    #[test]
+    fn topo_order_rejects_missing_prerequisite() {
         let cmd = |id: &str| Step::Command {
             id: id.into(),
             label: id.into(),
@@ -9640,32 +9990,119 @@ mod tests {
             expects_file: String::new(),
         };
         let steps = vec![cmd("A"), cmd("B")];
-        // корректный порядок: prereq раньше dependent
-        assert!(validate_dependencies(&steps, &[dep("B", "A")]).is_ok());
-        // dependent раньше prereq → нарушение порядка (эквивалент цикла)
-        let err = validate_dependencies(&steps, &[dep("A", "B")]).unwrap_err();
-        assert!(
-            err.to_lowercase()
-                .contains("dependency cycle or ordering violation"),
-            "{err}"
-        );
-        assert!(err.contains("'A' requires prerequisite 'B'"), "{err}");
-        // самозависимость
-        assert!(validate_dependencies(&steps, &[dep("A", "A")]).is_err());
-        // висячий предшественник
-        let err = validate_dependencies(&steps, &[dep("B", "missing")]).unwrap_err();
+        let err = topo_order_steps(&steps, &[dep("B", "missing")]).unwrap_err();
         assert!(err.contains("'missing' of 'B' is not in the plan"), "{err}");
-        // чистый файловый dep: dependent обязан существовать, prereq не нужен
-        assert!(validate_dependencies(&steps, &[dep("A", "")]).is_ok());
-        let err = validate_dependencies(&steps, &[dep("ghost", "")]).unwrap_err();
+        // Чисто файловое предусловие: dependent обязан существовать,
+        // предшественник не нужен — порядок не меняется.
+        let ordered = topo_order_steps(&steps, &[dep("A", "")]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["A", "B"]);
+        let err = topo_order_steps(&steps, &[dep("ghost", "")]).unwrap_err();
         assert!(err.contains("'ghost' is not in the plan"), "{err}");
     }
 
     #[test]
-    fn validate_dependencies_rejects_parallel_flattening_violations() {
-        // Parallel раскрывается в порядке следования шагов; если зависимость
-        // требует обратного порядка (A→B, а внутри Parallel [B, A]) — план
-        // отклоняется целиком.
+    fn topo_order_rejects_self_dependency() {
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let dep = |step: &str, prereq: &str| StepDependency {
+            step_id: step.into(),
+            prereq_id: prereq.into(),
+            expects_file: String::new(),
+        };
+        let steps = vec![cmd("A"), cmd("B")];
+        let err = topo_order_steps(&steps, &[dep("A", "A")]).unwrap_err();
+        assert!(err.contains("'A' cannot depend on itself"), "{err}");
+    }
+
+    #[test]
+    fn topo_order_rejects_duplicate_step_ids() {
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let steps = vec![cmd("A"), cmd("A")];
+        let err = topo_order_steps(&steps, &[]).unwrap_err();
+        assert!(err.contains("duplicate step id 'A'"), "{err}");
+    }
+
+    #[test]
+    fn topo_order_reports_two_node_cycle_path() {
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let dep = |step: &str, prereq: &str| StepDependency {
+            step_id: step.into(),
+            prereq_id: prereq.into(),
+            expects_file: String::new(),
+        };
+        let steps = vec![cmd("A"), cmd("B")];
+        let err = topo_order_steps(&steps, &[dep("A", "B"), dep("B", "A")]).unwrap_err();
+        assert!(err.contains("Dependency cycle detected"), "{err}");
+        assert!(err.contains("A -> B -> A"), "{err}");
+    }
+
+    #[test]
+    fn topo_order_reports_three_node_cycle_path() {
+        let cmd = |id: &str| Step::Command {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            env: None,
+            timeout_secs: Some(10),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        };
+        let dep = |step: &str, prereq: &str| StepDependency {
+            step_id: step.into(),
+            prereq_id: prereq.into(),
+            expects_file: String::new(),
+        };
+        let steps = vec![cmd("A"), cmd("B"), cmd("C")];
+        let err =
+            topo_order_steps(&steps, &[dep("A", "B"), dep("B", "C"), dep("C", "A")]).unwrap_err();
+        assert!(err.contains("Dependency cycle detected"), "{err}");
+        assert!(err.contains("A -> B -> C -> A"), "{err}");
+    }
+
+    #[test]
+    fn topo_order_reorders_parallel_flattening_dependencies() {
+        // Parallel раскрывается в порядке следования шагов [B, A]; зависимость
+        // B→A нормализуется перестановкой в [A, B] — план НЕ отклоняется.
         let cmd = |id: &str| Step::Command {
             id: id.into(),
             label: id.into(),
@@ -9692,50 +10129,90 @@ mod tests {
             flat.iter().map(|s| s.id()).collect::<Vec<_>>(),
             vec!["B", "A"]
         );
-        // B требует A, но A расположился ПОСЛЕ B при раскрытии Parallel —
-        // план отклоняется целиком (порядок внутри Parallel не переставляется).
         let dep = StepDependency {
             step_id: "B".into(),
             prereq_id: "A".into(),
             expects_file: String::new(),
         };
-        let err = validate_dependencies(&flat, &[dep]).unwrap_err();
-        assert!(
-            err.to_lowercase()
-                .contains("dependency cycle or ordering violation"),
-            "{err}"
-        );
+        let ordered = topo_order_steps(&flat, &[dep]).unwrap();
+        let ids: Vec<String> = ordered.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["A", "B"]);
     }
 
     #[tokio::test]
-    async fn execute_aborts_on_invalid_dependencies() {
-        // План с циклической зависимостью не выполняется вовсе: ранний
-        // Aborted с причиной, без единого шага.
+    async fn execute_aborts_on_cyclic_dependencies() {
+        // План с настоящим циклом не выполняется вовсе: ранний Aborted
+        // с полным путём цикла, без единого шага.
         let engine = DefaultRecipeEngine::new();
-        let (plan, dir) = plan_with_dependency(
+        let (mut plan, dir) = plan_with_dependency(
             "cycle",
             "0",
             None,
             None,
             StepDependency {
-                step_id: "prereq".into(),
-                prereq_id: "dependent".into(),
+                step_id: "dependent".into(),
+                prereq_id: "prereq".into(),
                 expects_file: String::new(),
             },
         );
+        plan.dependencies.push(StepDependency {
+            step_id: "prereq".into(),
+            prereq_id: "dependent".into(),
+            expects_file: String::new(),
+        });
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let result = engine.execute(plan, tx).await;
         assert!(
             matches!(
                 &result.overall,
-                OverallStatus::Aborted { reason, .. } if reason.to_lowercase().contains("dependency cycle or ordering violation")
+                OverallStatus::Aborted { reason, .. }
+                    if reason.to_lowercase().contains("dependency cycle detected")
             ),
             "{:?}",
             result.overall
         );
+        assert!(result.step_results.is_empty(), "ни один шаг не выполняется");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_normalizes_out_of_order_declared_steps() {
+        // Прямо построенный план с зависимым шагом ДО предшественника:
+        // execute() нормализует порядок (стабильная топосортировка) и
+        // выполняет оба шага — предшественник первым.
+        let engine = DefaultRecipeEngine::new();
+        let (mut plan, dir) = plan_with_dependency(
+            "reorder",
+            "0",
+            None,
+            None,
+            StepDependency {
+                step_id: "dependent".into(),
+                prereq_id: "prereq".into(),
+                expects_file: String::new(),
+            },
+        );
+        plan.steps = vec![plan.steps[1].clone(), plan.steps[0].clone()];
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
         assert!(
-            result.step_results.is_empty(),
-            "ни один шаг не выполняется"
+            matches!(result.overall, OverallStatus::Success),
+            "{:?}",
+            result.overall
+        );
+        let ids: Vec<String> = result
+            .step_results
+            .iter()
+            .map(|r| r.step_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["prereq", "dependent"]);
+        assert!(
+            result
+                .step_results
+                .iter()
+                .all(|r| matches!(r.status, StepStatus::Success { .. })),
+            "{:?}",
+            result.step_results
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -10126,8 +10603,7 @@ mod tests {
             "tags": ["typescript"],
             "steps": []
         }"#;
-        let recipe: Recipe =
-            serde_json::from_str(json).expect("старый Recipe парсится");
+        let recipe: Recipe = serde_json::from_str(json).expect("старый Recipe парсится");
         assert!(recipe.dependencies.is_empty());
         // ExecutionPlan/StepPreview — те же гарантии
         let preview_json = r#"{"id":"s1","label":"L","description":"D","action":"$ x","will_execute":true,"skip_reason":null}"#;
@@ -10199,10 +10675,7 @@ mod tests {
                 );
                 match condition {
                     Some(StepCondition::FileExists { path }) => {
-                        assert_eq!(
-                            path, "backend/package.json",
-                            "условие seg-префиксовано"
-                        )
+                        assert_eq!(path, "backend/package.json", "условие seg-префиксовано")
                     }
                     other => panic!("ожидали FileExists backend/package.json: {other:?}"),
                 }
@@ -10280,11 +10753,7 @@ mod tests {
                 "{fw_id}: php-префлайт обязан идти ДО composer create-project"
             );
             let check = &recipe.steps[idx(check_id)];
-            assert_eq!(
-                cmd_args(check)[0],
-                "-r",
-                "префлайт — php -r скрипт"
-            );
+            assert_eq!(cmd_args(check)[0], "-r", "префлайт — php -r скрипт");
             let scaffold = recipe.steps.iter().find(|s| s.id() == new_id).unwrap();
             if let Step::Generate {
                 generator_config, ..
@@ -10359,10 +10828,7 @@ mod tests {
             } => {
                 match condition {
                     Some(StepCondition::FileNotExists { path }) => {
-                        assert_eq!(
-                            path, "backend/venv/pyvenv.cfg",
-                            "маркер в сегменте"
-                        )
+                        assert_eq!(path, "backend/venv/pyvenv.cfg", "маркер в сегменте")
                     }
                     other => panic!("ожидали FileNotExists: {other:?}"),
                 }
@@ -10551,6 +11017,339 @@ mod tests {
         }
     }
 
+    #[test]
+    fn flutter_preflight_aborts_when_sdk_missing() {
+        // Отсутствующий flutter обязан ОСТАНОВИТЬ пайплайн (Abort) с
+        // понятной причиной, а не маскироваться скипом каркаса: префлайт
+        // проверяет SDK строго ДО flutter create.
+        let mut ctx = context();
+        ctx.languages = vec!["dart".into()];
+        ctx.frameworks = vec!["flutter".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+
+        let pre = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "flutter_preflight")
+            .expect("flutter_preflight должен быть в плане");
+        match pre {
+            Step::Command {
+                command,
+                args,
+                on_error,
+                ..
+            } => {
+                assert_eq!(command, "flutter");
+                assert_eq!(args, &vec!["--version".to_string()]);
+                assert_eq!(
+                    on_error,
+                    &ErrorMode::Abort,
+                    "SDK отсутствует — пайплайн останавливается"
+                );
+            }
+            _ => panic!("flutter_preflight — Command"),
+        }
+
+        let pre_idx = recipe
+            .steps
+            .iter()
+            .position(|s| s.id() == "flutter_preflight")
+            .unwrap();
+        let create_idx = recipe
+            .steps
+            .iter()
+            .position(|s| s.id() == "flutter_create")
+            .unwrap();
+        assert!(pre_idx < create_idx, "префлайт ДО flutter create");
+    }
+
+    #[test]
+    fn scaffold_ownership_table_describes_known_frameworks() {
+        // Единственная таблица владения: поведение каждого скаффолдера
+        // описано здесь, движок не делает выводов по id фреймворка.
+        let tauri = ScaffoldOwnership::for_framework("tauri");
+        assert!(tauri.creates_app_shell);
+        assert!(!tauri.creates_frontend, "tauri — обёртка, фронтенд чужой");
+        assert!(
+            tauri.wraps_existing_project,
+            "tauri init требует готовый фронтенд"
+        );
+        assert!(tauri.may_run_in_existing_dir);
+        assert!(!tauri.supports_staging_dir);
+        assert_eq!(
+            tauri.expected_outputs,
+            &["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"]
+        );
+
+        let electron = ScaffoldOwnership::for_framework("electron");
+        assert!(
+            electron.creates_frontend_shell(),
+            "electron: main + renderer"
+        );
+        assert!(!electron.is_ui_companion);
+        assert!(
+            electron.supports_staging_dir,
+            "Forge init — только в пустой папке (temp+move)"
+        );
+        assert!(!electron.may_run_in_existing_dir);
+        assert_eq!(electron.expected_outputs, &["package.json"]);
+
+        let flutter = ScaffoldOwnership::for_framework("flutter");
+        assert!(flutter.creates_frontend_shell(), "flutter: dart-ui");
+        assert!(!flutter.is_ui_companion);
+        assert!(
+            flutter.may_run_in_existing_dir,
+            "flutter create работает ВНУТРИ каталога"
+        );
+        assert!(!flutter.supports_staging_dir);
+        assert_eq!(flutter.expected_outputs, &["pubspec.yaml", "lib"]);
+
+        let qt = ScaffoldOwnership::for_framework("qt");
+        assert!(qt.creates_app_shell);
+        assert!(
+            !qt.creates_frontend,
+            "qt: собственный UI-стек, веб-часть — компаньон"
+        );
+        assert!(
+            !qt.wraps_existing_project,
+            "qt собирается в своём каталоге, не поверх проекта"
+        );
+
+        // UI-компаньоны — встраиваемые библиотеки под оболочку.
+        for companion in ["react", "vue", "svelte"] {
+            let o = ScaffoldOwnership::for_framework(companion);
+            assert!(o.is_ui_companion, "{companion} — UI-компаньон");
+            assert!(
+                o.creates_frontend_shell(),
+                "{companion} — полный фронтенд-каркас"
+            );
+            assert!(o.requires_empty_dir);
+        }
+        // Веб-фреймворки и прочие владельцы компаньонами не являются.
+        for owner in ["nextjs", "sveltekit", "nuxt", "expo", "solidjs"] {
+            assert!(
+                !ScaffoldOwnership::for_framework(owner).is_ui_companion,
+                "{owner}"
+            );
+        }
+
+        // Inplace-фреймворки (express, fastapi, axum...) каркас не создают.
+        assert_eq!(
+            ScaffoldOwnership::for_framework("express"),
+            ScaffoldOwnership::none()
+        );
+        assert_eq!(
+            ScaffoldOwnership::for_framework("fastapi"),
+            ScaffoldOwnership::none()
+        );
+        assert_eq!(
+            ScaffoldOwnership::for_framework("unknown-fw"),
+            ScaffoldOwnership::none()
+        );
+    }
+
+    #[test]
+    fn electron_scaffolds_own_frontend_and_suppresses_companion() {
+        // electron + react: у electron СОБСТВЕННЫЙ renderer (create-electron-app
+        // собирает main + renderer), поэтому react — UI-компаньон — НЕ
+        // скаффолдится отдельно: два несвязанных фронтенда в frontend/
+        // запрещены. electron_init — scaffold-генератор (temp+move: Forge init
+        // в непустом каталоге назначения падает), шаблон renderer'а
+        // фиксируется флагом --template.
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["electron".into(), "react".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "vite_create"),
+            "react не скаффолдится: electron владеет фронтендом"
+        );
+
+        let init = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "electron_init")
+            .expect("electron_init должен быть в плане");
+        match init {
+            Step::Generate {
+                generator_id,
+                generator_config,
+                on_error,
+                ..
+            } => {
+                assert_eq!(generator_id, "scaffold");
+                assert_eq!(on_error, &ErrorMode::Skip);
+                assert_eq!(
+                    generator_config.get("capability").and_then(|v| v.as_str()),
+                    Some("creates_project_and_may_prompt")
+                );
+                assert_eq!(
+                    generator_config.get("target_dir").and_then(|v| v.as_str()),
+                    Some("frontend"),
+                    "electron живёт в frontend/ (собственный renderer)"
+                );
+                let args = gen_args(generator_config);
+                assert!(args.contains(&"__TARGET__".to_string()), "{args:?}");
+                assert!(
+                    args.iter().any(|a| a == "--template"),
+                    "шаблон renderer'а фиксируется флагом: {args:?}"
+                );
+                assert!(
+                    args.iter().any(|a| a == "typescript"),
+                    "TS-стек → typescript-шаблон: {args:?}"
+                );
+                assert_eq!(
+                    gen_strs(generator_config, "expected_outputs"),
+                    vec!["package.json".to_string()]
+                );
+                assert!(generator_config
+                    .get("interactive")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|entries| entries.iter().any(|e| e
+                        .get("trigger")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.contains("git repository")))));
+            }
+            _ => panic!("electron_init — Generate scaffold"),
+        }
+
+        // npm install ровно один раз, в frontend/ (node_modules не плодятся).
+        let installs: Vec<_> = recipe
+            .steps
+            .iter()
+            .filter(|s| s.id().starts_with("npm_install"))
+            .collect();
+        assert_eq!(
+            installs.len(),
+            1,
+            "один npm install на каталог с package.json"
+        );
+        match installs[0] {
+            Step::Command { working_dir, .. } => {
+                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+            }
+            _ => panic!("npm_install — Command"),
+        }
+    }
+
+    #[test]
+    fn four_target_combos_keep_legal_step_order() {
+        // Четыре целевых стека: итоговый ПОРЯДОК шагов плана для каждого —
+        // легальная последовательность (см. отчёт по сценариям).
+        // Порядок проверяется на уровне plan() (topo_order_steps): связи,
+        // объявленные в рецепте (qt_web_build после vite_create), в
+        // compose_recipe гарантируются именно топологической сортировкой.
+        let engine = DefaultRecipeEngine::new();
+        let plan_for = |ctx: &WizardContext| -> ExecutionPlan {
+            engine
+                .plan(ctx, std::path::Path::new("C:\\dev\\myapp"))
+                .expect("plan должен собраться")
+        };
+        let idx = |plan: &ExecutionPlan, id: &str| -> usize {
+            plan.steps
+                .iter()
+                .position(|s| s.id() == id)
+                .unwrap_or_else(|| panic!("шаг {id} отсутствует в плане"))
+        };
+        let installs = |plan: &ExecutionPlan| -> usize {
+            plan.steps
+                .iter()
+                .filter(|s| s.id().starts_with("npm_install"))
+                .count()
+        };
+
+        // (a) Tauri + Svelte + TypeScript: фронтенд FIRST → tauri init.
+        let mut ctx = context();
+        ctx.languages = vec!["rust".into(), "typescript".into()];
+        ctx.frameworks = vec!["tauri".into(), "svelte".into()];
+        let plan_a = plan_for(&ctx);
+        assert!(
+            idx(&plan_a, "vite_create") < idx(&plan_a, "tauri_init"),
+            "(a) svelte-фронтенд ДО tauri init"
+        );
+        assert!(
+            idx(&plan_a, "tauri_init") < idx(&plan_a, "tauri_config_patch"),
+            "(a) config-патч после init"
+        );
+        assert!(
+            !plan_a.steps.iter().any(|s| s.id() == "cargo_init"),
+            "(a) rust-языковой скаффолд подавлен tauri"
+        );
+        assert_eq!(installs(&plan_a), 1, "(a) один npm install");
+
+        // (b) Electron + React + TypeScript: react подавлен (собственный
+        // renderer electron), один npm install в frontend/.
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["electron".into(), "react".into()];
+        let plan_b = plan_for(&ctx);
+        assert!(
+            !plan_b.steps.iter().any(|s| s.id() == "vite_create"),
+            "(b) react подавлен electron"
+        );
+        assert_eq!(installs(&plan_b), 1, "(b) один npm install в frontend/");
+
+        // (c) Qt WebEngine + Vue + TypeScript: веб-сборка после vite_create,
+        // cmake — после qt_cmake; сборка ждёт собранный фронтенд.
+        let mut ctx = context();
+        ctx.languages = vec!["cpp".into(), "typescript".into()];
+        ctx.frameworks = vec!["qt".into(), "qt-webengine".into(), "vue".into()];
+        ctx.answers
+            .insert("qt_ui".into(), vec!["qt-webengine".into()]);
+        let plan_c = plan_for(&ctx);
+        assert!(
+            idx(&plan_c, "vite_create") < idx(&plan_c, "qt_web_build"),
+            "(c) vue-фронтенд ДО веб-сборки qt"
+        );
+        assert!(
+            idx(&plan_c, "qt_cmake") < idx(&plan_c, "qt_cmake_configure")
+                && idx(&plan_c, "qt_cmake_configure") < idx(&plan_c, "qt_cmake_build"),
+            "(c) cmake: configure после CMakeLists, build после configure"
+        );
+        assert!(
+            idx(&plan_c, "qt_web_build") < idx(&plan_c, "qt_cmake_build"),
+            "(c) сборка после собранного фронтенда"
+        );
+
+        // (d) Zig CLI + Zap + Flutter: zig-shell в backend/, flutter в
+        // frontend/; префлайт SDK ДО каркаса.
+        let mut ctx = context();
+        ctx.languages = vec!["zig".into(), "dart".into()];
+        ctx.frameworks = vec!["zig-cli".into(), "zap".into(), "flutter".into()];
+        let plan_d = plan_for(&ctx);
+        assert!(
+            idx(&plan_d, "zig_init") < idx(&plan_d, "flutter_create"),
+            "(d) zig-shell в backend/ до flutter-каркаса"
+        );
+        assert!(
+            idx(&plan_d, "flutter_preflight") < idx(&plan_d, "flutter_create"),
+            "(d) префлайт SDK ДО каркаса"
+        );
+        assert!(
+            idx(&plan_d, "zap_zon") < idx(&plan_d, "zap_fetch")
+                && idx(&plan_d, "zap_fetch") < idx(&plan_d, "zap_main"),
+            "(d) zon → fetch → entry"
+        );
+
+        // Сводка порядков для отчёта (cargo test -- --nocapture).
+        for (name, plan) in [
+            ("(a) tauri+svelte+ts", &plan_a),
+            ("(b) electron+react+ts", &plan_b),
+            ("(c) qt-webengine+vue+ts", &plan_c),
+            ("(d) zig-cli+zap+flutter", &plan_d),
+        ] {
+            println!(
+                "[{name}] {}",
+                plan.steps
+                    .iter()
+                    .map(|s| s.id())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            );
+        }
+    }
+
     // ==================== Scenario G: Qt WebEngine ====================
 
     #[test]
@@ -10672,10 +11471,7 @@ mod tests {
             match step {
                 Step::Command { condition, .. } => match condition {
                     Some(StepCondition::FileExists { path }) => {
-                        assert_eq!(
-                            path, "backend/go.mod",
-                            "{id}: условие seg-префиксовано"
-                        )
+                        assert_eq!(path, "backend/go.mod", "{id}: условие seg-префиксовано")
                     }
                     other => panic!("{id}: ожидали FileExists backend/go.mod: {other:?}"),
                 },
@@ -10753,10 +11549,7 @@ mod tests {
                     "gitInit=false одним токеном: {args:?}"
                 );
                 let git_idx = args.iter().position(|a| a == "--gitInit");
-                assert!(
-                    git_idx.is_none(),
-                    "пробельный вариант недопустим: {args:?}"
-                );
+                assert!(git_idx.is_none(), "пробельный вариант недопустим: {args:?}");
                 assert!(args.contains(&"--no-install".to_string()), "{args:?}");
                 assert!(args.contains(&"--packageManager".to_string()), "{args:?}");
             }
@@ -10818,11 +11611,7 @@ mod tests {
     // команды/аргументы, рабочие директории, условия (root-relative), таймауты,
     // зависимости и размещение финального npm install.
 
-    fn ctx_scenario(
-        languages: &[&str],
-        frameworks: &[&str],
-        tools: &[&str],
-    ) -> WizardContext {
+    fn ctx_scenario(languages: &[&str], frameworks: &[&str], tools: &[&str]) -> WizardContext {
         WizardContext {
             project_name: Some("myapp".into()),
             project_path: Some("C:\\dev\\myapp".into()),
@@ -10878,9 +11667,9 @@ mod tests {
 
     fn wd_of(step: &Step) -> String {
         match step {
-            Step::Command { working_dir, .. } => {
-                working_dir.clone().unwrap_or_else(|| panic!("working_dir unset"))
-            }
+            Step::Command { working_dir, .. } => working_dir
+                .clone()
+                .unwrap_or_else(|| panic!("working_dir unset")),
             other => panic!("expected Command, got {:?}", other.id()),
         }
     }
@@ -10917,7 +11706,9 @@ mod tests {
 
     fn assert_no_npm_install(recipe: &Recipe) {
         assert!(
-            !plan_ids(recipe).iter().any(|id| id.starts_with("npm_install")),
+            !plan_ids(recipe)
+                .iter()
+                .any(|id| id.starts_with("npm_install")),
             "no JS framework — npm install must not be scheduled"
         );
     }
@@ -10986,10 +11777,17 @@ mod tests {
         assert!(wd_of(find_step(&recipe, "nest_new")).ends_with("/backend"));
         let nest_pkg = find_step(&recipe, "nest_pkg_name");
         assert_file_exists(nest_pkg, "backend/package.json");
-        assert_eq!(wd_of(nest_pkg), "backend", "package_name_patch работает в относительной backend/");
+        assert_eq!(
+            wd_of(nest_pkg),
+            "backend",
+            "package_name_patch работает в относительной backend/"
+        );
 
         // telegraf: бот в backend/src/bot.js, патч package.json строго после nest.
-        assert_eq!(write_path_of(find_step(&recipe, "telegraf_bot")), "backend/src/bot.js");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "telegraf_bot")),
+            "backend/src/bot.js"
+        );
         let patch = find_step(&recipe, "telegraf_pkg_patch");
         assert_file_exists(patch, "backend/package.json");
         assert!(wd_of(patch).ends_with("/backend"));
@@ -10999,11 +11797,16 @@ mod tests {
         // nextjs: scaffold-генератор в frontend/ с --skip-install.
         let nextjs = find_step(&recipe, "nextjs_create");
         let args = gen_args(gen_config_of_step(nextjs));
-        assert!(args.contains(&"create-next-app@latest".to_string()), "{args:?}");
+        assert!(
+            args.contains(&"create-next-app@latest".to_string()),
+            "{args:?}"
+        );
         assert!(args.contains(&"--skip-install".to_string()), "{args:?}");
         assert!(args.contains(&"--typescript".to_string()), "{args:?}");
         assert_eq!(
-            gen_config_of_step(nextjs).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(nextjs)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
         assert!(gen_strs(gen_config_of_step(nextjs), "expected_outputs")
@@ -11022,7 +11825,10 @@ mod tests {
             }
             _ => unreachable!(),
         }
-        assert_eq!(write_path_of(find_step(&recipe, "dockerfile")), "backend/Dockerfile");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "dockerfile")),
+            "backend/Dockerfile"
+        );
         assert_eq!(
             write_path_of(find_step(&recipe, "docker_ignore")),
             "backend/.dockerignore"
@@ -11093,27 +11899,49 @@ mod tests {
         // Composer: create-project laravel/laravel в backend/ (temp+move, SkipIfExists).
         let laravel = find_step(&recipe, "laravel_new");
         let gen_args_v = gen_args(gen_config_of_step(laravel));
-        assert!(gen_args_v.contains(&"create-project".to_string()), "{gen_args_v:?}");
-        assert!(gen_args_v.contains(&"laravel/laravel".to_string()), "{gen_args_v:?}");
-        assert!(gen_args_v.contains(&"--no-interaction".to_string()), "{gen_args_v:?}");
-        assert!(gen_args_v.contains(&"--prefer-source".to_string()), "{gen_args_v:?}");
+        assert!(
+            gen_args_v.contains(&"create-project".to_string()),
+            "{gen_args_v:?}"
+        );
+        assert!(
+            gen_args_v.contains(&"laravel/laravel".to_string()),
+            "{gen_args_v:?}"
+        );
+        assert!(
+            gen_args_v.contains(&"--no-interaction".to_string()),
+            "{gen_args_v:?}"
+        );
+        assert!(
+            gen_args_v.contains(&"--prefer-source".to_string()),
+            "{gen_args_v:?}"
+        );
         assert_eq!(
-            gen_config_of_step(laravel).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(laravel)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("backend")
         );
         assert!(gen_strs(gen_config_of_step(laravel), "expected_outputs")
             .contains(&"package.json".to_string()));
-        assert!(matches!(gen_policy(laravel), Some(FilePolicy::SkipIfExists)));
+        assert!(matches!(
+            gen_policy(laravel),
+            Some(FilePolicy::SkipIfExists)
+        ));
 
         // React в frontend/ через create-vite (react-ts).
         let vite = find_step(&recipe, "vite_create");
         let vargs = gen_args(gen_config_of_step(vite));
         assert!(vargs.contains(&"react-ts".to_string()), "{vargs:?}");
         assert_eq!(
-            gen_config_of_step(vite).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(vite)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
-        assert_file_exists(find_step(&recipe, "react_pkg_name"), "frontend/package.json");
+        assert_file_exists(
+            find_step(&recipe, "react_pkg_name"),
+            "frontend/package.json",
+        );
         assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
     }
 
@@ -11167,7 +11995,7 @@ mod tests {
         assert_dep(&recipe, "django_pip_install", "django_venv_create");
 
         // Python-каркас сегментирован в backend/.
-match find_step(&recipe, "create_src") {
+        match find_step(&recipe, "create_src") {
             Step::CreateDirectory { path, .. } => assert_eq!(path, "backend/src"),
             _ => panic!("create_src — CreateDirectory"),
         }
@@ -11193,15 +12021,25 @@ match find_step(&recipe, "create_src") {
 
         // django-admin строго из venv, в рабочей директории backend/.
         let start = find_step(&recipe, "django_start");
-        assert!(command_of(start).0.contains("django-admin"), "{}", command_of(start).0);
+        assert!(
+            command_of(start).0.contains("django-admin"),
+            "{}",
+            command_of(start).0
+        );
         assert_eq!(command_of(start).1, vec!["startproject", "myapp", "."]);
         assert!(wd_of(start).ends_with("/backend"));
 
         // tools-фаза: тот же маркер venv, требования из backend/requirements.txt + alembic.
-        assert_file_not_exists(find_step(&recipe, "py_venv_create"), "backend/venv/pyvenv.cfg");
+        assert_file_not_exists(
+            find_step(&recipe, "py_venv_create"),
+            "backend/venv/pyvenv.cfg",
+        );
         let pip = find_step(&recipe, "py_pip_install");
         let (_, pip_args) = command_of(pip);
-        assert!(pip_args.iter().any(|a| a.contains("requirements.txt")), "{pip_args:?}");
+        assert!(
+            pip_args.iter().any(|a| a.contains("requirements.txt")),
+            "{pip_args:?}"
+        );
         assert!(pip_args.contains(&"alembic".to_string()), "{pip_args:?}");
         let alembic = find_step(&recipe, "alembic_init");
         assert!(command_of(alembic).0.contains("alembic"));
@@ -11263,7 +12101,9 @@ match find_step(&recipe, "create_src") {
         let vite = find_step(&recipe, "vite_create");
         assert!(gen_args(gen_config_of_step(vite)).contains(&"svelte-ts".to_string()));
         assert_eq!(
-            gen_config_of_step(vite).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(vite)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
 
@@ -11275,22 +12115,40 @@ match find_step(&recipe, "create_src") {
         assert!(iargs.contains(&"--ci".to_string()), "{iargs:?}");
         assert!(iargs.contains(&"--app-name".to_string()), "{iargs:?}");
         assert_eq!(
-            gen_config_of_step(init).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(init)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some(".")
         );
         let expected = gen_strs(gen_config_of_step(init), "expected_outputs");
-        assert!(expected.contains(&"src-tauri/tauri.conf.json".to_string()), "{expected:?}");
-        assert!(expected.contains(&"src-tauri/Cargo.toml".to_string()), "{expected:?}");
+        assert!(
+            expected.contains(&"src-tauri/tauri.conf.json".to_string()),
+            "{expected:?}"
+        );
+        assert!(
+            expected.contains(&"src-tauri/Cargo.toml".to_string()),
+            "{expected:?}"
+        );
 
-        assert_file_exists(find_step(&recipe, "tauri_config_patch"), "src-tauri/tauri.conf.json");
-        assert_file_exists(find_step(&recipe, "tauri_pkg_name"), "frontend/package.json");
+        assert_file_exists(
+            find_step(&recipe, "tauri_config_patch"),
+            "src-tauri/tauri.conf.json",
+        );
+        assert_file_exists(
+            find_step(&recipe, "tauri_pkg_name"),
+            "frontend/package.json",
+        );
         assert_eq!(wd_of(find_step(&recipe, "tauri_pkg_name")), "frontend");
         assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
     }
 
     #[test]
     fn validation_s5_fastapi_backend_only_with_tools() {
-        let ctx = ctx_scenario(&["python"], &["fastapi"], &["alembic", "ruff", "sqlalchemy"]);
+        let ctx = ctx_scenario(
+            &["python"],
+            &["fastapi"],
+            &["alembic", "ruff", "sqlalchemy"],
+        );
         let layout = ProjectLayout::compute(&ctx);
         assert_eq!(layout.to_summary(&ctx).class, "backend-only");
 
@@ -11323,17 +12181,29 @@ match find_step(&recipe, "create_src") {
         assert_no_npm_install(&recipe);
 
         // Всё в корне: venv = ./venv, требования = ./requirements.txt.
-match find_step(&recipe, "create_src") {
+        match find_step(&recipe, "create_src") {
             Step::CreateDirectory { path, .. } => assert_eq!(path, "src"),
             _ => panic!("create_src — CreateDirectory"),
         }
-        assert_eq!(write_path_of(find_step(&recipe, "fastapi_main")), "src/main.py");
-        assert_eq!(write_path_of(find_step(&recipe, "sqlalchemy_config")), "src/database.py");
-        assert_eq!(write_path_of(find_step(&recipe, "ruff_config")), "ruff.toml");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "fastapi_main")),
+            "src/main.py"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "sqlalchemy_config")),
+            "src/database.py"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "ruff_config")),
+            "ruff.toml"
+        );
         assert_file_not_exists(find_step(&recipe, "py_venv_create"), "venv/pyvenv.cfg");
         let (_, pip_args) = command_of(find_step(&recipe, "py_pip_install"));
         assert!(pip_args.contains(&"alembic".to_string()), "{pip_args:?}");
-        assert!(pip_args.iter().any(|a| a.contains("requirements.txt")), "{pip_args:?}");
+        assert!(
+            pip_args.iter().any(|a| a.contains("requirements.txt")),
+            "{pip_args:?}"
+        );
         let alembic_wd = wd_of(find_step(&recipe, "alembic_init"));
         assert!(
             alembic_wd.ends_with("/myapp") || alembic_wd.ends_with("\\myapp"),
@@ -11352,7 +12222,11 @@ match find_step(&recipe, "create_src") {
 
     #[test]
     fn validation_s6_zig_zap_flutter_prisma_drizzle() {
-        let ctx = ctx_scenario(&["zig", "dart"], &["zig-cli", "zap", "flutter"], &["prisma", "drizzle"]);
+        let ctx = ctx_scenario(
+            &["zig", "dart"],
+            &["zig-cli", "zap", "flutter"],
+            &["prisma", "drizzle"],
+        );
         let layout = ProjectLayout::compute(&ctx);
         assert_eq!(layout.to_summary(&ctx).class, "split");
 
@@ -11391,20 +12265,43 @@ match find_step(&recipe, "create_src") {
 
         // zig init: shell в backend/ (сегмент), SkipIfExists, пост-условия build.zig + zon.
         let zig_init = find_step(&recipe, "zig_init");
-        assert!(matches!(gen_policy(zig_init), Some(FilePolicy::SkipIfExists)));
+        assert!(matches!(
+            gen_policy(zig_init),
+            Some(FilePolicy::SkipIfExists)
+        ));
         assert_eq!(
-            gen_config_of_step(zig_init).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(zig_init)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("backend")
         );
         let zexpected = gen_strs(gen_config_of_step(zig_init), "expected_outputs");
-        assert!(zexpected.contains(&"build.zig".to_string()), "{zexpected:?}");
-        assert!(zexpected.contains(&"build.zig.zon".to_string()), "{zexpected:?}");
+        assert!(
+            zexpected.contains(&"build.zig".to_string()),
+            "{zexpected:?}"
+        );
+        assert!(
+            zexpected.contains(&"build.zig.zon".to_string()),
+            "{zexpected:?}"
+        );
 
         // zap (inplace-фреймворк): перезаписывает build.zig/zon в backend/.
-        assert_eq!(write_path_of(find_step(&recipe, "zap_zon")), "backend/build.zig.zon");
-        assert_eq!(write_path_of(find_step(&recipe, "zap_build")), "backend/build.zig");
-        assert_eq!(write_path_of(find_step(&recipe, "zap_main")), "backend/src/main.zig");
-        assert_eq!(write_path_of(find_step(&recipe, "zig_cli_module")), "backend/src/cli.zig");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "zap_zon")),
+            "backend/build.zig.zon"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "zap_build")),
+            "backend/build.zig"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "zap_main")),
+            "backend/src/main.zig"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "zig_cli_module")),
+            "backend/src/cli.zig"
+        );
         let (zcmd, zargs) = command_of(find_step(&recipe, "zap_fetch"));
         assert_eq!(zcmd, "zig");
         assert!(zargs.contains(&"fetch".to_string()), "{zargs:?}");
@@ -11418,12 +12315,17 @@ match find_step(&recipe, "create_src") {
         assert!(fargs.contains(&"--project-name".to_string()), "{fargs:?}");
         assert!(fargs.contains(&"myapp".to_string()), "{fargs:?}");
         assert_eq!(
-            gen_config_of_step(fl).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(fl)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
         assert!(matches!(gen_policy(fl), Some(FilePolicy::SkipIfExists)));
         let fexpected = gen_strs(gen_config_of_step(fl), "expected_outputs");
-        assert!(fexpected.contains(&"pubspec.yaml".to_string()), "{fexpected:?}");
+        assert!(
+            fexpected.contains(&"pubspec.yaml".to_string()),
+            "{fexpected:?}"
+        );
         assert!(fexpected.contains(&"lib".to_string()), "{fexpected:?}");
 
         // prisma init в корне (ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ: без JS/TS-каркаса и package.json
@@ -11433,7 +12335,10 @@ match find_step(&recipe, "create_src") {
         assert_eq!(pcmd, "npx");
         assert!(pargs.contains(&"prisma".to_string()), "{pargs:?}");
         assert!(pargs.contains(&"init".to_string()), "{pargs:?}");
-        assert!(pargs.contains(&"--datasource-provider".to_string()), "{pargs:?}");
+        assert!(
+            pargs.contains(&"--datasource-provider".to_string()),
+            "{pargs:?}"
+        );
         assert!(pargs.contains(&"sqlite".to_string()), "{pargs:?}");
         assert!(pargs.contains(&"--no-skills".to_string()), "{pargs:?}");
         let prisma_wd = wd_of(prisma);
@@ -11441,7 +12346,10 @@ match find_step(&recipe, "create_src") {
             prisma_wd.ends_with("/myapp") || prisma_wd.ends_with("\\myapp"),
             "prisma init работает в корне проекта: {prisma_wd}"
         );
-        assert_eq!(write_path_of(find_step(&recipe, "drizzle_config")), "drizzle.config.ts");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "drizzle_config")),
+            "drizzle.config.ts"
+        );
     }
 
     #[test]
@@ -11479,10 +12387,15 @@ match find_step(&recipe, "create_src") {
         assert!(sargs.contains(&"create-project".to_string()), "{sargs:?}");
         assert!(sargs.contains(&"symfony/skeleton".to_string()), "{sargs:?}");
         assert_eq!(
-            gen_config_of_step(symfony).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(symfony)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("backend")
         );
-        assert!(matches!(gen_policy(symfony), Some(FilePolicy::SkipIfExists)));
+        assert!(matches!(
+            gen_policy(symfony),
+            Some(FilePolicy::SkipIfExists)
+        ));
 
         // nuxi init: неинтерактивен только с полным набором флагов.
         let nuxt = find_step(&recipe, "nuxt_create");
@@ -11494,7 +12407,9 @@ match find_step(&recipe, "create_src") {
         assert!(nargs.contains(&"--gitInit=false".to_string()), "{nargs:?}");
         assert!(nargs.contains(&"--no-install".to_string()), "{nargs:?}");
         assert_eq!(
-            gen_config_of_step(nuxt).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(nuxt)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
         assert_file_exists(find_step(&recipe, "nuxt_pkg_name"), "frontend/package.json");
@@ -11504,10 +12419,8 @@ match find_step(&recipe, "create_src") {
     #[test]
     fn validation_s8_qt_webengine_vue() {
         let mut ctx = ctx_scenario(&["cpp", "typescript"], &["qt", "vue"], &[]);
-        ctx.answers.insert(
-            "qt_ui".into(),
-            vec!["qt-webengine".into()],
-        );
+        ctx.answers
+            .insert("qt_ui".into(), vec!["qt-webengine".into()]);
         let layout = ProjectLayout::compute(&ctx);
         assert_eq!(layout.to_summary(&ctx).class, "split");
         assert!(layout.eager_dirs().contains(&"backend".to_string()));
@@ -11552,8 +12465,14 @@ match find_step(&recipe, "create_src") {
         );
 
         // Qt (inplace): main.cpp + CMakeLists в backend/, перезапись поверх zig/c++ каркаса.
-        assert_eq!(write_path_of(find_step(&recipe, "qt_main")), "backend/src/main.cpp");
-        assert_eq!(write_path_of(find_step(&recipe, "qt_cmake")), "backend/CMakeLists.txt");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "qt_main")),
+            "backend/src/main.cpp"
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "qt_cmake")),
+            "backend/CMakeLists.txt"
+        );
 
         // Цепочка сборки WebEngine: веб-часть в frontend/, cmake в backend/.
         let web_build = find_step(&recipe, "qt_web_build");
@@ -11583,7 +12502,9 @@ match find_step(&recipe, "create_src") {
         let vite = find_step(&recipe, "vite_create");
         assert!(gen_args(gen_config_of_step(vite)).contains(&"vue-ts".to_string()));
         assert_eq!(
-            gen_config_of_step(vite).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(vite)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
         assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
@@ -11591,7 +12512,11 @@ match find_step(&recipe, "create_src") {
 
     #[test]
     fn validation_s9_go_gin_cobra_solidjs() {
-        let ctx = ctx_scenario(&["go", "typescript"], &["gin", "cobra", "solidjs"], &["mongodb"]);
+        let ctx = ctx_scenario(
+            &["go", "typescript"],
+            &["gin", "cobra", "solidjs"],
+            &["mongodb"],
+        );
         let layout = ProjectLayout::compute(&ctx);
         assert_eq!(layout.to_summary(&ctx).class, "split");
 
@@ -11612,7 +12537,7 @@ match find_step(&recipe, "create_src") {
                 "cobra_install",
                 "cobra_init",
                 "cobra_cli",
-"solid_init",
+                "solid_init",
                 "solidjs_pkg_name",
                 "env_example",
                 "git_cleanup_nested",
@@ -11636,15 +12561,21 @@ match find_step(&recipe, "create_src") {
         assert!(wd_of(go_mod).ends_with("/backend"));
         assert_file_not_exists(go_mod, "backend/go.mod");
 
-        assert_eq!(write_path_of(find_step(&recipe, "main_go")), "backend/cmd/main.go");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "main_go")),
+            "backend/cmd/main.go"
+        );
         let gin_main = find_step(&recipe, "gin_main");
         assert_eq!(write_path_of(gin_main), "backend/cmd/main.go");
-        assert!(matches!(step_file_policy_of(gin_main), FilePolicy::Overwrite));
+        assert!(matches!(
+            step_file_policy_of(gin_main),
+            FilePolicy::Overwrite
+        ));
         let get_gin = find_step(&recipe, "get_gin");
         assert_file_exists(get_gin, "backend/go.mod");
         assert!(matches!(error_mode_of(get_gin), ErrorMode::Abort));
 
-// cobra (inplace-фреймворк): go.mod пишется поверх go-каркаса; шаги cobra
+        // cobra (inplace-фреймворк): go.mod пишется поверх go-каркаса; шаги cobra
         // проходят override overwrite=true (scaffold не задан), как и gin_main.
         let cobra_mod = find_step(&recipe, "go_mod");
         assert_eq!(write_path_of(cobra_mod), "backend/go.mod");
@@ -11654,7 +12585,10 @@ match find_step(&recipe, "create_src") {
             step_file_policy_of(cobra_mod)
         );
         assert_file_exists(find_step(&recipe, "cobra_init"), "backend/go.mod");
-        assert_eq!(write_path_of(find_step(&recipe, "cobra_cli")), "backend/cmd/cli/main.go");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "cobra_cli")),
+            "backend/cmd/cli/main.go"
+        );
 
         // solidjs: create-solid в frontend/, полный набор флагов для неинтерактивности.
         let solid = find_step(&recipe, "solid_init");
@@ -11666,7 +12600,9 @@ match find_step(&recipe, "create_src") {
         assert!(sargs.contains(&"--v2".to_string()), "{sargs:?}");
         assert!(sargs.contains(&"--ts".to_string()), "{sargs:?}");
         assert_eq!(
-            gen_config_of_step(solid).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(solid)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
 
@@ -11710,11 +12646,16 @@ match find_step(&recipe, "create_src") {
         );
         let nextjs = find_step(&recipe, "nextjs_create");
         assert_eq!(
-            gen_config_of_step(nextjs).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(nextjs)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend"),
             "special case: nextjs в frontend-only раскладке — frontend/"
         );
-        assert_file_exists(find_step(&recipe, "nextjs_pkg_name"), "frontend/package.json");
+        assert_file_exists(
+            find_step(&recipe, "nextjs_pkg_name"),
+            "frontend/package.json",
+        );
         assert_eq!(wd_of(find_step(&recipe, "nextjs_pkg_name")), "frontend");
         assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
     }
@@ -11752,11 +12693,17 @@ match find_step(&recipe, "create_src") {
         // Без инструмента alembic в pip-установке только -r requirements.txt.
         let (_, pip_args) = command_of(find_step(&recipe, "py_pip_install"));
         assert!(!pip_args.contains(&"alembic".to_string()), "{pip_args:?}");
-        assert!(pip_args.iter().any(|a| a.contains("requirements.txt")), "{pip_args:?}");
+        assert!(
+            pip_args.iter().any(|a| a.contains("requirements.txt")),
+            "{pip_args:?}"
+        );
         assert_file_not_exists(find_step(&recipe, "git_init"), ".git/HEAD");
         // git_commit идемпотентен при повторном запуске.
         let (commit_cmd, _) = command_of(find_step(&recipe, "git_commit"));
-        assert!(commit_cmd.contains("git diff --cached --quiet"), "{commit_cmd}");
+        assert!(
+            commit_cmd.contains("git diff --cached --quiet"),
+            "{commit_cmd}"
+        );
     }
 
     #[test]
@@ -11794,11 +12741,16 @@ match find_step(&recipe, "create_src") {
         // Без компаньона фронтенд создаёт vite (vanilla), SkipIfExists.
         let web = find_step(&recipe, "tauri_web_scaffold");
         let wargs = gen_args(gen_config_of_step(web));
-        assert!(wargs.contains(&"create-vite@latest".to_string()), "{wargs:?}");
+        assert!(
+            wargs.contains(&"create-vite@latest".to_string()),
+            "{wargs:?}"
+        );
         assert!(wargs.contains(&"--template".to_string()), "{wargs:?}");
         assert!(wargs.contains(&"vanilla".to_string()), "{wargs:?}");
         assert_eq!(
-            gen_config_of_step(web).get("target_dir").and_then(|v| v.as_str()),
+            gen_config_of_step(web)
+                .get("target_dir")
+                .and_then(|v| v.as_str()),
             Some("frontend")
         );
         assert!(matches!(gen_policy(web), Some(FilePolicy::SkipIfExists)));
@@ -11810,8 +12762,14 @@ match find_step(&recipe, "create_src") {
         assert_file_exists(install, "frontend/package.json");
 
         assert_file_exists(find_step(&recipe, "tauri_init"), "frontend/package.json");
-        assert_file_exists(find_step(&recipe, "tauri_config_patch"), "src-tauri/tauri.conf.json");
-        assert_file_exists(find_step(&recipe, "tauri_pkg_name"), "frontend/package.json");
+        assert_file_exists(
+            find_step(&recipe, "tauri_config_patch"),
+            "src-tauri/tauri.conf.json",
+        );
+        assert_file_exists(
+            find_step(&recipe, "tauri_pkg_name"),
+            "frontend/package.json",
+        );
     }
 
     #[test]
@@ -11838,7 +12796,7 @@ match find_step(&recipe, "create_src") {
             "backend/myapp/pubspec.yaml",
         );
 
-// Монолит: маркер остаётся в корне (поведение без изменений).
+        // Монолит: маркер остаётся в корне (поведение без изменений).
         let mono = ctx_scenario(&["go"], &[], &[]);
         let recipe = recipe_for(&mono, "myapp").expect("recipe must build");
         assert_file_not_exists(find_step(&recipe, "go_mod_init"), "go.mod");
@@ -11866,11 +12824,23 @@ match find_step(&recipe, "create_src") {
                 &["alembic", "sqlalchemy"],
             ),
             ctx_scenario(&["rust", "typescript"], &["tauri", "svelte"], &[]),
-            ctx_scenario(&["python"], &["fastapi"], &["alembic", "ruff", "sqlalchemy"]),
-            ctx_scenario(&["zig", "dart"], &["zig-cli", "zap", "flutter"], &["prisma", "drizzle"]),
+            ctx_scenario(
+                &["python"],
+                &["fastapi"],
+                &["alembic", "ruff", "sqlalchemy"],
+            ),
+            ctx_scenario(
+                &["zig", "dart"],
+                &["zig-cli", "zap", "flutter"],
+                &["prisma", "drizzle"],
+            ),
             ctx_scenario(&["php", "typescript"], &["symfony", "nuxt"], &[]),
             qt_ctx,
-            ctx_scenario(&["go", "typescript"], &["gin", "cobra", "solidjs"], &["mongodb"]),
+            ctx_scenario(
+                &["go", "typescript"],
+                &["gin", "cobra", "solidjs"],
+                &["mongodb"],
+            ),
             ctx_scenario(&["typescript"], &["nextjs"], &[]),
             ctx_scenario(&["python"], &["fastapi"], &[]),
             ctx_scenario(&["rust"], &["tauri"], &[]),
@@ -11879,7 +12849,9 @@ match find_step(&recipe, "create_src") {
             let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
             for step in &recipe.steps {
                 match step {
-                    Step::Command { id, timeout_secs, .. } => {
+                    Step::Command {
+                        id, timeout_secs, ..
+                    } => {
                         assert!(
                             timeout_secs.is_some(),
                             "Command '{id}' has no timeout in a recipe"
@@ -11893,7 +12865,9 @@ match find_step(&recipe, "create_src") {
 
     fn gen_config_of_step(step: &Step) -> &serde_json::Value {
         match step {
-            Step::Generate { generator_config, .. } => generator_config,
+            Step::Generate {
+                generator_config, ..
+            } => generator_config,
             other => panic!("expected Generate, got {:?}", other.id()),
         }
     }
@@ -11912,10 +12886,8 @@ match find_step(&recipe, "create_src") {
     #[tokio::test]
     async fn engine_failed_step_reports_stdout_and_stderr_tails() {
         let engine = DefaultRecipeEngine::new();
-        let dir = std::env::temp_dir().join(format!(
-            "stackpilot_engine_err_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_engine_err_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (command, args) = if cfg!(target_os = "windows") {
@@ -11930,7 +12902,10 @@ match find_step(&recipe, "create_src") {
         } else {
             (
                 "sh".to_string(),
-                vec!["-c".into(), "echo out-line; echo err-line 1>&2; exit 1".into()],
+                vec![
+                    "-c".into(),
+                    "echo out-line; echo err-line 1>&2; exit 1".into(),
+                ],
             )
         };
         let plan = ExecutionPlan {
@@ -11976,7 +12951,7 @@ match find_step(&recipe, "create_src") {
             }
             other => panic!("expected Failed, got {other:?}"),
         }
-let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
