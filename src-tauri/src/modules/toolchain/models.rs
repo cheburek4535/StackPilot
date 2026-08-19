@@ -215,7 +215,10 @@ pub enum ToolStatus {
     /// Установлен, версия устраивает
     Installed { version: String },
     /// Установлен, но вышла рекомендуемая версия
-    UpdateAvailable { installed: String, recommended: String },
+    UpdateAvailable {
+        installed: String,
+        recommended: String,
+    },
     /// Найден, но не работает (бинарь не в PATH, сломанная установка)
     PathBroken { reason: String },
     /// Инструмент не установлен и ставится ТОЛЬКО вручную (движки, SDK).
@@ -396,12 +399,23 @@ pub struct ToolchainEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolchainEventType {
     TaskStarted,
-    TaskPhaseChanged { phase: TaskPhase },
+    TaskPhaseChanged {
+        phase: TaskPhase,
+    },
     /// Строка вывода установщика
-    TaskProgress { line: String },
-    TaskCompleted { state: TaskState },
-    AllCompleted { success_count: usize, failed: Vec<String> },
-    Error { message: String },
+    TaskProgress {
+        line: String,
+    },
+    TaskCompleted {
+        state: TaskState,
+    },
+    AllCompleted {
+        success_count: usize,
+        failed: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Промежуточный прогресс проверки окружения. Стримится на фронтенд

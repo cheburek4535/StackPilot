@@ -1,30 +1,38 @@
-use std::time::Duration;
-use std::thread;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::process::Command as StdCommand;
 use std::process::Stdio;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::io::{Write, BufReader, BufRead};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use crate::modules::devlauncher::models::*;
 use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
 
 pub trait LaunchEngine: Send + Sync {
-    fn execute_action(&self, action: &LaunchAction, session_id: Option<String>) -> Result<ActionStatus, String>;
+    fn execute_action(
+        &self,
+        action: &LaunchAction,
+        session_id: Option<String>,
+    ) -> Result<ActionStatus, String>;
 }
 
 pub struct ProcessLaunchEngine {
-    process_manager: Arc<dyn ProcessManager>
+    process_manager: Arc<dyn ProcessManager>,
 }
 
 impl ProcessLaunchEngine {
     pub fn new(process_manager: Arc<dyn ProcessManager>) -> Self {
-        Self {process_manager}
+        Self { process_manager }
     }
 }
 impl LaunchEngine for ProcessLaunchEngine {
-    fn execute_action(&self, action: &LaunchAction, session_id: Option<String>) -> Result<ActionStatus, String> {
+    fn execute_action(
+        &self,
+        action: &LaunchAction,
+        session_id: Option<String>,
+    ) -> Result<ActionStatus, String> {
         if !action.enabled {
             return Ok(ActionStatus::Skipped {
                 reason: format!("Action '{}' disabled", action.label),
@@ -32,25 +40,35 @@ impl LaunchEngine for ProcessLaunchEngine {
         }
 
         match &action.action_type {
-            ActionType::RunCommand { command, working_dir } => {
+            ActionType::RunCommand {
+                command,
+                working_dir,
+            } => {
                 let dir_ref = working_dir.as_deref();
 
-                match self.process_manager.spawn_and_track("cmd", &["/C", command], dir_ref, &action.label, session_id){
+                match self.process_manager.spawn_and_track(
+                    "cmd",
+                    &["/C", command],
+                    dir_ref,
+                    &action.label,
+                    session_id,
+                ) {
                     Ok(tracked_proc) => Ok(ActionStatus::Success {
-                        message: format!("Процесс запущен под контролем менеджера. ID: {}", tracked_proc.id),
+                        message: format!(
+                            "Процесс запущен под контролем менеджера. ID: {}",
+                            tracked_proc.id
+                        ),
                     }),
                     Err(e) => Err(format!("Менеджер не смог запустить команду: {}", e)),
                 }
             }
 
-            ActionType::OpenUrl { url } => {
-                match webbrowser::open(url) {
-                    Ok(_) => Ok(ActionStatus::Success {
-                        message: format!("Browser opened: {}", url),
-                    }),
-                    Err(e) => Err(format!("Failed to open browser: {}", e)),
-                }
-            }
+            ActionType::OpenUrl { url } => match webbrowser::open(url) {
+                Ok(_) => Ok(ActionStatus::Success {
+                    message: format!("Browser opened: {}", url),
+                }),
+                Err(e) => Err(format!("Failed to open browser: {}", e)),
+            },
 
             ActionType::OpenApplication { path, args } => {
                 let mut cmd = StdCommand::new(path);
@@ -76,15 +94,21 @@ impl LaunchEngine for ProcessLaunchEngine {
 
                 for _ in 0..*timeout_secs {
                     for addr in &addrs {
-                        if let Ok(mut stream) = TcpStream::connect_timeout(addr, Duration::from_secs(2)) {
+                        if let Ok(mut stream) =
+                            TcpStream::connect_timeout(addr, Duration::from_secs(2))
+                        {
                             let request = format!(
                                 "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
                                 parsed.path, parsed.host
                             );
-                            if stream.write_all(request.as_bytes()).is_err() { continue; }
+                            if stream.write_all(request.as_bytes()).is_err() {
+                                continue;
+                            }
                             let mut reader = BufReader::new(&stream);
                             let mut first_line = String::new();
-                            if reader.read_line(&mut first_line).is_err() { continue; }
+                            if reader.read_line(&mut first_line).is_err() {
+                                continue;
+                            }
 
                             let parts: Vec<&str> = first_line.split_whitespace().collect();
                             if let Some(code_str) = parts.get(1) {
@@ -100,10 +124,17 @@ impl LaunchEngine for ProcessLaunchEngine {
                     }
                     thread::sleep(Duration::from_secs(1));
                 }
-                Err(format!("Timeout: {} not available after {}s", url, timeout_secs))
+                Err(format!(
+                    "Timeout: {} not available after {}s",
+                    url, timeout_secs
+                ))
             }
 
-            ActionType::WaitForPort { host, port, timeout_secs } => {
+            ActionType::WaitForPort {
+                host,
+                port,
+                timeout_secs,
+            } => {
                 let addr_str = format!("{}:{}", host, port);
                 let addrs = addr_str
                     .to_socket_addrs()
@@ -120,7 +151,10 @@ impl LaunchEngine for ProcessLaunchEngine {
                     }
                     thread::sleep(Duration::from_secs(1));
                 }
-                Err(format!("Timeout: port {}:{} not open after {}s", host, port, timeout_secs))
+                Err(format!(
+                    "Timeout: port {}:{} not open after {}s",
+                    host, port, timeout_secs
+                ))
             }
 
             ActionType::Delay { seconds } => {
@@ -139,8 +173,11 @@ impl LaunchEngine for ProcessLaunchEngine {
                 };
 
                 // 1. Запускаем скрипт под контролем менеджера, чтобы он появился в UI
-                let tracked_proc = self.process_manager.spawn_and_track(shell_name, &[flag, script], None, &action.label, session_id).map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
-                
+                let tracked_proc = self
+                    .process_manager
+                    .spawn_and_track(shell_name, &[flag, script], None, &action.label, session_id)
+                    .map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
+
                 let proc_id = tracked_proc.id;
 
                 // 2. Запускаем цикл неблокирующего ожидания (Polling)
@@ -173,7 +210,8 @@ impl LaunchEngine for ProcessLaunchEngine {
                         }
                         Ok(ProcessStatus::Killed) => {
                             return Ok(ActionStatus::Failed {
-                                error: "Выполнение скрипта было принудительно остановлено".to_string(),
+                                error: "Выполнение скрипта было принудительно остановлено"
+                                    .to_string(),
                             });
                         }
                         Err(e) => {
@@ -183,7 +221,6 @@ impl LaunchEngine for ProcessLaunchEngine {
                     }
                 }
             }
-
         }
     }
 }
@@ -206,7 +243,8 @@ fn parse_http_url(raw: &str) -> Result<ParsedUrl, String> {
     let (host, port) = match host_port.split_once(':') {
         Some((h, p)) => (
             h.to_string(),
-            p.parse::<u16>().map_err(|_| format!("Invalid port in URL: {}", raw))?,
+            p.parse::<u16>()
+                .map_err(|_| format!("Invalid port in URL: {}", raw))?,
         ),
         None => (host_port.to_string(), 80),
     };

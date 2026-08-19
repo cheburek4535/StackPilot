@@ -24,11 +24,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::modules::toolchain::models::*;
+use crate::modules::toolchain::platforms;
 use tokio::process::Command as TokioCommand;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use crate::modules::toolchain::models::*;
-use crate::modules::toolchain::platforms;
 
 use super::discovery;
 
@@ -187,18 +187,21 @@ pub async fn run_check(
             let is_manual = matches!(status, ToolStatus::ManualInstall { .. });
             let desc = source_description(&def);
             let install_options = options.get(&def.id).cloned().unwrap_or_default();
-            temp_requirements.push((index, ToolRequirement {
-                tool_id: def.id,
-                display: def.display,
-                category: def.category,
-                icon: def.icon.clone(),
-                status,
-                // ManualInstall ни откуда не скачивается — размер 0.
-                size_mb: if is_manual { 0 } else { def.size_mb },
-                needs_admin: def.needs_admin && !is_manual,
-                source_description: desc,
-                install_options,
-            }));
+            temp_requirements.push((
+                index,
+                ToolRequirement {
+                    tool_id: def.id,
+                    display: def.display,
+                    category: def.category,
+                    icon: def.icon.clone(),
+                    status,
+                    // ManualInstall ни откуда не скачивается — размер 0.
+                    size_mb: if is_manual { 0 } else { def.size_mb },
+                    needs_admin: def.needs_admin && !is_manual,
+                    source_description: desc,
+                    install_options,
+                },
+            ));
         }
     };
 
@@ -213,7 +216,8 @@ pub async fn run_check(
 
     temp_requirements.sort_by_key(|pair| pair.0);
 
-    let requirements: Vec<ToolRequirement> = temp_requirements.into_iter().map(|pair| pair.1).collect();
+    let requirements: Vec<ToolRequirement> =
+        temp_requirements.into_iter().map(|pair| pair.1).collect();
 
     // .NET MAUI: SDK без workload не даёт шаблон `dotnet new maui`.
     // Если проекту нужен dotnet (язык csharp, фреймворк maui, CSharpRepl),
@@ -232,9 +236,9 @@ pub async fn run_check(
     }
 
     // ManualInstall — предупреждение, а не блокировка: проект можно создавать.
-    let all_ready = requirements.iter().all(|r| {
-        r.status.is_ok() || matches!(r.status, ToolStatus::ManualInstall { .. })
-    });
+    let all_ready = requirements
+        .iter()
+        .all(|r| r.status.is_ok() || matches!(r.status, ToolStatus::ManualInstall { .. }));
     let enough_space = free_space_mb == 0 || free_space_mb >= total_size_mb;
 
     EnvironmentCheck {
@@ -386,7 +390,14 @@ mod tests {
         let mut def = fake_def("fake-bundled");
         def.bundled_with = Some("fake-host".to_string());
 
-        let check = run_check(&[def], &["fake-bundled".to_string()], &HashMap::new(), 0, None).await;
+        let check = run_check(
+            &[def],
+            &["fake-bundled".to_string()],
+            &HashMap::new(),
+            0,
+            None,
+        )
+        .await;
         assert!(check.requirements.is_empty());
         assert!(check.all_ready);
     }
@@ -401,7 +412,14 @@ mod tests {
         def.needs_admin = true; // не должно влиять на needs_admin_any
         def.size_mb = 5000; // не должно влиять на total_size_mb
 
-        let check = run_check(&[def], &["fake-engine".to_string()], &HashMap::new(), 0, None).await;
+        let check = run_check(
+            &[def],
+            &["fake-engine".to_string()],
+            &HashMap::new(),
+            0,
+            None,
+        )
+        .await;
 
         assert_eq!(check.requirements.len(), 1);
         let req = &check.requirements[0];
@@ -437,7 +455,10 @@ mod tests {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let events_cb = Arc::clone(&events);
         let cb: ProgressFn = Arc::new(move |ev| {
-            events_cb.lock().unwrap().push((ev.tool_id, ev.done, ev.total));
+            events_cb
+                .lock()
+                .unwrap()
+                .push((ev.tool_id, ev.done, ev.total));
         });
 
         let check = run_check(

@@ -1,17 +1,17 @@
-pub mod models;
-pub mod process_manager;
 pub mod commands;
-pub mod project;
+pub mod file_explorer;
+pub mod info;
+pub mod logs;
+pub mod models;
 pub mod overview;
+pub mod problems;
+pub mod process_manager;
+pub mod project;
 pub mod runtime;
 pub mod session;
-pub mod logs;
-pub mod problems;
-pub mod info;
-pub mod file_explorer;
 
-use std::sync::Arc;
 use crate::modules::workspace::process_manager::ProcessManager;
+use std::sync::Arc;
 
 pub struct WorkspaceState {
     pub process_manager: Arc<dyn ProcessManager>,

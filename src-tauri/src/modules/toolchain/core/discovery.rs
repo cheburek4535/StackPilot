@@ -119,7 +119,10 @@ pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
                 .ok()?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .find(|p| {
-                    let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default();
                     name.starts_with(&prefix) && name.ends_with(&suffix) && p.is_dir()
                 })?;
         } else {
@@ -279,7 +282,10 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
             .cloned()
             .unwrap_or_default();
         return ToolStatus::PathBroken {
-            reason: format!("Установка найдена ({}), но бинарник не отвечает на пробу", footprint),
+            reason: format!(
+                "Установка найдена ({}), но бинарник не отвечает на пробу",
+                footprint
+            ),
         };
     }
 
@@ -301,9 +307,10 @@ fn is_shell_probe(program: &str) -> bool {
 /// (с учётом glob). Используется для записи в state.json после
 /// установки (путь установки сам инструмент не сообщает).
 pub(crate) fn installed_path(def: &ToolDefinition) -> Option<String> {
-    def.detection.known_paths.iter().find_map(|p| {
-        glob_first(&expand_env(p)).map(|p| p.to_string_lossy().into_owned())
-    })
+    def.detection
+        .known_paths
+        .iter()
+        .find_map(|p| glob_first(&expand_env(p)).map(|p| p.to_string_lossy().into_owned()))
 }
 
 // ============================================================
@@ -448,7 +455,9 @@ mod tests {
         let def = def("kafka").clone();
         let probes = &def.detection.version_probes;
         assert!(
-            probes.iter().any(|p| p.first().map(String::as_str) == Some("powershell")),
+            probes
+                .iter()
+                .any(|p| p.first().map(String::as_str) == Some("powershell")),
             "kafka должна определяться через powershell-пробу"
         );
         let status = detect_tool(&def).await;

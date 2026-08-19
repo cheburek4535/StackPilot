@@ -139,17 +139,18 @@ mod tests {
         let additions = vec!["C:\\b".to_string(), "C:\\c".to_string()];
         assert_eq!(
             merge_dirs(&existing, &additions),
-            vec!["C:\\a".to_string(), "C:\\b".to_string(), "C:\\c".to_string()]
+            vec![
+                "C:\\a".to_string(),
+                "C:\\b".to_string(),
+                "C:\\c".to_string()
+            ]
         );
     }
 
     #[test]
     fn merge_skips_empty_and_whitespace() {
         let existing = vec!["".to_string(), "  ".to_string(), "C:\\x".to_string()];
-        assert_eq!(
-            merge_dirs(&existing, &[]),
-            vec!["C:\\x".to_string()]
-        );
+        assert_eq!(merge_dirs(&existing, &[]), vec!["C:\\x".to_string()]);
     }
 
     #[test]
@@ -170,7 +171,10 @@ mod tests {
         } else {
             ("%HOME%", std::env::var("HOME").expect("нет HOME"))
         };
-        assert_eq!(expand_env_vars(&format!("{var}\\dev")), format!("{expected}\\dev"));
+        assert_eq!(
+            expand_env_vars(&format!("{var}\\dev")),
+            format!("{expected}\\dev")
+        );
 
         // неизвестная переменная остаётся как есть
         assert_eq!(
@@ -181,6 +185,9 @@ mod tests {
 
     #[test]
     fn expand_leaves_plain_path() {
-        assert_eq!(expand_env_vars("C:\\Program Files\\nodejs"), "C:\\Program Files\\nodejs");
+        assert_eq!(
+            expand_env_vars("C:\\Program Files\\nodejs"),
+            "C:\\Program Files\\nodejs"
+        );
     }
 }

@@ -1,44 +1,16 @@
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
-use chrono::Local;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-use crate::modules::project_creator::engine::ExecutionPlan;
-use crate::modules::project_creator::generators::{
-    is_windows_batch, windows_command_program, windows_shell_line, GeneratorRegistry, sh_quote,
-};
-use crate::modules::project_creator::models::*;
 
-/// Стандартные fallback-триггеры на все случаи, когда step‑специфичных нет.
-static FALLBACK_TRIGGERS: &[(&str, &str)] = &[
-    // Node.js / npx
-    ("need to install the following packages", "y"),
-    ("ok to proceed?", "y"),
-    ("do you want to proceed?", "y"),
-    // Универсальные булевы паттерны
-    ("would you like to", "n"),
-    ("do you want to", "n"),
-    ("(y/n)", "y"),
-    ("(y/n)", "y"),
-    ("(y/n)", "y"),
-    ("[y/n]", "y"),
-    ("[y/n]", "y"),
-    ("proceed?", "y"),
-    ("accept?", "y"),
-    // Зависимости
-    ("install dependencies", "y"),
-    ("download and install", "n"),
-    ("install the ios and android", "n"),
-    ("initialize a new git", "y"),
-    // CocoaPods (macOS)
-    ("install cocoapods", "n"),
-    // Expo
-    ("do you want to log in", "n"),
-    // Лицензии
-    ("accept the license", "y"),
-    ("review licenses", "y"),
-];
+use tokio::sync::mpsc;
+
+use crate::modules::project_creator::engine::paths;
+use crate::modules::project_creator::engine::process::{
+    command_display, local_time, ExecutionEventSink, InteractiveRules, ProcessRunner, ProcessSpec,
+    StdinMode,
+};
+use crate::modules::project_creator::engine::ExecutionPlan;
+use crate::modules::project_creator::generators::GeneratorRegistry;
+use crate::modules::project_creator::models::*;
 
 /// StepExecutor — выполняет отдельные шаги плана.
 pub struct StepExecutor {
@@ -58,421 +30,118 @@ impl StepExecutor {
         Self { generators }
     }
 
-    /// Собрать карту триггеров из interactive-поля шага (владеющие данные).
-    fn build_trigger_map(step: &Step) -> Vec<(String, ResponseType)> {
-        let mut map: Vec<(String, ResponseType)> = Vec::new();
-        if let Step::Command { interactive, .. } = step {
-            for entry in interactive {
-                map.push((entry.trigger.clone(), entry.response_type.clone()));
-            }
-        }
-        map
-    }
-
-    /// Отправить ответ в stdin процесса согласно ResponseType.
-    async fn send_response(
-        stdin: &mut tokio::process::ChildStdin,
-        rt: &ResponseType,
-    ) {
-        let bytes: Vec<u8> = match rt {
-            ResponseType::Text(val) => {
-                format!("{}\n", val).into_bytes()
-            }
-            ResponseType::Confirm(true) => b"y\n".to_vec(),
-            ResponseType::Confirm(false) => b"n\n".to_vec(),
-            ResponseType::Select(idx) => {
-                // *idx* раз нажать стрелку вниз, затем Enter
-                let mut seq = Vec::new();
-                for _ in 0..*idx {
-                    seq.extend_from_slice(b"\x1b[B"); // Down arrow
-                }
-                seq.push(b'\n');                     // Enter
-                seq
-            }
-            ResponseType::Keys(raw) => raw.as_bytes().to_vec(),
-        };
-        let _ = stdin.write_all(&bytes).await;
-        let _ = stdin.flush().await;
-    }
-
-    /// Проверить rolling‑буфер на совпадение с любым триггером.
-    /// Возвращает true, если совпадение найдено и ответ отправлен.
-    async fn check_triggers(
-        rolling: &str,
-        trigger_map: &[(String, ResponseType)],
-        stdin: &mut tokio::process::ChildStdin,
-    ) -> bool {
-        let lower = rolling.to_lowercase();
-        for (trigger, response_type) in trigger_map {
-            if lower.contains(&trigger.to_lowercase()) {
-                Self::send_response(stdin, response_type).await;
-                return true;
-            }
-        }
-        // Fallback — более широкая сеть
-        for (trigger, response) in FALLBACK_TRIGGERS {
-            if lower.contains(trigger) {
-                let _ = stdin.write_all(response.as_bytes()).await;
-                let _ = stdin.write_all(b"\n").await;
-                let _ = stdin.flush().await;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Прочитать stdout с побайтовым накоплением, детекцией триггеров и отправкой ответов.
-    async fn read_stdout_loop(
-        mut stdout: tokio::process::ChildStdout,
-        mut stdin: tokio::process::ChildStdin,
-        trigger_map: Vec<(String, ResponseType)>, // владеющие данные
-        stdout_tail: Arc<Mutex<Vec<String>>>,
-        tx: mpsc::Sender<ExecutionEvent>,
-        step_id: String,
-        step_name: String,
-        step_desc: String,
+    /// Событийный приёмник шага: маршрутизирует вывод процесса в канал
+    /// ExecutionEvent (общий механизм для Step::Command и Step::Generate).
+    fn sink_for_step(
+        tx: &mpsc::Sender<ExecutionEvent>,
+        step: &Step,
         index: usize,
         total_steps: usize,
-    ) {
-        // 256‑байтовый буфер — не ждём \n, читаем как только данные появляются
-        let mut buf = [0u8; 256];
-        // Скользящее окно 2048 символов
-        let mut rolling = String::with_capacity(2048);
-        // Таймаут бездействия перед fallback-опросом
-        let idle_timeout = Duration::from_secs(4);
-
-        loop {
-            let read_fut = stdout.read(&mut buf);
-            let result = tokio::time::timeout(idle_timeout, read_fut).await;
-
-            match result {
-                // Данные пришли
-                Ok(Ok(0)) => break, // EOF — процесс закрыл stdout
-                Ok(Ok(n)) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-
-                    capture_tail(&stdout_tail, &chunk);
-
-                    // Печатаем в консоль для отладки
-                    print!("{}", chunk);
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                    // Добавляем в скользящее окно
-                    rolling.push_str(&chunk);
-                    if rolling.len() > 2048 {
-                        rolling.drain(..rolling.len() - 2048);
-                    }
-
-                    // Ищем триггеры
-                    let matched = Self::check_triggers(&rolling, &trigger_map, &mut stdin).await;
-                    if matched {
-                        rolling.clear(); // Очищаем окно после ответа
-                    }
-
-                    // Шлём событие на фронтенд
-                    let _ = tx
-                        .send(ExecutionEvent {
-                            event_type: ExecutionEventType::StepProgress {
-                                stdout: chunk.into(),
-                                stderr: String::new(),
-                            },
-                            step_id: step_id.clone(),
-                            step_index: index,
-                            total_steps,
-                            step_name: step_name.clone(),
-                            step_description: step_desc.clone(),
-                            timestamp: local_time(),
-                        })
-                        .await;
-                }
-                // Ошибка чтения
-                Ok(Err(_)) => break,
-                // Таймаут — процесс молчит, возможно ждёт ввода без триггера
-                Err(_elapsed) => {
-                    // Пробуем последний раз проверить буфер и отправить fallback
-                    if !rolling.is_empty() {
-                        let matched = Self::check_triggers(&rolling, &trigger_map, &mut stdin).await;
-                        if matched {
-                            rolling.clear();
-                            continue;
-                        }
-                    }
-                    // Если процесс ещё жив — отправляем "y\n" как последнее средство
-                    // (иначе выходим — процесс сам завершится)
-                    let _ = stdin.write_all(b"\n").await;
-                    let _ = stdin.flush().await;
-                }
-            }
-        }
+    ) -> ExecutionEventSink {
+        ExecutionEventSink::new(
+            tx.clone(),
+            step_id(step),
+            index,
+            total_steps,
+            step_label(step),
+            step_description(step),
+        )
     }
 
     pub async fn run_command(
-    &self,
-    step: &Step,
-    plan: &ExecutionPlan,
-    tx: &mpsc::Sender<ExecutionEvent>,
-    index: usize,
-) -> StepResult {
-    use std::env::consts::OS;
-    use std::process::Stdio;
+        &self,
+        step: &Step,
+        plan: &ExecutionPlan,
+        tx: &mpsc::Sender<ExecutionEvent>,
+        index: usize,
+    ) -> StepResult {
+        let (command, raw_args, working_dir, env, timeout_secs, interactive) = match step {
+            Step::Command {
+                command,
+                args,
+                working_dir,
+                env,
+                timeout_secs,
+                interactive,
+                ..
+            } => (command, args, working_dir, env, timeout_secs, interactive),
+            _ => {
+                return StepResult {
+                    step_id: step_id(step),
+                    label: step_label(step),
+                    status: StepStatus::Failed {
+                        error: "Expected Command step".into(),
+                    },
+                    duration_ms: 0,
+                }
+            }
+        };
 
-    let (command, raw_args, working_dir, env, timeout_secs) = match step {
-        Step::Command {
-            command,
+        // Аргументы рецепта передаются без скрытых модификаций. В частности,
+        // рецепт сам отвечает за наличие `npx --yes`: глобальная инъекция меняет
+        // позицию/семантику аргументов отдельных CLI.
+        let args: Vec<String> = raw_args.clone();
+
+        // Рабочая директория — строго внутри корня проекта: абсолютные пути
+        // рецептов (project_path, project_path + "/segment") пропускаются,
+        // выход за корень (../, чужие абсолютные пути) — ошибка шага.
+        let full_working_dir = if let Some(dir) = working_dir {
+            match paths::resolve_working_dir(&plan.project_path, dir) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    return failed_result(
+                        step,
+                        std::time::Instant::now(),
+                        format!("Invalid working directory: {e}"),
+                    )
+                }
+            }
+        } else {
+            plan.project_path.clone()
+        };
+
+        // Piped-режим сохраняет историческое поведение Step::Command:
+        // детекция interactive-триггеров, fallback-ответы и idle-Enter при
+        // молчании процесса. Сам запуск делегируется общему ProcessRunner.
+        let spec = ProcessSpec {
+            command: command.clone(),
             args,
-            working_dir,
-            env,
-            timeout_secs,
-            ..
-        } => (command, args, working_dir, env, timeout_secs),
-        _ => {
-            return StepResult {
+            working_dir: Some(full_working_dir.clone()),
+            env: env.clone(),
+            timeout: timeout_secs.map(Duration::from_secs),
+            stdin: StdinMode::Piped(InteractiveRules {
+                entries: interactive
+                    .iter()
+                    .map(|e| (e.trigger.clone(), e.response_type.clone()))
+                    .collect(),
+            }),
+            ci_mode: true,
+        };
+
+        let sink = Self::sink_for_step(tx, step, index, plan.step_count());
+        let start = std::time::Instant::now();
+        let command_text = command_display(command, &spec.args);
+
+        match ProcessRunner::run(spec, Some(&sink)).await {
+            Ok(output) => StepResult {
                 step_id: step_id(step),
                 label: step_label(step),
-                status: StepStatus::Failed {
-                    error: "Expected Command step".into(),
+                status: StepStatus::Success {
+                    message: format!("Command '{}' completed successfully", command_text),
                 },
-                duration_ms: 0,
-            }
+                duration_ms: output.duration_ms,
+            },
+            Err(error) => failed_result(step, start, error.format_command_error()),
         }
-    };
-
-    // Аргументы рецепта передаются без скрытых модификаций. В частности,
-    // рецепт сам отвечает за наличие `npx --yes`: глобальная инъекция меняет
-    // позицию/семантику аргументов отдельных CLI.
-    let args: Vec<String> = raw_args.clone();
-
-    // Кроссплатформенный запуск через shell
-    let mut cmd = match OS {
-        "windows" => {
-            let is_powershell = command.starts_with("powershell")
-                || command.starts_with("pwsh")
-                || command.contains("Get-")
-                || command.contains("Set-")
-                || command.contains("Invoke-")
-                || command.contains("New-");
-
-            if is_powershell {
-                let mut ps_cmd = tokio::process::Command::new("powershell");
-                ps_cmd.arg("-Command");
-                ps_cmd.arg(command);
-                if !args.is_empty() {
-                    ps_cmd.args(&args);
-                }
-                ps_cmd
-            } else {
-                // Обычные команды запускаем напрямую. `cmd /C` ломает
-                // вложенные кавычки в `node -e`, путях venv и Composer,
-                // из-за чего шаги завершаются кодом 1 без stderr. Batch-файлы
-                // npm/npx/composer разрешаются через .cmd/.bat в helper.
-                let program = windows_command_program(command);
-                let mut win_cmd = if is_windows_batch(&program) {
-                    let mut shell = tokio::process::Command::new("cmd");
-                    shell
-                        .arg("/D")
-                        .arg("/S")
-                        .arg("/C")
-                        .arg(windows_shell_line(&program, &args));
-                    shell
-                } else {
-                    tokio::process::Command::new(&program)
-                };
-                if !is_windows_batch(&program) {
-                    win_cmd.args(&args);
-                }
-                win_cmd
-            }
-        }
-        _ => {
-            let mut unix_cmd = tokio::process::Command::new("sh");
-            unix_cmd.arg("-c");
-            let mut shell_cmd = String::from(command);
-            for arg in args.iter() {
-                shell_cmd.push(' ');
-                shell_cmd.push_str(&sh_quote(arg));
-            }
-            unix_cmd.arg(shell_cmd);
-            unix_cmd
-        }
-    };
-
-    let full_working_dir = if let Some(dir) = working_dir {
-        plan.project_path.join(dir)
-    } else {
-        plan.project_path.clone()
-    };
-    cmd.current_dir(&full_working_dir);
-
-    if let Some(env_map) = env {
-        cmd.envs(env_map);
     }
-
-    // Принудительный неинтерактивный режим для ВСЕХ команд: CI=1 заставляет
-    // npm/prisma/create-* CLI (Tauri, Vite, Next.js...) пропускать промпты,
-    // NPM_CONFIG_YES отвечает «да» на подтверждение установки пакета у npx.
-    // Без этого prisma init повисает на вопросе о БД, create-* ждут Enter.
-    cmd.env("CI", "1");
-    cmd.env("NPM_CONFIG_YES", "true");
-
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::piped());
-
-    let start = std::time::Instant::now();
-    let total_steps = plan.step_count();
-
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            return failed_result(
-                step,
-                start,
-                format_command_error(
-                    "failed to spawn",
-                    &command_display(command, &args),
-                    &full_working_dir,
-                    &e.to_string(),
-                ),
-            );
-        }
-    };
-
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let stderr = child.stderr.take().expect("stderr should be piped");
-    let stdin = child.stdin.take().expect("stdin should be piped");
-    let stdout_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // Строим карту триггеров из interactive-поля шага
-    let trigger_map = Self::build_trigger_map(step);
-
-    // Запускаем stdout-читалку в отдельном таске
-    let tx_stdout = tx.clone();
-    let step_id_out = step_id(step);
-    let step_name_out = step_label(step);
-    let step_desc_out = step_description(step);
-    let stdout_tail_capture = Arc::clone(&stdout_tail);
-
-    let stdout_handle = tokio::spawn(async move {
-        Self::read_stdout_loop(
-            stdout,
-            stdin,
-            trigger_map,
-            stdout_tail_capture,
-            tx_stdout,
-            step_id_out,
-            step_name_out,
-            step_desc_out,
-            index,
-            total_steps,
-        )
-        .await;
-    });
-
-    // Для stderr
-    let tx_stderr = tx.clone();
-    let step_id_err = step_id(step);
-    let step_name_err = step_label(step);
-    let step_desc_err = step_description(step);
-    let stderr_tail_capture = Arc::clone(&stderr_tail);
-
-    let stderr_handle = tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-
-        while let Ok(Some(line)) = lines.next_line().await {
-            capture_tail(&stderr_tail_capture, &line);
-            tx_stderr
-                .send(ExecutionEvent {
-                    event_type: ExecutionEventType::StepProgress {
-                        stdout: String::new(),
-                        stderr: line,
-                    },
-                    step_id: step_id_err.clone(),
-                    step_index: index,
-                    total_steps,
-                    step_name: step_name_err.clone(),
-                    step_description: step_desc_err.clone(),
-                    timestamp: local_time(),
-                })
-                .await
-                .ok();
-        }
-    });
-
-    // Ожидаем завершения процесса, но в любом случае приводим его к единому
-    // результату: spawn/wait/timeout/ненулевой exit-код должны иметь одинаковый
-    // контекст и хвосты обоих потоков.
-    let wait_result: Result<std::process::ExitStatus, String> = if let Some(timeout_secs) = timeout_secs {
-        let duration = std::time::Duration::from_secs(*timeout_secs);
-
-        match tokio::time::timeout(duration, child.wait()).await {
-            Ok(Ok(status)) => Ok(status),
-            Ok(Err(e)) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!("process wait failed: {e}"))
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!("timed out after {timeout_secs} seconds"))
-            }
-        }
-    } else {
-        match child.wait().await {
-            Ok(status) => Ok(status),
-            Err(e) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!("process wait failed: {e}"))
-            }
-        }
-    };
-
-    let _ = stdout_handle.await;
-    let _ = stderr_handle.await;
-
-    let command_text = command_display(command, &args);
-    let stdout_detail = tail_text(&stdout_tail);
-    let stderr_detail = tail_text(&stderr_tail);
-    let status = match wait_result {
-        Ok(exit_status) if exit_status.success() => StepStatus::Success {
-            message: format!("Command '{command_text}' completed successfully"),
-        },
-        Ok(exit_status) => StepStatus::Failed {
-            error: format_command_error(
-                &format!("exited with status {}", exit_status_text(&exit_status)),
-                &command_text,
-                &full_working_dir,
-                &format_output_tails(&stdout_detail, &stderr_detail),
-            ),
-        },
-        Err(reason) => StepStatus::Failed {
-            error: format_command_error(
-                &reason,
-                &command_text,
-                &full_working_dir,
-                &format_output_tails(&stdout_detail, &stderr_detail),
-            ),
-        },
-    };
-
-    let duration_ms = start.elapsed().as_millis() as u64;
-    StepResult {
-        step_id: step_id(step),
-        label: step_label(step),
-        status,
-        duration_ms,
-    }
-}
 
     /// Выполнить шаг Generate: диспетчеризация во встроенные генераторы
     /// движка (spring-boot, fs-cleanup, cli). Ошибка генератора (например,
     /// «Spring Initializr error: HTTP 400 ...») становится Failed-статусом
     /// шага и останавливает пайплайн при on_error=Abort.
+    /// Политика SkipIfExists: CLI не запускается, когда все expected_outputs
+    /// уже существуют в каталоге назначения (повторный запуск рецепта не
+    /// перезатирает готовый каркас) — шаг успешен без действий.
     pub async fn run_generate(
         &self,
         step: &Step,
@@ -480,12 +149,13 @@ impl StepExecutor {
         tx: &mpsc::Sender<ExecutionEvent>,
         index: usize,
     ) -> StepResult {
-        let (generator_id, generator_config) = match step {
+        let (generator_id, generator_config, policy) = match step {
             Step::Generate {
                 generator_id,
                 generator_config,
+                policy,
                 ..
-            } => (generator_id, generator_config),
+            } => (generator_id, generator_config, policy),
             _ => {
                 return StepResult {
                     step_id: step_id(step),
@@ -500,10 +170,59 @@ impl StepExecutor {
 
         let start = std::time::Instant::now();
 
+        if *policy == Some(FilePolicy::SkipIfExists) && generator_id == "scaffold" {
+            if let Some(outputs) = generator_config
+                .get("expected_outputs")
+                .and_then(|v| v.as_array())
+            {
+                let outputs: Vec<String> = outputs
+                    .iter()
+                    .filter_map(|o| o.as_str().map(String::from))
+                    .collect();
+                if !outputs.is_empty()
+                    && all_expected_outputs_exist(plan, generator_config, &outputs)
+                {
+                    let message = format!(
+                        "Scaffold '{}' already exists — skipped by policy (skip_if_exists)",
+                        outputs.join(", ")
+                    );
+                    tx.send(ExecutionEvent {
+                        event_type: ExecutionEventType::StepProgress {
+                            stdout: message.clone(),
+                            stderr: String::new(),
+                        },
+                        step_id: step_id(step),
+                        step_index: index,
+                        total_steps: plan.step_count(),
+                        step_name: step_label(step),
+                        step_description: step_description(step),
+                        timestamp: local_time(),
+                    })
+                    .await
+                    .ok();
+                    return StepResult {
+                        step_id: step_id(step),
+                        label: step_label(step),
+                        status: StepStatus::Success { message },
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+            }
+        }
+
+        // Генераторам отдаётся событийный приёмник шага: их CLI-вывод
+        // стримится в UI тем же механизмом, что и вывод Step::Command.
+        let sink = Self::sink_for_step(tx, step, index, plan.step_count());
+
         let outcome = match self.generators.get(generator_id) {
             Some(generator) => {
                 generator
-                    .generate(&plan.context, &plan.project_path, generator_config)
+                    .generate_with_sink(
+                        &plan.context,
+                        &plan.project_path,
+                        generator_config,
+                        Some(&sink),
+                    )
                     .await
             }
             None => Err(format!("Unknown generator '{}'", generator_id)),
@@ -548,7 +267,14 @@ impl StepExecutor {
         }
     }
 
-    /// Записать файл
+    /// Записать файл. Путь строго внутри корня проекта; поведение при
+    /// существующем файле — по политике идемпотентности (FilePolicy):
+    ///   - Overwrite: всегда перезаписать;
+    ///   - CreateOnly/SkipIfExists: существующий файл не трогается (skip);
+    ///   - MergeJson: глубокое JSON-слияние с существующим содержимым
+    ///     (существующие ключи сохраняются), не-JSON — ошибка шага;
+    ///   - FailOnMismatch: идентичный файл — идемпотентный no-op (Success),
+    ///     отличие — ошибка (молчаливый перезапрос невозможен).
     pub async fn write_file(
         &self,
         step: &Step,
@@ -556,51 +282,86 @@ impl StepExecutor {
         tx: &mpsc::Sender<ExecutionEvent>,
         index: usize,
     ) -> StepResult {
-
         let final_status: StepStatus;
         let duration: u64;
 
-        if let Step::WriteFile {path, content, overwrite, ..} = step {
-            
-            let project_path = &plan.project_path.join(path);
-
+        if let Step::WriteFile {
+            path,
+            content,
+            policy,
+            overwrite,
+            ..
+        } = step
+        {
             let start = std::time::Instant::now();
+
+            // Безопасный путь строго внутри корня проекта: ../ и абсолютные
+            // пути — ошибка шага, а не запись мимо проекта.
+            let Some(project_path) = paths::resolve_in_root(&plan.project_path, path) else {
+                return StepResult {
+                    step_id: step_id(step),
+                    label: step_label(step),
+                    status: StepStatus::Failed {
+                        error: format!("WriteFile path '{}' escapes the project root", path),
+                    },
+                    duration_ms: 0,
+                };
+            };
 
             if let Some(parent) = project_path.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     return StepResult {
-                        step_id: step_id(step), 
-                        label: step_label(step), 
-                        status: StepStatus::Failed { error: format!("Failed create all dirs to project root: {e}")}, duration_ms: start.elapsed().as_millis() as u64};
-                }        
+                        step_id: step_id(step),
+                        label: step_label(step),
+                        status: StepStatus::Failed {
+                            error: format!("Failed create all dirs to project root: {e}"),
+                        },
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
             }
-            if !overwrite && project_path.exists() {
-                final_status = StepStatus::Skipped { reason: "file already exists and overwrite == false".into() };
+
+            let effective = policy.unwrap_or(if *overwrite {
+                FilePolicy::Overwrite
             } else {
-                let success = std::fs::write(project_path, content);
-                match success {
-                    Ok(_) => {
-                        final_status = StepStatus::Success { message: "Successfully written content".into() };
+                FilePolicy::SkipIfExists
+            });
 
-                        tx.send(ExecutionEvent { 
-                            event_type: ExecutionEventType::StepProgress { stdout: format!("Wrote {path}"), stderr: String::new() },
-                            step_id: step_id(step), 
-                            step_index: index, 
-                            total_steps: plan.step_count(), 
-                            step_name: step_label(step),
-                            step_description: step_description(step), 
-                            timestamp: local_time() 
-                        }).await.ok();
-
+            if project_path.exists() {
+                final_status = match effective {
+                    FilePolicy::CreateOnly | FilePolicy::SkipIfExists => StepStatus::Skipped {
+                        reason: format!("file already exists and overwrite policy is {:?}", effective),
+                    },
+                    FilePolicy::Overwrite => {
+                        Self::write_out(&project_path, content, path, tx, step, index, plan).await
                     }
-                    Err(err) => {
-                        final_status = StepStatus::Failed {error: format!(" Failed write file {err}") };
+                    FilePolicy::MergeJson => match merge_json_write(&project_path, content, path) {
+                        Ok(status) => status,
+                        Err(e) => StepStatus::Failed { error: e },
+                    },
+                    FilePolicy::FailOnMismatch => {
+                        match std::fs::read_to_string(&project_path) {
+                            Ok(existing) if existing == *content => StepStatus::Success {
+                                message: format!("File {} is unchanged — keeping existing content", path),
+                            },
+                            Ok(_) => StepStatus::Failed {
+                                error: format!("File {} already exists with different content and policy is fail_on_mismatch", path),
+                            },
+                            Err(e) => StepStatus::Failed {
+                                error: format!("Failed read existing file {}: {}", path, e),
+                            },
                         }
                     }
-            }      
-            duration = start.elapsed().as_millis() as u64;    
+                };
+            } else {
+                final_status =
+                    Self::write_out(&project_path, content, path, tx, step, index, plan).await;
+            }
+            duration = start.elapsed().as_millis() as u64;
         } else {
-            final_status = StepStatus::Failed { error: ("Incorrect step type, expected WriteFile".into()) };
+            final_status = StepStatus::Failed {
+                error: ("Incorrect step type, expected WriteFile".into()),
+            };
             duration = 0;
         }
 
@@ -608,7 +369,43 @@ impl StepExecutor {
             step_id: step_id(step),
             label: step_label(step),
             status: final_status,
-            duration_ms: duration
+            duration_ms: duration,
+        }
+    }
+
+    /// Записать файл и застримить StepProgress-событие.
+    async fn write_out(
+        path: &std::path::Path,
+        content: &str,
+        display_path: &str,
+        tx: &mpsc::Sender<ExecutionEvent>,
+        step: &Step,
+        index: usize,
+        plan: &ExecutionPlan,
+    ) -> StepStatus {
+        match std::fs::write(path, content) {
+            Ok(_) => {
+                tx.send(ExecutionEvent {
+                    event_type: ExecutionEventType::StepProgress {
+                        stdout: format!("Wrote {display_path}"),
+                        stderr: String::new(),
+                    },
+                    step_id: step_id(step),
+                    step_index: index,
+                    total_steps: plan.step_count(),
+                    step_name: step_label(step),
+                    step_description: step_description(step),
+                    timestamp: local_time(),
+                })
+                .await
+                .ok();
+                StepStatus::Success {
+                    message: "Successfully written content".into(),
+                }
+            }
+            Err(err) => StepStatus::Failed {
+                error: format!(" Failed write file {err}"),
+            },
         }
     }
 
@@ -695,37 +492,49 @@ impl StepExecutor {
         if let Step::CreateDirectory { path, .. } = step {
             let start = std::time::Instant::now();
 
-            let full_path = plan.project_path.join(path);
+            let Some(full_path) = paths::resolve_in_root(&plan.project_path, path) else {
+                return StepResult {
+                    step_id: step_id(step),
+                    label: step_label(step),
+                    status: StepStatus::Failed {
+                        error: format!("CreateDirectory path '{}' escapes the project root", path),
+                    },
+                    duration_ms: 0,
+                };
+            };
             match std::fs::create_dir_all(&full_path) {
                 Ok(_) => {
-                    tx.send(ExecutionEvent { 
-                            event_type: ExecutionEventType::StepProgress { stdout: format!("Created {}", full_path.display()), stderr: String::new() },
-                            step_id: step_id(step), 
-                            step_index: index, 
-                            total_steps: plan.step_count(), 
-                            step_name: step_label(step),
-                            step_description: step_description(step), 
-                            timestamp: local_time() 
-                        }).await.ok();
+                    tx.send(ExecutionEvent {
+                        event_type: ExecutionEventType::StepProgress {
+                            stdout: format!("Created {}", full_path.display()),
+                            stderr: String::new(),
+                        },
+                        step_id: step_id(step),
+                        step_index: index,
+                        total_steps: plan.step_count(),
+                        step_name: step_label(step),
+                        step_description: step_description(step),
+                        timestamp: local_time(),
+                    })
+                    .await
+                    .ok();
 
                     StepResult {
                         step_id: step_id(step),
                         label: step_label(step),
                         status: StepStatus::Success {
                             message: format!("Created {}", full_path.display()),
-                    },
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    }
-                },
-                Err(e) => { 
-                    StepResult {
-                        step_id: step_id(step),
-                        label: step_label(step),
-                        status: StepStatus::Failed {
-                            error: format!("Failed to create directory {}: {}", full_path.display(), e),
                         },
                         duration_ms: start.elapsed().as_millis() as u64,
-                    }    
+                    }
+                }
+                Err(e) => StepResult {
+                    step_id: step_id(step),
+                    label: step_label(step),
+                    status: StepStatus::Failed {
+                        error: format!("Failed to create directory {}: {}", full_path.display(), e),
+                    },
+                    duration_ms: start.elapsed().as_millis() as u64,
                 },
             }
         } else {
@@ -742,55 +551,92 @@ impl StepExecutor {
 }
 
 // Helpers
-fn step_id(step: &Step) -> String { step.id() }
-fn step_label(step: &Step) -> String { step.label() }
-fn step_description(step: &Step) -> String { step.description() }
+fn step_id(step: &Step) -> String {
+    step.id()
+}
+fn step_label(step: &Step) -> String {
+    step.label()
+}
+fn step_description(step: &Step) -> String {
+    step.description()
+}
 
-const OUTPUT_TAIL_LINES: usize = 12;
+/// Глубокое JSON-слияние при политике MergeJson: ключи существующего файла
+/// сохраняются, недостающие берутся из записываемого содержимого; вложенные
+/// объекты сливаются рекурсивно. Существующий не-JSON файл — ошибка шага
+/// (молчаливый деструктивный перезапрос невозможен).
+fn merge_json_write(
+    path: &std::path::Path,
+    content: &str,
+    display_path: &str,
+) -> Result<StepStatus, String> {
+    let existing_text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed read existing file {}: {}", path.display(), e))?;
+    let existing: serde_json::Value = serde_json::from_str(&existing_text).map_err(|e| {
+        format!(
+            "MergeJson: existing file {} is not valid JSON: {}",
+            display_path, e
+        )
+    })?;
+    let incoming: serde_json::Value = serde_json::from_str(content).map_err(|e| {
+        format!(
+            "MergeJson: content for {} is not valid JSON: {}",
+            display_path, e
+        )
+    })?;
+    let merged = merge_json(&existing, &incoming);
+    let text = serde_json::to_string_pretty(&merged).map_err(|e| {
+        format!(
+            "MergeJson: failed to serialize merged JSON for {}: {}",
+            display_path, e
+        )
+    })?;
+    std::fs::write(path, format!("{}\n", text))
+        .map_err(|e| format!("Failed write file {}: {}", path.display(), e))?;
+    Ok(StepStatus::Success {
+        message: format!("Merged JSON into {}", display_path),
+    })
+}
 
-fn capture_tail(tail: &Arc<Mutex<Vec<String>>>, text: &str) {
-    if let Ok(mut lines) = tail.lock() {
-        for line in text.lines() {
-            lines.push(line.to_string());
-            if lines.len() > OUTPUT_TAIL_LINES {
-                lines.remove(0);
+/// Все expected_outputs scaffold-шага уже существуют в каталоге назначения
+/// (пути относительно target_dir, как их валидирует ScaffoldGenerator).
+fn all_expected_outputs_exist(
+    plan: &ExecutionPlan,
+    generator_config: &serde_json::Value,
+    outputs: &[String],
+) -> bool {
+    let target_dir = generator_config
+        .get("target_dir")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+    let Some(target) = (if target_dir == "." {
+        Some(plan.project_path.clone())
+    } else {
+        paths::resolve_in_root(&plan.project_path, target_dir)
+    }) else {
+        return false;
+    };
+    outputs.iter().all(|output| {
+        paths::resolve_in_root(&target, output)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    })
+}
+
+fn merge_json(base: &serde_json::Value, extra: &serde_json::Value) -> serde_json::Value {
+    match (base, extra) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(e)) => {
+            let mut out = b.clone();
+            for (k, v) in e {
+                out.entry(k.clone())
+                    .and_modify(|existing| {
+                        *existing = merge_json(existing, v);
+                    })
+                    .or_insert_with(|| v.clone());
             }
+            serde_json::Value::Object(out)
         }
-    }
-}
-
-fn tail_text(tail: &Arc<Mutex<Vec<String>>>) -> String {
-    tail.lock()
-        .map(|lines| lines.join("\n"))
-        .unwrap_or_default()
-}
-
-fn command_display(command: &str, args: &[String]) -> String {
-    let mut display = command.to_string();
-    for arg in args {
-        display.push(' ');
-        display.push_str(arg);
-    }
-    display
-}
-
-fn format_output_tails(stdout: &str, stderr: &str) -> String {
-    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
-    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
-    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
-}
-
-fn format_command_error(reason: &str, command: &str, working_dir: &std::path::Path, detail: &str) -> String {
-    format!(
-        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
-        working_dir.display()
-    )
-}
-
-fn exit_status_text(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(code) => code.to_string(),
-        None => "terminated by signal".to_string(),
+        (base, _) => base.clone(),
     }
 }
 
@@ -801,12 +647,4 @@ fn failed_result(step: &Step, start: std::time::Instant, error: String) -> StepR
         status: StepStatus::Failed { error },
         duration_ms: start.elapsed().as_millis() as u64,
     }
-}
-
-fn local_time() -> String {
-    // Получаем текущее локальное время
-    let local_time = Local::now();
-    
-    // Форматируем в строку (в chrono для двоеточия не нужен экранирующий синтаксис)
-    local_time.format("%H::%M:%S").to_string()
 }

@@ -70,7 +70,11 @@ pub fn write_rc_user_path(dirs: &[String]) -> Result<(), String> {
     // не бывает).
     let safe: Vec<String> = dirs
         .iter()
-        .map(|d| d.chars().filter(|c| *c != '"' && *c != '$' && *c != '`').collect())
+        .map(|d| {
+            d.chars()
+                .filter(|c| *c != '"' && *c != '$' && *c != '`')
+                .collect()
+        })
         .collect();
     let block = format!("{RC_BEGIN}\nexport PATH=\"{}\"\n{RC_END}\n", safe.join(":"));
 
@@ -112,8 +116,13 @@ mod tests {
     /// (rc_path читает HOME из окружения — переопределяем через env).
     fn with_rc(content: &str, f: impl FnOnce()) {
         let _guard = RC_TEST_LOCK.lock().unwrap();
-        let home = std::env::temp_dir().join(format!("tc-rc-test-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let home = std::env::temp_dir().join(format!(
+            "tc-rc-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&home).unwrap();
         let mut file = std::fs::File::create(home.join(".bashrc")).unwrap();
         file.write_all(content.as_bytes()).unwrap();
@@ -149,7 +158,12 @@ mod tests {
     fn read_parses_marker_block() {
         with_rc(
             "# other\n# StackPilot:begin\nexport PATH=\"/a:/b\"\n# StackPilot:end\n",
-            || assert_eq!(read_rc_user_path(), vec!["/a".to_string(), "/b".to_string()]),
+            || {
+                assert_eq!(
+                    read_rc_user_path(),
+                    vec!["/a".to_string(), "/b".to_string()]
+                )
+            },
         );
     }
 
@@ -171,10 +185,8 @@ mod tests {
     fn write_appends_block_when_absent() {
         with_rc("export FOO=bar\n", || {
             write_rc_user_path(&["/appended".to_string()]).unwrap();
-            let content = std::fs::read_to_string(
-                std::env::var("HOME").unwrap() + "/.bashrc",
-            )
-            .unwrap();
+            let content =
+                std::fs::read_to_string(std::env::var("HOME").unwrap() + "/.bashrc").unwrap();
             assert!(content.contains("# StackPilot:begin"));
             assert!(content.contains("export PATH=\"/appended\""));
             assert!(content.starts_with("export FOO=bar\n"));

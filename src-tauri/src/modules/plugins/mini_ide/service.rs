@@ -19,7 +19,12 @@ impl DefaultIdeService {
 }
 
 impl IdeService for DefaultIdeService {
-    fn get_completions(&self, _file_path: &str, _line: usize, _column: usize) -> Vec<CompletionItem> {
+    fn get_completions(
+        &self,
+        _file_path: &str,
+        _line: usize,
+        _column: usize,
+    ) -> Vec<CompletionItem> {
         Vec::new()
     }
 

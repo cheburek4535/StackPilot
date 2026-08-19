@@ -80,7 +80,11 @@ pub struct PipedResult {
 }
 
 impl PipedResult {
-    fn from_status(status: std::process::ExitStatus, aborted: bool, error_line: Option<String>) -> Self {
+    fn from_status(
+        status: std::process::ExitStatus,
+        aborted: bool,
+        error_line: Option<String>,
+    ) -> Self {
         PipedResult {
             success: !aborted && status.success(),
             aborted,
@@ -174,7 +178,16 @@ pub async fn piped_run(
         let tool_id = tool_id.to_string();
         let abort = Arc::clone(&abort);
         readers.spawn(async move {
-            stream_lines(BufReader::new(out), sink, index, total, task_id, tool_id, abort).await
+            stream_lines(
+                BufReader::new(out),
+                sink,
+                index,
+                total,
+                task_id,
+                tool_id,
+                abort,
+            )
+            .await
         });
     }
     if let Some(err) = child.stderr.take() {
@@ -183,7 +196,16 @@ pub async fn piped_run(
         let tool_id = tool_id.to_string();
         let abort = Arc::clone(&abort);
         readers.spawn(async move {
-            stream_lines(BufReader::new(err), sink, index, total, task_id, tool_id, abort).await
+            stream_lines(
+                BufReader::new(err),
+                sink,
+                index,
+                total,
+                task_id,
+                tool_id,
+                abort,
+            )
+            .await
         });
     }
 
@@ -243,10 +265,7 @@ pub async fn piped_run(
 /// Пишет PS-скрипт во временный файл (избегаем base64-экранок —
 /// кодирование в UTF-8 и запуск через -File).
 fn write_script(tool_id: &str, script: &str) -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join(format!(
-        "tc-{tool_id}-{}.ps1",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("tc-{tool_id}-{}.ps1", std::process::id()));
     std::fs::write(&path, script).map_err(|e| format!("Не удалось записать PS-скрипт: {e}"))?;
     Ok(path)
 }
@@ -542,11 +561,26 @@ mod tests {
         let abort = Arc::new(AtomicBool::new(false));
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
-        let args = vec!["/c".to_string(), "ping".to_string(), "-n".to_string(), "30".to_string(), "127.0.0.1".to_string()];
+        let args = vec![
+            "/c".to_string(),
+            "ping".to_string(),
+            "-n".to_string(),
+            "30".to_string(),
+            "127.0.0.1".to_string(),
+        ];
         let tool_id = "sleep";
         let task_id = "sleep";
 
-        let res_tok = piped_run("cmd", &args, 0, 1, task_id, tool_id, &trait_sink, abort.clone());
+        let res_tok = piped_run(
+            "cmd",
+            &args,
+            0,
+            1,
+            task_id,
+            tool_id,
+            &trait_sink,
+            abort.clone(),
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
         abort.store(true, Ordering::SeqCst);
 
@@ -570,9 +604,18 @@ mod tests {
             "-Command".to_string(),
             "Write-Output 'tc:error test-boom'; exit 3".to_string(),
         ];
-        let res = piped_run("powershell", &args, 0, 1, "t", "tool", &trait_sink, no_abort())
-            .await
-            .unwrap();
+        let res = piped_run(
+            "powershell",
+            &args,
+            0,
+            1,
+            "t",
+            "tool",
+            &trait_sink,
+            no_abort(),
+        )
+        .await
+        .unwrap();
 
         assert!(!res.success);
         assert_eq!(res.code, 3);

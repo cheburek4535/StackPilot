@@ -3,9 +3,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
-
-use super::models::*;
 use super::engine::duplicate_framework_write_paths;
+use super::models::*;
 use super::{ProjectCreatorState, EXECUTION_SNAPSHOT_LIMIT};
 
 #[tauri::command]
@@ -59,10 +58,10 @@ pub fn get_host_platform() -> String {
 pub fn validate_project_stack(
     state: State<'_, ProjectCreatorState>,
     project_type: Option<String>,
-        backend_languages: Vec<String>,
-        frontend_languages: Vec<String>,
-        frameworks: Vec<String>,
-    ) -> Vec<super::validate::StackIssue> {
+    backend_languages: Vec<String>,
+    frontend_languages: Vec<String>,
+    frameworks: Vec<String>,
+) -> Vec<super::validate::StackIssue> {
     let mut issues = super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         project_type.as_deref(),
@@ -128,7 +127,7 @@ pub fn validate_project_stack_error(
     backend_languages: Vec<String>,
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
-    ) -> Option<String> {
+) -> Option<String> {
     let mut issues = super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         project_type.as_deref(),
@@ -186,7 +185,7 @@ pub fn preview_project_recipe(
     state: State<'_, ProjectCreatorState>,
     context: WizardContext,
     project_path: String,
-    ) -> Result<RecipePreview, String> {
+) -> Result<RecipePreview, String> {
     if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         context.project_type.as_deref(),
@@ -213,7 +212,7 @@ pub async fn start_project_execution(
     state: State<'_, ProjectCreatorState>,
     context: WizardContext,
     project_path: String,
-    ) -> Result<ExecutionPlan, String> {
+) -> Result<ExecutionPlan, String> {
     if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
         state.wizard.get_wizard_tree(),
         context.project_type.as_deref(),
@@ -237,7 +236,9 @@ pub async fn start_project_execution(
     let running_flag = Arc::clone(&state.execution_running);
 
     running_flag.store(true, Ordering::SeqCst);
-    *events_store.lock().map_err(|_| "execution state poisoned".to_string())? = Vec::new();
+    *events_store
+        .lock()
+        .map_err(|_| "execution state poisoned".to_string())? = Vec::new();
 
     tokio::spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecutionEvent>(32);

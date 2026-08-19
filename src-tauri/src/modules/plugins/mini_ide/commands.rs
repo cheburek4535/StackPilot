@@ -24,10 +24,7 @@ pub fn get_completions(
 }
 
 #[tauri::command]
-pub fn get_diagnostics(
-    state: tauri::State<'_, IdeState>,
-    file_path: String,
-) -> Vec<Diagnostic> {
+pub fn get_diagnostics(state: tauri::State<'_, IdeState>, file_path: String) -> Vec<Diagnostic> {
     state.service.get_diagnostics(&file_path)
 }
 

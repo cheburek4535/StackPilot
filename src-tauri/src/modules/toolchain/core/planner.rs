@@ -113,9 +113,12 @@ mod tests {
 
     #[test]
     fn installed_tools_are_not_scheduled() {
-        let check = check_with(vec![requirement("git", ToolStatus::Installed {
-            version: "2.48".to_string(),
-        })]);
+        let check = check_with(vec![requirement(
+            "git",
+            ToolStatus::Installed {
+                version: "2.48".to_string(),
+            },
+        )]);
         let plan = build_plan(&check, None);
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.total_size_mb, 0);
@@ -124,21 +127,30 @@ mod tests {
     #[test]
     fn missing_and_outdated_become_tasks() {
         let check = check_with(vec![
-            requirement("git", ToolStatus::Installed {
-                version: "2.48".to_string(),
-            }),
+            requirement(
+                "git",
+                ToolStatus::Installed {
+                    version: "2.48".to_string(),
+                },
+            ),
             requirement("node", ToolStatus::Missing),
-            requirement("python", ToolStatus::UpdateAvailable {
-                installed: "3.9".to_string(),
-                recommended: "3.13".to_string(),
-            }),
+            requirement(
+                "python",
+                ToolStatus::UpdateAvailable {
+                    installed: "3.9".to_string(),
+                    recommended: "3.13".to_string(),
+                },
+            ),
         ]);
 
         let plan = build_plan(&check, None);
         let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
         assert_eq!(ids, vec!["node", "python"]);
         assert_eq!(plan.total_size_mb, 20);
-        assert!(plan.tasks.iter().all(|t| matches!(t.state, TaskState::Pending)));
+        assert!(plan
+            .tasks
+            .iter()
+            .all(|t| matches!(t.state, TaskState::Pending)));
     }
 
     #[test]
@@ -162,9 +174,12 @@ mod tests {
     #[test]
     fn selected_ids_never_include_installed() {
         let check = check_with(vec![
-            requirement("node", ToolStatus::Installed {
-                version: "24".to_string(),
-            }),
+            requirement(
+                "node",
+                ToolStatus::Installed {
+                    version: "24".to_string(),
+                },
+            ),
             requirement("git", ToolStatus::Missing),
         ]);
         // даже если фронт случайно попросил установить node — он уже готов
@@ -184,7 +199,12 @@ mod tests {
         let plan = build_plan(&check, None);
         assert_eq!(plan.tasks[0].tool_id, "winget");
         // порядок остальных не меняется (относительный)
-        let rest: Vec<&str> = plan.tasks.iter().skip(1).map(|t| t.tool_id.as_str()).collect();
+        let rest: Vec<&str> = plan
+            .tasks
+            .iter()
+            .skip(1)
+            .map(|t| t.tool_id.as_str())
+            .collect();
         assert_eq!(rest, vec!["node", "git"]);
     }
 
@@ -203,9 +223,12 @@ mod tests {
     fn manual_install_tools_never_scheduled() {
         let check = check_with(vec![
             requirement("git", ToolStatus::Missing),
-            requirement("unity", ToolStatus::ManualInstall {
-                reason: "вручную".to_string(),
-            }),
+            requirement(
+                "unity",
+                ToolStatus::ManualInstall {
+                    reason: "вручную".to_string(),
+                },
+            ),
         ]);
 
         // даже если фронт попросил — manual-тул не ставится автоматически

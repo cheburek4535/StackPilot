@@ -150,7 +150,10 @@ mod tests {
     fn render_keeps_unknown_keys_untouched() {
         let engine = TemplateEngine::new();
         let ctx = HashMap::new();
-        assert_eq!(engine.render("{{ missing }} stays", &ctx), "{{ missing }} stays");
+        assert_eq!(
+            engine.render("{{ missing }} stays", &ctx),
+            "{{ missing }} stays"
+        );
     }
 
     #[test]
@@ -169,12 +172,18 @@ mod tests {
         assert!(main_cpp.contains("#include <QWebEngineView>"));
         assert!(main_cpp.contains("QWebEngineView view;"));
         assert!(main_cpp.contains("qrc:/web/index.html"));
-        assert!(!main_cpp.contains("{{"), "плейсхолдеры не должны остаться: {main_cpp}");
+        assert!(
+            !main_cpp.contains("{{"),
+            "плейсхолдеры не должны остаться: {main_cpp}"
+        );
 
         let cmake = engine.qt_webengine_cmake("myapp");
         assert!(cmake.contains("find_package(Qt6 REQUIRED COMPONENTS WebEngineWidgets)"));
         assert!(cmake.contains("target_link_libraries(myapp Qt6::WebEngineWidgets)"));
         assert!(cmake.contains("add_executable(myapp src/main.cpp)"));
-        assert!(!cmake.contains("{{"), "плейсхолдеры не должны остаться: {cmake}");
+        assert!(
+            !cmake.contains("{{"),
+            "плейсхолдеры не должны остаться: {cmake}"
+        );
     }
 }

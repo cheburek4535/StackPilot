@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // Исполнение плана установки (installer.rs)
 // ============================================================
 // Этап 3–4: берёт InstallPlan и выполняет задачи по очереди
@@ -71,7 +71,11 @@ fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> Exe
     }
 
     if let Some(url) = source.url.as_ref() {
-        let tail = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+        let tail = url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(url)
+            .trim_end_matches('/');
         if tail.to_ascii_lowercase().ends_with(".git") {
             return ExecutionKind::GitClone;
         }
@@ -238,11 +242,7 @@ fn build_install_command(
 ) -> Result<InstallCommand, String> {
     match source.kind {
         InstallSourceKind::PkgManager => {
-            let mut args = vec![
-                "install".to_string(),
-                "--id".to_string(),
-                source.id.clone(),
-            ];
+            let mut args = vec!["install".to_string(), "--id".to_string(), source.id.clone()];
             args.extend(source.args.iter().cloned());
 
             if source.dynamic_args {
@@ -275,7 +275,13 @@ fn build_install_command(
                 let target = git_clone_target(def, source)?;
                 let mut args = vec!["clone".to_string()];
                 // Терпим старые tools.json, где «clone» уже лежал в args.
-                args.extend(source.args.iter().filter(|a| a.as_str() != "clone").cloned());
+                args.extend(
+                    source
+                        .args
+                        .iter()
+                        .filter(|a| a.as_str() != "clone")
+                        .cloned(),
+                );
                 args.push(url.clone());
                 args.push(target);
                 return Ok(InstallCommand {
@@ -316,12 +322,7 @@ fn build_install_command(
                 // заранее: CreateProcess переменные не подставляет.
                 ExecutionKind::Phar => {
                     let mut php_args = vec![path.to_string_lossy().into_owned()];
-                    php_args.extend(
-                        source
-                            .args
-                            .iter()
-                            .map(|a| path_service::expand_env_vars(a)),
-                    );
+                    php_args.extend(source.args.iter().map(|a| path_service::expand_env_vars(a)));
                     Ok(InstallCommand {
                         program: "php".to_string(),
                         args: php_args,
@@ -465,12 +466,14 @@ Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
                     match path.extension().and_then(|e| e.to_str()) {
                         // MSI-пакеты (Node.js) запускаются через msiexec
                         Some(ext) if ext.eq_ignore_ascii_case("msi") => {
-                            let mut args = vec!["/i".to_string(), path.to_string_lossy().into_owned()];
+                            let mut args =
+                                vec!["/i".to_string(), path.to_string_lossy().into_owned()];
                             args.extend(source.args.iter().cloned());
                             args.extend(dynamic);
                             // Подробный MSI-лог: при сбое тихой установки это
                             // единственный способ узнать настоящую причину.
-                            let log = std::env::temp_dir().join(format!("tc-{}-msi.log", source.id));
+                            let log =
+                                std::env::temp_dir().join(format!("tc-{}-msi.log", source.id));
                             args.push("/l*v".to_string());
                             args.push(log.to_string_lossy().into_owned());
                             Ok(InstallCommand {
@@ -484,8 +487,10 @@ Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
                         // набор лежит в DesktopAppInstaller_Dependencies.zip того же
                         // релиза winget-cli; ставим их первыми (мимо Windows Store,
                         // skip уже установленных — иначе 0x80073D06).
-                        Some(ext) if ext.eq_ignore_ascii_case("msix")
-                            || ext.eq_ignore_ascii_case("msixbundle") => {
+                        Some(ext)
+                            if ext.eq_ignore_ascii_case("msix")
+                                || ext.eq_ignore_ascii_case("msixbundle") =>
+                        {
                             let bundle = path.to_string_lossy();
                             let script = format!(
                                 r#"$ErrorActionPreference = 'Stop'
@@ -589,7 +594,10 @@ try {{
 
 /// Имя временного файла для скачиваемого установщика.
 fn download_dest(tool_id: &str, url: &str) -> std::path::PathBuf {
-    let name = url.split(['/', '?', '#']).next_back().unwrap_or("installer");
+    let name = url
+        .split(['/', '?', '#'])
+        .next_back()
+        .unwrap_or("installer");
     let cleaned: String = name
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
@@ -662,7 +670,10 @@ pub async fn execute_plan(
         .map(|t| t.display.clone())
         .collect();
     sink.emit(console::event(
-        ToolchainEventType::AllCompleted { success_count, failed },
+        ToolchainEventType::AllCompleted {
+            success_count,
+            failed,
+        },
         0,
         total,
         "",
@@ -695,7 +706,13 @@ async fn run_task(
 ) -> TaskState {
     let tool_id = def.id.clone();
     let task_id = task.task_id.clone();
-    sink.emit(console::event(ToolchainEventType::TaskStarted, index, total, &task_id, &tool_id));
+    sink.emit(console::event(
+        ToolchainEventType::TaskStarted,
+        index,
+        total,
+        &task_id,
+        &tool_id,
+    ));
 
     if abort.load(Ordering::SeqCst) {
         return TaskState::Skipped {
@@ -724,7 +741,10 @@ async fn run_task(
 
     let mut failures: Vec<String> = Vec::new();
     for source in os_sources.iter() {
-        match try_install_source(def, source, task, index, total, &task_id, &tool_id, sink, abort).await
+        match try_install_source(
+            def, source, task, index, total, &task_id, &tool_id, sink, abort,
+        )
+        .await
         {
             Ok((version, secret)) => {
                 if let Some(pw) = secret {
@@ -732,7 +752,10 @@ async fn run_task(
                 }
                 sink.emit(console::event(
                     ToolchainEventType::TaskProgress {
-                        line: format!("tc:ok Установлено через источник «{}» (версия {version})", source.id),
+                        line: format!(
+                            "tc:ok Установлено через источник «{}» (версия {version})",
+                            source.id
+                        ),
                     },
                     index,
                     total,
@@ -802,7 +825,11 @@ async fn install_maui_workload(
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) {
-    let maui_args = vec!["workload".to_string(), "install".to_string(), "maui".to_string()];
+    let maui_args = vec![
+        "workload".to_string(),
+        "install".to_string(),
+        "maui".to_string(),
+    ];
     sink.emit(console::event(
         ToolchainEventType::TaskProgress {
             line: "tc:info dotnet workload install maui (шаблоны .NET MAUI)".to_string(),
@@ -813,14 +840,7 @@ async fn install_maui_workload(
         tool_id,
     ));
     match console::piped_run(
-        "dotnet",
-        &maui_args,
-        index,
-        total,
-        task_id,
-        tool_id,
-        sink,
-        abort,
+        "dotnet", &maui_args, index, total, task_id, tool_id, sink, abort,
     )
     .await
     {
@@ -952,15 +972,18 @@ async fn configure_php_ini(
     if !ini.exists() {
         let dev = php_dir.join("php.ini-development");
         let create_result = if dev.exists() {
-            std::fs::copy(&dev, &ini).map(|_| ()).map_err(|e| e.to_string())
-        } else {
-            std::fs::write(&ini, "; Created by StackPilot Toolchain\r\n")
+            std::fs::copy(&dev, &ini)
+                .map(|_| ())
                 .map_err(|e| e.to_string())
+        } else {
+            std::fs::write(&ini, "; Created by StackPilot Toolchain\r\n").map_err(|e| e.to_string())
         };
         if let Err(e) = create_result {
             sink.emit(console::event(
                 ToolchainEventType::TaskProgress {
-                    line: format!("tc:warn php.ini: не удалось создать из php.ini-development: {e}"),
+                    line: format!(
+                        "tc:warn php.ini: не удалось создать из php.ini-development: {e}"
+                    ),
                 },
                 index,
                 total,
@@ -1027,7 +1050,10 @@ async fn configure_php_ini(
     if let Err(e) = std::fs::write(&ini, &new_content) {
         sink.emit(console::event(
             ToolchainEventType::TaskProgress {
-                line: format!("tc:warn php.ini: не удалось записать {}: {e}", ini.display()),
+                line: format!(
+                    "tc:warn php.ini: не удалось записать {}: {e}",
+                    ini.display()
+                ),
             },
             index,
             total,
@@ -1067,7 +1093,11 @@ async fn ensure_composer_bat_shim(
     tool_id: &str,
     sink: &Arc<dyn EventSink>,
 ) {
-    let Some(dir_arg) = source.args.iter().find_map(|a| a.strip_prefix("--install-dir=")) else {
+    let Some(dir_arg) = source
+        .args
+        .iter()
+        .find_map(|a| a.strip_prefix("--install-dir="))
+    else {
         return;
     };
     let dir = path_service::expand_env_vars(dir_arg);
@@ -1162,24 +1192,25 @@ async fn try_install_source(
                     tool_id,
                 ));
                 std::fs::remove_dir_all(&target).map_err(|e| {
-                    format!(
-                        "Не удалось очистить каталог {}: {e}",
-                        target.display()
-                    )
+                    format!("Не удалось очистить каталог {}: {e}", target.display())
                 })?;
             }
             if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    format!("Не удалось создать каталог {}: {e}", parent.display())
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Не удалось создать каталог {}: {e}", parent.display()))?;
             }
         }
-    } else if matches!(source.kind, InstallSourceKind::Official | InstallSourceKind::Script) {
+    } else if matches!(
+        source.kind,
+        InstallSourceKind::Official | InstallSourceKind::Script
+    ) {
         // Источники с http-URL качаем заранее (фаза Downloading, с прогрессом).
         if let Some(url) = source.url.as_ref() {
             if url.starts_with("http://") || url.starts_with("https://") {
                 sink.emit(console::event(
-                    ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Downloading },
+                    ToolchainEventType::TaskPhaseChanged {
+                        phase: TaskPhase::Downloading,
+                    },
                     index,
                     total,
                     task_id,
@@ -1189,7 +1220,17 @@ async fn try_install_source(
                     Some(name) => std::env::temp_dir().join(name),
                     None => download_dest(tool_id, url),
                 };
-                if let Err(e) = console::download(url, &dest, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
+                if let Err(e) = console::download(
+                    url,
+                    &dest,
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    sink,
+                    Arc::clone(abort),
+                )
+                .await
                 {
                     return Err(e);
                 }
@@ -1202,7 +1243,9 @@ async fn try_install_source(
 
     if !skip_run {
         sink.emit(console::event(
-            ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Installing },
+            ToolchainEventType::TaskPhaseChanged {
+                phase: TaskPhase::Installing,
+            },
             index,
             total,
             task_id,
@@ -1216,9 +1259,29 @@ async fn try_install_source(
         let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
         let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
         let run = if needs_admin {
-            console::run_elevated(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
+            console::run_elevated(
+                &program,
+                &args,
+                index,
+                total,
+                task_id,
+                tool_id,
+                sink,
+                Arc::clone(abort),
+            )
+            .await
         } else {
-            console::piped_run(&program, &args, index, total, task_id, tool_id, sink, Arc::clone(abort)).await
+            console::piped_run(
+                &program,
+                &args,
+                index,
+                total,
+                task_id,
+                tool_id,
+                sink,
+                Arc::clone(abort),
+            )
+            .await
         };
 
         let res = match run {
@@ -1239,7 +1302,10 @@ async fn try_install_source(
             const WINGET_ALREADY_INSTALLED: i32 = -1978335189;
             const WINGET_UPGRADE_NOT_AVAILABLE: i32 = -1978335193;
             let winget_already_installed = matches!(source.kind, InstallSourceKind::PkgManager)
-                && matches!(res.code, WINGET_ALREADY_INSTALLED | WINGET_UPGRADE_NOT_AVAILABLE);
+                && matches!(
+                    res.code,
+                    WINGET_ALREADY_INSTALLED | WINGET_UPGRADE_NOT_AVAILABLE
+                );
             if !winget_already_installed {
                 // tc:error-строка из скрипта (download/run_elevated) — настоящая
                 // причина сбоя; код процесса — лишь дополнение к ней.
@@ -1270,7 +1336,9 @@ async fn try_install_source(
     // свежеустановленный бинарник, хотя он стоит.
     if !def.path_entries.is_empty() || matches!(exec, ExecutionKind::Archive) {
         sink.emit(console::event(
-            ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::UpdatingPath },
+            ToolchainEventType::TaskPhaseChanged {
+                phase: TaskPhase::UpdatingPath,
+            },
             index,
             total,
             task_id,
@@ -1288,7 +1356,9 @@ async fn try_install_source(
                 if let Some(bin) = find_bin_dir(Path::new(&root), &probe_binaries(def)) {
                     let bin_str = bin.to_string_lossy().into_owned();
                     if let Err(e) = path_service::add_to_user_path(&[bin_str]).await {
-                        eprintln!("[toolchain] не удалось добавить {bin:?} в PATH для {tool_id}: {e}");
+                        eprintln!(
+                            "[toolchain] не удалось добавить {bin:?} в PATH для {tool_id}: {e}"
+                        );
                     }
                 }
             }
@@ -1313,7 +1383,9 @@ async fn try_install_source(
     // Проверка: пересканируем инструмент тем же discovery. Проба
     // known_paths умеет находить бинарь и без PATH (postgres).
     sink.emit(console::event(
-        ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Verifying },
+        ToolchainEventType::TaskPhaseChanged {
+            phase: TaskPhase::Verifying,
+        },
         index,
         total,
         task_id,
@@ -1324,7 +1396,8 @@ async fn try_install_source(
             // .NET MAUI: SDK сам по себе не даёт шаблон `dotnet new maui` —
             // нужен workload. Ставим сразу после подтверждённой установки.
             if def.id == "dotnet" {
-                install_maui_workload(index, total, task_id, tool_id, sink, Arc::clone(abort)).await;
+                install_maui_workload(index, total, task_id, tool_id, sink, Arc::clone(abort))
+                    .await;
             }
             // PHP на Windows: без настроенного php.ini composer падает
             // («The zip extension and unzip/7z commands are both missing»).
@@ -1478,7 +1551,10 @@ mod tests {
         let cmd = build_install_command(&git, source, None, None).unwrap();
 
         assert_eq!(cmd.program, "winget");
-        assert!(cmd.args.windows(2).any(|w| w[0] == "install" && w[1] == "--id"));
+        assert!(cmd
+            .args
+            .windows(2)
+            .any(|w| w[0] == "install" && w[1] == "--id"));
         assert!(cmd.args.iter().any(|a| a == "Git.Git"));
         // это PkgManager, не dynamic → --override не должно появиться
         assert!(!cmd.args.iter().any(|a| a == "--override"));
@@ -1512,8 +1588,8 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
@@ -1655,7 +1731,10 @@ mod tests {
     fn php_ini_canonical_line_ignores_others() {
         // Чужие строки и чужие расширения не трогаются.
         assert_eq!(canonical_php_ini_line(";extension=gd", "zip"), None);
-        assert_eq!(canonical_php_ini_line(";error_log = php_errors.log", "zip"), None);
+        assert_eq!(
+            canonical_php_ini_line(";error_log = php_errors.log", "zip"),
+            None
+        );
         assert_eq!(canonical_php_ini_line("[PHP]", "extension_dir"), None);
         assert_eq!(canonical_php_ini_line("", "zip"), None);
     }
@@ -1684,14 +1763,20 @@ mod tests {
         configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
 
         let ini = std::fs::read_to_string(dir.join("php.ini")).unwrap();
-        assert!(ini.contains("extension_dir = \"ext\""), "extension_dir: {ini}");
+        assert!(
+            ini.contains("extension_dir = \"ext\""),
+            "extension_dir: {ini}"
+        );
         assert!(ini.contains("extension=zip"), "zip: {ini}");
         assert!(ini.contains("extension=openssl"), "openssl: {ini}");
         assert!(ini.contains("extension=curl"), "curl: {ini}");
         assert!(ini.contains("extension=mbstring"), "mbstring: {ini}");
         assert!(ini.contains("extension=pdo_sqlite"), "pdo_sqlite: {ini}");
         assert!(ini.contains("extension=gd"), "gd сохранился: {ini}");
-        assert!(!ini.contains(";extension="), "нет закомментированных: {ini}");
+        assert!(
+            !ini.contains(";extension="),
+            "нет закомментированных: {ini}"
+        );
 
         // Идемпотентность: повторный запуск не меняет содержимое.
         configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
@@ -1722,7 +1807,11 @@ mod tests {
         let file_pos = cmd.args.iter().position(|a| a == "-File").unwrap();
         assert_eq!(cmd.args[file_pos + 1], script.to_string_lossy());
         // Аргументы источника (канал/версия) НЕ должны теряться
-        assert!(cmd.args.iter().any(|a| a == "-Channel"), "args: {:?}", cmd.args);
+        assert!(
+            cmd.args.iter().any(|a| a == "-Channel"),
+            "args: {:?}",
+            cmd.args
+        );
         assert!(cmd.args.iter().any(|a| a == "10.0"), "args: {:?}", cmd.args);
     }
 
@@ -1906,8 +1995,8 @@ mod tests {
             dynamic_args: false,
             install_dir: Some("%LOCALAPPDATA%/Programs/kafka".to_string()),
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let tgz = std::env::temp_dir().join("tc-tool-kafka.tgz");
         let cmd = build_install_command(&bare_def(), &source, Some(&tgz), None).unwrap();
@@ -1920,8 +2009,14 @@ mod tests {
         );
         // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/kafka");
-        assert!(script.contains(&expected), "раскрытый install_dir в скрипте: {script}");
-        assert!(!script.contains("%LOCALAPPDATA%"), "сырой %VAR% в скрипте: {script}");
+        assert!(
+            script.contains(&expected),
+            "раскрытый install_dir в скрипте: {script}"
+        );
+        assert!(
+            !script.contains("%LOCALAPPDATA%"),
+            "сырой %VAR% в скрипте: {script}"
+        );
     }
 
     #[test]
@@ -1936,15 +2031,19 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "msiexec");
         assert_eq!(cmd.args[0], "/i");
         assert_eq!(cmd.args[1], "node.msi");
         // диагностический MSI-лог должен быть добавлен автоматически
-        assert!(cmd.args.iter().any(|a| a == "/l*v"), "нет /l*v: {:?}", cmd.args);
+        assert!(
+            cmd.args.iter().any(|a| a == "/l*v"),
+            "нет /l*v: {:?}",
+            cmd.args
+        );
         assert!(
             cmd.args.iter().any(|a| a.ends_with("tc-node-msi-msi.log")),
             "нет пути к MSI-логу: {:?}",
@@ -1964,8 +2063,8 @@ mod tests {
             dynamic_args: false,
             install_dir: Some("%LOCALAPPDATA%/Programs/gradle".to_string()),
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-foo.zip");
         let cmd = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap();
@@ -1977,9 +2076,18 @@ mod tests {
         // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
         // и не должен попасть в скрипт как есть
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/gradle");
-        assert!(script.contains(&expected), "раскрытый install_dir в скрипте: {script}");
-        assert!(!script.contains("%LOCALAPPDATA%"), "сырой %VAR% в скрипте: {script}");
-        assert!(script.contains("foo.zip"), "путь к архиву в скрипте: {script}");
+        assert!(
+            script.contains(&expected),
+            "раскрытый install_dir в скрипте: {script}"
+        );
+        assert!(
+            !script.contains("%LOCALAPPDATA%"),
+            "сырой %VAR% в скрипте: {script}"
+        );
+        assert!(
+            script.contains("foo.zip"),
+            "путь к архиву в скрипте: {script}"
+        );
         // .bat-обёртки (elixir и др. GitHub-архивы) нормализуются в CRLF —
         // иначе cmd их не читает
         assert!(
@@ -1999,8 +2107,8 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-bad.zip");
         let err = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap_err();
@@ -2019,8 +2127,8 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                    file_name: None,
-                    execution: None,
+            file_name: None,
+            execution: None,
         };
         let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
         let cmd = build_install_command(&bare_def(), &source, Some(&bundle), None).unwrap();
@@ -2058,7 +2166,9 @@ mod tests {
             .iter()
             .map(|e| e.event_type.clone())
             .collect();
-        assert!(events.iter().any(|e| matches!(e, ToolchainEventType::TaskStarted)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, ToolchainEventType::TaskStarted)));
         assert!(
             events
                 .iter()
@@ -2067,7 +2177,9 @@ mod tests {
         );
         assert!(events.iter().any(|e| matches!(
             e,
-            ToolchainEventType::TaskCompleted { state: TaskState::Success { .. } }
+            ToolchainEventType::TaskCompleted {
+                state: TaskState::Success { .. }
+            }
         )));
         assert!(events
             .iter()
@@ -2104,8 +2216,8 @@ mod tests {
                 dynamic_args: false,
                 install_dir: None,
                 needs_admin: None,
-                    file_name: None,
-                    execution: None,
+                file_name: None,
+                execution: None,
             },
             def.sources.windows[0].clone(),
         ];
@@ -2168,8 +2280,8 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                file_name: None,
-                execution: None,
+            file_name: None,
+            execution: None,
         };
         let bad2 = InstallSource {
             kind: InstallSourceKind::Official,
@@ -2180,8 +2292,8 @@ mod tests {
             dynamic_args: false,
             install_dir: None,
             needs_admin: None,
-                file_name: None,
-                execution: None,
+            file_name: None,
+            execution: None,
         };
         def.sources.windows = vec![bad, bad2];
 
@@ -2203,7 +2315,9 @@ mod tests {
         let errors: Vec<&String> = events
             .iter()
             .filter_map(|e| match e {
-                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error") => Some(line),
+                ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error") => {
+                    Some(line)
+                }
                 _ => None,
             })
             .collect();

@@ -51,18 +51,29 @@ impl ProblemsService for DefaultProblemsService {
                     severity: ProblemSeverity::Error,
                 };
                 problems.push(problem.clone());
-                self.storage.lock().expect("storage lock poisoned").push(problem);
+                self.storage
+                    .lock()
+                    .expect("storage lock poisoned")
+                    .push(problem);
             }
         }
         problems
     }
 
     fn add_problem(&self, problem: Problem) {
-        self.storage.lock().expect("storage lock poisoned").push(problem);
+        self.storage
+            .lock()
+            .expect("storage lock poisoned")
+            .push(problem);
     }
 
     fn get_all(&self) -> Vec<Problem> {
-        self.storage.lock().expect("storage lock poisoned").iter().cloned().collect()
+        self.storage
+            .lock()
+            .expect("storage lock poisoned")
+            .iter()
+            .cloned()
+            .collect()
     }
 
     fn clear(&self) {

@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -34,7 +34,10 @@ impl DefaultFileExplorerService {
     }
 
     fn detect_language_from_ext(path: &str) -> String {
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
         match ext.to_lowercase().as_str() {
             "js" | "mjs" | "cjs" => "javascript".into(),
             "ts" | "tsx" | "mts" | "cts" => "typescript".into(),
@@ -66,16 +69,13 @@ impl DefaultFileExplorerService {
 
 impl FileExplorerService for DefaultFileExplorerService {
     fn list_directory(&self, dir: &str) -> Result<Vec<FileEntry>, String> {
-        let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read dir '{}': {}", dir, e))?;
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("Failed to read dir '{}': {}", dir, e))?;
         let mut files = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
             let path = entry.path();
-            let name = entry
-                .file_name()
-                .to_str()
-                .unwrap_or("?")
-                .to_string();
+            let name = entry.file_name().to_str().unwrap_or("?").to_string();
 
             // Skip hidden files/dirs
             if name.starts_with('.') && name != ".env" {
@@ -108,8 +108,8 @@ impl FileExplorerService for DefaultFileExplorerService {
     }
 
     fn read_file(&self, path: &str) -> Result<FileContent, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
         let language = Self::detect_language_from_ext(path);
         Ok(FileContent { content, language })
     }
@@ -126,7 +126,10 @@ impl FileExplorerService for DefaultFileExplorerService {
         };
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(format!("Failed to open VSCode: {}. Make sure 'code' is in your PATH.", e)),
+            Err(e) => Err(format!(
+                "Failed to open VSCode: {}. Make sure 'code' is in your PATH.",
+                e
+            )),
         }
     }
 

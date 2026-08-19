@@ -6,13 +6,13 @@ use tauri::{Listener, Manager};
 
 #[cfg(feature = "plugins")]
 use modules::plugins::mini_ide;
-use modules::workspace::session::SessionService;
-use modules::toolchain::ToolchainState;
 use modules::project_creator::analysis::DefaultProjectAnalyzer;
 use modules::project_creator::engine::DefaultRecipeEngine;
 use modules::project_creator::generators::GeneratorRegistry;
 use modules::project_creator::knowledge::DefaultKnowledgeBase;
 use modules::project_creator::packs::DefaultPackRegistry;
+use modules::toolchain::ToolchainState;
+use modules::workspace::session::SessionService;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,8 +25,7 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data dir");
 
-            std::fs::create_dir_all(&data_dir)
-                .expect("Failed to create data dir");
+            std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 
             std::fs::create_dir_all(data_dir.join("profiles"))
                 .expect("Failed to create profiles dir");
@@ -39,9 +38,8 @@ pub fn run() {
             }
 
             // === Core services ===
-            let settings_service: Arc<dyn core::settings::SettingsService> = Arc::new(
-                core::settings::JsonSettingsService::new(data_dir.clone()),
-            );
+            let settings_service: Arc<dyn core::settings::SettingsService> =
+                Arc::new(core::settings::JsonSettingsService::new(data_dir.clone()));
 
             // === Workspace module ===
             let os_pm = modules::workspace::process_manager::OsProcessManager::new();
@@ -52,7 +50,9 @@ pub fn run() {
             // === DevLauncher module ===
             let devlauncher_state = modules::devlauncher::DevLauncherState::new(
                 data_dir.join("profiles"),
-                Arc::new(modules::devlauncher::launch_engine::ProcessLaunchEngine::new(process_manager)),
+                Arc::new(
+                    modules::devlauncher::launch_engine::ProcessLaunchEngine::new(process_manager),
+                ),
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
             );
 
@@ -86,14 +86,19 @@ pub fn run() {
             // Auto-track process errors in the session
             let handle = app.handle().clone();
             app.listen("process-status", move |event| {
-                if let Ok(payload) = serde_json::from_str::<modules::workspace::models::ProcessStatusEvent>(event.payload()) {
+                if let Ok(payload) = serde_json::from_str::<
+                    modules::workspace::models::ProcessStatusEvent,
+                >(event.payload())
+                {
                     let is_error = match &payload.status {
                         modules::workspace::models::ProcessStatus::Crashed => true,
                         modules::workspace::models::ProcessStatus::Exited(c) if *c != 0 => true,
                         _ => false,
                     };
                     if is_error {
-                        if let Some(session) = handle.try_state::<modules::workspace::WorkspaceState>() {
+                        if let Some(session) =
+                            handle.try_state::<modules::workspace::WorkspaceState>()
+                        {
                             session.inner().session.increment_errors();
                         }
                     }

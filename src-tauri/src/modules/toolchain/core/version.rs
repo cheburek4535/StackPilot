@@ -15,14 +15,14 @@ pub fn parse_version(raw: &str) -> Result<Vec<u32>, String> {
             } else {
                 Ok(vec)
             }
-        },
-        Err(e) => Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 
 pub fn compare(a: &[u32], b: &[u32]) -> Ordering {
     let max_len = cmp::max(a.len(), b.len());
-    
+
     let a_iter = a.iter().copied().chain(std::iter::repeat(0)).take(max_len);
     let b_iter = b.iter().copied().chain(std::iter::repeat(0)).take(max_len);
 

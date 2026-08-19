@@ -98,8 +98,9 @@ impl PlatformAdapter for WindowsAdapter {
     }
 
     async fn os_version(&self) -> String {
-        let script = "$o = Get-CimInstance Win32_OperatingSystem; '{0} ({1})' -f $o.Caption, $o.Version"
-            .to_string();
+        let script =
+            "$o = Get-CimInstance Win32_OperatingSystem; '{0} ({1})' -f $o.Caption, $o.Version"
+                .to_string();
         run_command(
             "powershell",
             &[
@@ -124,7 +125,10 @@ impl PlatformAdapter for WindowsAdapter {
             root.push('\\');
         }
 
-        let script = format!("[System.IO.DriveInfo]::new({}).AvailableFreeSpace", ps_quote(&root));
+        let script = format!(
+            "[System.IO.DriveInfo]::new({}).AvailableFreeSpace",
+            ps_quote(&root)
+        );
         let raw = run_command(
             "powershell",
             &[
@@ -155,7 +159,11 @@ mod tests {
     fn split_path_skips_empties() {
         assert_eq!(
             split_path("C:\\a;C:\\b;; C:\\c ;"),
-            vec!["C:\\a".to_string(), "C:\\b".to_string(), "C:\\c".to_string()]
+            vec![
+                "C:\\a".to_string(),
+                "C:\\b".to_string(),
+                "C:\\c".to_string()
+            ]
         );
     }
 

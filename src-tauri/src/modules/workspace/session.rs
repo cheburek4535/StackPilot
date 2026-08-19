@@ -1,6 +1,6 @@
+use crate::modules::workspace::models::{ProjectContext, SessionInfo};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::modules::workspace::models::{SessionInfo, ProjectContext};
 
 pub trait SessionService: Send + Sync {
     fn start_session(&self, ctx: &ProjectContext);
@@ -24,7 +24,9 @@ pub struct DefaultSessionService {
 
 impl DefaultSessionService {
     pub fn new() -> Self {
-        Self { current: Arc::new(Mutex::new(None)) }
+        Self {
+            current: Arc::new(Mutex::new(None)),
+        }
     }
 
     fn now_secs() -> u64 {

@@ -50,8 +50,11 @@ impl PlatformAdapter for LinuxAdapter {
     }
 
     async fn free_space_mb(&self, path: &Path) -> Result<u64, String> {
-        let raw = run_command("df", &["-Pk".to_string(), path.to_string_lossy().into_owned()])
-            .await?;
+        let raw = run_command(
+            "df",
+            &["-Pk".to_string(), path.to_string_lossy().into_owned()],
+        )
+        .await?;
         disk::df_avail_kb(&raw)
             .map(|kb| kb / 1024)
             .ok_or_else(|| format!("Не разобрать вывод df:\n{raw}"))

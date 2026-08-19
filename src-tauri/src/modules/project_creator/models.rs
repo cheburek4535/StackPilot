@@ -315,12 +315,8 @@ pub struct WizardQuestion {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QuestionType {
-    SingleChoice {
-        options: Vec<ChoiceOption>,
-    },
-    MultiChoice {
-        options: Vec<ChoiceOption>,
-    },
+    SingleChoice { options: Vec<ChoiceOption> },
+    MultiChoice { options: Vec<ChoiceOption> },
     Confirm,
 }
 
@@ -335,10 +331,20 @@ pub struct ChoiceOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WizardCondition {
-    AnswerEquals { question_id: String, value: String },
-    AnswerContains { question_id: String, values: Vec<String> },
-    TechnologyDetected { technology: String },
-    TechnologyNotDetected { technology: String },
+    AnswerEquals {
+        question_id: String,
+        value: String,
+    },
+    AnswerContains {
+        question_id: String,
+        values: Vec<String>,
+    },
+    TechnologyDetected {
+        technology: String,
+    },
+    TechnologyNotDetected {
+        technology: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -464,6 +470,38 @@ pub struct Recipe {
     pub description: String,
     pub tags: Vec<String>,
     pub steps: Vec<Step>,
+    /// Явные предусловия шагов (dependent → prereq). Декларируются при
+    /// составлении рецепта; порядок шагов НЕ заменяет их (см. plan()).
+    #[serde(default)]
+    pub dependencies: Vec<StepDependency>,
+}
+
+/// Одно явное предусловие шага: шаг-предшественник (по id) и/или файловое
+/// пост-условие. Никакие зависимости НЕ выводятся из порядка шагов — только
+/// этот список (см. ExecutionPlan.dependencies).
+///
+/// Семантика при выполнении (движок, execute()):
+///   - `prereq_id` выполнился с ошибкой → зависимый шаг помечается Skipped
+///     с точной причиной провала предшественника, команда не запускается;
+///   - `prereq_id` пропущен и не задано файловое пост-условие → зависимый
+///     шаг пропускается (причина пропуска предшественника);
+///   - предшественник успешен, но `expects_file` отсутствует (пост-условие
+///     не выполнено) → предшественник помечается Failed (путь + рабочая
+///     директория проверки), зависимый шаг пропускается;
+///   - только `expects_file` (без предшественника) → зависимый шаг
+///     пропускается, пока файл не появится.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepDependency {
+    /// id зависимого шага (тот, который ждёт предусловие).
+    pub step_id: String,
+    /// id шага-предшественника в том же плане. Пусто — чисто файловое
+    /// предусловие.
+    #[serde(default)]
+    pub prereq_id: String,
+    /// Файловое пост-условие предшественника (путь ОТНОСИТЕЛЬНО корня
+    /// проекта). Пусто — без файловой проверки.
+    #[serde(default)]
+    pub expects_file: String,
 }
 
 /// Один интерактивный ответ: обнаружли триггер в выводе → отправили response
@@ -512,6 +550,10 @@ pub enum Step {
         path: String,
         content: String,
         overwrite: bool,
+        /// Явная политика идемпотентности. Отсутствует — legacy-семантика
+        /// из `overwrite` (см. `Step::file_policy()`).
+        #[serde(default)]
+        policy: Option<FilePolicy>,
         condition: Option<StepCondition>,
         on_error: ErrorMode,
     },
@@ -540,6 +582,11 @@ pub enum Step {
         description: String,
         generator_id: String,
         generator_config: serde_json::Value,
+        /// Политика идемпотентности: SkipIfExists на scaffold-шаге
+        /// пропускает CLI, когда все expected_outputs уже на месте
+        /// (повторный запуск рецепта не перезатирает готовый каркас).
+        #[serde(default)]
+        policy: Option<FilePolicy>,
         condition: Option<StepCondition>,
         on_error: ErrorMode,
     },
@@ -553,7 +600,7 @@ pub enum Step {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StepCondition {
     Always,
     ContextHas { key: String, value: String },
@@ -565,10 +612,50 @@ pub enum StepCondition {
     FeatureEnabled { feature: String },
 }
 
+impl Step {
+    /// Файловая политика идемпотентности шага: явная `policy`, иначе
+    /// legacy-семантика `overwrite` (true → Overwrite, false → SkipIfExists).
+    /// Шаги без файловой семантики (Command/CreateDirectory/Parallel) — None.
+    pub fn file_policy(&self) -> Option<FilePolicy> {
+        match self {
+            Step::WriteFile {
+                policy, overwrite, ..
+            } => Some(policy.unwrap_or(if *overwrite {
+                FilePolicy::Overwrite
+            } else {
+                FilePolicy::SkipIfExists
+            })),
+            Step::Generate { policy, .. } => *policy,
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ErrorMode {
     Abort,
     Skip,
+}
+
+/// Политика идемпотентности файловых шагов (WriteFile / Generate):
+/// что делать, когда целевой файл/выходы уже существуют на диске.
+/// Legacy-семантика `overwrite` маппится в нее (true → Overwrite,
+/// false → SkipIfExists) — см. `Step::file_policy()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilePolicy {
+    /// Создать только если файла нет; существующий — не трогать (skip).
+    CreateOnly,
+    /// Всегда перезаписывать существующий файл.
+    Overwrite,
+    /// Глубокое JSON-слияние с существующим содержимым (существующие ключи
+    /// сохраняются); существующий не-JSON файл — ошибка шага.
+    MergeJson,
+    /// Ничего не делать, если файл уже существует.
+    SkipIfExists,
+    /// Идентичный файл — идемпотентный no-op (Success), отличие — ошибка
+    /// шага: молчаливый «деструктивный» перезапрос невозможен.
+    FailOnMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,6 +666,43 @@ pub struct StepPreview {
     pub action: String,
     pub will_execute: bool,
     pub skip_reason: Option<String>,
+    /// id шагов-предшественников (явные зависимости плана).
+    #[serde(default)]
+    pub prerequisites: Vec<String>,
+    /// Возможные причины пропуска, связанные с зависимостями и условиями.
+    #[serde(default)]
+    pub possible_skip_reasons: Vec<String>,
+    /// Существует ли целевой файл/выходы шага на диске на момент
+    /// предпросмотра (для WriteFile/Generate — фактическое состояние
+    /// файловой системы проекта).
+    #[serde(default)]
+    pub existing_file: bool,
+    /// Политика идемпотентности файлового шага (см. FilePolicy).
+    #[serde(default)]
+    pub file_policy: Option<FilePolicy>,
+}
+
+/// Куда именно фреймворк кладёт свои файлы (итог канонической раскладки).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameworkPlacement {
+    pub framework: String,
+    /// "." — корень проекта, иначе относительный каталог (backend/, frontend/).
+    pub directory: String,
+}
+
+/// Снимок канонической раскладки проекта (ProjectLayout в engine/mod.rs):
+/// вычисляется ОДИН раз в plan() и попадает в RecipePreview — UI показывает
+/// класс раскладки, владельца корня и каталог каждого фреймворка.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutSummary {
+    /// "split" | "integrated" | "backend-only" | "frontend-only"
+    pub class: String,
+    /// Каталоги, которые движок создаёт ДО всех скаффолдеров (только split).
+    pub generated_directories: Vec<String>,
+    /// Фреймворк, владеющий корнем проекта (tauri при integrated) — None иначе.
+    pub root_owner: Option<String>,
+    /// Фреймворк → каталог его файлов.
+    pub framework_placement: Vec<FrameworkPlacement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +713,8 @@ pub struct RecipePreview {
     pub total_steps: usize,
     pub will_execute_count: usize,
     pub will_skip_count: usize,
+    /// Каноническая раскладка проекта (см. LayoutSummary).
+    pub layout: LayoutSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,8 +737,13 @@ pub enum StepStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OverallStatus {
     Success,
-    PartialFailure { failed_steps: Vec<String> },
-    Aborted { last_step: Option<String>, reason: String },
+    PartialFailure {
+        failed_steps: Vec<String>,
+    },
+    Aborted {
+        last_step: Option<String>,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,6 +762,14 @@ pub struct ExecutionPlan {
     pub project_path: PathBuf,
     /// «Развёрнутые» шаги (после раскрытия Parallel, после фильтрации по condition)
     pub steps: Vec<Step>,
+    /// Явные предусловия шагов (см. StepDependency): отфильтрованы по
+    /// фактически оставшимся шагам плана и проверены на циклы/порядок
+    /// в plan(). Никаких зависимостей, выведенных из порядка шагов.
+    #[serde(default)]
+    pub dependencies: Vec<StepDependency>,
+    /// Каноническая раскладка проекта — вычислена один раз в plan()
+    /// и переиспользуется предпросмотром и UI.
+    pub layout_summary: LayoutSummary,
 }
 
 impl ExecutionPlan {
@@ -654,10 +793,20 @@ pub struct ExecutionEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutionEventType {
     StepStarted,
-    StepProgress { stdout: String, stderr: String },
-    StepCompleted { status: StepStatus, duration_ms: u64 },
-    AllCompleted { result: ExecutionResult },
-    Error { message: String },
+    StepProgress {
+        stdout: String,
+        stderr: String,
+    },
+    StepCompleted {
+        status: StepStatus,
+        duration_ms: u64,
+    },
+    AllCompleted {
+        result: ExecutionResult,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Снимок выполнения проекта для восстановления вкладки Create после
@@ -679,12 +828,94 @@ pub struct GeneratorDescriptor {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Явная способность CLI-скаффолдера. Рецепт обязан указывать её для каждого
+/// шага `Step::Generate { generator_id: "scaffold" }` — движок не угадывает
+/// поведение CLI (как раньше, когда каждый CLI считался create-vite).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaffoldCapability {
+    /// CLI создаёт ПОДПАПКУ с именем, переданным аргументом
+    /// (create-vite my-app, create-next-app app, nuxi init app,
+    /// composer create-project pkg dir). Каталог создаётся рядом с рабочей
+    /// директорией CLI, затем его содержимое переносится в target_dir.
+    CreatesNamedDirectory,
+    /// CLI умеет работать в текущей директории — аргумент "." или явная
+    /// рабочая директория (nest new ., flutter create ., django-admin
+    /// startproject x ., dotnet new -o .). CLI запускается ВНУТРИ target_dir.
+    CreatesInCurrentDirectory,
+    /// CLI создаёт проект, но может задавать вопросы (create-solid,
+    /// flutter create, electron-forge, RN CLI). Требует явного списка
+    /// interactive-ответов; без него шаг не считается безопасным.
+    CreatesProjectAndMayPrompt,
+    /// CLI генерирует «оболочку» проекта внутри УЖЕ СУЩЕСТВУЮЩЕГО корня и не
+    /// создаёт новых каталогов (cargo tauri init, zig init). Запускается
+    /// прямо в target_dir, перенос ничего не делает.
+    GeneratesRootShell,
+    /// CLI не создаёт проект вовсе — установка зависимостей или
+    /// пост-обработка (npm install, prisma init). Никакой работы с
+    /// каталогами, только выполнение команды.
+    DoesNotCreateAProject,
+}
+
+impl ScaffoldCapability {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScaffoldCapability::CreatesNamedDirectory => "creates_named_directory",
+            ScaffoldCapability::CreatesInCurrentDirectory => "creates_in_current_directory",
+            ScaffoldCapability::CreatesProjectAndMayPrompt => "creates_project_and_may_prompt",
+            ScaffoldCapability::GeneratesRootShell => "generates_root_shell",
+            ScaffoldCapability::DoesNotCreateAProject => "does_not_create_a_project",
+        }
+    }
+
+    /// CLI может выполниться во временной папке (temp+move) — его созданный
+    /// каталог переносится в target программно. false = CLI обязан работать
+    /// внутри финального дерева проекта (разрешает относительные пути).
+    pub fn supports_temp_dir(&self) -> bool {
+        matches!(
+            self,
+            ScaffoldCapability::CreatesNamedDirectory
+                | ScaffoldCapability::CreatesProjectAndMayPrompt
+        )
+    }
+}
+
+/// Результат генератора. Расширен явными секциями: созданные файлы и
+/// каталоги, изменённые файлы, пропущенные зависимые шаги и
+/// предупреждения валидации. Ошибки валидации НЕ прячутся — они
+/// возвращаются как Err и останавливают зависимые шаги.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GenerationReport {
+    /// Файлы, созданные генератором (относительные пути).
     pub created_files: Vec<String>,
+    /// Каталоги, созданные генератором (относительные пути).
+    #[serde(default)]
+    pub created_directories: Vec<String>,
+    /// Файлы, изменённые генератором (относительные пути).
     pub modified_files: Vec<String>,
+    /// Файлы/каталоги, которые генератор не тронул (причина в тексте).
     pub skipped_files: Vec<String>,
+    /// Зависимые шаги генератора, пропущенные из-за отсутствия
+    /// предусловия (например, перенос содержимого, когда CLI ничего не
+    /// создал, но это не ошибка).
+    #[serde(default)]
+    pub skipped_dependent_steps: Vec<String>,
+    /// Не-фатальные замечания валидации (нормализация вложенной папки,
+    /// пустой ожидаемый файл и т.п.). Фатальные провалы — в Err.
+    #[serde(default)]
+    pub validation_warnings: Vec<String>,
     pub message: String,
+}
+
+impl GenerationReport {
+    /// Успешный отчёт без побочных эффектов (совместимость с историческими
+    /// вызовами).
+    pub fn success(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ..Self::default()
+        }
+    }
 }
 
 // ============================================================

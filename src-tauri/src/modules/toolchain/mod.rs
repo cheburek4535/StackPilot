@@ -116,7 +116,8 @@ impl ToolchainState {
             .definitions
             .iter()
             .filter(|d| {
-                !core::requirements::is_dual_tool(&d.id, &self.definitions) || installed.contains(&d.id)
+                !core::requirements::is_dual_tool(&d.id, &self.definitions)
+                    || installed.contains(&d.id)
             })
             .count();
         EnvironmentInfo {

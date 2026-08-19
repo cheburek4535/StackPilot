@@ -27,7 +27,11 @@ impl LogsService for DefaultLogsService {
         let filter_stderr = stream.map_or(true, |s| s == "stderr");
 
         let stdout: Vec<String> = if filter_stdout && !query.is_empty() {
-            logs.stdout_lines.iter().filter(|l| l.contains(query)).cloned().collect()
+            logs.stdout_lines
+                .iter()
+                .filter(|l| l.contains(query))
+                .cloned()
+                .collect()
         } else if filter_stdout {
             logs.stdout_lines.clone()
         } else {
@@ -35,14 +39,21 @@ impl LogsService for DefaultLogsService {
         };
 
         let stderr: Vec<String> = if filter_stderr && !query.is_empty() {
-            logs.stderr_lines.iter().filter(|l| l.contains(query)).cloned().collect()
+            logs.stderr_lines
+                .iter()
+                .filter(|l| l.contains(query))
+                .cloned()
+                .collect()
         } else if filter_stderr {
             logs.stderr_lines.clone()
         } else {
             Vec::new()
         };
 
-        ProcessLogs { stdout_lines: stdout, stderr_lines: stderr }
+        ProcessLogs {
+            stdout_lines: stdout,
+            stderr_lines: stderr,
+        }
     }
 
     fn merge_logs(&self, all_logs: Vec<(&str, ProcessLogs)>) -> MergedLog {

@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // Tauri-команды Toolchain Manager
 // ============================================================
 // Команды вызываются с фронтенда через invoke(). Префикс tc_
@@ -55,9 +55,7 @@ pub async fn tc_check_environment(
     // Опции установки (Qt: UI-модули qt-qml/qt-webengine/...) — уезжают
     // в план и говорят установщику, какие пакеты репозитория ставить.
     let install_options = core::requirements::resolve_install_options(&requirements);
-    eprintln!(
-        "[toolchain] check_environment: опции установки = {install_options:?}"
-    );
+    eprintln!("[toolchain] check_environment: опции установки = {install_options:?}");
 
     // Прогресс по каждому инструменту стримится на фронтенд —
     // пользователь видит «проверяется X (2/N)» вместо тишины.
@@ -71,7 +69,14 @@ pub async fn tc_check_environment(
     let free_space_mb = core::disk::free_space_mb(&core::disk::install_root())
         .await
         .unwrap_or(0);
-    let check = core::check::run_check(state.definitions(), &requested, &install_options, free_space_mb, Some(progress)).await;
+    let check = core::check::run_check(
+        state.definitions(),
+        &requested,
+        &install_options,
+        free_space_mb,
+        Some(progress),
+    )
+    .await;
     // Опциональные требования: docker-инструменты мастера (postgresql,
     // mongodb, kafka, ...), которые по умолчанию разворачиваются контейнерами
     // проекта. Пользователь может переключить их на локальную установку —
@@ -156,15 +161,16 @@ pub async fn tc_run_install(
     let metadata_arc = state.metadata();
     let pending_arc = state.pending_secrets();
     // Сбрасываем флаг отмены перед стартом (контракт: run = «сначала»).
-    state.abort_flag().store(false, std::sync::atomic::Ordering::SeqCst);
+    state
+        .abort_flag()
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let abort = state.abort_flag();
 
     tokio::spawn(async move {
         let mut working_plan = plan.clone();
-        let sink: Arc<dyn core::console::EventSink> = Arc::new(AppEventSink {
-            app: app.clone(),
-        });
-        let secrets = core::installer::execute_plan(&definitions, &mut working_plan, sink, abort).await;
+        let sink: Arc<dyn core::console::EventSink> = Arc::new(AppEventSink { app: app.clone() });
+        let secrets =
+            core::installer::execute_plan(&definitions, &mut working_plan, sink, abort).await;
 
         // Успешно установленные инструменты и сгенерированные секреты
         // сохраняем в state.json — переживут перезапуск приложения.
@@ -220,7 +226,9 @@ pub async fn tc_run_install(
 /// Забираются «одноразово»: после вызова витрина очищается, чтобы
 /// старые пароли не всплывали на следующей странице окружения.
 #[tauri::command]
-pub fn tc_take_new_secrets(state: State<'_, ToolchainState>) -> std::collections::HashMap<String, String> {
+pub fn tc_take_new_secrets(
+    state: State<'_, ToolchainState>,
+) -> std::collections::HashMap<String, String> {
     let pending = state.pending_secrets();
     let mut guard = pending.lock().expect("pending_secrets poisoned");
     std::mem::take(&mut *guard)
@@ -285,7 +293,9 @@ pub async fn tc_get_health_report(
         .collect::<std::collections::HashSet<String>>();
     let visible: Vec<ToolDefinition> = definitions
         .iter()
-        .filter(|d| !core::requirements::is_dual_tool(&d.id, definitions) || installed.contains(&d.id))
+        .filter(|d| {
+            !core::requirements::is_dual_tool(&d.id, definitions) || installed.contains(&d.id)
+        })
         .cloned()
         .collect();
     Ok(core::health::run_health_report(&visible).await)

@@ -24,7 +24,7 @@ pub trait ProcessManager: Send + Sync {
         args: &[&str],
         working_dir: Option<&str>,
         label: &str,
-        session_id: Option<String>
+        session_id: Option<String>,
     ) -> Result<TrackedProcess, String>;
 
     fn list(&self) -> Vec<TrackedProcess>;
@@ -62,7 +62,10 @@ impl OsProcessManager {
             for line in buf_reader.lines() {
                 match line {
                     Ok(text) => {
-                        buffer.lock().expect("buffer lock poisoned").push(text.clone());
+                        buffer
+                            .lock()
+                            .expect("buffer lock poisoned")
+                            .push(text.clone());
                         let _ = handle.emit(
                             PROCESS_EVENT_OUTPUT,
                             ProcessOutputEvent {
@@ -86,12 +89,10 @@ impl ProcessManager for OsProcessManager {
         args: &[&str],
         working_dir: Option<&str>,
         label: &str,
-        session_id: Option<String>
+        session_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
         let mut cmd = Command::new(command);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -111,7 +112,7 @@ impl ProcessManager for OsProcessManager {
             duration_secs: 0,
             restarts: 0,
             last_error: None,
-            session_id: session_id
+            session_id: session_id,
         };
 
         let stdout_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -236,8 +237,7 @@ impl ProcessManager for OsProcessManager {
                     entry.info.status = new_status.clone();
                     entry.info.last_error = error_msg.clone();
 
-                    let handle_guard =
-                        self.app_handle.lock().expect("app_handle lock poisoned");
+                    let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
                     if let Some(handle) = handle_guard.as_ref() {
                         let _ = handle.emit(
                             PROCESS_EVENT_STATUS,
@@ -265,8 +265,16 @@ impl ProcessManager for OsProcessManager {
             .find(|p| p.info.id == id)
             .ok_or_else(|| format!("Process '{}' not found", id))?;
 
-        let stdout = entry.stdout_buffer.lock().expect("stdout lock poisoned").clone();
-        let stderr = entry.stderr_buffer.lock().expect("stderr lock poisoned").clone();
+        let stdout = entry
+            .stdout_buffer
+            .lock()
+            .expect("stdout lock poisoned")
+            .clone();
+        let stderr = entry
+            .stderr_buffer
+            .lock()
+            .expect("stderr lock poisoned")
+            .clone();
         Ok(ProcessLogs {
             stdout_lines: stdout,
             stderr_lines: stderr,

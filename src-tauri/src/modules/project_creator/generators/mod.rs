@@ -1,13 +1,15 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::process::Command as TokioCommand;
 
 use crate::modules::project_creator::engine::content;
+use crate::modules::project_creator::engine::process::{
+    command_display, ExecutionEventSink, InteractiveRules, ProcessErrorKind, ProcessRunner,
+    ProcessSpec, StdinMode,
+};
 use crate::modules::project_creator::models::*;
 
 /// Плейсхолдер в args, на месте которого ScaffoldGenerator подставляет имя
@@ -21,12 +23,32 @@ pub trait Generator: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+
+    /// Без событийного приёмника: вывод CLI-команд не стримится в UI
+    /// (используется тестами и внешними вызывающими).
     async fn generate(
         &self,
         context: &WizardContext,
         project_path: &Path,
         config: &serde_json::Value,
-    ) -> Result<GenerationReport, String>;
+    ) -> Result<GenerationReport, String> {
+        self.generate_with_sink(context, project_path, config, None)
+            .await
+    }
+
+    /// Основная точка входа движка: `sink` маршрутизирует stdout/stderr
+    /// запускаемых процессов в ExecutionEvent — тот же канал, что у
+    /// Step::Command. По умолчанию — без приёмника (совместимость).
+    async fn generate_with_sink(
+        &self,
+        context: &WizardContext,
+        project_path: &Path,
+        config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<GenerationReport, String> {
+        let _ = sink;
+        self.generate(context, project_path, config).await
+    }
 }
 
 pub struct GeneratorRegistry {
@@ -74,6 +96,54 @@ impl GeneratorRegistry {
     }
 }
 
+/// Запустить CLI-команду через общий ProcessRunner (кроссплатформенный
+/// cmd/PowerShell/sh-хендлинг, таймаут с kill, хвосты в ошибках) и
+/// преобразовать результат в GenerationReport или отформатированную ошибку.
+/// stdout/stderr стримятся в UI через `sink`, если он передан.
+/// `interactive` переводит stdin в piped-режим с детекцией триггеров.
+async fn run_cli_process(
+    command: &str,
+    args: &[String],
+    working_dir: &Path,
+    env: Option<&HashMap<String, String>>,
+    timeout_secs: u64,
+    interactive: &[InteractiveEntry],
+    sink: Option<&ExecutionEventSink>,
+) -> Result<GenerationReport, String> {
+    // Не модифицируем аргументы рецепта: отдельные CLI имеют собственный
+    // синтаксис и сами явно объявляют `--yes`, если он им нужен.
+    let stdin = if interactive.is_empty() {
+        StdinMode::Null
+    } else {
+        StdinMode::Piped(InteractiveRules {
+            entries: interactive
+                .iter()
+                .map(|e| (e.trigger.clone(), e.response_type.clone()))
+                .collect(),
+        })
+    };
+    let spec = ProcessSpec {
+        command: command.to_string(),
+        args: args.to_vec(),
+        working_dir: Some(working_dir.to_path_buf()),
+        env: env.cloned(),
+        timeout: Some(Duration::from_secs(timeout_secs)),
+        stdin,
+        // CI=1 заставляет npx/npm/create-* CLI пропускать интерактивные
+        // промпты; NPM_CONFIG_YES/npm_config_yes отвечают «да» на
+        // подтверждение установки пакета через npx.
+        ci_mode: true,
+    };
+
+    match ProcessRunner::run(spec, sink).await {
+        Ok(_) => Ok(GenerationReport::success(format!(
+            "Command '{}' completed successfully",
+            command_display(command, args)
+        ))),
+        Err(error) => Err(error.format_command_error()),
+    }
+}
+
 // ============================================================================
 // CliGenerator — универсальный CLI-раннер.
 //
@@ -88,7 +158,10 @@ impl GeneratorRegistry {
 //     "args": ["create-next-app@latest", ".", "--skip-install"],
 //     "working_dir": "frontend",        // относительно project_path; опционально
 //     "env": {"CI": "1"},               // опционально
-//     "timeout_secs": 600               // опционально, по умолчанию 600
+//     "timeout_secs": 600,              // опционально, по умолчанию 600
+//     "interactive": [                  // опционально: piped-stdin ответы
+//       {"trigger": "Which package manager", "response_type": {"Text": "npm"}}
+//     ]
 //   }
 // ============================================================================
 pub struct CliGenerator;
@@ -104,11 +177,12 @@ impl Generator for CliGenerator {
     fn description(&self) -> &str {
         "Executes a CLI command to generate project scaffolding"
     }
-    async fn generate(
+    async fn generate_with_sink(
         &self,
         _context: &WizardContext,
         project_path: &Path,
         config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
     ) -> Result<GenerationReport, String> {
         let command = config
             .get("command")
@@ -128,10 +202,8 @@ impl Generator for CliGenerator {
             .and_then(|v| v.as_str())
             .map(|d| project_path.join(d))
             .unwrap_or_else(|| project_path.to_path_buf());
-        let env: Option<HashMap<String, String>> = config
-            .get("env")
-            .and_then(|e| e.as_object())
-            .map(|obj| {
+        let env: Option<HashMap<String, String>> =
+            config.get("env").and_then(|e| e.as_object()).map(|obj| {
                 obj.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
@@ -140,8 +212,22 @@ impl Generator for CliGenerator {
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(600);
+        let interactive: Vec<InteractiveEntry> = config
+            .get("interactive")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(parse_interactive_entry).collect())
+            .unwrap_or_default();
 
-        run_cli(command, &args, &working_dir, env.as_ref(), timeout_secs).await
+        run_cli_process(
+            command,
+            &args,
+            &working_dir,
+            env.as_ref(),
+            timeout_secs,
+            &interactive,
+            sink,
+        )
+        .await
     }
 }
 
@@ -172,11 +258,12 @@ impl Generator for SpringBootGenerator {
     fn description(&self) -> &str {
         "Downloads and unpacks a Spring Boot starter from start.spring.io"
     }
-    async fn generate(
+    async fn generate_with_sink(
         &self,
         context: &WizardContext,
         project_path: &Path,
         config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
     ) -> Result<GenerationReport, String> {
         let project_name = config
             .get("project_name")
@@ -212,13 +299,16 @@ impl Generator for SpringBootGenerator {
         let zip_path = target.join("project.zip");
 
         // 1) Скачивание. --fail-with-body: тело HTTP-ошибки сохраняется в файл.
-        download_starter(&url, &zip_path).await?;
+        download_starter(&url, &zip_path, sink).await?;
 
         // 2) Проверка HTTP-статуса на Rust: настоящий ZIP или тело ошибки
         //    Initializr? Если ответ не архив (JSON с ключом message, HTML) —
         //    генерация прерывается, сломанный архив не сохраняется.
         let bytes = std::fs::read(&zip_path).map_err(|e| {
-            format!("Spring Initializr error: failed to read downloaded archive 'project.zip': {}", e)
+            format!(
+                "Spring Initializr error: failed to read downloaded archive 'project.zip': {}",
+                e
+            )
         })?;
         if !is_zip_archive(&bytes) {
             let reason = extract_error_text(&bytes);
@@ -233,20 +323,15 @@ impl Generator for SpringBootGenerator {
         } else {
             ("unzip", vec!["-o".to_string(), zip_str])
         };
-        run_cli(unzip_cmd, &unzip_args, &target, None, 300).await?;
+        run_cli_process(unzip_cmd, &unzip_args, &target, None, 300, &[], sink).await?;
 
         // 4) Уборка.
         let _ = std::fs::remove_file(&zip_path);
 
-        Ok(GenerationReport {
-            created_files: Vec::new(),
-            modified_files: Vec::new(),
-            skipped_files: Vec::new(),
-            message: format!(
-                "Spring Boot project '{}' generated (dependencies: {})",
-                project_name, deps
-            ),
-        })
+        Ok(GenerationReport::success(format!(
+            "Spring Boot project '{}' generated (dependencies: {})",
+            project_name, deps
+        )))
     }
 }
 
@@ -293,12 +378,9 @@ impl Generator for FsCleanupGenerator {
             })
             .unwrap_or_default();
         if paths.is_empty() {
-            return Ok(GenerationReport {
-                created_files: Vec::new(),
-                modified_files: Vec::new(),
-                skipped_files: Vec::new(),
-                message: "Nothing to clean up: no paths configured".into(),
-            });
+            return Ok(GenerationReport::success(
+                "Nothing to clean up: no paths configured",
+            ));
         }
 
         // Маркер, что артефакты создал именно prisma init.
@@ -338,39 +420,213 @@ impl Generator for FsCleanupGenerator {
             created_files: Vec::new(),
             modified_files: Vec::new(),
             skipped_files: skipped,
-            message,
+            ..GenerationReport::success(message)
         })
     }
 }
 
 // ============================================================================
-// ScaffoldGenerator — «умный» запуск CLI-скаффолдеров без матрёшек.
+// ScaffoldGenerator — выполнение CLI-скаффолдеров по ЯВНЫМ способностям.
 //
-// Проблема: create-vite/create-next-app/nuxi init и т.п. создают проект В
-// ПОДПАПКЕ с именем, переданным аргументом. Вызов из корня с именем проекта
-// даёт матрёшку (testapp13/testapp13), а "." большинство CLI либо не умеет
-// обрабатывать, либо требует подтверждения.
+// МОДЕЛЬ СПОСОБНОСТЕЙ (ScaffoldCapability)
+// ----------------------------------------
+// Раньше движок считал каждый CLI-скаффолдер «create-vite»: принимает
+// каталог позиционным аргументом, создаёт именно его, работает без
+// интерактива, понимает одни и те же yes/no-флаги и безопасен во временной
+// папке с последующим переносом. Это неверно для Nest, Nuxt, Tauri,
+// SolidStart, Flutter, Zig и других инструментов. Универсальный temp+move
+// применяется ТОЛЬКО там, где рецепт явно разрешил временную папку.
 //
-// Решение — Temp-to-Target (используется ВСЕГДА, без dot-режима):
-//   1. CLI выполняется НЕ в финальном каталоге, а во временной папке
-//      temp_<target>/ в корне проекта (имя генерируется уникальным);
-//   2. после успешного завершения всё содержимое (рекурсивно, ВКЛЮЧАЯ
-//      скрытые файлы: .gitignore, .env и т.п.) ПРОГРАММНО переносится
-//      в target_dir (frontend/, backend/ или корень);
-//   3. временная папка удаляется.
-// Так CLI никогда не работает «внутри» финального frontend//backend/ —
-// «папка внутри папки» невозможна в принципе.
+// Рецепт обязан объявить способность каждого scaffold-шага:
+//
+//   | Способность                      | Примеры                                 |
+//   |----------------------------------|-----------------------------------------|
+//   | creates_named_directory          | create-vite app, create-next-app app,   |
+//   |                                  | nuxi init app, composer create-project, |
+//   |                                  | create-expo-app                         |
+//   | creates_in_current_directory     | nest new ., flutter create .,           |
+//   |                                  | django-admin startproject x .,          |
+//   |                                  | dotnet new -o .                         |
+//   | creates_project_and_may_prompt   | create-solid, flutter create,           |
+//   |                                  | electron-forge, RN CLI, plasmo init     |
+//   | generates_root_shell             | cargo tauri init, zig init              |
+//   | does_not_create_a_project        | npm install, prisma init                |
+//
+// Каждый шаг ЯВНО определяет:
+//   - command / args                       — что выполняется;
+//   - working_dir                          — рабочая директория CLI;
+//   - target_dir                           — поведение назначения ("." или подкаталог);
+//   - temp_dir_allowed                     — разрешена ли временная папка;
+//   - expected_outputs                     — ожидаемые пути ПОСЛЕ завершения
+//                                            (пост-условия: package.json,
+//                                            src-tauri/tauri.conf.json,
+//                                            pubspec.yaml, build.zig...);
+//   - interactive                          — обязательные интерактивные ответы
+//                                            (для may-prompt способностей).
+//
+// ПОСТ-УСЛОВИЯ: после успешного выхода CLI каждый expected_output обязан
+// существовать в каталоге назначения. Провал — ОДНА ошибка шага (все
+// недостающие пути перечислены), зависимые шаги рецепта (патчи package.json,
+// tauri-config и т.п.) не выполняются: движок пропускает их по
+// FileExists-условию, а не выдаёт вторичные ENOENT-ошибки.
+//
+// МИГРАЦИЯ РЕЦЕПТОВ (движок engine/mod.rs — см. scaffold_step):
+//   vite (react/vue/svelte) → creates_named_directory + temp, ожидает package.json
+//   nextjs                   → creates_named_directory + temp, ожидает package.json
+//   sveltekit                → creates_named_directory + temp, ожидает package.json
+//   nuxt                     → creates_named_directory + temp, ожидает package.json
+//   expo                     → creates_named_directory + temp, ожидает package.json
+//   laravel/symfony          → creates_named_directory + temp (composer), ожидает package.json
+//   solidjs                  → creates_project_and_may_prompt + interactive, ожидает package.json
+//   flutter                  → creates_project_and_may_prompt + interactive, ожидает pubspec.yaml
+//   tauri_web_scaffold       → creates_named_directory + temp, ожидает package.json
+//   tauri_init               → generates_root_shell, ожидает src-tauri/tauri.conf.json
 //
 // Конфиг (Step::Generate.generator_config):
 //   {
 //     "command": "npx",
 //     "args": ["create-vite@latest", "__TARGET__", "--template", "react-ts"],
-//     "name_arg": 1,             // позиция имени проекта в args (обязательно)
-//     "target_dir": "frontend",  // куда класть проект ("." = корень проекта)
-//     "timeout_secs": 600        // опционально, по умолчанию 600
+//     "capability": "creates_named_directory",   // ОБЯЗАТЕЛЬНО
+//     "target_dir": "frontend",                  // "." = корень проекта
+//     "working_dir": ".",                        // относительно корня (опционально)
+//     "temp_dir_allowed": true,                  // опционально, по умолчанию — по способности
+//     "expected_outputs": ["package.json"],      // пост-условия (опционально)
+//     "interactive": [{"trigger": "...", "response_type": {"Text": "npm"}}],
+//     "timeout_secs": 600
 //   }
 // ============================================================================
 pub struct ScaffoldGenerator;
+
+/// Полное описание одного scaffold-шага — рецепт обязан заполнить все поля.
+#[derive(Debug, Clone)]
+pub struct ScaffoldStepConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    /// Способность CLI (см. ScaffoldCapability).
+    pub capability: ScaffoldCapability,
+    /// Куда проект обязан попасть: "." (корень) или относительный подкаталог.
+    pub target_dir: String,
+    /// Рабочая директория CLI относительно корня проекта. По умолчанию:
+    /// корень для named-directory, target_dir для in-place/root-shell.
+    pub working_dir: Option<String>,
+    /// Разрешена ли временная папка (temp+move). По умолчанию — по способности.
+    pub temp_dir_allowed: Option<bool>,
+    /// Пост-условия: ожидаемые файлы/каталоги после завершения (относительно
+    /// каталога назначения). Провал любого — ошибка шага.
+    pub expected_outputs: Vec<String>,
+    /// Интерактивные ответы (piped stdin) — обязательны для may-prompt.
+    pub interactive: Vec<InteractiveEntry>,
+    pub timeout_secs: u64,
+}
+
+impl ScaffoldStepConfig {
+    pub fn from_json(config: &serde_json::Value) -> Result<Self, String> {
+        let command = config
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ScaffoldGenerator: missing 'command' in config".to_string())?
+            .to_string();
+        let args: Vec<String> = config
+            .get("args")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .ok_or_else(|| {
+                "ScaffoldGenerator: missing 'args' (array of strings) in config".to_string()
+            })?;
+        let capability_str = config
+            .get("capability")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                "ScaffoldGenerator: missing 'capability' in config — recipe must declare the \
+                 scaffold capability explicitly (creates_named_directory | \
+                 creates_in_current_directory | creates_project_and_may_prompt | \
+                 generates_root_shell | does_not_create_a_project)"
+                    .to_string()
+            })?;
+        let capability = match capability_str {
+            "creates_named_directory" => ScaffoldCapability::CreatesNamedDirectory,
+            "creates_in_current_directory" => ScaffoldCapability::CreatesInCurrentDirectory,
+            "creates_project_and_may_prompt" => ScaffoldCapability::CreatesProjectAndMayPrompt,
+            "generates_root_shell" => ScaffoldCapability::GeneratesRootShell,
+            "does_not_create_a_project" => ScaffoldCapability::DoesNotCreateAProject,
+            other => {
+                return Err(format!(
+                    "ScaffoldGenerator: unknown 'capability' '{}' (expected: \
+                     creates_named_directory | creates_in_current_directory | \
+                     creates_project_and_may_prompt | generates_root_shell | \
+                     does_not_create_a_project)",
+                    other
+                ));
+            }
+        };
+        let target_dir = config
+            .get("target_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".")
+            .to_string();
+        let working_dir = config
+            .get("working_dir")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let temp_dir_allowed = config.get("temp_dir_allowed").and_then(|v| v.as_bool());
+        let expected_outputs: Vec<String> = config
+            .get("expected_outputs")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let interactive: Vec<InteractiveEntry> = config
+            .get("interactive")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(parse_interactive_entry).collect())
+            .unwrap_or_default();
+        let timeout_secs = config
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(600);
+        Ok(Self {
+            command,
+            args,
+            capability,
+            target_dir,
+            working_dir,
+            temp_dir_allowed,
+            expected_outputs,
+            interactive,
+            timeout_secs,
+        })
+    }
+}
+
+/// Разобрать {"trigger": "...", "response_type": ...} в InteractiveEntry.
+fn parse_interactive_entry(value: &serde_json::Value) -> Option<InteractiveEntry> {
+    let trigger = value.get("trigger")?.as_str()?.to_string();
+    let response_type = parse_response_type(value.get("response_type")?)?;
+    Some(InteractiveEntry {
+        trigger,
+        response_type,
+    })
+}
+
+/// Разобрать response_type: строка-шорткат ("y"/"n"/"yes"/текст) или
+/// сериализованный вариант ResponseType ({"Text": "npm"} и т.п.).
+fn parse_response_type(value: &serde_json::Value) -> Option<ResponseType> {
+    if let Some(text) = value.as_str() {
+        return match text.to_ascii_lowercase().as_str() {
+            "y" | "yes" | "confirm" => Some(ResponseType::Confirm(true)),
+            "n" | "no" | "decline" => Some(ResponseType::Confirm(false)),
+            _ => Some(ResponseType::Text(text.to_string())),
+        };
+    }
+    serde_json::from_value::<ResponseType>(value.clone()).ok()
+}
 
 #[async_trait]
 impl Generator for ScaffoldGenerator {
@@ -381,101 +637,341 @@ impl Generator for ScaffoldGenerator {
         "Smart Scaffold"
     }
     fn description(&self) -> &str {
-        "Runs a scaffolding CLI into a temp folder, then moves contents into the target dir"
+        "Runs a scaffolding CLI according to its declared capability, then validates expected outputs"
     }
-    async fn generate(
+    async fn generate_with_sink(
         &self,
         _context: &WizardContext,
         project_path: &Path,
         config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
     ) -> Result<GenerationReport, String> {
-        let command = config
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "ScaffoldGenerator: missing 'command' in config".to_string())?;
-        let mut args: Vec<String> = config
-            .get("args")
-            .and_then(|a| a.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let name_arg = config
-            .get("name_arg")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| "ScaffoldGenerator: missing 'name_arg' in config".to_string())?
-            as usize;
-        let target_dir = config
-            .get("target_dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "ScaffoldGenerator: missing 'target_dir' in config".to_string())?;
-        let timeout_secs = config
-            .get("timeout_secs")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(600);
+        let cfg = ScaffoldStepConfig::from_json(config)?;
+        let mut report = GenerationReport::success(format!(
+            "Scaffold '{}' ({}) completed",
+            cfg.command,
+            cfg.capability.as_str()
+        ));
 
-        // Валидация: плейсхолдер обязан стоять на месте имени проекта.
-        if name_arg >= args.len() {
-            return Err(format!(
-                "ScaffoldGenerator: 'name_arg' {} out of bounds for {} args",
-                name_arg,
-                args.len()
-            ));
-        }
-        if args[name_arg] != SCAFFOLD_TARGET {
-            return Err(format!(
-                "ScaffoldGenerator: args[{}] must be the '{}' placeholder, got '{}'",
-                name_arg, SCAFFOLD_TARGET, args[name_arg]
-            ));
+        // may-prompt способность без ответов — CLI может повиснуть на вопросе.
+        if cfg.capability == ScaffoldCapability::CreatesProjectAndMayPrompt
+            && cfg.interactive.is_empty()
+        {
+            report.validation_warnings.push(
+                "capability 'creates_project_and_may_prompt' has no interactive answers \
+                 configured — the CLI may prompt and hang"
+                    .to_string(),
+            );
         }
 
-        let target = if target_dir == "." {
-            project_path.to_path_buf()
-        } else {
-            let target = project_path.join(target_dir);
+        // Каталог назначения: куда проект обязан попасть.
+        let target = resolve_target(project_path, &cfg.target_dir)?;
+        if cfg.target_dir != "." && !target.exists() {
             std::fs::create_dir_all(&target).map_err(|e| {
                 format!(
                     "ScaffoldGenerator: failed to create target dir '{}': {}",
-                    target_dir, e
+                    cfg.target_dir, e
                 )
             })?;
-            target
+            report.created_directories.push(cfg.target_dir.clone());
+        }
+        let work_dir = resolve_working_dir(project_path, &cfg);
+        if !work_dir.exists() {
+            // Рабочая директория CLI обязана существовать (например,
+            // does_not_create_a_project с working_dir="backend").
+            std::fs::create_dir_all(&work_dir).map_err(|e| {
+                format!(
+                    "ScaffoldGenerator: failed to create working dir '{}': {}",
+                    work_dir.display(),
+                    e
+                )
+            })?;
+        }
+        let mut args = cfg.args.clone();
+
+        match cfg.capability {
+            ScaffoldCapability::CreatesNamedDirectory
+            | ScaffoldCapability::CreatesProjectAndMayPrompt => {
+                run_named_directory_scaffold(
+                    &cfg,
+                    &mut args,
+                    project_path,
+                    &target,
+                    &work_dir,
+                    sink,
+                    &mut report,
+                )
+                .await?;
+            }
+            ScaffoldCapability::CreatesInCurrentDirectory => {
+                // CLI работает ВНУТРИ каталога назначения с "." (или уже с
+                // фиксированным именем в args — плейсхолдер заменяется).
+                replace_placeholder(&mut args, ".");
+                run_cli_process(
+                    &cfg.command,
+                    &args,
+                    &target,
+                    None,
+                    cfg.timeout_secs,
+                    &cfg.interactive,
+                    sink,
+                )
+                .await?;
+            }
+            ScaffoldCapability::GeneratesRootShell | ScaffoldCapability::DoesNotCreateAProject => {
+                if args.iter().any(|a| a == SCAFFOLD_TARGET) {
+                    report.validation_warnings.push(format!(
+                        "capability '{}' does not take the '{}' placeholder — left as-is",
+                        cfg.capability.as_str(),
+                        SCAFFOLD_TARGET
+                    ));
+                }
+                run_cli_process(
+                    &cfg.command,
+                    &args,
+                    &work_dir,
+                    None,
+                    cfg.timeout_secs,
+                    &cfg.interactive,
+                    sink,
+                )
+                .await?;
+            }
+        }
+
+        // ПОСТ-УСЛОВИЯ: ожидаемые выходные пути обязаны существовать. Провал —
+        // одна ошибка шага; зависимые шаги рецепта не выполняются.
+        validate_outputs(&cfg, &target, &mut report)?;
+
+        Ok(report)
+    }
+}
+
+/// Заменить плейсхолдер в args (если он есть).
+fn replace_placeholder(args: &mut [String], replacement: &str) {
+    for arg in args.iter_mut() {
+        if arg == SCAFFOLD_TARGET {
+            *arg = replacement.to_string();
+        }
+    }
+}
+
+/// Каталог назначения (абсолютный), создаётся при необходимости.
+fn resolve_target(project_path: &Path, target_dir: &str) -> Result<std::path::PathBuf, String> {
+    if target_dir == "." {
+        Ok(project_path.to_path_buf())
+    } else {
+        Ok(project_path.join(target_dir))
+    }
+}
+
+/// Рабочая директория CLI: явный working_dir, иначе по способности —
+/// корень (named-directory) или каталог назначения (in-place/root-shell).
+fn resolve_working_dir(project_path: &Path, cfg: &ScaffoldStepConfig) -> std::path::PathBuf {
+    match (&cfg.working_dir, cfg.capability) {
+        (Some(wd), _) => project_path.join(wd),
+        (
+            None,
+            ScaffoldCapability::CreatesInCurrentDirectory | ScaffoldCapability::GeneratesRootShell,
+        ) => {
+            if cfg.target_dir == "." {
+                project_path.to_path_buf()
+            } else {
+                project_path.join(&cfg.target_dir)
+            }
+        }
+        (None, _) => project_path.to_path_buf(),
+    }
+}
+
+/// Выполнение named-directory / may-prompt скаффолдера:
+///   1. имя создаваемой папки подставляется на место плейсхолдера
+///      (временная папка при temp_dir_allowed, иначе — имя каталога
+///      назначения рядом с ним);
+///   2. CLI запускается в рабочей директории;
+///   3. созданная папка переносится в target (merge, если это не сам target);
+///   4. матрёшка <target>/<name> нормализуется (содержимое поднимается вверх).
+async fn run_named_directory_scaffold(
+    cfg: &ScaffoldStepConfig,
+    args: &mut Vec<String>,
+    project_path: &Path,
+    target: &Path,
+    work_dir: &Path,
+    sink: Option<&ExecutionEventSink>,
+    report: &mut GenerationReport,
+) -> Result<(), String> {
+    let placeholder = args
+        .iter()
+        .position(|a| a == SCAFFOLD_TARGET)
+        .ok_or_else(|| {
+            format!(
+                "ScaffoldGenerator: capability '{}' requires the '{}' placeholder in args",
+                cfg.capability.as_str(),
+                SCAFFOLD_TARGET
+            )
+        })?;
+    let temp_allowed = cfg
+        .temp_dir_allowed
+        .unwrap_or_else(|| cfg.capability.supports_temp_dir());
+
+    // Куда CLI кладёт проект: уникальная временная папка в корне проекта
+    // (temp+move) или папка с именем каталога назначения рядом с ним.
+    let (created_dir, created_name, needs_merge) = if temp_allowed {
+        let temp_name = unique_temp_name(project_path, &cfg.target_dir);
+        args[placeholder] = temp_name.clone();
+        (work_dir.join(&temp_name), temp_name, true)
+    } else {
+        // target=".": имя = имя папки проекта (как поступил бы пользователь);
+        // иначе — имя каталога назначения (CLI создаёт его рядом с самим собой).
+        let name = if cfg.target_dir == "." {
+            project_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("app")
+                .to_string()
+        } else {
+            Path::new(&cfg.target_dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("app")
+                .to_string()
         };
+        args[placeholder] = name.clone();
+        let created = work_dir.join(&name);
+        // CLI создал сам каталог назначения — слияние не нужно.
+        let needs_merge = created != target;
+        (created, name, needs_merge)
+    };
 
-        // Temp-to-Target: CLI выполняется во временной папке, содержимое
-        // (включая скрытые файлы) переносится в target программно.
-        let temp_name = unique_temp_name(project_path, target_dir);
-        args[name_arg] = temp_name.clone();
-        run_cli(command, &args, project_path, None, timeout_secs).await?;
+    // Перенос + нормализация матрёшки. При ЛЮБОЙ ошибке (включая провал
+    // самого CLI, создавшего временную папку) временная папка (temp+move)
+    // удаляется целиком — повторный запуск рецепта не натыкается на хвосты
+    // проваленного скаффолда, а postcondition-валидация работает по честному
+    // «файл есть/нет».
+    let result = async {
+        run_cli_process(
+            &cfg.command,
+            args,
+            work_dir,
+            None,
+            cfg.timeout_secs,
+            &cfg.interactive,
+            sink,
+        )
+        .await?;
 
-        let temp_dir = project_path.join(&temp_name);
-        if !temp_dir.exists() {
+        if !created_dir.is_dir() {
             return Err(format!(
-                "ScaffoldGenerator: CLI '{}' did not create the expected folder '{}'",
-                command, temp_name
+                "Scaffold '{}' failed: the CLI exited successfully but did not create the \
+                 expected directory '{}' in {}",
+                cfg.command,
+                created_name,
+                work_dir.display()
             ));
         }
-        merge_dir_contents(&temp_dir, &target).map_err(|e| {
-            format!(
-                "ScaffoldGenerator: failed to move '{}' into '{}': {}",
-                temp_name, target_dir, e
-            )
-        })?;
-        std::fs::remove_dir_all(&temp_dir).map_err(|e| {
-            format!(
-                "ScaffoldGenerator: failed to remove temp dir '{}': {}",
-                temp_name, e
-            )
-        })?;
 
-        Ok(GenerationReport {
-            created_files: Vec::new(),
-            modified_files: Vec::new(),
-            skipped_files: Vec::new(),
-            message: format!("Scaffold '{}' created in '{}'", command, target_dir),
-        })
+        if needs_merge {
+            merge_dir_contents(&created_dir, target).map_err(|e| {
+                format!(
+                    "Scaffold '{}': failed to move '{}' into '{}': {}",
+                    cfg.command, created_name, cfg.target_dir, e
+                )
+            })?;
+            std::fs::remove_dir_all(&created_dir).map_err(|e| {
+                format!(
+                    "Scaffold '{}': failed to remove '{}': {}",
+                    cfg.command, created_name, e
+                )
+            })?;
+        } else {
+            report.skipped_dependent_steps.push(format!(
+                "merge of '{}' into '{}' skipped (CLI created the target itself)",
+                created_name, cfg.target_dir
+            ));
+        }
+
+        // Матрёшка: CLI положил проект во вложенную <target>/<name> — содержимое
+        // поднимается в target, папка удаляется, факт фиксируется предупреждением.
+        let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let nested = target.join(&created_name);
+        if created_name != target_name && nested.is_dir() {
+            merge_dir_contents(&nested, target).map_err(|e| {
+                format!(
+                    "Scaffold '{}': failed to flatten nested '{}' into '{}': {}",
+                    cfg.command, created_name, cfg.target_dir, e
+                )
+            })?;
+            let _ = std::fs::remove_dir_all(&nested);
+            report.validation_warnings.push(format!(
+                "CLI created a nested '{}/' folder — its contents were flattened into '{}'",
+                created_name, cfg.target_dir
+            ));
+        } else if needs_merge {
+            report.skipped_dependent_steps.push(format!(
+                "nested-folder flatten skipped (no nested '{}' detected in '{}')",
+                created_name, cfg.target_dir
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+    if result.is_err() && temp_allowed {
+        let _ = std::fs::remove_dir_all(&created_dir);
+    }
+    result
+}
+
+/// Проверка пост-условий: каждый expected_output обязан существовать в
+/// каталоге назначения. Провал — ОДНА ошибка со списком недостающих путей.
+/// Файлы/каталоги, подтверждённые валидацией, попадают в отчёт.
+fn validate_outputs(
+    cfg: &ScaffoldStepConfig,
+    target: &Path,
+    report: &mut GenerationReport,
+) -> Result<(), String> {
+    if cfg.expected_outputs.is_empty() {
+        return Ok(());
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for output in &cfg.expected_outputs {
+        let full = target.join(output);
+        if !full.exists() {
+            missing.push(output.clone());
+            continue;
+        }
+        let reported = report_path(&cfg.target_dir, output);
+        if full.is_dir() {
+            report.created_directories.push(reported);
+        } else {
+            report.created_files.push(reported.clone());
+            // Пустой файл — подозрительный результат (package.json без
+            // содержимого и т.п.) — предупреждение, не ошибка.
+            if full.metadata().map(|m| m.len() == 0).unwrap_or(false) {
+                report.validation_warnings.push(format!(
+                    "expected output '{}' exists but is empty",
+                    reported
+                ));
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "Scaffold '{}' validation failed: expected output(s) missing in '{}': {}",
+            cfg.command,
+            cfg.target_dir,
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Путь для отчёта: с префиксом каталога назначения (кроме корня ".").
+fn report_path(target_dir: &str, output: &str) -> String {
+    if target_dir == "." {
+        output.to_string()
+    } else {
+        format!("{}/{}", target_dir, output)
     }
 }
 
@@ -537,11 +1033,15 @@ impl Generator for TauriConfigGenerator {
         let before_dev_command = config
             .get("before_dev_command")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "TauriConfigGenerator: missing 'before_dev_command' in config".to_string())?;
+            .ok_or_else(|| {
+                "TauriConfigGenerator: missing 'before_dev_command' in config".to_string()
+            })?;
         let before_build_command = config
             .get("before_build_command")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "TauriConfigGenerator: missing 'before_build_command' in config".to_string())?;
+            .ok_or_else(|| {
+                "TauriConfigGenerator: missing 'before_build_command' in config".to_string()
+            })?;
         let identifier = config
             .get("identifier")
             .and_then(|v| v.as_str())
@@ -554,15 +1054,27 @@ impl Generator for TauriConfigGenerator {
             .map(String::from)
             .unwrap_or_else(|| format!("../{}/dist", frontend_dir));
 
+        // Валидация итоговых путей: каталог фронтенда обязан существовать
+        // (его создал фронтенд-скаффолд ДО tauri init). Отсутствие означает
+        // оборванную цепочку «vite/компаньон → frontend/» — патчить конфиг
+        // на пустой каталог бессмысленно.
+        let frontend_path = project_path.join(frontend_dir);
+        if !frontend_path.is_dir() {
+            return Err(format!(
+                "TauriConfigGenerator: frontend dir '{}' does not exist — the frontend scaffold did not run (no '{}' next to src-tauri/). Aborting the tauri.conf.json patch.",
+                frontend_dir,
+                frontend_path.join("package.json").display()
+            ));
+        }
+
         let tauri_root = if tauri_dir.is_empty() {
             project_path.to_path_buf()
         } else {
             project_path.join(tauri_dir)
         };
         let config_path = tauri_root.join("src-tauri").join("tauri.conf.json");
-        let mut value = read_json(&config_path).map_err(|e| {
-            format!("TauriConfigGenerator: {} (tauri init не создал конфиг?)", e)
-        })?;
+        let mut value = read_json(&config_path)
+            .map_err(|e| format!("TauriConfigGenerator: {} (tauri init не создал конфиг?)", e))?;
 
         if !value.get("build").is_some_and(|v| v.is_object()) {
             value["build"] = serde_json::json!({});
@@ -579,7 +1091,10 @@ impl Generator for TauriConfigGenerator {
             "beforeBuildCommand".into(),
             serde_json::Value::String(before_build_command.to_string()),
         );
-        build.insert("devUrl".into(), serde_json::Value::String(dev_url.to_string()));
+        build.insert(
+            "devUrl".into(),
+            serde_json::Value::String(dev_url.to_string()),
+        );
         build.insert(
             "frontendDist".into(),
             serde_json::Value::String(dist.clone()),
@@ -599,10 +1114,10 @@ impl Generator for TauriConfigGenerator {
             format!("{}/src-tauri/tauri.conf.json", tauri_dir)
         };
         Ok(GenerationReport {
-            created_files: Vec::new(),
             modified_files: vec![reported_path],
-            skipped_files: Vec::new(),
-            message: "Tauri configuration adapted to the frontend/ layout".to_string(),
+            ..GenerationReport::success(
+                "Tauri configuration adapted to the frontend/ layout".to_string(),
+            )
         })
     }
 }
@@ -719,8 +1234,9 @@ impl Generator for VsCodeMergeGenerator {
         Ok(GenerationReport {
             created_files,
             modified_files,
-            skipped_files: Vec::new(),
-            message: "VS Code settings merged with scaffolding CLI configs".to_string(),
+            ..GenerationReport::success(
+                "VS Code settings merged with scaffolding CLI configs".to_string(),
+            )
         })
     }
 }
@@ -764,123 +1280,6 @@ impl Generator for VsCodeFoldersMergeGenerator {
 // ============================================================================
 // Общие помощники
 // ============================================================================
-
-/// Запустить CLI-команду кроссплатформенно (cmd /C на Windows, sh -c на unix)
-/// и дождаться завершения с таймаутом. stderr/stdout пишутся в консоль,
-/// последние строки попадают в сообщение об ошибке.
-async fn run_cli(
-    command: &str,
-    args: &[String],
-    working_dir: &Path,
-    env: Option<&HashMap<String, String>>,
-    timeout_secs: u64,
-) -> Result<GenerationReport, String> {
-    // Не модифицируем аргументы рецепта: отдельные CLI имеют собственный
-    // синтаксис и сами явно объявляют `--yes`, если он им нужен.
-    let mut cmd = spawn_command(command, args);
-    cmd.current_dir(working_dir);
-    if let Some(env) = env {
-        cmd.envs(env);
-    }
-    // CI=1 заставляет npx/npm/create-* CLI пропускать интерактивные промпты.
-    cmd.env("CI", "1");
-    // CI не во всех версиях npm отключает подтверждение установки пакета
-    // через npx; переменная npm гарантирует неинтерактивный режим.
-    cmd.env("NPM_CONFIG_YES", "true");
-    cmd.env("npm_config_yes", "true");
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::null());
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| {
-            format!(
-                "Command failed (failed to spawn)\ncommand: {}\nworking directory: {}\nerror: {}",
-                command_display(command, args),
-                working_dir.display(),
-                e
-            )
-        })?;
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let stderr = child.stderr.take().expect("stderr should be piped");
-    let out_handle = tokio::spawn(async move { tail_lines(stdout).await });
-    let err_handle = tokio::spawn(async move { tail_lines(stderr).await });
-
-    let waited = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await;
-    let status = match waited {
-        Ok(Ok(status)) => status,
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let out_tail = out_handle.await.unwrap_or_default();
-            let err_tail = err_handle.await.unwrap_or_default();
-            return Err(format_command_error(
-                &format!("process wait failed: {e}"),
-                &command_display(command, args),
-                working_dir,
-                &format_output_tails(&out_tail, &err_tail),
-            ));
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let out_tail = out_handle.await.unwrap_or_default();
-            let err_tail = err_handle.await.unwrap_or_default();
-            return Err(format_command_error(
-                &format!("timed out after {timeout_secs} seconds"),
-                &command_display(command, args),
-                working_dir,
-                &format_output_tails(&out_tail, &err_tail),
-            ));
-        }
-    };
-    let out_tail = out_handle.await.unwrap_or_default();
-    let err_tail = err_handle.await.unwrap_or_default();
-
-    if status.success() {
-        return Ok(GenerationReport {
-            created_files: Vec::new(),
-            modified_files: Vec::new(),
-            skipped_files: Vec::new(),
-            message: format!("Command '{}' completed successfully", command_display(command, args)),
-        });
-    }
-
-    Err(format_command_error(
-        &format!("exited with status {}", exit_status_text(&status)),
-        &command_display(command, args),
-        working_dir,
-        &format_output_tails(&out_tail, &err_tail),
-    ))
-}
-
-fn command_display(command: &str, args: &[String]) -> String {
-    std::iter::once(command)
-        .chain(args.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn format_output_tails(stdout: &str, stderr: &str) -> String {
-    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
-    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
-    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
-}
-
-fn format_command_error(reason: &str, command: &str, working_dir: &Path, detail: &str) -> String {
-    format!(
-        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
-        working_dir.display()
-    )
-}
-
-fn exit_status_text(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(code) => code.to_string(),
-        None => "terminated by signal".to_string(),
-    }
-}
 
 /// Слить .vscode из frontend/ и backend/ в корневой .vscode/ и удалить
 /// вложенные папки (см. VsCodeFoldersMergeGenerator).
@@ -943,13 +1342,14 @@ fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String>
     let message = if merged_files.is_empty() {
         "No inner .vscode folders found — nothing to merge".to_string()
     } else {
-        format!("Merged inner .vscode into root: {}", merged_files.join(", "))
+        format!(
+            "Merged inner .vscode into root: {}",
+            merged_files.join(", ")
+        )
     };
     Ok(GenerationReport {
-        created_files: Vec::new(),
         modified_files: merged_files,
-        skipped_files: Vec::new(),
-        message,
+        ..GenerationReport::success(message)
     })
 }
 
@@ -958,7 +1358,13 @@ fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String>
 fn unique_temp_name(project_path: &Path, target_dir: &str) -> String {
     let hint: String = target_dir
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let hint = if hint.is_empty() {
         "scaffold".to_string()
@@ -979,9 +1385,7 @@ fn unique_temp_name(project_path: &Path, target_dir: &str) -> String {
 /// копирования удаляются (перенос, а не копирование); опустевшие каталоги
 /// тоже убираются.
 fn merge_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
-    for entry in std::fs::read_dir(src).map_err(|e| {
-        format!("read_dir {}: {}", src.display(), e)
-    })? {
+    for entry in std::fs::read_dir(src).map_err(|e| format!("read_dir {}: {}", src.display(), e))? {
         let entry = entry.map_err(|e| format!("read_dir entry: {}", e))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
@@ -1059,13 +1463,13 @@ fn parse_json(text: &str) -> Result<serde_json::Value, String> {
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     parse_json(&text)
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let text =
-        serde_json::to_string_pretty(value).map_err(|e| format!("serialize JSON: {}", e))?;
+    let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize JSON: {}", e))?;
     std::fs::write(path, format!("{}\n", text))
         .map_err(|e| format!("write {}: {}", path.display(), e))
 }
@@ -1084,8 +1488,13 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
 /// percent-кодируются (urlencode — пробелы, кавычки, &, %), а шелл
 /// (особенно cmd) раскрывает %VAR%-пары и пережёвывает спецсимволы —
 /// строка `?name=a%20b&deps=web` в кавычках cmd даст `?name=a20b`. Прямой
-/// spawn передаёт аргумент curl'у байт-в-байт.
-async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
+/// spawn передаёт аргумент curl'у байт-в-байт (build_command не оборачивает
+/// команду без метасимволов, поэтому curl идёт напрямую).
+async fn download_starter(
+    url: &str,
+    zip_path: &Path,
+    sink: Option<&ExecutionEventSink>,
+) -> Result<(), String> {
     let zip_str = zip_path.to_string_lossy().to_string();
     let args: Vec<String> = vec![
         "-sSL".into(),
@@ -1099,76 +1508,85 @@ async fn download_starter(url: &str, zip_path: &Path) -> Result<(), String> {
         "-o".into(),
         zip_str,
     ];
-    let mut cmd = TokioCommand::new("curl");
-    cmd.args(&args);
-    cmd.current_dir(zip_path.parent().unwrap_or(Path::new(".")));
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::null());
+    let spec = ProcessSpec {
+        command: "curl".into(),
+        args,
+        working_dir: zip_path.parent().map(|p| p.to_path_buf()),
+        env: None,
+        timeout: Some(Duration::from_secs(180)),
+        stdin: StdinMode::Null,
+        // curl не нуждается в CI-переменных npm — их не инжектируем.
+        ci_mode: false,
+    };
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Spring Initializr отказал: failed to spawn curl: {}", e))?;
-    let stderr = child.stderr.take().expect("stderr should be piped");
-    let err_handle = tokio::spawn(async move { tail_lines(stderr).await });
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let out_handle = tokio::spawn(async move { tail_lines(stdout).await });
-
-    let waited = tokio::time::timeout(Duration::from_secs(180), child.wait()).await;
-    let status = match waited {
-        Ok(Ok(status)) => status,
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(format!("Spring Initializr отказал: failed to run curl: {}", e));
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(
-                "Spring Initializr отказал: timed out after 180 seconds".to_string(),
-            );
+    let (http_code, exit_code, stderr_tail) = match ProcessRunner::run(spec, sink).await {
+        Ok(output) => (
+            output.stdout_tail.trim().parse::<u32>().unwrap_or(0),
+            None,
+            output.stderr_tail,
+        ),
+        Err(error) => {
+            let http_code = error.stdout_tail.trim().parse::<u32>().unwrap_or(0);
+            let stderr_tail = error.stderr_tail;
+            match &error.kind {
+                ProcessErrorKind::Spawn { source } => {
+                    return Err(format!(
+                        "Spring Initializr отказал: failed to spawn curl: {}",
+                        source
+                    ));
+                }
+                ProcessErrorKind::Wait { source } => {
+                    return Err(format!(
+                        "Spring Initializr отказал: failed to run curl: {}",
+                        source
+                    ));
+                }
+                ProcessErrorKind::Timeout { timeout_secs } => {
+                    return Err(format!(
+                        "Spring Initializr отказал: timed out after {} seconds",
+                        timeout_secs
+                    ));
+                }
+                ProcessErrorKind::Exit { code } => (http_code, Some(code.clone()), stderr_tail),
+            }
         }
     };
-    let stderr_tail = err_handle.await.unwrap_or_default();
-    let stdout_tail = out_handle.await.unwrap_or_default();
 
     // HTTP-статус от curl (-w "%{http_code}"): при любом HTTP-ответе
     // (включая 4xx/5xx) процесс завершается успешно, статус — в stdout.
-    let http_code: u32 = stdout_tail.trim().parse().unwrap_or(0);
-
-    if !status.success() && http_code == 0 {
-        // curl не дождался HTTP-ответа (недоступный хост, обрыв соединения).
-        let tail = stderr_tail.trim();
-        let reason = if tail.is_empty() {
-            format!("HTTP request failed (exit code {})", status.code().unwrap_or(-1))
-        } else {
-            truncate(tail, 500)
-        };
-        return Err(format!("Spring Initializr отказал: {}", reason));
+    if http_code != 0 {
+        if http_code != 200 {
+            // Статус != 200: в project.zip лежит тело ошибки Initializr
+            // (JSON с полем message или HTML). Извлекаем причину, НЕ сохраняем
+            // сломанный архив (удаляем) и прерываем генерацию.
+            let text = match std::fs::read(zip_path) {
+                Ok(bytes) if !bytes.is_empty() => extract_error_text(&bytes),
+                _ => format!("HTTP request failed with status {}", http_code),
+            };
+            let _ = std::fs::remove_file(zip_path);
+            return Err(format!("Spring Initializr error: {}", text));
+        }
+        return Ok(());
     }
 
-    if http_code != 200 {
-        // Статус != 200: в project.zip лежит тело ошибки Initializr
-        // (JSON с полем message или HTML). Извлекаем причину, НЕ сохраняем
-        // сломанный архив (удаляем) и прерываем генерацию.
-        let text = match std::fs::read(zip_path) {
-            Ok(bytes) if !bytes.is_empty() => extract_error_text(&bytes),
-            _ => format!("HTTP request failed with status {}", http_code),
-        };
-        let _ = std::fs::remove_file(zip_path);
-        return Err(format!("Spring Initializr error: {}", text));
-    }
-
-    Ok(())
+    // curl не дождался HTTP-ответа (недоступный хост, обрыв соединения).
+    let tail = stderr_tail.trim();
+    let reason = if tail.is_empty() {
+        format!(
+            "HTTP request failed (exit code {})",
+            exit_code.unwrap_or_else(|| "-1".into())
+        )
+    } else {
+        truncate(tail, 500)
+    };
+    Err(format!("Spring Initializr отказал: {}", reason))
 }
 
 /// Настоящий ZIP-архив? Проверяем магические байты (PK\x03\x04 — обычный
 /// архив, PK\x05\x06 — пустой архив). Тело HTTP-ошибки (JSON/HTML) сюда
 /// не подходит — это и есть детектор «ответ был не архивом».
 fn is_zip_archive(bytes: &[u8]) -> bool {
-    bytes.len() >= 4
-        && (bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06"))
+    bytes.len() >= 4 && (bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06"))
 }
 
 /// Извлечь человекочитаемый текст ошибки из тела HTTP-ответа Initializr.
@@ -1189,7 +1607,13 @@ fn extract_error_text(body: &[u8]) -> String {
     // HTML или сырой текст: схлопываем пробелы и управляющие символы.
     let cleaned: String = trimmed
         .chars()
-        .map(|c| if c.is_control() && c != '\n' && c != '\t' { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -1240,154 +1664,9 @@ fn urlencode(input: &str) -> String {
     out
 }
 
-/// Параметр в командную строку cmd.exe: кавычки нужны при пробелах или
-/// cmd-метасимволах (включая % — cmd раскрывает %VAR% даже в кавычках,
-/// поэтому такие аргументы обязаны быть в кавычках и не содержать валидных
-/// %VAR% пар). Внутренние кавычки удваиваются (cmd-эскейп "" внутри строки).
-fn win_quote_arg(arg: &str) -> String {
-    let needs_quote = arg.is_empty()
-        || arg
-            .chars()
-            // `@` is valid in npm package names (`@nestjs/cli`, `create-vite@latest`).
-            // Do not quote it by itself: cmd can pass the quotes through to npm,
-            // producing EINVALIDPACKAGENAME for otherwise valid packages.
-            .any(|c| c.is_whitespace() || "&()[]{}<>^|%!\"".contains(c));
-    if !needs_quote {
-        arg.to_string()
-    } else {
-        format!("\"{}\"", arg.replace('"', "\"\""))
-    }
-}
-
-/// Командная строка для `cmd /S /C`: каждый токен кавычкуется по
-/// необходимости, вся строка оборачивается во ВНЕШНИЕ кавычки — cmd снимает
-/// внешнюю пару, внутренние кавычки сохраняются. Без внешней обёртки
-/// команда-путь с пробелами ломается: cmd снимает первую кавычку и режет
-/// токен по пробелу («C:\Users\John» → «Doe\pip.exe» отдельным аргументом).
-pub fn win_command_line(command: &str, args: &[String]) -> String {
-    let mut line = win_quote_arg(command);
-    for arg in args {
-        line.push(' ');
-        line.push_str(&win_quote_arg(arg));
-    }
-    format!("\"{}\"", line)
-}
-
-/// Параметр для `sh -c`: одинарные кавычки с экранированием '\'' —
-/// защищает пробелы и метасимволы (&, ;, |, $, `, ", ...).
-pub fn sh_quote(arg: &str) -> String {
-    let needs_quote = arg.is_empty()
-        || arg
-            .chars()
-            .any(|c| c.is_whitespace() || "&;|<>()$`\\\"'*?[]~#!{}".contains(c));
-    if !needs_quote {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', "'\\''"))
-    }
-}
-
-/// Кроссплатформенный запуск команды (как в executor::run_command).
-fn spawn_command(command: &str, args: &[String]) -> TokioCommand {
-    use std::env::consts::OS;
-    match OS {
-        "windows" => {
-            let is_powershell = command.starts_with("powershell")
-                || command.starts_with("pwsh")
-                || command.contains("Get-")
-                || command.contains("Set-")
-                || command.contains("Invoke-")
-                || command.contains("New-");
-            if is_powershell {
-                let mut cmd = TokioCommand::new("powershell");
-                cmd.arg("-Command").arg(command).args(args);
-                cmd
-            } else {
-                // Не прогоняем обычные CLI через `cmd /C`: вложенные кавычки
-                // (особенно у `node -e` и путей Composer) в таком режиме
-                // искажаются ещё до запуска процесса. Прямой запуск также
-                // корректно обрабатывает stdout/stderr и коды возврата.
-                let program = windows_command_program(command);
-                let batch = is_windows_batch(&program);
-                let mut cmd = if batch {
-                    let mut shell = TokioCommand::new("cmd");
-                    shell.arg("/D").arg("/S").arg("/C").arg(windows_shell_line(&program, args));
-                    shell
-                } else {
-                    TokioCommand::new(program)
-                };
-                if !batch {
-                    cmd.args(args);
-                }
-                cmd
-            }
-        }
-        _ => {
-            let mut shell_cmd = String::from(command);
-            for arg in args {
-                shell_cmd.push(' ');
-                shell_cmd.push_str(&sh_quote(arg));
-            }
-            let mut cmd = TokioCommand::new("sh");
-            cmd.arg("-c").arg(shell_cmd);
-            cmd
-        }
-    }
-}
-
-/// Имя исполняемого файла для прямого запуска на Windows. npm-экосистема
-/// устанавливает эти команды как batch-файлы; CreateProcess не умеет
-/// запускать `.cmd/.bat` без cmd.exe, поэтому явно добавляем расширение.
-/// Пути и уже расширенные имена оставляем без изменений.
-pub fn windows_command_program(command: &str) -> String {
-    let trimmed = command.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.ends_with(".cmd")
-        || lower.ends_with(".bat")
-        || lower.ends_with(".exe")
-        || trimmed.contains('\\')
-        || trimmed.contains('/')
-    {
-        return trimmed.to_string();
-    }
-    match lower.as_str() {
-        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" => {
-            format!("{}.cmd", trimmed)
-        }
-        "composer" => "composer.bat".to_string(),
-        _ => trimmed.to_string(),
-    }
-}
-
-pub fn is_windows_batch(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
-    lower.ends_with(".cmd") || lower.ends_with(".bat")
-}
-
-/// Безопасная строка для cmd /C: кавычки только вокруг отдельных токенов,
-/// без внешней пары, которая превращала `node -e "..."` в один аргумент.
-pub fn windows_shell_line(command: &str, args: &[String]) -> String {
-    let mut line = win_quote_arg(command);
-    for arg in args {
-        line.push(' ');
-        line.push_str(&win_quote_arg(arg));
-    }
-    line
-}
-
-/// Читает поток построчно, печатает в консоль и возвращает последние 8 строк.
-async fn tail_lines<R: AsyncRead + Unpin>(reader: R) -> String {
-    let mut lines = BufReader::new(reader).lines();
-    let mut tail: VecDeque<String> = VecDeque::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        println!("{}", line);
-        tail.push_back(line);
-        if tail.len() > 8 {
-            tail.pop_front();
-        }
-    }
-    tail.into_iter().collect::<Vec<_>>().join("\n")
-}
+/// Кроссплатформенный запуск команды реализован в engine::process
+/// (ProcessRunner::run) — генераторы используют его через run_cli_process
+/// и download_starter. Отдельной логики спавна здесь нет.
 
 #[cfg(test)]
 mod tests {
@@ -1400,8 +1679,7 @@ mod tests {
         // «Spring Initializr отказал: <message>».
         let text = extract_error_text(body);
         assert_eq!(
-            text,
-            "Invalid dependency 'web' for type 'maven-project'",
+            text, "Invalid dependency 'web' for type 'maven-project'",
             "message извлекается без статуса/error: {text}"
         );
     }
@@ -1410,7 +1688,10 @@ mod tests {
     fn extract_error_text_falls_back_to_raw_html() {
         let body = b"<html><body>Spring Initializr is temporarily down</body></html>";
         let text = extract_error_text(body);
-        assert!(text.contains("Spring Initializr is temporarily down"), "{text}");
+        assert!(
+            text.contains("Spring Initializr is temporarily down"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1456,40 +1737,11 @@ mod tests {
     }
 
     #[test]
-    fn win_command_line_quotes_spaces_and_metachars() {
-        // Команда-путь с пробелами (venv\Scripts\pip.exe) оборачивается во
-        // внешние кавычки: cmd /S /C снимает внешнюю пару, внутренние
-        // кавычки сохраняются — токен не режется по пробелу.
-        let line = win_command_line(
-            "C:\\Users\\John Doe\\app\\venv\\Scripts\\pip.exe",
-            &["install".into(), "-r".into(), "C:\\req file.txt".into(), "alembic".into()],
-        );
-        assert_eq!(
-            line,
-            "\"\"C:\\Users\\John Doe\\app\\venv\\Scripts\\pip.exe\" install -r \"C:\\req file.txt\" alembic\""
-        );
-        // Простая команда: внешняя обёртка есть, лишних кавычек внутри нет.
-        let plain = win_command_line("php", &["--version".into()]);
-        assert_eq!(plain, "\"php --version\"");
-        // %: cmd раскрывает %VAR%, поэтому аргумент обязан быть в кавычках.
-        let curl = win_command_line("curl", &["-w".into(), "%{http_code}".into()]);
-        assert_eq!(curl, "\"curl -w \"%{http_code}\"\"");
-    }
-
-    #[test]
-    fn sh_quote_protects_metachars() {
-        assert_eq!(sh_quote("plain"), "plain");
-        assert_eq!(sh_quote("a b"), "'a b'");
-        assert_eq!(sh_quote("a&b;c"), "'a&b;c'");
-        assert_eq!(sh_quote("it's"), "'it'\\''s'");
-        assert_eq!(sh_quote("$HOME"), "'$HOME'");
-    }
-
-    #[test]
     fn cli_generator_rejects_config_without_command() {
         let gen = CliGenerator;
         let ctx = WizardContext::default();
-        let result = tokio_test_block_on(gen.generate(&ctx, Path::new("."), &serde_json::json!({})));
+        let result =
+            tokio_test_block_on(gen.generate(&ctx, Path::new("."), &serde_json::json!({})));
         assert!(result.is_err(), "конфиг без command обязан падать");
     }
 
@@ -1503,42 +1755,463 @@ mod tests {
 
     /// Уникальная временная папка для тестов (по имени тега).
     fn temp_test_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("stackpilot_gen_{}_{}", tag, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_gen_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }
 
     #[test]
-    fn scaffold_generator_validates_placeholder_config() {
+    fn scaffold_step_config_parses_full_config() {
+        let cfg = serde_json::json!({
+            "command": "npx",
+            "args": ["create-vite@latest", "__TARGET__", "--template", "react-ts"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "working_dir": ".",
+            "temp_dir_allowed": false,
+            "expected_outputs": ["package.json", "src"],
+            "interactive": [
+                {"trigger": "pm?", "response_type": {"Text": "npm"}},
+                {"trigger": "git?", "response_type": "n"},
+            ],
+            "timeout_secs": 90,
+        });
+        let parsed = ScaffoldStepConfig::from_json(&cfg).expect("конфиг должен парситься");
+        assert_eq!(parsed.command, "npx");
+        assert_eq!(
+            parsed.args,
+            vec!["create-vite@latest", "__TARGET__", "--template", "react-ts"]
+        );
+        assert_eq!(parsed.capability, ScaffoldCapability::CreatesNamedDirectory);
+        assert_eq!(parsed.target_dir, "frontend");
+        assert_eq!(parsed.working_dir.as_deref(), Some("."));
+        assert_eq!(parsed.temp_dir_allowed, Some(false));
+        assert_eq!(parsed.expected_outputs, vec!["package.json", "src"]);
+        assert_eq!(parsed.interactive.len(), 2, "интерактивные ответы парсятся");
+        assert!(
+            matches!(parsed.interactive[0].response_type, ResponseType::Text(ref t) if t == "npm")
+        );
+        assert!(matches!(
+            parsed.interactive[1].response_type,
+            ResponseType::Confirm(false)
+        ));
+        assert_eq!(parsed.timeout_secs, 90);
+    }
+
+    #[test]
+    fn scaffold_step_config_applies_defaults() {
+        let cfg = serde_json::json!({
+            "command": "flutter",
+            "args": ["create", "__TARGET__"],
+            "capability": "creates_project_and_may_prompt",
+        });
+        let parsed = ScaffoldStepConfig::from_json(&cfg).expect("конфиг должен парситься");
+        assert_eq!(parsed.target_dir, ".");
+        assert_eq!(parsed.working_dir, None);
+        assert_eq!(
+            parsed.temp_dir_allowed, None,
+            "по умолчанию — по способности"
+        );
+        assert!(parsed.expected_outputs.is_empty());
+        assert!(parsed.interactive.is_empty());
+        assert_eq!(parsed.timeout_secs, 600);
+    }
+
+    #[test]
+    fn scaffold_step_config_requires_capability() {
+        let cfg = serde_json::json!({
+            "command": "npx",
+            "args": ["create-vite@latest", "__TARGET__"],
+        });
+        let err = ScaffoldStepConfig::from_json(&cfg).unwrap_err();
+        assert!(err.contains("missing 'capability'"), "{err}");
+    }
+
+    #[test]
+    fn scaffold_step_config_rejects_unknown_capability() {
+        let cfg = serde_json::json!({
+            "command": "npx",
+            "args": ["create-vite@latest", "__TARGET__"],
+            "capability": "creates_magic_dir",
+        });
+        let err = ScaffoldStepConfig::from_json(&cfg).unwrap_err();
+        assert!(
+            err.contains("unknown 'capability'") && err.contains("creates_magic_dir"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn scaffold_step_config_parses_all_capabilities() {
+        for (name, expected) in [
+            (
+                "creates_named_directory",
+                ScaffoldCapability::CreatesNamedDirectory,
+            ),
+            (
+                "creates_in_current_directory",
+                ScaffoldCapability::CreatesInCurrentDirectory,
+            ),
+            (
+                "creates_project_and_may_prompt",
+                ScaffoldCapability::CreatesProjectAndMayPrompt,
+            ),
+            (
+                "generates_root_shell",
+                ScaffoldCapability::GeneratesRootShell,
+            ),
+            (
+                "does_not_create_a_project",
+                ScaffoldCapability::DoesNotCreateAProject,
+            ),
+        ] {
+            let cfg = serde_json::json!({
+                "command": "x",
+                "args": [],
+                "capability": name,
+            });
+            let parsed =
+                ScaffoldStepConfig::from_json(&cfg).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(parsed.capability, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn scaffold_capability_supports_temp_dir() {
+        // Временная папка (temp+move) разрешена только там, где CLI сам
+        // создаёт именованную папку и её содержимое можно перенести.
+        assert!(ScaffoldCapability::CreatesNamedDirectory.supports_temp_dir());
+        assert!(ScaffoldCapability::CreatesProjectAndMayPrompt.supports_temp_dir());
+        assert!(!ScaffoldCapability::CreatesInCurrentDirectory.supports_temp_dir());
+        assert!(!ScaffoldCapability::GeneratesRootShell.supports_temp_dir());
+        assert!(!ScaffoldCapability::DoesNotCreateAProject.supports_temp_dir());
+    }
+
+    #[test]
+    fn scaffold_generator_rejects_config_without_capability() {
         let gen = ScaffoldGenerator;
         let ctx = WizardContext::default();
-        // нет name_arg — конфиг обязан падать без запуска CLI
+        // нет capability — конфиг обязан падать без запуска CLI
         let cfg = serde_json::json!({ "command": "npx", "args": ["create-vite@latest", "app"] });
         let res = tokio_test_block_on(gen.generate(&ctx, Path::new("."), &cfg));
-        assert!(res.is_err(), "конфиг без name_arg обязан падать");
+        assert!(res.is_err(), "конфиг без capability обязан падать");
 
-        // name_arg вне границ args
+        // named-directory способность без плейсхолдера в args
         let cfg = serde_json::json!({
             "command": "npx",
             "args": ["create-vite@latest", "app"],
-            "name_arg": 5,
+            "capability": "creates_named_directory",
             "target_dir": ".",
-            "dot_capable": true,
         });
         let res = tokio_test_block_on(gen.generate(&ctx, Path::new("."), &cfg));
-        assert!(res.is_err(), "name_arg вне границ обязан падать");
+        assert!(
+            res.is_err(),
+            "named-directory без плейсхолдера обязан падать"
+        );
+    }
 
-        // плейсхолдер не на месте
+    // ==================== fake CLI: выполнение по способностям =============
+
+    /// Фейковые CLI-скаффолдеры (.cmd на Windows, sh на Unix) в temp-папке:
+    ///   - fake-create: создаёт ПОДПАПКУ <name> с package.json внутри;
+    ///   - fake-matroshka: создаёт <name>/<name>/package.json (вложенная папка);
+    ///   - fake-create-empty: создаёт только <name>, без package.json;
+    ///   - fake-inplace: пишет package.json в ТЕКУЩИЙ каталог;
+    ///   - fake-fail: завершается с exit 1;
+    ///   - fake-nothing: exit 0 без побочных эффектов.
+    fn fake_cli_dir(tag: &str) -> std::path::PathBuf {
+        let dir = temp_test_dir(&format!("{}_clis", tag));
+        if cfg!(target_os = "windows") {
+            std::fs::write(
+                dir.join("fake-create.cmd"),
+                "@echo off\r\nmkdir \"%1\"\r\necho {}> \"%1\\package.json\"\r\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-matroshka.cmd"),
+                "@echo off\r\nmkdir \"%1\\%1\"\r\necho {}> \"%1\\%1\\package.json\"\r\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-create-empty.cmd"),
+                "@echo off\r\nmkdir \"%1\"\r\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-inplace.cmd"),
+                "@echo off\r\necho {}> package.json\r\n",
+            )
+            .unwrap();
+            std::fs::write(dir.join("fake-fail.cmd"), "@echo off\r\nexit /b 1\r\n").unwrap();
+            std::fs::write(dir.join("fake-nothing.cmd"), "@echo off\r\n").unwrap();
+        } else {
+            std::fs::write(
+                dir.join("fake-create.sh"),
+                "#!/bin/sh\nmkdir \"$1\"\necho '{}' > \"$1/package.json\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-matroshka.sh"),
+                "#!/bin/sh\nmkdir -p \"$1/$1\"\necho '{}' > \"$1/$1/package.json\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-create-empty.sh"),
+                "#!/bin/sh\nmkdir \"$1\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("fake-inplace.sh"),
+                "#!/bin/sh\necho '{}' > package.json\n",
+            )
+            .unwrap();
+            std::fs::write(dir.join("fake-fail.sh"), "#!/bin/sh\nexit 1\n").unwrap();
+            std::fs::write(dir.join("fake-nothing.sh"), "#!/bin/sh\n").unwrap();
+        }
+        dir
+    }
+
+    fn fake_cli(dir: &Path, name: &str) -> String {
+        let ext = if cfg!(target_os = "windows") {
+            ".cmd"
+        } else {
+            ".sh"
+        };
+        dir.join(format!("{}{}", name, ext))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn scaffold_named_directory_uses_temp_and_merges() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_named");
+        let clis = fake_cli_dir("scaffold_named");
+        let ctx = WizardContext::default();
         let cfg = serde_json::json!({
-            "command": "npx",
-            "args": ["create-vite@latest", "app"],
-            "name_arg": 1,
-            "target_dir": ".",
-            "dot_capable": true,
+            "command": fake_cli(&clis, "fake-create"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json"],
         });
-        let res = tokio_test_block_on(gen.generate(&ctx, Path::new("."), &cfg));
-        assert!(res.is_err(), "отсутствие плейсхолдера обязано падать");
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("scaffold должен пройти");
+
+        // package.json лежит В frontend/ — без матрёшки frontend/<name>/
+        assert!(
+            project.join("frontend/package.json").exists(),
+            "проект в frontend/"
+        );
+        assert_eq!(report.created_files, vec!["frontend/package.json"]);
+        // временная папка удалена, матрёшки нет
+        assert!(!project.join("frontend/frontend").exists(), "нет матрёшки");
+        let leftovers: Vec<_> = std::fs::read_dir(&project)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("temp_"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp-папки удаляются: {leftovers:?}");
+        assert!(
+            report
+                .skipped_dependent_steps
+                .iter()
+                .any(|s| s.contains("nested")),
+            "flatten-скип фиксируется в отчёте: {:?}",
+            report.skipped_dependent_steps
+        );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_named_directory_without_temp_lets_cli_create_target() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_notemp");
+        let clis = fake_cli_dir("scaffold_notemp");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-create"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "temp_dir_allowed": false,
+            "expected_outputs": ["package.json"],
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("scaffold должен пройти");
+        assert!(project.join("frontend/package.json").exists());
+        // CLI создал сам target — merge пропущен и это зафиксировано
+        assert!(
+            report
+                .skipped_dependent_steps
+                .iter()
+                .any(|s| s.contains("merge")),
+            "{:?}",
+            report.skipped_dependent_steps
+        );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_flattens_nested_folder_with_warning() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_matroshka");
+        let clis = fake_cli_dir("scaffold_matroshka");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-matroshka"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json"],
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("scaffold должен пройти");
+        assert!(
+            project.join("frontend/package.json").exists(),
+            "вложенная папка распрямлена"
+        );
+        assert!(
+            report
+                .validation_warnings
+                .iter()
+                .any(|w| w.contains("nested")),
+            "факт матрёшки фиксируется предупреждением: {:?}",
+            report.validation_warnings
+        );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_in_current_directory_writes_inside_target() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_inplace");
+        let clis = fake_cli_dir("scaffold_inplace");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-inplace"),
+            "args": ["__TARGET__"],
+            "capability": "creates_in_current_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json"],
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("scaffold должен пройти");
+        assert!(
+            project.join("frontend/package.json").exists(),
+            "CLI пишет ВНУТРИ target"
+        );
+        assert_eq!(report.created_files, vec!["frontend/package.json"]);
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_missing_postcondition_fails_with_all_paths() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_postcond");
+        let clis = fake_cli_dir("scaffold_postcond");
+        let ctx = WizardContext::default();
+        // CLI создаёт папку, но не кладёт ожидаемые файлы
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-create-empty"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json", "src/index.ts"],
+        });
+        let err = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect_err("недостающие пост-условия обязаны падать");
+        assert!(
+            err.contains("package.json"),
+            "в ошибке все недостающие пути: {err}"
+        );
+        assert!(
+            err.contains("src/index.ts"),
+            "в ошибке все недостающие пути: {err}"
+        );
+        assert!(
+            err.contains("frontend"),
+            "ошибка указывает каталог назначения: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_cli_exit_zero_without_creating_dir_fails() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_nodir");
+        let clis = fake_cli_dir("scaffold_nodir");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-nothing"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json"],
+        });
+        let err = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect_err("exit 0 без созданной папки обязан падать");
+        assert!(
+            err.contains("did not create the expected directory"),
+            "{err}"
+        );
+        assert!(
+            err.contains("frontend"),
+            "ошибка называет ожидаемую папку: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_cli_failure_is_reported() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_cli_fail");
+        let clis = fake_cli_dir("scaffold_cli_fail");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-fail"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "expected_outputs": ["package.json"],
+        });
+        let err = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect_err("exit 1 обязан падать");
+        assert!(err.to_lowercase().contains("exit"), "{err}");
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_does_not_create_project_runs_in_working_dir() {
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_doesnot");
+        let clis = fake_cli_dir("scaffold_doesnot");
+        let ctx = WizardContext::default();
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-inplace"),
+            "args": ["init"],
+            "capability": "does_not_create_a_project",
+            "working_dir": "backend",
+            "expected_outputs": ["backend/package.json"],
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("scaffold должен пройти");
+        assert!(
+            project.join("backend/package.json").exists(),
+            "CLI работает в рабочей директории, а не в корне"
+        );
+        assert_eq!(report.created_files, vec!["backend/package.json"]);
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
     }
 
     #[test]
@@ -1569,8 +2242,14 @@ mod tests {
             "src-config",
             "скрытый файл переносится (перезапись)"
         );
-        assert_eq!(std::fs::read_to_string(dst.join("keep.txt")).unwrap(), "keep");
-        assert!(!src.join("package.json").exists(), "исходный файл удаляется после копирования");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(
+            !src.join("package.json").exists(),
+            "исходный файл удаляется после копирования"
+        );
         assert!(!src.join(".git").exists(), "каталог переносится целиком");
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
@@ -1587,10 +2266,22 @@ mod tests {
             "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" }
         });
         let merged = merge_json(&base, &extra);
-        assert_eq!(merged["typescript.tsdk"], "node_modules/typescript/lib", "ключ CLI побеждает");
-        assert_eq!(merged["editor.formatOnSave"], true, "наши ключи добавляются");
-        assert_eq!(merged["[typescript]"]["editor.formatOnSave"], false, "вложенный ключ CLI побеждает");
-        assert_eq!(merged["[typescript]"]["editor.defaultFormatter"], "esbenp.prettier-vscode");
+        assert_eq!(
+            merged["typescript.tsdk"], "node_modules/typescript/lib",
+            "ключ CLI побеждает"
+        );
+        assert_eq!(
+            merged["editor.formatOnSave"], true,
+            "наши ключи добавляются"
+        );
+        assert_eq!(
+            merged["[typescript]"]["editor.formatOnSave"], false,
+            "вложенный ключ CLI побеждает"
+        );
+        assert_eq!(
+            merged["[typescript]"]["editor.defaultFormatter"],
+            "esbenp.prettier-vscode"
+        );
     }
 
     #[test]
@@ -1612,24 +2303,39 @@ mod tests {
 
         let ctx = WizardContext::default();
         let cfg = serde_json::json!({ "lang": "typescript", "dirs": [".", "frontend"] });
-        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("merge должен пройти");
+        let report =
+            tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("merge должен пройти");
 
         // Ключ CLI сохранился, наши ключи добавлены
         let merged: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(vscode.join("settings.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(vscode.join("settings.json")).unwrap())
+                .unwrap();
         assert_eq!(merged["typescript.tsdk"], "node_modules/typescript/lib");
         assert_eq!(merged["editor.formatOnSave"], true);
 
         // Рекомендации объединяются без дубликатов
         let exts: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(vscode.join("extensions.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(vscode.join("extensions.json")).unwrap())
+                .unwrap();
         let recs = exts["recommendations"].as_array().unwrap();
-        assert!(recs.iter().any(|r| r == "dbaeumer.vscode-eslint"), "{recs:?}");
-        assert!(recs.iter().any(|r| r == "esbenp.prettier-vscode"), "{recs:?}");
+        assert!(
+            recs.iter().any(|r| r == "dbaeumer.vscode-eslint"),
+            "{recs:?}"
+        );
+        assert!(
+            recs.iter().any(|r| r == "esbenp.prettier-vscode"),
+            "{recs:?}"
+        );
 
         // В frontend/ (без .vscode от CLI) папка НЕ создаётся
-        assert!(!dir.join("frontend").join(".vscode").exists(), "не-корневой .vscode без CLI не создаётся");
-        assert!(report.modified_files.iter().any(|f| f == "./.vscode/settings.json"));
+        assert!(
+            !dir.join("frontend").join(".vscode").exists(),
+            "не-корневой .vscode без CLI не создаётся"
+        );
+        assert!(report
+            .modified_files
+            .iter()
+            .any(|f| f == "./.vscode/settings.json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1649,10 +2355,15 @@ mod tests {
         let cfg = serde_json::json!({ "lang": "typescript", "dirs": [".", "frontend"] });
         tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("merge должен пройти");
 
-        let merged: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(sub_vscode.join("settings.json")).unwrap()).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(sub_vscode.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(merged["typescript.tsdk"], "node_modules/typescript/lib");
-        assert_eq!(merged["editor.formatOnSave"], true, "наши настройки добавлены в подкаталог CLI");
+        assert_eq!(
+            merged["editor.formatOnSave"], true,
+            "наши настройки добавлены в подкаталог CLI"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1662,6 +2373,10 @@ mod tests {
         let dir = temp_test_dir("tauri_config");
         let src_tauri = dir.join("src-tauri");
         std::fs::create_dir_all(&src_tauri).unwrap();
+        // Фронтенд-каталог обязан существовать (его создал фронтенд-скаффолд
+        // ДО tauri init — генератор валидирует пути перед патчем).
+        std::fs::create_dir_all(dir.join("frontend")).unwrap();
+        std::fs::write(dir.join("frontend").join("package.json"), "{}").unwrap();
         std::fs::write(
             src_tauri.join("tauri.conf.json"),
             r#"{
@@ -1687,19 +2402,32 @@ mod tests {
             "before_build_command": "npm --prefix frontend run build",
             "identifier": "com.myapp",
         });
-        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("патч должен пройти");
-        assert_eq!(report.modified_files, vec!["src-tauri/tauri.conf.json".to_string()]);
+        let report =
+            tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("патч должен пройти");
+        assert_eq!(
+            report.modified_files,
+            vec!["src-tauri/tauri.conf.json".to_string()]
+        );
 
         let patched: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(src_tauri.join("tauri.conf.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(patched["build"]["frontendDist"], "../frontend/dist");
-        assert_eq!(patched["build"]["beforeDevCommand"], "npm --prefix frontend run dev");
-        assert_eq!(patched["build"]["beforeBuildCommand"], "npm --prefix frontend run build");
+        assert_eq!(
+            patched["build"]["beforeDevCommand"],
+            "npm --prefix frontend run dev"
+        );
+        assert_eq!(
+            patched["build"]["beforeBuildCommand"],
+            "npm --prefix frontend run build"
+        );
         assert_eq!(patched["build"]["devUrl"], "http://localhost:5173");
         assert_eq!(patched["identifier"], "com.myapp");
-        assert!(patched["build"].get("distDir").is_none(), "v2-конфиг не получает legacy distDir");
+        assert!(
+            patched["build"].get("distDir").is_none(),
+            "v2-конфиг не получает legacy distDir"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1709,6 +2437,8 @@ mod tests {
         let dir = temp_test_dir("tauri_config_v1");
         let src_tauri = dir.join("src-tauri");
         std::fs::create_dir_all(&src_tauri).unwrap();
+        std::fs::create_dir_all(dir.join("frontend")).unwrap();
+        std::fs::write(dir.join("frontend").join("package.json"), "{}").unwrap();
         std::fs::write(
             src_tauri.join("tauri.conf.json"),
             r#"{
@@ -1732,7 +2462,10 @@ mod tests {
             &std::fs::read_to_string(src_tauri.join("tauri.conf.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(patched["build"]["distDir"], "../frontend/dist", "legacy distDir переписывается");
+        assert_eq!(
+            patched["build"]["distDir"], "../frontend/dist",
+            "legacy distDir переписывается"
+        );
         assert_eq!(patched["build"]["frontendDist"], "../frontend/dist");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1761,6 +2494,8 @@ mod tests {
         let dir = temp_test_dir("tauri_config_seg");
         let src_tauri = dir.join("backend").join("src-tauri");
         std::fs::create_dir_all(&src_tauri).unwrap();
+        std::fs::create_dir_all(dir.join("frontend")).unwrap();
+        std::fs::write(dir.join("frontend").join("package.json"), "{}").unwrap();
         std::fs::write(
             src_tauri.join("tauri.conf.json"),
             r#"{
@@ -1779,15 +2514,25 @@ mod tests {
             "before_build_command": "npm --prefix ../frontend run build",
             "identifier": "com.myapp",
         });
-        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("патч должен пройти");
-        assert_eq!(report.modified_files, vec!["backend/src-tauri/tauri.conf.json".to_string()]);
+        let report =
+            tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("патч должен пройти");
+        assert_eq!(
+            report.modified_files,
+            vec!["backend/src-tauri/tauri.conf.json".to_string()]
+        );
 
         let patched: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(src_tauri.join("tauri.conf.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(patched["build"]["frontendDist"], "../../frontend/dist", "движок задаёт путь из backend/");
-        assert_eq!(patched["build"]["beforeDevCommand"], "npm --prefix ../frontend run dev");
+        assert_eq!(
+            patched["build"]["frontendDist"], "../../frontend/dist",
+            "движок задаёт путь из backend/"
+        );
+        assert_eq!(
+            patched["build"]["beforeDevCommand"],
+            "npm --prefix ../frontend run dev"
+        );
         assert_eq!(patched["identifier"], "com.myapp");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1830,18 +2575,48 @@ mod tests {
         let report = tokio_test_block_on(gen.generate(&ctx, &dir, &serde_json::json!({})))
             .expect("merge должен пройти");
 
-        assert!(!front_vscode.exists(), "frontend/.vscode удаляется после слияния");
-        assert!(!back_vscode.exists(), "backend/.vscode удаляется после слияния");
-        assert!(report.modified_files.contains(&"frontend/.vscode/settings.json".to_string()), "{:?}", report.modified_files);
-        assert!(report.modified_files.contains(&"frontend/.vscode/extensions.json".to_string()), "{:?}", report.modified_files);
-        assert!(report.modified_files.contains(&"backend/.vscode/extensions.json".to_string()), "{:?}", report.modified_files);
+        assert!(
+            !front_vscode.exists(),
+            "frontend/.vscode удаляется после слияния"
+        );
+        assert!(
+            !back_vscode.exists(),
+            "backend/.vscode удаляется после слияния"
+        );
+        assert!(
+            report
+                .modified_files
+                .contains(&"frontend/.vscode/settings.json".to_string()),
+            "{:?}",
+            report.modified_files
+        );
+        assert!(
+            report
+                .modified_files
+                .contains(&"frontend/.vscode/extensions.json".to_string()),
+            "{:?}",
+            report.modified_files
+        );
+        assert!(
+            report
+                .modified_files
+                .contains(&"backend/.vscode/extensions.json".to_string()),
+            "{:?}",
+            report.modified_files
+        );
 
         let settings: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(root_vscode.join("settings.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(settings["typescript.tsdk"], "node_modules/typescript/lib", "конфиг CLI побеждает");
-        assert_eq!(settings["editor.tabSize"], 2, "глубокое слияние: ключ CLI поверх корневого");
+        assert_eq!(
+            settings["typescript.tsdk"], "node_modules/typescript/lib",
+            "конфиг CLI побеждает"
+        );
+        assert_eq!(
+            settings["editor.tabSize"], 2,
+            "глубокое слияние: ключ CLI поверх корневого"
+        );
         assert!(
             settings.get("editor.formatOnSave").is_none(),
             "наши настройки не добавляются — это не VsCodeMergeGenerator: {settings}"
@@ -1852,8 +2627,14 @@ mod tests {
         )
         .unwrap();
         let recs = exts["recommendations"].as_array().unwrap();
-        assert!(recs.iter().any(|r| r == "dbaeumer.vscode-eslint"), "{recs:?}");
-        assert!(recs.iter().any(|r| r == "rust-lang.rust-analyzer"), "{recs:?}");
+        assert!(
+            recs.iter().any(|r| r == "dbaeumer.vscode-eslint"),
+            "{recs:?}"
+        );
+        assert!(
+            recs.iter().any(|r| r == "rust-lang.rust-analyzer"),
+            "{recs:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1864,8 +2645,15 @@ mod tests {
         let ctx = WizardContext::default();
         let report = tokio_test_block_on(gen.generate(&ctx, &dir, &serde_json::json!({})))
             .expect("no-op не должен падать");
-        assert!(report.modified_files.is_empty(), "{:?}", report.modified_files);
-        assert!(!dir.join(".vscode").exists(), "корневой .vscode без содержимого не создаётся");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+        assert!(
+            !dir.join(".vscode").exists(),
+            "корневой .vscode без содержимого не создаётся"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

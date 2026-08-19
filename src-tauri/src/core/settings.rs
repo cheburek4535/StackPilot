@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
@@ -25,8 +25,7 @@ impl JsonSettingsService {
     fn load(&self) -> Result<AppSettings, String> {
         let content = fs::read_to_string(&self.settings_path)
             .map_err(|e| format!("Failed to read settings: {}", e))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse settings: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse settings: {}", e))
     }
 
     fn save(&self, settings: &AppSettings) -> Result<(), String> {
@@ -44,13 +43,11 @@ impl JsonSettingsService {
             theme: "system".into(),
             language: "ru".into(),
             auto_save_profiles: true,
-            preferred_apps: vec![
-                PreferredApp {
-                    name: "VS Code".into(),
-                    path: "code".into(),
-                    args: None,
-                },
-            ],
+            preferred_apps: vec![PreferredApp {
+                name: "VS Code".into(),
+                path: "code".into(),
+                args: None,
+            }],
         }
     }
 }
@@ -87,7 +84,10 @@ pub fn get_settings(state: State<'_, SettingsState>) -> Result<AppSettings, Stri
 }
 
 #[tauri::command]
-pub fn update_settings(state: State<'_, SettingsState>, settings: AppSettings) -> Result<(), String> {
+pub fn update_settings(
+    state: State<'_, SettingsState>,
+    settings: AppSettings,
+) -> Result<(), String> {
     state.0.update_settings(&settings)
 }
 

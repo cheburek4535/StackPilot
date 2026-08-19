@@ -36,7 +36,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use crate::modules::toolchain::models::{ProjectRequirements, ToolDefinition, ToolRequirement, ToolStatus};
+use crate::modules::toolchain::models::{
+    ProjectRequirements, ToolDefinition, ToolRequirement, ToolStatus,
+};
 
 // ------------------------------------------------------------
 // 1. Языки → инструменты
@@ -124,8 +126,8 @@ fn framework_required_tools() -> &'static HashMap<String, Vec<String>> {
     static MAP: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     MAP.get_or_init(|| {
         let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
-        let tree: serde_json::Value = serde_json::from_str(raw)
-            .expect("wizard_tree.json должен быть корректным JSON");
+        let tree: serde_json::Value =
+            serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON");
         tree.get("frameworks")
             .and_then(|arr| arr.as_array())
             .map(|arr| {
@@ -157,8 +159,8 @@ fn framework_requires_language() -> &'static HashMap<String, Vec<String>> {
     static MAP: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     MAP.get_or_init(|| {
         let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
-        let tree: serde_json::Value = serde_json::from_str(raw)
-            .expect("wizard_tree.json должен быть корректным JSON");
+        let tree: serde_json::Value =
+            serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON");
         tree.get("frameworks")
             .and_then(|arr| arr.as_array())
             .map(|arr| {
@@ -239,8 +241,8 @@ fn docker_managed_tools() -> &'static HashSet<String> {
     static SET: OnceLock<HashSet<String>> = OnceLock::new();
     SET.get_or_init(|| {
         let raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
-        let tree: serde_json::Value = serde_json::from_str(raw)
-            .expect("wizard_tree.json должен быть корректным JSON");
+        let tree: serde_json::Value =
+            serde_json::from_str(raw).expect("wizard_tree.json должен быть корректным JSON");
         tree.get("tools")
             .and_then(|arr| arr.as_array())
             .map(|arr| {
@@ -278,7 +280,9 @@ pub fn docker_optional_tool_ids(requirements: &ProjectRequirements) -> Vec<Strin
     requirements
         .tools
         .iter()
-        .filter(|t| docker_managed_tools().contains(*t) && !requirements.local_infra_tools.contains(*t))
+        .filter(|t| {
+            docker_managed_tools().contains(*t) && !requirements.local_infra_tools.contains(*t)
+        })
         .cloned()
         .collect()
 }
@@ -339,8 +343,11 @@ fn qt_ui_module(framework: &str) -> Option<&'static str> {
 /// Сейчас единственный потребитель — Qt: мастерийские UI-варианты
 /// (qt-webengine и т.п.) превращаются в модули, которые установщик
 /// превратит в конкретные пакеты репозитория.
-pub fn resolve_install_options(requirements: &ProjectRequirements) -> std::collections::HashMap<String, Vec<String>> {
-    let mut options: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+pub fn resolve_install_options(
+    requirements: &ProjectRequirements,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut options: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for fw in &requirements.frameworks {
         if let Some(module) = qt_ui_module(fw) {
             options
@@ -513,11 +520,17 @@ mod tests {
         // рантаймы из статичной таблицы (tauri-cli больше не нужен —
         // генерация идёт через npx create-tauri-app)
         for expected in ["rust", "node", "msvc-build-tools"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в {ids:?}"
+            );
         }
         // инфраструктура из framework_tool_map (docker, npm) НЕ является
         // обязательным требованием — она приходит только явным выбором
-        assert!(!ids.contains(&"docker".to_string()), "tauri не должен требовать docker сам по себе: {ids:?}");
+        assert!(
+            !ids.contains(&"docker".to_string()),
+            "tauri не должен требовать docker сам по себе: {ids:?}"
+        );
     }
 
     #[test]
@@ -525,14 +538,23 @@ mod tests {
         let mut r = req();
         r.frameworks = vec!["spring-boot".into()];
         let ids = resolve(&r);
-        assert!(ids.iter().any(|i| i == "java"), "spring boot без JDK: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "java"),
+            "spring boot без JDK: {ids:?}"
+        );
         // обязательные тулы сборки из required_tools
         for expected in ["maven", "gradle"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в {ids:?}"
+            );
         }
         // БД/кеши/очереди из framework_tool_map — только по явному выбору
         for unexpected in ["postgresql", "redis", "docker", "kafka", "mongodb"] {
-            assert!(!ids.contains(&unexpected.to_string()), "{unexpected} не должен требоваться без выбора: {ids:?}");
+            assert!(
+                !ids.contains(&unexpected.to_string()),
+                "{unexpected} не должен требоваться без выбора: {ids:?}"
+            );
         }
     }
 
@@ -553,7 +575,10 @@ mod tests {
         }
         // рантаймы и обязательные тулы на месте
         for expected in ["dotnet", "node", "npm"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в {ids:?}"
+            );
         }
         // инфраструктура появляется ТОЛЬКО явным выбором, причём
         // docker-инструменты (postgresql, redis) по умолчанию локально
@@ -566,10 +591,16 @@ mod tests {
         r2.vscode_config = true;
         let ids2 = resolve(&r2);
         for expected in ["docker", "git", "vscode"] {
-            assert!(ids2.iter().any(|i| i == expected), "нет {expected} в {ids2:?}");
+            assert!(
+                ids2.iter().any(|i| i == expected),
+                "нет {expected} в {ids2:?}"
+            );
         }
         for unexpected in ["postgresql", "redis", "mongodb", "sqlite"] {
-            assert!(!ids2.contains(&unexpected.to_string()), "{unexpected} в требованиях: {ids2:?}");
+            assert!(
+                !ids2.contains(&unexpected.to_string()),
+                "{unexpected} в требованиях: {ids2:?}"
+            );
         }
         // локальная установка docker-инструментов — только по явному выбору:
         // postgresql и redis в local_infra_tools обязаны появиться в требованиях
@@ -577,7 +608,10 @@ mod tests {
         r3.local_infra_tools = vec!["postgresql".into(), "redis".into()];
         let ids3 = resolve(&r3);
         for expected in ["postgresql", "redis"] {
-            assert!(ids3.iter().any(|i| i == expected), "нет {expected} после локального выбора в {ids3:?}");
+            assert!(
+                ids3.iter().any(|i| i == expected),
+                "нет {expected} после локального выбора в {ids3:?}"
+            );
         }
     }
 
@@ -587,8 +621,14 @@ mod tests {
         r.frameworks = vec!["ktor".into()];
         let ids = resolve(&r);
         assert!(ids.iter().any(|i| i == "java"), "ktor без JDK: {ids:?}");
-        assert!(ids.iter().any(|i| i == "gradle"), "ktor без gradle: {ids:?}");
-        assert!(!ids.contains(&"kafka".to_string()), "kafka не обязательна для ktor: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "gradle"),
+            "ktor без gradle: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"kafka".to_string()),
+            "kafka не обязательна для ktor: {ids:?}"
+        );
     }
 
     #[test]
@@ -596,7 +636,10 @@ mod tests {
         let mut r = req();
         r.languages = vec!["kotlin".into()];
         let ids = resolve(&r);
-        assert!(ids.iter().any(|i| i == "kotlin"), "kotlin без kotlinc: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "kotlin"),
+            "kotlin без kotlinc: {ids:?}"
+        );
         assert!(ids.iter().any(|i| i == "java"), "kotlin без JDK: {ids:?}");
     }
 
@@ -606,7 +649,10 @@ mod tests {
         r.tools = vec!["grafana".into(), "terraform".into(), "firebase".into()];
         let ids = resolve(&r);
         for expected in ["terraform", "firebase"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в {ids:?}"
+            );
         }
         // grafana — «двойной» docker-инструмент: без локального выбора
         // его разворачивает docker-compose, локально он не нужен
@@ -666,7 +712,14 @@ mod tests {
         ];
         r.local_infra_tools = r.tools.clone();
         let ids = resolve(&r);
-        for expected in ["postgresql", "redis", "mongodb", "kafka", "grafana", "mysql"] {
+        for expected in [
+            "postgresql",
+            "redis",
+            "mongodb",
+            "kafka",
+            "grafana",
+            "mysql",
+        ] {
             assert!(
                 ids.iter().any(|i| i == expected),
                 "нет {expected} после локального выбора в {ids:?}"
@@ -680,7 +733,10 @@ mod tests {
         r.languages = vec!["gleam".into()];
         let ids = resolve(&r);
         assert!(ids.iter().any(|i| i == "gleam"), "нет gleam: {ids:?}");
-        assert!(ids.iter().any(|i| i == "erlang"), "gleam без erlang: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "erlang"),
+            "gleam без erlang: {ids:?}"
+        );
     }
 
     #[test]
@@ -688,7 +744,10 @@ mod tests {
         let mut r = req();
         r.tools = vec!["firebase".into()];
         let ids = resolve(&r);
-        assert!(ids.iter().any(|i| i == "node"), "firebase без node: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "node"),
+            "firebase без node: {ids:?}"
+        );
     }
 
     #[test]
@@ -696,7 +755,10 @@ mod tests {
         let mut r = req();
         r.tools = vec!["csharprepl".into()];
         let ids = resolve(&r);
-        assert!(ids.iter().any(|i| i == "dotnet"), "csharprepl без dotnet: {ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "dotnet"),
+            "csharprepl без dotnet: {ids:?}"
+        );
     }
 
     #[test]
@@ -707,7 +769,10 @@ mod tests {
         r.docker = true;
         let ids = resolve(&r);
         for expected in ["git", "vscode", "docker"] {
-            assert!(ids.iter().any(|i| i == expected), "нет {expected} в {ids:?}");
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в {ids:?}"
+            );
         }
     }
 
@@ -809,10 +874,7 @@ mod tests {
         let mut r = req();
         r.frameworks = vec!["nextjs".into()];
         let ids = resolve(&r);
-        assert!(
-            ids.iter().any(|i| i == "node"),
-            "nextjs без node: {ids:?}"
-        );
+        assert!(ids.iter().any(|i| i == "node"), "nextjs без node: {ids:?}");
     }
 
     #[test]

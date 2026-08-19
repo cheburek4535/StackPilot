@@ -1,12 +1,12 @@
-use tauri::State;
-use crate::modules::workspace::models::*;
-use crate::modules::workspace::WorkspaceState;
 use crate::modules::workspace::file_explorer;
+use crate::modules::workspace::file_explorer::FileExplorerService;
+use crate::modules::workspace::models::*;
+use crate::modules::workspace::overview::{OverviewData, OverviewService};
+use crate::modules::workspace::problems::{Problem, ProblemsService};
 use crate::modules::workspace::project::ProjectService;
 use crate::modules::workspace::session::SessionService;
-use crate::modules::workspace::file_explorer::FileExplorerService;
-use crate::modules::workspace::problems::{ProblemsService, Problem};
-use crate::modules::workspace::overview::{OverviewService, OverviewData};
+use crate::modules::workspace::WorkspaceState;
+use tauri::State;
 
 // ===== Process commands =====
 
@@ -91,10 +91,7 @@ pub fn clear_current_project(state: State<'_, WorkspaceState>) {
 }
 
 #[tauri::command]
-pub fn open_project_from_path(
-    state: State<'_, WorkspaceState>,
-    path: String,
-) -> ProjectContext {
+pub fn open_project_from_path(state: State<'_, WorkspaceState>, path: String) -> ProjectContext {
     let name = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -144,7 +141,6 @@ pub fn open_in_vscode(state: State<'_, WorkspaceState>, path: String) -> Result<
     state.file_explorer.open_in_vscode(&path)
 }
 
-
 // ===== Problems commands =====
 
 #[tauri::command]
@@ -159,14 +155,13 @@ pub fn clear_problems(state: State<'_, WorkspaceState>) {
     state.problems.clear()
 }
 
-
 // other
 #[tauri::command]
-pub fn get_workspace_overview(
-    state: State<'_, WorkspaceState>,
-) -> OverviewData {
+pub fn get_workspace_overview(state: State<'_, WorkspaceState>) -> OverviewData {
     let processes = state.process_manager.list();
-    let session_started = state.session.get_session()
+    let session_started = state
+        .session
+        .get_session()
         .and_then(|s| s.started_at.parse::<u64>().ok());
     state.overview.compute_overview(&processes, session_started)
 }

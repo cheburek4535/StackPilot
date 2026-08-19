@@ -1,6 +1,6 @@
-use tauri::State;
 use crate::modules::devlauncher::models::*;
 use crate::modules::devlauncher::DevLauncherState;
+use tauri::State;
 
 #[tauri::command]
 pub fn ping_rust() -> String {
@@ -59,12 +59,18 @@ pub fn list_profiles(state: State<'_, DevLauncherState>) -> Result<Vec<LaunchPro
 }
 
 #[tauri::command]
-pub fn get_profile(state: State<'_, DevLauncherState>, name: String) -> Result<LaunchProfile, String> {
+pub fn get_profile(
+    state: State<'_, DevLauncherState>,
+    name: String,
+) -> Result<LaunchProfile, String> {
     state.profile_manager.get_profile(&name)
 }
 
 #[tauri::command]
-pub fn save_profile(state: State<'_, DevLauncherState>, profile: LaunchProfile) -> Result<(), String> {
+pub fn save_profile(
+    state: State<'_, DevLauncherState>,
+    profile: LaunchProfile,
+) -> Result<(), String> {
     state.profile_manager.save_profile(&profile)
 }
 
@@ -77,7 +83,7 @@ pub fn delete_profile(state: State<'_, DevLauncherState>, name: String) -> Resul
 pub fn execute_action(
     state: State<'_, DevLauncherState>,
     action: LaunchAction,
-    session_id: Option<String>
+    session_id: Option<String>,
 ) -> Result<ActionStatus, String> {
     state.launch_engine.execute_action(&action, session_id)
 }

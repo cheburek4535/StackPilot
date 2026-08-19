@@ -11,8 +11,8 @@
 // by the workspace::file_explorer module. Only IDE-specific
 // features (LSP, diagnostics, advanced editing) are missing.
 
+pub mod commands;
 pub mod models;
 pub mod service;
-pub mod commands;
 
 pub use service::IdeService;

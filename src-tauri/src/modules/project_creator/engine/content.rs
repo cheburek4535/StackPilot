@@ -12,25 +12,31 @@ POSTGRES_PASSWORD=password
 POSTGRES_DB=dbname
 POSTGRES_PORT=5432
 DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-"#.to_string(),
+"#
+        .to_string(),
         "redis" => r#"REDIS_URL=redis://localhost:6379/0
-"#.to_string(),
+"#
+        .to_string(),
         "mongodb" => r#"MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=dbname
-"#.to_string(),
+"#
+        .to_string(),
         "mysql" => r#"MYSQL_ROOT_PASSWORD=rootpassword
 MYSQL_DATABASE=dbname
 MYSQL_USER=user
 MYSQL_PASSWORD=password
 MYSQL_PORT=3306
-"#.to_string(),
+"#
+        .to_string(),
         "airflow" => r#"AIRFLOW__CORE__EXECUTOR=LocalExecutor
 AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:12345@postgres:5432/postgres
 AIRFLOW__CORE__LOAD_EXAMPLES=False
 AIRFLOW_WEBSERVER_PORT=8080
-"#.to_string(),
+"#
+        .to_string(),
         "grafana" => r#"GRAFANA_URL=http://localhost:3001
-"#.to_string(),
+"#
+        .to_string(),
         _ => format!("# Environment variables for {}\n", tool_id),
     }
 }
@@ -103,7 +109,8 @@ they must be running before you launch the project.\n",
 
     for tool in tools {
         let section: &str = match tool.as_str() {
-            "postgresql" => r#"## PostgreSQL
+            "postgresql" => {
+                r#"## PostgreSQL
 
 - The superuser password was generated during installation and shown ONCE in
   StackPilot (`Generated passwords` window after installation).
@@ -112,16 +119,20 @@ they must be running before you launch the project.\n",
   createdb -U postgres dbname
   ```
 - Connection: see `POSTGRES_*` / `DATABASE_URL` in `.env.example`.
-"#,
-            "redis" => r#"## Redis
+"#
+            }
+            "redis" => {
+                r#"## Redis
 
 - Start the server once (install directory is on PATH):
   ```powershell
   redis-server
   ```
 - Connection: `REDIS_URL=redis://localhost:6379/0`.
-"#,
-            "mongodb" => r#"## MongoDB
+"#
+            }
+            "mongodb" => {
+                r#"## MongoDB
 
 - Create a data folder and start the server once (install directory is on PATH):
   ```powershell
@@ -129,8 +140,10 @@ they must be running before you launch the project.\n",
   mongod --dbpath $env:USERPROFILE\mongo-data
   ```
 - Connection: `MONGODB_URI=mongodb://localhost:27017`.
-"#,
-            "mysql" => r#"## MySQL
+"#
+            }
+            "mysql" => {
+                r#"## MySQL
 
 - The root password was set during installation (MSI setup).
 - The server runs as a Windows service (`MySQL80`); start it with:
@@ -142,8 +155,10 @@ they must be running before you launch the project.\n",
   mysql -u root -p -e "CREATE DATABASE dbname CHARACTER SET utf8mb4;"
   ```
 - Connection: `MYSQL_*` in `.env.example`.
-"#,
-            "kafka" => r#"## Apache Kafka
+"#
+            }
+            "kafka" => {
+                r#"## Apache Kafka
 
 - Single-node KRaft mode. From the Kafka install directory (`bin/windows`):
   ```powershell
@@ -152,8 +167,10 @@ they must be running before you launch the project.\n",
   kafka-server-start ..\config\kraft\server.properties
   ```
 - Connection: `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
-"#,
-            "grafana" => r#"## Grafana
+"#
+            }
+            "grafana" => {
+                r#"## Grafana
 
 - Start the server once (install directory is on PATH):
   ```powershell
@@ -161,7 +178,8 @@ they must be running before you launch the project.\n",
   ```
 - UI: http://localhost:3000 (admin/admin on first run).
 - Connection: `GRAFANA_URL=http://localhost:3000`.
-"#,
+"#
+            }
             _ => "",
         };
         if !section.is_empty() {
@@ -258,13 +276,16 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                     environment: vec![
                         ("KAFKA_BROKER_ID".into(), "1".into()),
                         ("KAFKA_ZOOKEEPER_CONNECT".into(), "zookeeper:2181".into()),
-                        ("KAFKA_ADVERTISED_LISTENERS".into(), "PLAINTEXT://localhost:9092".into()),
+                        (
+                            "KAFKA_ADVERTISED_LISTENERS".into(),
+                            "PLAINTEXT://localhost:9092".into(),
+                        ),
                         ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(), "1".into()),
                     ],
                     volumes: Vec::new(),
                     depends_on: vec!["Zookeeper".into()],
                 });
-            },
+            }
 
             "clickhouse" => services.push(DockerService {
                 name: "clickHouse".into(),
@@ -290,9 +311,15 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                 ports: vec!["8080:8080".into()],
                 environment: vec![
                     ("AIRFLOW__CORE__EXECUTOR".into(), "LocalExecutor".into()),
-                    ("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN".into(), "postgresql+psycopg2://postgres:12345@postgres:5432/postgres".into()),
+                    (
+                        "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN".into(),
+                        "postgresql+psycopg2://postgres:12345@postgres:5432/postgres".into(),
+                    ),
                     ("AIRFLOW__CORE__LOAD_EXAMPLES".into(), "False".into()),
-                    ("AIRFLOW__WEBSERVER__SECRET_KEY".into(), "airflow-secret-key".into()),
+                    (
+                        "AIRFLOW__WEBSERVER__SECRET_KEY".into(),
+                        "airflow-secret-key".into(),
+                    ),
                 ],
                 volumes: vec![
                     "./dags:/opt/airflow/dags".into(),
@@ -331,29 +358,18 @@ pub fn generate_dockerfile_content(
     match lang {
         "python" => {
             let (base_image, entrypoint, port) = match framework {
-                Some("fastapi") => (
-                    "python:3.13-slim",
-                    "src/main.py",
-                    "3000",
-                ),
+                Some("fastapi") => ("python:3.13-slim", "src/main.py", "3000"),
                 Some("django") => (
                     "python:3.13-slim",
-                    "manage.py",        // Django запускается иначе
-                    "8000",             // Django default port
+                    "manage.py", // Django запускается иначе
+                    "8000",      // Django default port
                 ),
-                Some("flask") => (
-                    "python:3.13-slim",
-                    "src/app.py",
-                    "3000",
-                ),
-                _ => (
-                    "python:3.13-slim",
-                    "src/main.py",
-                    "3000",
-                ),
+                Some("flask") => ("python:3.13-slim", "src/app.py", "3000"),
+                _ => ("python:3.13-slim", "src/main.py", "3000"),
             };
 
-            Some(format!(r#"FROM {base_image}
+            Some(format!(
+                r#"FROM {base_image}
 
 WORKDIR /app
 
@@ -369,7 +385,8 @@ EXPOSE {port}
 
 # Run the application
 CMD ["python", "{entrypoint}"]
-"#))
+"#
+            ))
         }
 
         "rust" => {
@@ -379,7 +396,8 @@ CMD ["python", "{entrypoint}"]
                 _ => ("3000", project_name),
             };
 
-            Some(format!(r#"# Build stage
+            Some(format!(
+                r#"# Build stage
 FROM rust:1.83-slim-bookworm AS builder
 
 WORKDIR /app
@@ -395,58 +413,50 @@ COPY --from=builder /app/target/release/{bin_name} .
 EXPOSE {port}
 
 CMD ["./{bin_name}"]
-"#))
+"#
+            ))
         }
 
         "typescript" | "javascript" | "node" => {
-    let (base_image, needs_build, entrypoint, port, _build_steps) = match framework {
-        Some("nextjs") => (
-            "node:22-alpine",
-            true,
-            "node_modules/.bin/next",
-            "3000",
-            "RUN npm run build\n",  // Next.js запускается через next start
-        ),
-        Some("nuxt") => (
-            "node:22-alpine",
-            true,
-            ".output/server/index.mjs",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("sveltekit") => (
-            "node:22-alpine",
-            true,
-            "build/index.js",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("nest") => (
-            "node:22-alpine",
-            true,
-            "dist/main.js",
-            "3000",
-            "COPY . .\nRUN npm ci && npm run build\n",
-        ),
-        Some("fastify") | Some("express") => (
-            "node:22-alpine",
-            false,
-            "src/index.js",
-            "3000",
-            "",
-        ),
-        _ => (
-            "node:22-alpine",
-            false,
-            "src/index.js",
-            "3000",
-            "",
-        ),
-    };
+            let (base_image, needs_build, entrypoint, port, _build_steps) = match framework {
+                Some("nextjs") => (
+                    "node:22-alpine",
+                    true,
+                    "node_modules/.bin/next",
+                    "3000",
+                    "RUN npm run build\n", // Next.js запускается через next start
+                ),
+                Some("nuxt") => (
+                    "node:22-alpine",
+                    true,
+                    ".output/server/index.mjs",
+                    "3000",
+                    "COPY . .\nRUN npm ci && npm run build\n",
+                ),
+                Some("sveltekit") => (
+                    "node:22-alpine",
+                    true,
+                    "build/index.js",
+                    "3000",
+                    "COPY . .\nRUN npm ci && npm run build\n",
+                ),
+                Some("nest") => (
+                    "node:22-alpine",
+                    true,
+                    "dist/main.js",
+                    "3000",
+                    "COPY . .\nRUN npm ci && npm run build\n",
+                ),
+                Some("fastify") | Some("express") => {
+                    ("node:22-alpine", false, "src/index.js", "3000", "")
+                }
+                _ => ("node:22-alpine", false, "src/index.js", "3000", ""),
+            };
 
-    if needs_build {
-        // Для фреймворков, которым нужна сборка
-        Some(format!(r#"FROM {base_image}
+            if needs_build {
+                // Для фреймворков, которым нужна сборка
+                Some(format!(
+                    r#"FROM {base_image}
 
 WORKDIR /app
 
@@ -464,10 +474,12 @@ RUN npm prune --production
 EXPOSE {port}
 
 CMD ["node", "{entrypoint}"]
-"#))
-    } else {
-        // Для простых серверов без сборки
-        Some(format!(r#"FROM {base_image}
+"#
+                ))
+            } else {
+                // Для простых серверов без сборки
+                Some(format!(
+                    r#"FROM {base_image}
 
 WORKDIR /app
 
@@ -481,13 +493,17 @@ COPY . .
 EXPOSE {port}
 
 CMD ["node", "{entrypoint}"]
-"#))
-    }
-}
+"#
+                ))
+            }
+        }
 
         "go" => {
-            if framework == Some("cobra") {return None}
-            Some(format!(r#"# Build stage
+            if framework == Some("cobra") {
+                return None;
+            }
+            Some(format!(
+                r#"# Build stage
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
@@ -505,23 +521,25 @@ COPY --from=builder /app/app .
 EXPOSE 3000
 
 CMD ["./app"]
-"#))
+"#
+            ))
         }
         "csharp" => {
-    let (runtime_image, port, project_file) = match framework {
-        Some("aspnetcore") => (
-            "mcr.microsoft.com/dotnet/aspnet:8.0",
-            "EXPOSE 8080",
-            format!("{}.csproj", project_name)
-        ),
-        _ => (
-            "mcr.microsoft.com/dotnet/runtime:8.0",
-            "",
-            format!("{}.csproj", project_name)
-        ),
-    };
+            let (runtime_image, port, project_file) = match framework {
+                Some("aspnetcore") => (
+                    "mcr.microsoft.com/dotnet/aspnet:8.0",
+                    "EXPOSE 8080",
+                    format!("{}.csproj", project_name),
+                ),
+                _ => (
+                    "mcr.microsoft.com/dotnet/runtime:8.0",
+                    "",
+                    format!("{}.csproj", project_name),
+                ),
+            };
 
-    Some(format!(r#"FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+            Some(format!(
+                r#"FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 COPY {project_file} .
 RUN dotnet restore
@@ -533,14 +551,16 @@ WORKDIR /app
 {port}
 COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "{project_name}.dll"]
-"#))
-},
-        "java" => {
-        let has_spring = framework == Some("spring-boot");
-        if !has_spring {
-            return None; // Только Spring Boot поддерживает Docker из коробки
+"#
+            ))
         }
-    Some(format!(r#"FROM eclipse-temurin:21-jdk-alpine AS build
+        "java" => {
+            let has_spring = framework == Some("spring-boot");
+            if !has_spring {
+                return None; // Только Spring Boot поддерживает Docker из коробки
+            }
+            Some(format!(
+                r#"FROM eclipse-temurin:21-jdk-alpine AS build
 WORKDIR /app
 COPY mvnw pom.xml ./
 COPY .mvn .mvn
@@ -553,14 +573,16 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
-"#))
-},
+"#
+            ))
+        }
         "php" => {
-    let has_laravel = framework == Some("laravel") || framework == Some("symfony");
-    if !has_laravel {
-        return None;
-    }
-    Some(format!(r#"FROM php:8.3-fpm-alpine
+            let has_laravel = framework == Some("laravel") || framework == Some("symfony");
+            if !has_laravel {
+                return None;
+            }
+            Some(format!(
+                r#"FROM php:8.3-fpm-alpine
 
 RUN docker-php-ext-install pdo pdo_mysql
 
@@ -575,14 +597,16 @@ RUN php artisan config:cache || true
 
 EXPOSE 8000
 CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
-"#))
-},
+"#
+            ))
+        }
         "elixir" => {
-    let is_phoenix = framework == Some("phoenix");
-    if !is_phoenix {
-        return None;
-    }
-    Some(format!(r#"FROM hexpm/elixir:1.17-erlang-27-alpine AS build
+            let is_phoenix = framework == Some("phoenix");
+            if !is_phoenix {
+                return None;
+            }
+            Some(format!(
+                r#"FROM hexpm/elixir:1.17-erlang-27-alpine AS build
 WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 COPY mix.exs mix.lock ./
@@ -595,12 +619,14 @@ WORKDIR /app
 COPY --from=build /app/_build/prod/rel/{project_name} .
 EXPOSE 4000
 CMD ["./bin/{project_name}", "start"]
-"#))
-},
+"#
+            ))
+        }
         "cpp" => {
-        let is_qt = framework == Some("qt");
-        if is_qt {
-            Some(format!(r#"FROM stateoftheartio/qt6:6.7-gcc-ubuntu-24.04 AS build
+            let is_qt = framework == Some("qt");
+            if is_qt {
+                Some(format!(
+                    r#"FROM stateoftheartio/qt6:6.7-gcc-ubuntu-24.04 AS build
 WORKDIR /app
 COPY . .
 RUN mkdir build && cd build && \
@@ -615,9 +641,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY --from=build /app/build/{project_name} .
-ENTRYPOINT ["./{project_name}", "-platform", "offscreen"]"#))
-        } else {
-            Some(format!(r#"FROM ubuntu:24.04 AS build
+ENTRYPOINT ["./{project_name}", "-platform", "offscreen"]"#
+                ))
+            } else {
+                Some(format!(
+                    r#"FROM ubuntu:24.04 AS build
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -633,16 +661,18 @@ FROM ubuntu:24.04 AS final
 WORKDIR /app
 
 COPY --from=build /app/build/{project_name} .
-ENTRYPOINT ["./{project_name}"]"#))
+ENTRYPOINT ["./{project_name}"]"#
+                ))
+            }
         }
-    },
         "zig" => {
-// Зависимости (zap) подтягиваются автоматически: `zig build` сам
-// выполняет fetch-фазу из build.zig.zon (флаг --fetch останавливается
-// ПОСЛЕ загрузки зависимостей и не собирает бинарь — zig-out/bin
-// остался бы пустым). Образ 0.14 — минимальная версия для zap v0.10.1
-// (в zon пишется minimum_zig_version = "0.14.0").
-Some(format!(r#"FROM ziglang/zig:0.14.0 AS build
+            // Зависимости (zap) подтягиваются автоматически: `zig build` сам
+            // выполняет fetch-фазу из build.zig.zon (флаг --fetch останавливается
+            // ПОСЛЕ загрузки зависимостей и не собирает бинарь — zig-out/bin
+            // остался бы пустым). Образ 0.14 — минимальная версия для zap v0.10.1
+            // (в zon пишется minimum_zig_version = "0.14.0").
+            Some(format!(
+                r#"FROM ziglang/zig:0.14.0 AS build
 WORKDIR /app
 
 COPY build.zig build.zig.zon ./
@@ -656,12 +686,14 @@ WORKDIR /
 COPY --from=build /app/zig-out/bin/{project_name} /{project_name}
 
 ENTRYPOINT ["/{project_name}"]
-"#))
-    },
+"#
+            ))
+        }
         "kotlin" => {
-    let has_fw = framework == Some("ktor") || framework == Some("spring-boot");
-    if has_fw {
-        Some(format!(r#"FROM gradle:8.10-jdk21 AS build
+            let has_fw = framework == Some("ktor") || framework == Some("spring-boot");
+            if has_fw {
+                Some(format!(
+                    r#"FROM gradle:8.10-jdk21 AS build
 WORKDIR /app
 COPY build.gradle.kts settings.gradle.kts ./
 RUN gradle dependencies --no-daemon
@@ -675,15 +707,17 @@ EXPOSE 8080
 COPY --from=build /app/build/libs/ ./libs/
 RUN cp $(ls ./libs/*.jar | grep -v -E 'plain|sources|javadoc') app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]
-"#))
-    } else {
-        None  // Без фреймворка не генерируем Dockerfile
-    }
-},
+"#
+                ))
+            } else {
+                None // Без фреймворка не генерируем Dockerfile
+            }
+        }
         "swift" => {
-    let has_fw = framework == Some("vapor");
-    if has_fw {
-        Some(format!(r#"FROM swift:6.0-noble AS build
+            let has_fw = framework == Some("vapor");
+            if has_fw {
+                Some(format!(
+                    r#"FROM swift:6.0-noble AS build
 WORKDIR /build
 COPY Package.swift Package.resolved ./
 RUN swift package resolve
@@ -699,9 +733,11 @@ EXPOSE 8080
 COPY --from=build /build/.build/release/{project_name} ./App
 COPY --from=build /build/Public ./Public
 ENTRYPOINT ["./App"]
-"#))
-    } else {
-        Some(format!(r#"FROM swift:6.0-noble AS build
+"#
+                ))
+            } else {
+                Some(format!(
+                    r#"FROM swift:6.0-noble AS build
 WORKDIR /build
 COPY Package.swift ./
 RUN swift package resolve
@@ -712,11 +748,12 @@ FROM swift:6.0-noble-slim AS final
 WORKDIR /app
 COPY --from=build /build/.build/release/{project_name} ./
 ENTRYPOINT ["./{project_name}"]
-"#))
-    }
-},
-        "dart" => {
-        Some(format!(r#"# Этап сборки
+"#
+                ))
+            }
+        }
+        "dart" => Some(format!(
+            r#"# Этап сборки
 FROM dart:3.5 AS build
 WORKDIR /app
 COPY pubspec.yaml ./
@@ -728,10 +765,10 @@ RUN dart compile exe bin/main.dart -o bin/main
 FROM scratch
 COPY --from=build /app/bin/main /main
 ENTRYPOINT ["/main"]
-"#))
-    },
-        "gleam" => {
-    Some(format!(r#"FROM ghcr.io/gleam-lang/gleam:v1.4-erlang-alpine AS build
+"#
+        )),
+        "gleam" => Some(format!(
+            r#"FROM ghcr.io/gleam-lang/gleam:v1.4-erlang-alpine AS build
 WORKDIR /app
 COPY gleam.toml manifest.toml ./
 RUN gleam deps download
@@ -742,8 +779,8 @@ FROM erlang:27-alpine AS final
 WORKDIR /app
 COPY --from=build /app/build/erlang-shipment ./
 ENTRYPOINT ["/app/entrypoint.sh"]
-"#))
-},
+"#
+        )),
         _ => None, // Неизвестный язык — не генерируем Dockerfile
     }
 }
@@ -788,19 +825,33 @@ fn is_named_volume(volume: &str) -> bool {
     true
 }
 
-pub fn generate_docker_compose(services: &[DockerService], project_name: &str, app_port: &str) -> String {
+pub fn generate_docker_compose(
+    services: &[DockerService],
+    project_name: &str,
+    app_port: &str,
+    build_context: &str,
+) -> String {
     let mut result = String::new();
     let mut volumes_section = String::new();
+    // Контекст сборки приложения: "." в корневой раскладке, "./backend" в
+    // split-проектах (Dockerfile живёт внутри backend/, см. steps_for_docker).
+    let build_ctx = if build_context.is_empty() {
+        "."
+    } else {
+        build_context
+    };
 
     result.push_str("version: '3.8'\n\nservices:\n");
 
     // App service всегда добавляется
-    result.push_str(&format!(r#"  app:
-    build: .
+    result.push_str(&format!(
+        r#"  app:
+    build: {build_ctx}
     container_name: {project_name}_app
     ports:
       - "{app_port}:{app_port}"
-"#));
+"#
+    ));
 
     // Если есть сервисы — добавляем depends_on
     if !services.is_empty() {
@@ -812,7 +863,9 @@ pub fn generate_docker_compose(services: &[DockerService], project_name: &str, a
         // Стандартные переменные окружения для подключения к сервисам
         for service in services.iter() {
             match service.name.as_str() {
-                "postgres" => result.push_str("      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname\n"),
+                "postgres" => result.push_str(
+                    "      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname\n",
+                ),
                 "redis" => result.push_str("      - REDIS_URL=redis://redis:6379/0\n"),
                 _ => {}
             }
@@ -824,7 +877,10 @@ pub fn generate_docker_compose(services: &[DockerService], project_name: &str, a
     for service in services.iter() {
         result.push_str(&format!("  {}:\n", service.name));
         result.push_str(&format!("    image: {}\n", service.image));
-        result.push_str(&format!("    container_name: {}_{}\n", project_name, service.name));
+        result.push_str(&format!(
+            "    container_name: {}_{}\n",
+            project_name, service.name
+        ));
 
         if !service.ports.is_empty() {
             result.push_str("    ports:\n");
@@ -918,20 +974,23 @@ pub fn gitignore_content(languages: &[String]) -> String {
          # Logs\n\
          *.log\n\
          logs/\n\
-         \n"
+         \n",
     );
 
     for lang in languages {
         match lang.as_str() {
             "rust" => {
-                content.push_str("# Rust\n\
+                content.push_str(
+                    "# Rust\n\
                                   target/\n\
                                   **/*.rs.bk\n\
                                   *.pdb\n\
-                                  \n");
+                                  \n",
+                );
             }
             "python" => {
-                content.push_str("# Python\n\
+                content.push_str(
+                    "# Python\n\
                                   __pycache__/\n\
                                   *.py[cod]\n\
                                   *$py.class\n\
@@ -974,10 +1033,12 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   .venv/\n\
                                   ENV/\n\
                                   env/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "typescript" | "javascript" | "node" => {
-                content.push_str("# Node\n\
+                content.push_str(
+                    "# Node\n\
                                   node_modules/\n\
                                   npm-debug.log*\n\
                                   yarn-debug.log*\n\
@@ -1006,10 +1067,12 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   .next/\n\
                                   .nuxt/\n\
                                   dist/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "go" => {
-                content.push_str("# Go\n\
+                content.push_str(
+                    "# Go\n\
                                   *.exe\n\
                                   *.exe~\n\
                                   *.dll\n\
@@ -1018,10 +1081,12 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   *.test\n\
                                   *.out\n\
                                   go.work\n\
-                                  \n");
+                                  \n",
+                );
             }
             "java" => {
-                content.push_str("# Java\n\
+                content.push_str(
+                    "# Java\n\
                                   *.class\n\
                                   *.jar\n\
                                   *.war\n\
@@ -1034,10 +1099,12 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   .gradle/\n\
                                   build/\n\
                                   target/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "csharp" => {
-                content.push_str("# .NET\n\
+                content.push_str(
+                    "# .NET\n\
                                   bin/\n\
                                   obj/\n\
                                   *.user\n\
@@ -1045,10 +1112,12 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   *.cache\n\
                                   *.docstates\n\
                                   packages/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "cpp" | "c" => {
-                content.push_str("# C/C++\n\
+                content.push_str(
+                    "# C/C++\n\
                                   *.o\n\
                                   *.obj\n\
                                   *.exe\n\
@@ -1057,57 +1126,72 @@ pub fn gitignore_content(languages: &[String]) -> String {
                                   *.a\n\
                                   *.so\n\
                                   *.dylib\n\
-                                  \n");
+                                  \n",
+                );
             }
             "php" => {
-                content.push_str("# PHP\n\
+                content.push_str(
+                    "# PHP\n\
                                   vendor/\n\
                                   composer.lock\n\
-                                  \n");
+                                  \n",
+                );
             }
             "zig" => {
-                content.push_str("# Zig\n\
+                content.push_str(
+                    "# Zig\n\
                                   zig-out/\n\
                                   zig-cache/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "swift" => {
-                content.push_str("# Swift\n\
+                content.push_str(
+                    "# Swift\n\
                                   .build/\n\
                                   DerivedData/\n\
                                   *.xcodeproj\n\
                                   *.xcworkspace\n\
-                                  \n");
+                                  \n",
+                );
             }
             "kotlin" => {
-                content.push_str("# Kotlin\n\
+                content.push_str(
+                    "# Kotlin\n\
                                   .gradle/\n\
                                   build/\n\
                                   .idea/\n\
                                   *.iml\n\
                                   out/\n\
                                   local.properties\n\
-                                  \n");
+                                  \n",
+                );
             }
             "elixir" => {
-                content.push_str("# Elixir\n\
+                content.push_str(
+                    "# Elixir\n\
                                   _build/\n\
                                   deps/\n\
                                   .elixir_ls/\n\
-                                  \n");
+                                  \n",
+                );
             }
             "dart" => {
-                content.push_str("# Dart\n\
+                content.push_str(
+                    "# Dart\n\
                                   .dart_tool/\n\
                                   .packages\n\
                                   build/\n\
                                   pubspec.lock\n\
-                                  \n");
+                                  \n",
+                );
             }
             "gleam" => {
-                content.push_str("# Gleam\n\
+                content.push_str(
+                    "# Gleam\n\
                                   build/\n\
-                                  \n");
+                                  \n",
+                );
             }
             _ => {}
         }
@@ -1122,7 +1206,8 @@ pub fn gitignore_content(languages: &[String]) -> String {
 
 pub fn generate_ci_content(lang: &str, _framework: Option<&str>, _project_name: &str) -> String {
     match lang {
-        "rust" => format!(r#"name: CI
+        "rust" => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1152,9 +1237,11 @@ jobs:
         run: cargo test --verbose
       - name: Build
         run: cargo build --release
-"#),
+"#
+        ),
 
-        "python" => format!(r#"name: CI
+        "python" => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1183,9 +1270,11 @@ jobs:
         run: |
           pip install pytest
           pytest
-"#),
+"#
+        ),
 
-        "typescript" | "javascript" | "node" => format!(r#"name: CI
+        "typescript" | "javascript" | "node" => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1209,9 +1298,11 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build --if-present
-"#),
+"#
+        ),
 
-        "go" => format!(r#"name: CI
+        "go" => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1232,9 +1323,11 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build -v ./...
-"#),
+"#
+        ),
 
-        "java" => format!(r#"name: CI
+        "java" => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1258,9 +1351,11 @@ jobs:
         run: ./gradlew test
       - name: Build
         run: ./gradlew build -x test
-"#),
+"#
+        ),
 
-        _ => format!(r#"name: CI
+        _ => format!(
+            r#"name: CI
 
 on:
   push:
@@ -1275,7 +1370,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run build script
         run: echo "Add build steps here for {lang} project"
-"#),
+"#
+        ),
     }
 }
 
@@ -1283,18 +1379,39 @@ jobs:
 // README content
 // ---------------------------------------------------------------------------
 
-pub fn generate_readme(name: &str, lang: &str, framework: Option<&str>, project_type: &str, tools: &[String]) -> String {
-    let fw_str = framework.map(|f| format!(" with {}", f)).unwrap_or_default();
+pub fn generate_readme(
+    name: &str,
+    lang: &str,
+    framework: Option<&str>,
+    project_type: &str,
+    tools: &[String],
+    structure: &str,
+) -> String {
+    let fw_str = framework
+        .map(|f| format!(" with {}", f))
+        .unwrap_or_default();
     let tools_str = if tools.is_empty() {
         String::new()
     } else {
-        format!("\n\n## Tools & Services\n\n{}", tools.iter()
-            .map(|t| format!("- {}", t))
-            .collect::<Vec<_>>()
-            .join("\n"))
+        format!(
+            "\n\n## Tools & Services\n\n{}",
+            tools
+                .iter()
+                .map(|t| format!("- {}", t))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    // Реальная структура проекта — из канонической раскладки движка
+    // (ProjectLayout): каталоги сегментов и файлы каждого фреймворка.
+    let structure_str = if structure.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", structure)
     };
 
-    format!(r#"# {name}
+    format!(
+        r#"# {name}
 
 A {project_type} built on {lang}{fw_str}.
 
@@ -1324,16 +1441,14 @@ cd {name}
 ###Project Structure
 ```text
 {name}/
-├── src/           # Source code
-├── tests/         # Test files
-└── README.md      # This file
+{structure_str}
 ```text
 
 {tools_str}
 
 
-***Made with StackPilot***"#)
-
+***Made with StackPilot***"#
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1347,7 +1462,8 @@ pub fn generate_vscode_settings(lang: &str) -> String {
     "[rust]": {
         "editor.formatOnSave": true
     }
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "python" => r#"{
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
@@ -1359,7 +1475,8 @@ pub fn generate_vscode_settings(lang: &str) -> String {
             "source.organizeImports": "explicit"
         }
     }
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "typescript" | "javascript" | "node" => r#"{
     "typescript.tsdk": "node_modules/typescript/lib",
@@ -1368,7 +1485,8 @@ pub fn generate_vscode_settings(lang: &str) -> String {
     "[typescript]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     }
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "go" => r#"{
     "go.useLanguageServer": true,
@@ -1380,11 +1498,13 @@ pub fn generate_vscode_settings(lang: &str) -> String {
             "source.organizeImports": "explicit"
         }
     }
-}"#.to_string(),
+}"#
+        .to_string(),
 
         _ => r#"{
     "editor.formatOnSave": true
-}"#.to_string(),
+}"#
+        .to_string(),
     }
 }
 
@@ -1399,7 +1519,8 @@ pub fn generate_vscode_extensions(lang: &str) -> String {
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "python" => r#"{
     "recommendations": [
@@ -1407,36 +1528,42 @@ pub fn generate_vscode_extensions(lang: &str) -> String {
         "charliermarsh.ruff",
         "ms-python.mypy-type-checker"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "typescript" | "javascript" | "node" => r#"{
     "recommendations": [
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "go" => r#"{
     "recommendations": [
         "golang.go"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "java" => r#"{
     "recommendations": [
         "vscjava.vscode-java-pack"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         "csharp" => r#"{
     "recommendations": [
         "ms-dotnettools.csharp"
     ]
-}"#.to_string(),
+}"#
+        .to_string(),
 
         _ => r#"{
     "recommendations": []
-}"#.to_string(),
+}"#
+        .to_string(),
     }
 }
 
@@ -1449,7 +1576,7 @@ mod tests {
         // airflow монтирует ./dags и ./logs — это bind-mounts, их НЕЛЬЗЯ
         // объявлять в глобальной секции volumes (Property is not allowed).
         let services = collect_docker_services(&["airflow".into(), "postgresql".into()]);
-        let compose = generate_docker_compose(&services, "myproj", "3000");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
 
         // Bind-mount остаётся внутри сервиса
         assert!(compose.contains("./dags:/opt/airflow/dags"), "{compose}");
@@ -1477,8 +1604,12 @@ mod tests {
             volumes: vec!["postgres_data:/var/lib/postgresql/data".into()],
             depends_on: vec![],
         }];
-        let compose = generate_docker_compose(&services, "myproj", "3000");
-        assert!(compose.contains("volumes:\n\n  postgres_data:") || compose.contains("\nvolumes:\n  postgres_data:"), "{compose}");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
+        assert!(
+            compose.contains("volumes:\n\n  postgres_data:")
+                || compose.contains("\nvolumes:\n  postgres_data:"),
+            "{compose}"
+        );
     }
 
     #[test]
@@ -1507,7 +1638,7 @@ mod tests {
             volumes: vec!["dags/data:/opt/app/data".into()],
             depends_on: vec![],
         }];
-        let compose = generate_docker_compose(&services, "myproj", "3000");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
         assert!(compose.contains("- dags/data:/opt/app/data"), "{compose}");
         assert!(
             !compose.contains("\nvolumes:"),

@@ -8,14 +8,14 @@
 // Добавление новой ОС = новый адаптер в этой папке,
 // бизнес-логика при этом не меняется.
 
-#[cfg(target_os = "windows")]
-pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(unix)]
 pub mod unix_rc;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -166,16 +166,17 @@ mod tests {
     fn resolve_command_keeps_exe_programs() {
         // cmd.exe — настоящий бинарь: which вернёт полный путь, и это ок.
         let (program, _args) = resolve_command("cmd", &["/c".to_string(), "echo".to_string()]);
-        assert!(program.to_ascii_lowercase().ends_with("cmd.exe"), "{program}");
+        assert!(
+            program.to_ascii_lowercase().ends_with("cmd.exe"),
+            "{program}"
+        );
     }
 
     #[test]
     fn resolve_command_keeps_missing_programs() {
         // Неизвестная программа не резолвится — команда как была, так и есть.
-        let (program, args) = resolve_command(
-            "definitely-no-such-tool-xyz",
-            &["--version".to_string()],
-        );
+        let (program, args) =
+            resolve_command("definitely-no-such-tool-xyz", &["--version".to_string()]);
         assert_eq!(program, "definitely-no-such-tool-xyz");
         assert_eq!(args, vec!["--version".to_string()]);
     }

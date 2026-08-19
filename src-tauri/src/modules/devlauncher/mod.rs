@@ -1,14 +1,14 @@
-pub mod models;
-pub mod profile_manager;
-pub mod launch_engine;
 pub mod analyzer;
 pub mod commands;
+pub mod launch_engine;
+pub mod models;
+pub mod profile_manager;
 
+use crate::modules::devlauncher::analyzer::ProjectAnalyzer;
+use crate::modules::devlauncher::launch_engine::LaunchEngine;
+use crate::modules::devlauncher::profile_manager::ProfileManager;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::modules::devlauncher::profile_manager::ProfileManager;
-use crate::modules::devlauncher::launch_engine::LaunchEngine;
-use crate::modules::devlauncher::analyzer::ProjectAnalyzer;
 
 /// Состояние модуля DevLauncher, регистрируется в Tauri отдельно.
 pub struct DevLauncherState {
@@ -24,9 +24,7 @@ impl DevLauncherState {
         analyzer: Arc<dyn ProjectAnalyzer>,
     ) -> Self {
         Self {
-            profile_manager: Arc::new(
-                profile_manager::JsonProfileManager::new(profiles_dir),
-            ),
+            profile_manager: Arc::new(profile_manager::JsonProfileManager::new(profiles_dir)),
             launch_engine,
             analyzer,
         }

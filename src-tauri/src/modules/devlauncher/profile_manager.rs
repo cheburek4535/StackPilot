@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use std::fs;
 use crate::modules::devlauncher::models::*;
+use std::fs;
+use std::path::PathBuf;
 
 pub trait ProfileManager: Send + Sync {
     fn list_profiles(&self) -> Result<Vec<LaunchProfile>, String>;
@@ -61,7 +61,6 @@ impl ProfileManager for JsonProfileManager {
 
     fn delete_profile(&self, name: &str) -> Result<(), String> {
         let path = self.profile_path(name);
-        fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete profile '{}': {}", name, e))
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete profile '{}': {}", name, e))
     }
 }

@@ -162,9 +162,18 @@ mod tests {
         // «новый запуск приложения»
         let reloaded = MetadataStore::load(&dir);
         assert_eq!(reloaded.tool("node").unwrap().version, "v22.12.0");
-        assert_eq!(reloaded.tool("node").unwrap().path, "C:\\Program Files\\nodejs");
-        assert_eq!(reloaded.get_secret("postgres_password"), Some("0123456789abcdef"));
-        assert_eq!(reloaded.data().last_scan.as_deref(), Some("2026-08-05T12:00:00Z"));
+        assert_eq!(
+            reloaded.tool("node").unwrap().path,
+            "C:\\Program Files\\nodejs"
+        );
+        assert_eq!(
+            reloaded.get_secret("postgres_password"),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(
+            reloaded.data().last_scan.as_deref(),
+            Some("2026-08-05T12:00:00Z")
+        );
     }
 
     #[test]

@@ -51,9 +51,9 @@ fn platform_ok(fw: &FrameworkDef, os: &str) -> bool {
 /// Пара фреймворков объявлена легальной связкой в wizard_tree.json
 /// (allowed_main_pairs). Порядок пары не важен.
 fn is_allowed_pair(tree: &WizardTreeData, a: &str, b: &str) -> bool {
-    tree.allowed_main_pairs.iter().any(|p| {
-        p.len() == 2 && ((p[0] == a && p[1] == b) || (p[0] == b && p[1] == a))
-    })
+    tree.allowed_main_pairs
+        .iter()
+        .any(|p| p.len() == 2 && ((p[0] == a && p[1] == b) || (p[0] == b && p[1] == a)))
 }
 
 /// Фреймворк не занимает лимит «одного главного на сторону»
@@ -155,10 +155,7 @@ pub fn validate_stack(
     //    соседствовать с любым числом других.
     let mut by_side: Vec<(&str, &FrameworkDef)> = Vec::new();
     for fw in &selected {
-        if fw.kind == "app"
-            && fw.side != "either"
-            && !is_main_limit_exempt(tree, &fw.id)
-        {
+        if fw.kind == "app" && fw.side != "either" && !is_main_limit_exempt(tree, &fw.id) {
             by_side.push((fw.side.as_str(), fw));
         }
     }
@@ -184,15 +181,9 @@ pub fn validate_stack(
     //      standalone-клиент, серверная сторона для него имеет смысл только
     //      как разделённый REST API. Бэкенд-фреймворк без rest-api в
     //      project_types (cli, боты, инструменты) с таким клиентом — Error.
-    if let Some(client_shell) = selected
-        .iter()
-        .find(|f| is_client_shell(tree, &f.id))
-    {
+    if let Some(client_shell) = selected.iter().find(|f| is_client_shell(tree, &f.id)) {
         for fw in &selected {
-            if fw.side == "backend"
-                && fw.id != client_shell.id
-                && !is_rest_api_framework(fw)
-            {
+            if fw.side == "backend" && fw.id != client_shell.id && !is_rest_api_framework(fw) {
                 issues.push(StackIssue {
                     severity: StackSeverity::Error,
                     message: format!(
@@ -243,7 +234,10 @@ pub fn validate_stack(
     for fw in &selected {
         match fw.side.as_str() {
             "backend" => {
-                if !backend_langs.iter().any(|l| fw.languages.iter().any(|x| x == l)) {
+                if !backend_langs
+                    .iter()
+                    .any(|l| fw.languages.iter().any(|x| x == l))
+                {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -256,7 +250,10 @@ pub fn validate_stack(
                 }
             }
             "frontend" => {
-                if !frontend_langs.iter().any(|l| fw.languages.iter().any(|x| x == l)) {
+                if !frontend_langs
+                    .iter()
+                    .any(|l| fw.languages.iter().any(|x| x == l))
+                {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -291,9 +288,10 @@ pub fn validate_stack(
     //    не могут существовать без своего владельца (qt): они дописывают
     //    файлы к его каркасу и в мастере выбираются только в его попапе.
     for fw in &selected {
-        let owner = tree.frameworks.iter().find(|f| {
-            f.qt_ui_options.iter().any(|m| m.id == fw.id)
-        });
+        let owner = tree
+            .frameworks
+            .iter()
+            .find(|f| f.qt_ui_options.iter().any(|m| m.id == fw.id));
         if let Some(owner) = owner {
             if !frameworks.iter().any(|id| id == &owner.id) {
                 issues.push(StackIssue {
@@ -379,7 +377,11 @@ mod tests {
                 f.id,
                 f.side
             );
-            assert!(!f.languages.is_empty(), "у фреймворка {} нет languages", f.id);
+            assert!(
+                !f.languages.is_empty(),
+                "у фреймворка {} нет languages",
+                f.id
+            );
             assert!(
                 f.languages.contains(&f.recommended_language),
                 "у фреймворка {} recommended_language не входит в languages",
@@ -455,9 +457,21 @@ mod tests {
             assert_eq!(p.len(), 2, "пара должна содержать ровно два id: {p:?}");
             let a = fw(&t, &p[0]);
             let b = fw(&t, &p[1]);
-            assert_eq!(a.kind, "app", "«{}» из allowed_main_pairs не kind=app", a.id);
-            assert_eq!(b.kind, "app", "«{}» из allowed_main_pairs не kind=app", b.id);
-            assert_eq!(a.side, b.side, "«{}» и «{}» из allowed_main_pairs — разные стороны", a.id, b.id);
+            assert_eq!(
+                a.kind, "app",
+                "«{}» из allowed_main_pairs не kind=app",
+                a.id
+            );
+            assert_eq!(
+                b.kind, "app",
+                "«{}» из allowed_main_pairs не kind=app",
+                b.id
+            );
+            assert_eq!(
+                a.side, b.side,
+                "«{}» и «{}» из allowed_main_pairs — разные стороны",
+                a.id, b.id
+            );
             assert!(
                 !a.conflicts.contains(&b.id) && !b.conflicts.contains(&a.id),
                 "«{}» и «{}» — легальная связка, но объявляет conflicts",
@@ -491,14 +505,22 @@ mod tests {
                     // технология фреймворка, живёт в его попапе, сторона
                     // может быть "either".
                 } else {
-                    assert_eq!(cdef.side, "frontend", "компаньон «{}» должен быть frontend", c);
+                    assert_eq!(
+                        cdef.side, "frontend",
+                        "компаньон «{}» должен быть frontend",
+                        c
+                    );
                 }
             }
             // Каждый qt_ui_options обязан указывать на существующий
             // фреймворк-вариант kind=side и быть в companions владельца.
             for m in &f.qt_ui_options {
                 let vdef = fw(&t, &m.id);
-                assert_eq!(vdef.kind, "side", "UI-вариант «{}» должен быть kind=side", m.id);
+                assert_eq!(
+                    vdef.kind, "side",
+                    "UI-вариант «{}» должен быть kind=side",
+                    m.id
+                );
                 assert!(
                     f.companions.contains(&m.id),
                     "«{}» заявляет qt_ui_options «{}», но нет в companions",
@@ -517,7 +539,9 @@ mod tests {
     fn no_game_engines_in_tree() {
         let t = tree();
         assert!(
-            !t.frameworks.iter().any(|f| ["unity", "unreal", "godot"].contains(&f.id.as_str())),
+            !t.frameworks
+                .iter()
+                .any(|f| ["unity", "unreal", "godot"].contains(&f.id.as_str())),
             "игровые движки должны быть удалены из wizard_tree"
         );
         assert!(!t.project_types.iter().any(|p| p.id == "game"));
@@ -541,10 +565,7 @@ mod tests {
                 issues.is_empty(),
                 "пресет {} невалиден: {:?}",
                 p.id,
-                issues
-                    .iter()
-                    .map(|i| i.message.clone())
-                    .collect::<Vec<_>>()
+                issues.iter().map(|i| i.message.clone()).collect::<Vec<_>>()
             );
         }
     }
@@ -556,7 +577,11 @@ mod tests {
         // иначе он не создаёт каркас сам.
         for f in &t.frameworks {
             if f.scaffold.is_some() {
-                assert_eq!(f.class, "standalone", "scaffold-фреймворк {} должен быть standalone", f.id);
+                assert_eq!(
+                    f.class, "standalone",
+                    "scaffold-фреймворк {} должен быть standalone",
+                    f.id
+                );
             }
         }
     }
@@ -569,24 +594,51 @@ mod tests {
             "client_shell_frameworks должны быть заданы"
         );
         // Expo (клиентская оболочка) + zig-cli (не REST API) — Error
-        let issues = validate(&t, Some("custom"), Some("zig"), Some("typescript"), &["expo", "zig-cli"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("zig"),
+            Some("typescript"),
+            &["expo", "zig-cli"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
             "expo + zig-cli должны блокироваться: {:?}",
             issues
         );
         // Expo + Zap (REST API) — не блокируется (может быть только Warning)
-        let issues = validate(&t, Some("custom"), Some("zig"), Some("typescript"), &["expo", "zap"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("zig"),
+            Some("typescript"),
+            &["expo", "zap"],
+            "windows",
+        );
         assert!(
-            !issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            !issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
             "expo + zap (REST API) не должны блокироваться: {:?}",
             issues
         );
         // Electron + Django (не-JS бэкенд, REST API) — не блокируется,
         // но обязана появиться спорная связка (Warning из warning_pairs)
-        let issues = validate(&t, Some("custom"), Some("python"), Some("typescript"), &["electron", "django"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("python"),
+            Some("typescript"),
+            &["electron", "django"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| matches!(i.severity, StackSeverity::Warning)),
+            issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Warning)),
             "electron + django должны дать Warning: {:?}",
             issues
         );
@@ -600,9 +652,18 @@ mod tests {
     fn nest_blocked_when_backend_is_cpp() {
         let t = tree();
         // Классический кейс из бага: cpp-бэкенд + ts-фронтенд + nest.
-        let issues = validate(&t, Some("rest-api"), Some("cpp"), Some("typescript"), &["nest"], "windows");
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("cpp"),
+            Some("typescript"),
+            &["nest"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("требует один из языков")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("требует один из языков")),
             "{issues:?}"
         );
     }
@@ -610,9 +671,18 @@ mod tests {
     #[test]
     fn telegraf_blocked_when_backend_is_cpp() {
         let t = tree();
-        let issues = validate(&t, Some("telegram-bot"), Some("cpp"), Some("typescript"), &["telegraf"], "windows");
+        let issues = validate(
+            &t,
+            Some("telegram-bot"),
+            Some("cpp"),
+            Some("typescript"),
+            &["telegraf"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("требует один из языков")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("требует один из языков")),
             "{issues:?}"
         );
     }
@@ -636,9 +706,18 @@ mod tests {
     fn framework_requires_language_side() {
         let t = tree();
         // express требует язык именно на бэкенде: ts только на фронте — ошибка.
-        let issues = validate(&t, Some("rest-api"), None, Some("typescript"), &["express"], "windows");
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            None,
+            Some("typescript"),
+            &["express"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("требует один из языков")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("требует один из языков")),
             "{issues:?}"
         );
     }
@@ -646,7 +725,14 @@ mod tests {
     #[test]
     fn framework_ok_with_language_on_its_side() {
         let t = tree();
-        let issues = validate(&t, Some("rest-api"), Some("typescript"), None, &["express"], "windows");
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("typescript"),
+            None,
+            &["express"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -658,9 +744,18 @@ mod tests {
     fn two_backend_apps_blocked() {
         let t = tree();
         // django + fastapi — оба главные бэкенд-фреймворки.
-        let issues = validate(&t, Some("web-app"), Some("python"), None, &["django", "fastapi"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["django", "fastapi"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("оба главные фреймворки")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("оба главные фреймворки")),
             "{issues:?}"
         );
     }
@@ -668,9 +763,18 @@ mod tests {
     #[test]
     fn two_frontend_apps_blocked() {
         let t = tree();
-        let issues = validate(&t, Some("web-app"), None, Some("typescript"), &["nextjs", "sveltekit"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            None,
+            Some("typescript"),
+            &["nextjs", "sveltekit"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("оба главные фреймворки")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("оба главные фреймворки")),
             "{issues:?}"
         );
     }
@@ -679,7 +783,14 @@ mod tests {
     fn django_plus_aiogram_allowed() {
         let t = tree();
         // Главный (django) + побочный (aiogram) на одном бэкенде — ок.
-        let issues = validate(&t, Some("web-app"), Some("python"), None, &["django", "aiogram"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["django", "aiogram"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -687,7 +798,14 @@ mod tests {
     fn side_framework_alone_allowed() {
         let t = tree();
         // aiogram сам по себе — валидный телеграм-бот.
-        let issues = validate(&t, Some("telegram-bot"), Some("python"), None, &["aiogram"], "windows");
+        let issues = validate(
+            &t,
+            Some("telegram-bot"),
+            Some("python"),
+            None,
+            &["aiogram"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -724,7 +842,14 @@ mod tests {
     fn express_and_telegraf_blocked_by_conflict() {
         let t = tree();
         // express (app) + telegraf (side) — не side-лимит, а явный конфликт.
-        let issues = validate(&t, Some("rest-api"), Some("typescript"), None, &["express", "telegraf"], "windows");
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("typescript"),
+            None,
+            &["express", "telegraf"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
@@ -735,7 +860,14 @@ mod tests {
     fn backend_plus_frontend_allowed() {
         let t = tree();
         // nest (бэкенд) + nextjs (фронтенд) — легальный полный стек.
-        let issues = validate(&t, Some("web-app"), Some("typescript"), Some("typescript"), &["nest", "nextjs"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            Some("typescript"),
+            &["nest", "nextjs"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -747,14 +879,28 @@ mod tests {
     fn gin_and_cobra_allowed_together() {
         let t = tree();
         // Веб-сервер (gin) + CLI (cobra) делят обязанности — связка легальна.
-        let issues = validate(&t, Some("custom"), Some("go"), None, &["gin", "cobra"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("go"),
+            None,
+            &["gin", "cobra"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
     fn axum_and_clap_allowed_together() {
         let t = tree();
-        let issues = validate(&t, Some("custom"), Some("rust"), None, &["axum", "clap"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("rust"),
+            None,
+            &["axum", "clap"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -762,7 +908,14 @@ mod tests {
     fn android_and_jetpack_compose_allowed_together() {
         let t = tree();
         // Нативный Kotlin-стек: Android SDK + Jetpack Compose (часть Android).
-        let issues = validate(&t, Some("mobile-app"), None, Some("kotlin"), &["android", "jetpack-compose"], "windows");
+        let issues = validate(
+            &t,
+            Some("mobile-app"),
+            None,
+            Some("kotlin"),
+            &["android", "jetpack-compose"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -770,7 +923,14 @@ mod tests {
     fn zig_cli_and_zap_allowed_together() {
         let t = tree();
         // zig-cli не занимает лимит «главного» — веб-фреймворк Zig рядом легален.
-        let issues = validate(&t, Some("custom"), Some("zig"), None, &["zig-cli", "zap"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("zig"),
+            None,
+            &["zig-cli", "zap"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -779,7 +939,14 @@ mod tests {
         let t = tree();
         // Electron + React/Vue/Svelte — классическая связка (UI-компаньон).
         for ui in ["react", "vue", "svelte"] {
-            let issues = validate(&t, Some("desktop-app"), None, Some("typescript"), &["electron", ui], "windows");
+            let issues = validate(
+                &t,
+                Some("desktop-app"),
+                None,
+                Some("typescript"),
+                &["electron", ui],
+                "windows",
+            );
             assert!(issues.is_empty(), "electron+{ui}: {issues:?}");
         }
     }
@@ -788,12 +955,28 @@ mod tests {
     fn two_web_servers_still_blocked() {
         let t = tree();
         // Два одинаковых по типу инструмента — тотальная блокировка остаётся.
-        let issues = validate(&t, Some("web-app"), Some("python"), None, &["fastapi", "flask"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["fastapi", "flask"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("оба главные фреймворки")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("оба главные фреймворки")),
             "{issues:?}"
         );
-        let issues = validate(&t, Some("rest-api"), Some("typescript"), None, &["express", "fastify"], "windows");
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("typescript"),
+            None,
+            &["express", "fastify"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
@@ -804,12 +987,26 @@ mod tests {
     fn fullstack_blocks_pure_ui_still() {
         let t = tree();
         // Next.js + React — жёсткая блокировка (React встроен в Next.js).
-        let issues = validate(&t, Some("web-app"), None, Some("typescript"), &["nextjs", "react"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            None,
+            Some("typescript"),
+            &["nextjs", "react"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
         );
-        let issues = validate(&t, Some("web-app"), None, Some("typescript"), &["nuxt", "vue"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            None,
+            Some("typescript"),
+            &["nuxt", "vue"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
@@ -820,7 +1017,14 @@ mod tests {
     fn qt_and_tauri_conflict() {
         let t = tree();
         // Два десктоп-каркаса в одном проекте — теперь явный конфликт.
-        let issues = validate(&t, Some("desktop-app"), Some("cpp"), Some("rust"), &["qt", "tauri"], "windows");
+        let issues = validate(
+            &t,
+            Some("desktop-app"),
+            Some("cpp"),
+            Some("rust"),
+            &["qt", "tauri"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
@@ -830,7 +1034,14 @@ mod tests {
     #[test]
     fn tauri_and_flutter_conflict() {
         let t = tree();
-        let issues = validate(&t, Some("custom"), Some("rust"), Some("dart"), &["tauri", "flutter"], "windows");
+        let issues = validate(
+            &t,
+            Some("custom"),
+            Some("rust"),
+            Some("dart"),
+            &["tauri", "flutter"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
@@ -844,13 +1055,22 @@ mod tests {
     #[test]
     fn phoenix_with_nextjs_warns_but_does_not_block() {
         let t = tree();
-        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "nextjs"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("elixir"),
+            Some("typescript"),
+            &["phoenix", "nextjs"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("LiveView")),
             "{issues:?}"
         );
         assert!(
-            !issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            !issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
             "предупреждение не должно блокировать: {issues:?}"
         );
     }
@@ -858,7 +1078,14 @@ mod tests {
     #[test]
     fn phoenix_with_nuxt_warns() {
         let t = tree();
-        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "nuxt"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("elixir"),
+            Some("typescript"),
+            &["phoenix", "nuxt"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("LiveView")),
             "{issues:?}"
@@ -869,7 +1096,14 @@ mod tests {
     fn phoenix_with_react_is_clean() {
         let t = tree();
         // Чистый UI (React/Vue/Svelte) с Phoenix — обычная архитектура API+SPA.
-        let issues = validate(&t, Some("web-app"), Some("elixir"), Some("typescript"), &["phoenix", "react"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("elixir"),
+            Some("typescript"),
+            &["phoenix", "react"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -878,14 +1112,27 @@ mod tests {
         let t = tree();
         // Laravel + Next.js — два full-stack фреймворка с собственным
         // роутингом и сервером: Warning, но не блокировка.
-        let issues = validate(&t, Some("web-app"), Some("php"), Some("typescript"), &["laravel", "nextjs"], "windows");
-        let warn = issues.iter().find(|i| matches!(i.severity, StackSeverity::Warning));
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("php"),
+            Some("typescript"),
+            &["laravel", "nextjs"],
+            "windows",
+        );
+        let warn = issues
+            .iter()
+            .find(|i| matches!(i.severity, StackSeverity::Warning));
         assert!(
-            warn.is_some_and(|i| i.message.contains("роутинг и сервер") && i.message.contains("Laravel") && i.message.contains("Next.js")),
+            warn.is_some_and(|i| i.message.contains("роутинг и сервер")
+                && i.message.contains("Laravel")
+                && i.message.contains("Next.js")),
             "{issues:?}"
         );
         assert!(
-            !issues.iter().any(|i| matches!(i.severity, StackSeverity::Error)),
+            !issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
             "предупреждение не должно блокировать: {issues:?}"
         );
     }
@@ -893,9 +1140,19 @@ mod tests {
     #[test]
     fn django_with_nuxt_warns() {
         let t = tree();
-        let issues = validate(&t, Some("web-app"), Some("python"), Some("typescript"), &["django", "nuxt"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            Some("typescript"),
+            &["django", "nuxt"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("роутинг и сервер")),
+            issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Warning)
+                    && i.message.contains("роутинг и сервер")),
             "{issues:?}"
         );
     }
@@ -904,7 +1161,14 @@ mod tests {
     fn backend_mvc_with_pure_spa_is_clean() {
         let t = tree();
         // Laravel + чистый SPA (React) — легальная архитектура API + SPA.
-        let issues = validate(&t, Some("web-app"), Some("php"), Some("typescript"), &["laravel", "react"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("php"),
+            Some("typescript"),
+            &["laravel", "react"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -912,15 +1176,37 @@ mod tests {
     fn backend_with_electron_warns_about_sidecar() {
         let t = tree();
         // Laravel + Electron: бэкенд на PHP придётся запускать сайдкаром.
-        let issues = validate(&t, Some("desktop-app"), Some("php"), Some("typescript"), &["laravel", "electron"], "windows");
+        let issues = validate(
+            &t,
+            Some("desktop-app"),
+            Some("php"),
+            Some("typescript"),
+            &["laravel", "electron"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("сайдкар") && i.message.contains("PHP")),
+            issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Warning)
+                    && i.message.contains("сайдкар")
+                    && i.message.contains("PHP")),
             "{issues:?}"
         );
         // Spring Boot + Electron — та же логика, язык Java подставляется.
-        let issues2 = validate(&t, Some("desktop-app"), Some("java"), Some("typescript"), &["spring-boot", "electron"], "windows");
+        let issues2 = validate(
+            &t,
+            Some("desktop-app"),
+            Some("java"),
+            Some("typescript"),
+            &["spring-boot", "electron"],
+            "windows",
+        );
         assert!(
-            issues2.iter().any(|i| matches!(i.severity, StackSeverity::Warning) && i.message.contains("сайдкар") && i.message.contains("Java")),
+            issues2
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Warning)
+                    && i.message.contains("сайдкар")
+                    && i.message.contains("Java")),
             "{issues2:?}"
         );
     }
@@ -933,9 +1219,18 @@ mod tests {
     fn project_type_filters_frameworks() {
         let t = tree();
         // telegraf не подходит для embedded.
-        let issues = validate(&t, Some("embedded"), Some("cpp"), None, &["telegraf"], "windows");
+        let issues = validate(
+            &t,
+            Some("embedded"),
+            Some("cpp"),
+            None,
+            &["telegraf"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("не подходит для проекта")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("не подходит для проекта")),
             "{issues:?}"
         );
     }
@@ -943,7 +1238,14 @@ mod tests {
     #[test]
     fn cli_frameworks_allowed_for_cli_tool() {
         let t = tree();
-        let issues = validate(&t, Some("cli-tool"), Some("rust"), None, &["clap"], "windows");
+        let issues = validate(
+            &t,
+            Some("cli-tool"),
+            Some("rust"),
+            None,
+            &["clap"],
+            "windows",
+        );
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -954,9 +1256,18 @@ mod tests {
     #[test]
     fn macos_only_blocked_on_windows() {
         let t = tree();
-        let issues = validate(&t, Some("mobile-app"), None, Some("swift"), &["swiftui"], "windows");
+        let issues = validate(
+            &t,
+            Some("mobile-app"),
+            None,
+            Some("swift"),
+            &["swiftui"],
+            "windows",
+        );
         assert!(
-            issues.iter().any(|i| i.message.contains("SwiftUI") && i.message.contains("macos")),
+            issues
+                .iter()
+                .any(|i| i.message.contains("SwiftUI") && i.message.contains("macos")),
             "{issues:?}"
         );
     }
@@ -964,8 +1275,18 @@ mod tests {
     #[test]
     fn macos_only_allowed_on_macos() {
         let t = tree();
-        let issues = validate(&t, Some("mobile-app"), None, Some("swift"), &["swiftui"], "macos");
-        assert!(!issues.iter().any(|i| i.message.contains("SwiftUI")), "{issues:?}");
+        let issues = validate(
+            &t,
+            Some("mobile-app"),
+            None,
+            Some("swift"),
+            &["swiftui"],
+            "macos",
+        );
+        assert!(
+            !issues.iter().any(|i| i.message.contains("SwiftUI")),
+            "{issues:?}"
+        );
     }
 
     #[test]
@@ -973,7 +1294,14 @@ mod tests {
         let t = tree();
         // nest + nextjs конфликтуют явно (tauri-ветки), но здесь — fallback-слой:
         // даже без side-правил список conflicts обязан работать.
-        let issues = validate(&t, Some("web-app"), Some("typescript"), None, &["nest", "express"], "windows");
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &["nest", "express"],
+            "windows",
+        );
         assert!(
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"

@@ -5,8 +5,17 @@ use walkdir::WalkDir;
 use crate::modules::project_creator::models::*;
 
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "target", ".venv", "__pycache__",
-    ".next", "dist", "build", ".idea", ".vscode", "vendor",
+    "node_modules",
+    ".git",
+    "target",
+    ".venv",
+    "__pycache__",
+    ".next",
+    "dist",
+    "build",
+    ".idea",
+    ".vscode",
+    "vendor",
 ];
 
 pub trait ProjectAnalyzer: Send + Sync {
@@ -108,8 +117,13 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
         }
 
         // --- Language detection by extension ---
-        let mut ext_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for entry_result in WalkDir::new(path).follow_links(false).max_depth(5).into_iter() {
+        let mut ext_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for entry_result in WalkDir::new(path)
+            .follow_links(false)
+            .max_depth(5)
+            .into_iter()
+        {
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -121,10 +135,24 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                 let ext_lower = ext.to_lowercase();
                 if matches!(
                     ext_lower.as_str(),
-                    "rs" | "py" | "ts" | "tsx" | "js" | "jsx"
-                        | "go" | "java" | "kt" | "swift" | "rb"
-                        | "c" | "h" | "cpp" | "hpp" | "cs" | "zig"
-                        | "svelte" | "vue"
+                    "rs" | "py"
+                        | "ts"
+                        | "tsx"
+                        | "js"
+                        | "jsx"
+                        | "go"
+                        | "java"
+                        | "kt"
+                        | "swift"
+                        | "rb"
+                        | "c"
+                        | "h"
+                        | "cpp"
+                        | "hpp"
+                        | "cs"
+                        | "zig"
+                        | "svelte"
+                        | "vue"
                 ) {
                     *ext_counts.entry(ext_lower).or_default() += 1;
                 }
@@ -153,7 +181,8 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
             ("vue", "Vue"),
         ];
 
-        let mut detected_langs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut detected_langs: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (ext, lang) in &lang_map {
             if let Some(&count) = ext_counts.get(*ext) {
                 if count > 0 {
@@ -161,8 +190,11 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                     techs.push(DetectedTechnology {
                         name: lang.to_string(),
                         version: None,
-                        confidence: if *ext == "rs" || *ext == "go" { DetectionConfidence::Certain }
-                            else { DetectionConfidence::Likely },
+                        confidence: if *ext == "rs" || *ext == "go" {
+                            DetectionConfidence::Certain
+                        } else {
+                            DetectionConfidence::Likely
+                        },
                         evidence: vec![format!("Found {} .{} files", count, ext)],
                     });
                 }
@@ -209,7 +241,10 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                         name: fw.to_string(),
                         version: pkg_ver,
                         confidence: DetectionConfidence::Certain,
-                        evidence: vec![format!("Found in package.json: {}", packages.iter().find(|p| has_dep(p)).unwrap())],
+                        evidence: vec![format!(
+                            "Found in package.json: {}",
+                            packages.iter().find(|p| has_dep(p)).unwrap()
+                        )],
                     });
                     project_type_hints.push(fw.to_string());
                 }
@@ -264,7 +299,10 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                         name: name.to_string(),
                         version: ver,
                         confidence: DetectionConfidence::Certain,
-                        evidence: vec![format!("Found in Cargo.toml: {}", crates.iter().find(|c| has_crate(c)).unwrap())],
+                        evidence: vec![format!(
+                            "Found in Cargo.toml: {}",
+                            crates.iter().find(|c| has_crate(c)).unwrap()
+                        )],
                     });
                     project_type_hints.push(name.to_string());
                 }
@@ -280,11 +318,13 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                         arr.iter()
                             .filter_map(|v| v.as_str())
                             .map(|s| {
-                                s.split(|c: char| c == '>' || c == '<' || c == '=' || c == '!' || c == '~')
-                                    .next()
-                                    .unwrap_or(s)
-                                    .trim()
-                                    .to_lowercase()
+                                s.split(|c: char| {
+                                    c == '>' || c == '<' || c == '=' || c == '!' || c == '~'
+                                })
+                                .next()
+                                .unwrap_or(s)
+                                .trim()
+                                .to_lowercase()
                             })
                             .collect()
                     })
@@ -346,7 +386,12 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
             project_type_hints.push("Python".to_string());
         }
         if detected_langs.contains("TypeScript") || detected_langs.contains("JavaScript") {
-            if !project_type_hints.iter().any(|h| h.contains("React") || h.contains("Vue") || h.contains("Svelte") || h.contains("Angular")) {
+            if !project_type_hints.iter().any(|h| {
+                h.contains("React")
+                    || h.contains("Vue")
+                    || h.contains("Svelte")
+                    || h.contains("Angular")
+            }) {
                 project_type_hints.push("Node.js".to_string());
             }
         }
@@ -358,19 +403,28 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
         let summary = if techs.is_empty() {
             format!(
                 "No known technologies detected in {}",
-                path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                path.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default()
             )
         } else {
             let langs: Vec<&str> = detected_langs.iter().map(|s| s.as_str()).collect();
-            let frameworks: Vec<&str> = techs.iter()
+            let frameworks: Vec<&str> = techs
+                .iter()
                 .filter(|t| !detected_langs.contains(&t.name))
                 .map(|t| t.name.as_str())
                 .collect();
             format!(
                 "Detected {} in {} with {}",
                 langs.join(", "),
-                path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
-                if frameworks.is_empty() { "no framework detected".to_string() } else { frameworks.join(", ") }
+                path.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default(),
+                if frameworks.is_empty() {
+                    "no framework detected".to_string()
+                } else {
+                    frameworks.join(", ")
+                }
             )
         };
 

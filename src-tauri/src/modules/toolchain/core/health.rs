@@ -22,11 +22,8 @@ use super::discovery;
 /// Полная проверка здоровья одного инструмента.
 pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth {
     // Тул не работает — health_checks не помогут.
-    if matches!(
-        status,
-        ToolStatus::Missing | ToolStatus::PathBroken { .. }
-    ) {
-return ToolHealth {
+    if matches!(status, ToolStatus::Missing | ToolStatus::PathBroken { .. }) {
+        return ToolHealth {
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
@@ -41,7 +38,7 @@ return ToolHealth {
 
     // Проверок нет — «здоровым» не считаем: не проверяли.
     if def.health_checks.is_empty() {
-return ToolHealth {
+        return ToolHealth {
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
@@ -82,7 +79,7 @@ return ToolHealth {
         }
     }
 
-ToolHealth {
+    ToolHealth {
         ok: all_ok,
         tool_id: def.id.clone(),
         display: def.display.clone(),
@@ -172,8 +169,19 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_tool_all_checks_ok() {
-        let def = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "echo".to_string(), "hi".to_string()]]);
-        let health = check_tool(&def, &ToolStatus::Installed { version: "1".to_string() }).await;
+        let def = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo".to_string(),
+            "hi".to_string(),
+        ]]);
+        let health = check_tool(
+            &def,
+            &ToolStatus::Installed {
+                version: "1".to_string(),
+            },
+        )
+        .await;
 
         assert!(health.ok);
         assert_eq!(health.checks.len(), 1);
@@ -183,8 +191,19 @@ mod tests {
 
     #[tokio::test]
     async fn failing_check_marks_unhealthy() {
-        let def = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "exit".to_string(), "1".to_string()]]);
-        let health = check_tool(&def, &ToolStatus::Installed { version: "1".to_string() }).await;
+        let def = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "exit".to_string(),
+            "1".to_string(),
+        ]]);
+        let health = check_tool(
+            &def,
+            &ToolStatus::Installed {
+                version: "1".to_string(),
+            },
+        )
+        .await;
 
         assert!(!health.ok);
         assert_eq!(health.checks.len(), 1);
@@ -195,10 +214,26 @@ mod tests {
     #[tokio::test]
     async fn mixed_checks_all_must_pass() {
         let def = def_with_checks(vec![
-            vec!["cmd".to_string(), "/c".to_string(), "echo".to_string(), "ok".to_string()],
-            vec!["cmd".to_string(), "/c".to_string(), "exit".to_string(), "1".to_string()],
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "echo".to_string(),
+                "ok".to_string(),
+            ],
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "exit".to_string(),
+                "1".to_string(),
+            ],
         ]);
-        let health = check_tool(&def, &ToolStatus::Installed { version: "1".to_string() }).await;
+        let health = check_tool(
+            &def,
+            &ToolStatus::Installed {
+                version: "1".to_string(),
+            },
+        )
+        .await;
 
         assert!(!health.ok, "одна упавшая проверка рушит весь тул");
         assert_eq!(health.checks.len(), 2);
@@ -206,7 +241,11 @@ mod tests {
 
     #[tokio::test]
     async fn missing_tool_is_unhealthy_without_checks() {
-        let def = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "echo".to_string()]]);
+        let def = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo".to_string(),
+        ]]);
         let health = check_tool(&def, &ToolStatus::Missing).await;
 
         assert!(!health.ok);
@@ -219,7 +258,9 @@ mod tests {
         let def = def_with_checks(vec![vec!["cmd".to_string()]]);
         let health = check_tool(
             &def,
-            &ToolStatus::PathBroken { reason: "нет в PATH".to_string() },
+            &ToolStatus::PathBroken {
+                reason: "нет в PATH".to_string(),
+            },
         )
         .await;
 
@@ -230,7 +271,12 @@ mod tests {
     fn no_checks_is_unhealthy() {
         // не async: run_capture не вызывается вообще
         let def = def_with_checks(vec![]);
-        let health = futures_block_on(check_tool(&def, &ToolStatus::Installed { version: "1".to_string() }));
+        let health = futures_block_on(check_tool(
+            &def,
+            &ToolStatus::Installed {
+                version: "1".to_string(),
+            },
+        ));
 
         assert!(!health.ok);
         assert!(health.checks.is_empty());
@@ -239,19 +285,35 @@ mod tests {
     #[test]
     fn empty_command_marks_failed() {
         let def = def_with_checks(vec![vec![]]);
-        let health = futures_block_on(check_tool(&def, &ToolStatus::Installed { version: "1".to_string() }));
+        let health = futures_block_on(check_tool(
+            &def,
+            &ToolStatus::Installed {
+                version: "1".to_string(),
+            },
+        ));
 
         assert!(!health.ok);
-        assert_eq!(health.checks[0].detail, "команда пустая (ошибка в tools.json)");
+        assert_eq!(
+            health.checks[0].detail,
+            "команда пустая (ошибка в tools.json)"
+        );
     }
 
     #[test]
     fn update_available_tool_is_checked() {
         // Устаревший тул всё равно проверяется на здоровье
-        let def = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "echo".to_string(), "v1".to_string()]]);
+        let def = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo".to_string(),
+            "v1".to_string(),
+        ]]);
         let health = futures_block_on(check_tool(
             &def,
-            &ToolStatus::UpdateAvailable { installed: "1".to_string(), recommended: "2".to_string() },
+            &ToolStatus::UpdateAvailable {
+                installed: "1".to_string(),
+                recommended: "2".to_string(),
+            },
         ));
 
         assert!(health.ok);
@@ -260,9 +322,19 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn report_score_counts_checked_only() {
-        let mut installed = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "echo".to_string(), "hi".to_string()]]);
+        let mut installed = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo".to_string(),
+            "hi".to_string(),
+        ]]);
         installed.id = "checked-ok".to_string();
-        let mut failed = def_with_checks(vec![vec!["cmd".to_string(), "/c".to_string(), "exit".to_string(), "1".to_string()]]);
+        let mut failed = def_with_checks(vec![vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "exit".to_string(),
+            "1".to_string(),
+        ]]);
         failed.id = "checked-bad".to_string();
         let mut unchecked = def_with_checks(vec![]);
         unchecked.id = "unchecked".to_string();

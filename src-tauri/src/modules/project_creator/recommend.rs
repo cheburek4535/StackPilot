@@ -50,7 +50,11 @@ impl StackRecommendations {
 }
 
 fn side_langs<'a>(backend: &'a [String], frontend: &'a [String]) -> Vec<&'a str> {
-    backend.iter().map(String::as_str).chain(frontend.iter().map(String::as_str)).collect()
+    backend
+        .iter()
+        .map(String::as_str)
+        .chain(frontend.iter().map(String::as_str))
+        .collect()
 }
 
 /// Рекомендации для текущего выбора. Не валидирует стек — только
@@ -75,7 +79,11 @@ pub fn recommend_stack(
         for r in &fw.recommends {
             rec.frameworks.push(FrameworkSuggestion {
                 id: r.framework.clone(),
-                note: if r.note.is_empty() { fw.label.clone() } else { r.note.clone() },
+                note: if r.note.is_empty() {
+                    fw.label.clone()
+                } else {
+                    r.note.clone()
+                },
             });
         }
     }
@@ -86,7 +94,9 @@ pub fn recommend_stack(
             continue;
         }
         let lang_ok = fw.languages.iter().any(|l| langs.contains(&l.as_str()));
-        let type_ok = project_type.is_none_or(|pt| fw.project_types.is_empty() || fw.project_types.iter().any(|p| p == pt));
+        let type_ok = project_type.is_none_or(|pt| {
+            fw.project_types.is_empty() || fw.project_types.iter().any(|p| p == pt)
+        });
         if lang_ok && type_ok {
             rec.side_frameworks.push(FrameworkSuggestion {
                 id: fw.id.clone(),
@@ -97,29 +107,50 @@ pub fn recommend_stack(
 
     // 3. Инструменты: тип проекта + языки + фреймворки (union, без дублей)
     let mut seen = std::collections::HashSet::new();
-    let mut push_tool = |id: &str, note: String, rec: &mut StackRecommendations, seen: &mut std::collections::HashSet<String>| {
+    let mut push_tool = |id: &str,
+                         note: String,
+                         rec: &mut StackRecommendations,
+                         seen: &mut std::collections::HashSet<String>| {
         if seen.insert(id.to_string()) {
-            rec.tools.push(ToolSuggestion { id: id.to_string(), note });
+            rec.tools.push(ToolSuggestion {
+                id: id.to_string(),
+                note,
+            });
         }
     };
     if let Some(pt) = project_type {
         if let Some(tools) = tree.project_tool_map.get(pt) {
             for t in tools {
-                push_tool(t, format!("Рекомендовано для проекта «{pt}»"), &mut rec, &mut seen);
+                push_tool(
+                    t,
+                    format!("Рекомендовано для проекта «{pt}»"),
+                    &mut rec,
+                    &mut seen,
+                );
             }
         }
     }
     for lang in &langs {
         if let Some(tools) = tree.language_tool_map.get(*lang) {
             for t in tools {
-                push_tool(t, format!("Рекомендовано для языка «{lang}»"), &mut rec, &mut seen);
+                push_tool(
+                    t,
+                    format!("Рекомендовано для языка «{lang}»"),
+                    &mut rec,
+                    &mut seen,
+                );
             }
         }
     }
     for fw in &selected {
         if let Some(tools) = tree.framework_tool_map.get(&fw.id) {
             for t in tools {
-                push_tool(t, format!("Хорошо сочетается с «{}»", fw.label), &mut rec, &mut seen);
+                push_tool(
+                    t,
+                    format!("Хорошо сочетается с «{}»", fw.label),
+                    &mut rec,
+                    &mut seen,
+                );
             }
         }
     }
@@ -127,7 +158,9 @@ pub fn recommend_stack(
     // 4. Недостающие языки: языки фреймворка не пересекаются с выбранными
     let mut seen_lang = std::collections::HashSet::new();
     for fw in &selected {
-        if !fw.languages.iter().any(|l| langs.contains(&l.as_str())) && seen_lang.insert(fw.recommended_language.clone()) {
+        if !fw.languages.iter().any(|l| langs.contains(&l.as_str()))
+            && seen_lang.insert(fw.recommended_language.clone())
+        {
             rec.missing_languages.push(fw.recommended_language.clone());
         }
     }

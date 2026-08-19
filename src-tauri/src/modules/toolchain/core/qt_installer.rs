@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use crate::modules::toolchain::models::*;
 
-use super::console::{self, EventSink, ps_quote};
+use super::console::{self, ps_quote, EventSink};
 use super::discovery;
 use super::path_service;
 
@@ -155,10 +155,7 @@ fn pick_latest_version_dir(listing: &str) -> Option<(String, String)> {
         let href = &after[..end];
         rest = &after[end..];
         // Нужен каталог вида .../qt6_683/ (последний сегмент пути)
-        let Some(dir) = href
-            .strip_suffix('/')
-            .and_then(|h| h.rsplit('/').next())
-        else {
+        let Some(dir) = href.strip_suffix('/').and_then(|h| h.rsplit('/').next()) else {
             continue;
         };
         let Some(suffix) = dir.strip_prefix("qt6_") else {
@@ -229,7 +226,8 @@ if ($LASTEXITCODE -ne 0 -or $code -ne '200') {{
         ps_quote(url),
         ps_quote(&dest.to_string_lossy())
     );
-    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await?;
+    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort)
+        .await?;
     if !res.success {
         let msg = res
             .error_line
@@ -272,7 +270,8 @@ exit 1
         ps_quote(&url),
         ps_quote(&dest.to_string_lossy())
     );
-    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await;
+    let res =
+        console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await;
     let ok = matches!(res, Ok(r) if r.success);
     let _ = std::fs::remove_file(&dest);
     ok
@@ -291,7 +290,17 @@ async fn resolve_latest_version(
 ) -> Result<(String, String), String> {
     // Живой листинг каталога desktop/ — надёжнее всего.
     let listing_url = format!("{repo}/desktop/");
-    match fetch_text(&listing_url, index, total, task_id, tool_id, sink, Arc::clone(&abort)).await {
+    match fetch_text(
+        &listing_url,
+        index,
+        total,
+        task_id,
+        tool_id,
+        sink,
+        Arc::clone(&abort),
+    )
+    .await
+    {
         Ok(listing) => {
             if let Some(found) = pick_latest_version_dir(&listing) {
                 return Ok(found);
@@ -300,7 +309,9 @@ async fn resolve_latest_version(
         Err(e) => {
             sink.emit(console::event(
                 ToolchainEventType::TaskProgress {
-                    line: format!("tc:info Листинг репозитория недоступен ({e}) — пробую известные каталоги"),
+                    line: format!(
+                        "tc:info Листинг репозитория недоступен ({e}) — пробую известные каталоги"
+                    ),
                 },
                 index,
                 total,
@@ -312,7 +323,18 @@ async fn resolve_latest_version(
 
     // Fallback: известные каталоги 6.8.x по убыванию.
     for suffix in ["683", "682", "681", "680"] {
-        if updates_exist(repo, suffix, index, total, task_id, tool_id, sink, Arc::clone(&abort)).await {
+        if updates_exist(
+            repo,
+            suffix,
+            index,
+            total,
+            task_id,
+            tool_id,
+            sink,
+            Arc::clone(&abort),
+        )
+        .await
+        {
             let version_dir = format!("qt6_{suffix}");
             return Ok((version_dir, version_from_suffix(suffix).unwrap_or_default()));
         }
@@ -345,13 +367,17 @@ if ($LASTEXITCODE -ne 0) {{
         ps_quote(&archive.to_string_lossy()),
         ps_quote(&target.to_string_lossy())
     );
-    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await?;
+    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort)
+        .await?;
     if res.success {
         Ok(())
     } else if let Some(line) = res.error_line {
         Err(line)
     } else {
-        Err(format!("Распаковка {archive:?} завершилась с кодом {}", res.code))
+        Err(format!(
+            "Распаковка {archive:?} завершилась с кодом {}",
+            res.code
+        ))
     }
 }
 
@@ -384,7 +410,9 @@ pub async fn install_qt_online(
     let install_dir = PathBuf::from(&install_dir);
 
     sink.emit(console::event(
-        ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Installing },
+        ToolchainEventType::TaskPhaseChanged {
+            phase: TaskPhase::Installing,
+        },
         index,
         total,
         task_id,
@@ -401,8 +429,16 @@ pub async fn install_qt_online(
     ));
 
     // 1. Самая свежая версия 6.8.x
-    let (version_dir, qt_version) =
-        resolve_latest_version(repo, index, total, task_id, tool_id, sink, Arc::clone(&abort)).await?;
+    let (version_dir, qt_version) = resolve_latest_version(
+        repo,
+        index,
+        total,
+        task_id,
+        tool_id,
+        sink,
+        Arc::clone(&abort),
+    )
+    .await?;
     sink.emit(console::event(
         ToolchainEventType::TaskProgress {
             line: format!("tc:info Найдена версия Qt {qt_version}"),
@@ -425,13 +461,21 @@ pub async fn install_qt_online(
     let mut extension_want: Vec<String> = Vec::new();
     let webengine = install_options.iter().any(|o| o == "qt-webengine");
     if webengine {
-        extension_want.push(format!("extensions.qtwebengine.{version_suffix}.{toolchain}"));
-        want.push(format!("qt.qt6.{version_suffix}.addons.qt5compat.{toolchain}"));
-        want.push(format!("qt.qt6.{version_suffix}.addons.qtwebchannel.{toolchain}"));
+        extension_want.push(format!(
+            "extensions.qtwebengine.{version_suffix}.{toolchain}"
+        ));
+        want.push(format!(
+            "qt.qt6.{version_suffix}.addons.qt5compat.{toolchain}"
+        ));
+        want.push(format!(
+            "qt.qt6.{version_suffix}.addons.qtwebchannel.{toolchain}"
+        ));
     }
     // Qt6ShaderTools.dll нужна qtdeclarative (Qt Quick) в рантайме —
     // в base-пакет она не входит, ставим всегда.
-    want.push(format!("qt.qt6.{version_suffix}.addons.qtshadertools.{toolchain}"));
+    want.push(format!(
+        "qt.qt6.{version_suffix}.addons.qtshadertools.{toolchain}"
+    ));
 
     // 3. Метаданные из Updates.xml (desktop + extensions).
     let desktop_base = format!("desktop/{version_dir}/{version_dir}");
@@ -465,7 +509,10 @@ pub async fn install_qt_online(
         packages.extend(parse_updates(&ext_xml, &ext_base, &ext_refs));
     }
     if packages.is_empty() {
-        return Err("В репозитории не найдены пакеты Qt 6.8 — возможно, каталог версии изменился".to_string());
+        return Err(
+            "В репозитории не найдены пакеты Qt 6.8 — возможно, каталог версии изменился"
+                .to_string(),
+        );
     }
     let expected_total = want.len() + extension_want.len();
     if packages.len() < expected_total {
@@ -488,7 +535,10 @@ pub async fn install_qt_online(
     let mut done_archives = 0usize;
     for pkg in &packages {
         if pkg.extracts.is_empty() {
-            return Err(format!("Пакет {} не содержит операций извлечения", pkg.name));
+            return Err(format!(
+                "Пакет {} не содержит операций извлечения",
+                pkg.name
+            ));
         }
         sink.emit(console::event(
             ToolchainEventType::TaskProgress {
@@ -506,7 +556,10 @@ pub async fn install_qt_online(
             }
 
             let target = resolve_target(target_arg, &install_dir, &qt_version);
-            let url = format!("{repo}/{}/{}/{}{archive}", pkg.base_path, pkg.name, pkg.version);
+            let url = format!(
+                "{repo}/{}/{}/{}{archive}",
+                pkg.base_path, pkg.name, pkg.version
+            );
             let dest = std::env::temp_dir().join(format!("tc-qt-{tool_id}-{archive}"));
 
             sink.emit(console::event(
@@ -520,9 +573,18 @@ pub async fn install_qt_online(
                 task_id,
                 tool_id,
             ));
-            console::download(&url, &dest, index, total, task_id, tool_id, sink, Arc::clone(&abort))
-                .await
-                .map_err(|e| format!("Пакет {}: {e}", pkg.name))?;
+            console::download(
+                &url,
+                &dest,
+                index,
+                total,
+                task_id,
+                tool_id,
+                sink,
+                Arc::clone(&abort),
+            )
+            .await
+            .map_err(|e| format!("Пакет {}: {e}", pkg.name))?;
 
             sink.emit(console::event(
                 ToolchainEventType::TaskProgress {
@@ -553,7 +615,9 @@ pub async fn install_qt_online(
     // 5. PATH: qmake/мета-тулсы Qt должны быть видны из терминала.
     if !def.path_entries.is_empty() {
         sink.emit(console::event(
-            ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::UpdatingPath },
+            ToolchainEventType::TaskPhaseChanged {
+                phase: TaskPhase::UpdatingPath,
+            },
             index,
             total,
             task_id,
@@ -569,7 +633,9 @@ pub async fn install_qt_online(
 
     // 6. Проверка установки тем же discovery, что и в проверке окружения.
     sink.emit(console::event(
-        ToolchainEventType::TaskPhaseChanged { phase: TaskPhase::Verifying },
+        ToolchainEventType::TaskPhaseChanged {
+            phase: TaskPhase::Verifying,
+        },
         index,
         total,
         task_id,
@@ -703,11 +769,7 @@ mod tests {
 
     #[test]
     fn target_dir_replaced_with_install_dir() {
-        let target = resolve_target(
-            "@TargetDir@/6.8.3/msvc2022_64",
-            Path::new("C:/Qt"),
-            "6.8.3",
-        );
+        let target = resolve_target("@TargetDir@/6.8.3/msvc2022_64", Path::new("C:/Qt"), "6.8.3");
         assert_eq!(target, PathBuf::from("C:/Qt/6.8.3/msvc2022_64"));
     }
 
@@ -745,7 +807,10 @@ mod tests {
                 .await
                 .expect("resolve_latest_version");
         eprintln!("live: version_dir={version_dir}, version={qt_version}");
-        assert!(qt_version.starts_with("6.8."), "ожидали 6.8.x: {qt_version}");
+        assert!(
+            qt_version.starts_with("6.8."),
+            "ожидали 6.8.x: {qt_version}"
+        );
 
         let suffix = version_dir.strip_prefix("qt6_").unwrap();
         let toolchain = "win64_msvc2022_64";
@@ -766,7 +831,11 @@ mod tests {
         .await
         .expect("desktop Updates.xml");
         let want_refs: Vec<&str> = want.iter().map(|s| s.as_str()).collect();
-        let packages = parse_updates(&desktop_xml, &format!("desktop/{version_dir}/{version_dir}"), &want_refs);
+        let packages = parse_updates(
+            &desktop_xml,
+            &format!("desktop/{version_dir}/{version_dir}"),
+            &want_refs,
+        );
         eprintln!("live: packages = {packages:?}");
         assert_eq!(packages.len(), 3, "все пакеты должны найтись");
 
@@ -777,7 +846,11 @@ mod tests {
             .expect("base-пакет");
         assert_eq!(base.extracts.len(), 7, "base: 7 архивов");
         assert!(base.extracts.iter().all(|(t, _)| t.contains("msvc2022_64")));
-        assert!(base.version.starts_with("6.8.3-0-"), "префикс версии: {}", base.version);
+        assert!(
+            base.version.starts_with("6.8.3-0-"),
+            "префикс версии: {}",
+            base.version
+        );
 
         // URL-шаблон должен существовать: HEAD на первый архив.
         let (target, archive) = &base.extracts[0];

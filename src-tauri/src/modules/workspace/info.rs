@@ -1,6 +1,6 @@
-use walkdir::WalkDir;
 use crate::modules::workspace::models::ProjectContext;
 use std::fs;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct ProjectInfo {
@@ -26,7 +26,9 @@ impl InfoService for DefaultInfoService {
     fn get_info(&self, ctx: &ProjectContext) -> ProjectInfo {
         let (file_count, git_branch) = if let Some(path_str) = ctx.project_path.as_deref() {
             (self.count_files(path_str), self.get_git_branch(path_str))
-        } else {(0, None)};
+        } else {
+            (0, None)
+        };
         ProjectInfo {
             profile_name: ctx.profile_name.clone(),
             project_path: ctx.project_path.clone(),
@@ -65,11 +67,20 @@ impl DefaultInfoService {
             .ok()?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        } else { None }
+        } else {
+            None
+        }
     }
 
     fn count_files(&self, path: &str) -> usize {
-        let excluded = ["node_modules", ".git", "target", ".venv", "__pycache__", ".next"];
+        let excluded = [
+            "node_modules",
+            ".git",
+            "target",
+            ".venv",
+            "__pycache__",
+            ".next",
+        ];
         WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {

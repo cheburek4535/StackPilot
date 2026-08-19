@@ -12,8 +12,9 @@ use crate::modules::toolchain::models::ToolDefinition;
 /// это статичные данные, а не пользовательский ввод.
 pub fn load_definitions() -> Vec<ToolDefinition> {
     let raw = include_str!("tools.json");
-    let definitions: Vec<ToolDefinition> = serde_json::from_str(raw)
-        .expect("tools.json должен быть корректным JSON и соответствовать структуре ToolDefinition");
+    let definitions: Vec<ToolDefinition> = serde_json::from_str(raw).expect(
+        "tools.json должен быть корректным JSON и соответствовать структуре ToolDefinition",
+    );
     definitions
 }
 

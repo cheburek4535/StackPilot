@@ -1,0 +1,1029 @@
+﻿diff --git a/src-tauri/src/modules/project_creator/engine/executor.rs b/src-tauri/src/modules/project_creator/engine/executor.rs
+index be5e9c2..ee4cbfc 100644
+--- a/src-tauri/src/modules/project_creator/engine/executor.rs
++++ b/src-tauri/src/modules/project_creator/engine/executor.rs
+@@ -114,54 +114,57 @@ impl StepExecutor {
+             if lower.contains(trigger) {
+                 let _ = stdin.write_all(response.as_bytes()).await;
+                 let _ = stdin.write_all(b"\n").await;
+                 let _ = stdin.flush().await;
+                 return true;
+             }
+         }
+         false
+     }
+ 
+     /// ╨Я╤А╨╛╤З╨╕╤В╨░╤В╤М stdout ╤Б ╨┐╨╛╨▒╨░╨╣╤В╨╛╨▓╤Л╨╝ ╨╜╨░╨║╨╛╨┐╨╗╨╡╨╜╨╕╨╡╨╝, ╨┤╨╡╤В╨╡╨║╤Ж╨╕╨╡╨╣ ╤В╤А╨╕╨│╨│╨╡╤А╨╛╨▓ ╨╕ ╨╛╤В╨┐╤А╨░╨▓╨║╨╛╨╣ ╨╛╤В╨▓╨╡╤В╨╛╨▓.
+     async fn read_stdout_loop(
+         mut stdout: tokio::process::ChildStdout,
+         mut stdin: tokio::process::ChildStdin,
+         trigger_map: Vec<(String, ResponseType)>, // ╨▓╨╗╨░╨┤╨╡╤О╤Й╨╕╨╡ ╨┤╨░╨╜╨╜╤Л╨╡
++        stdout_tail: Arc<Mutex<Vec<String>>>,
+         tx: mpsc::Sender<ExecutionEvent>,
+         step_id: String,
+         step_name: String,
+         step_desc: String,
+         index: usize,
+         total_steps: usize,
+     ) {
+         // 256тАС╨▒╨░╨╣╤В╨╛╨▓╤Л╨╣ ╨▒╤Г╤Д╨╡╤А тАФ ╨╜╨╡ ╨╢╨┤╤С╨╝ \n, ╤З╨╕╤В╨░╨╡╨╝ ╨║╨░╨║ ╤В╨╛╨╗╤М╨║╨╛ ╨┤╨░╨╜╨╜╤Л╨╡ ╨┐╨╛╤П╨▓╨╗╤П╤О╤В╤Б╤П
+         let mut buf = [0u8; 256];
+         // ╨б╨║╨╛╨╗╤М╨╖╤П╤Й╨╡╨╡ ╨╛╨║╨╜╨╛ 2048 ╤Б╨╕╨╝╨▓╨╛╨╗╨╛╨▓
+         let mut rolling = String::with_capacity(2048);
+         // ╨в╨░╨╣╨╝╨░╤Г╤В ╨▒╨╡╨╖╨┤╨╡╨╣╤Б╤В╨▓╨╕╤П ╨┐╨╡╤А╨╡╨┤ fallback-╨╛╨┐╤А╨╛╤Б╨╛╨╝
+         let idle_timeout = Duration::from_secs(4);
+ 
+         loop {
+             let read_fut = stdout.read(&mut buf);
+             let result = tokio::time::timeout(idle_timeout, read_fut).await;
+ 
+             match result {
+                 // ╨Ф╨░╨╜╨╜╤Л╨╡ ╨┐╤А╨╕╤И╨╗╨╕
+                 Ok(Ok(0)) => break, // EOF тАФ ╨┐╤А╨╛╤Ж╨╡╤Б╤Б ╨╖╨░╨║╤А╤Л╨╗ stdout
+                 Ok(Ok(n)) => {
+                     let chunk = String::from_utf8_lossy(&buf[..n]);
+ 
++                    capture_tail(&stdout_tail, &chunk);
++
+                     // ╨Я╨╡╤З╨░╤В╨░╨╡╨╝ ╨▓ ╨║╨╛╨╜╤Б╨╛╨╗╤М ╨┤╨╗╤П ╨╛╤В╨╗╨░╨┤╨║╨╕
+                     print!("{}", chunk);
+                     let _ = std::io::Write::flush(&mut std::io::stdout());
+ 
+                     // ╨Ф╨╛╨▒╨░╨▓╨╗╤П╨╡╨╝ ╨▓ ╤Б╨║╨╛╨╗╤М╨╖╤П╤Й╨╡╨╡ ╨╛╨║╨╜╨╛
+                     rolling.push_str(&chunk);
+                     if rolling.len() > 2048 {
+                         rolling.drain(..rolling.len() - 2048);
+                     }
+ 
+                     // ╨Ш╤Й╨╡╨╝ ╤В╤А╨╕╨│╨│╨╡╤А╤Л
+                     let matched = Self::check_triggers(&rolling, &trigger_map, &mut stdin).await;
+                     if matched {
+                         rolling.clear(); // ╨Ю╤З╨╕╤Й╨░╨╡╨╝ ╨╛╨║╨╜╨╛ ╨┐╨╛╤Б╨╗╨╡ ╨╛╤В╨▓╨╡╤В╨░
+                     }
+@@ -222,74 +225,71 @@ impl StepExecutor {
+             timeout_secs,
+             ..
+         } => (command, args, working_dir, env, timeout_secs),
+         _ => {
+             return StepResult {
+                 step_id: step_id(step),
+                 label: step_label(step),
+                 status: StepStatus::Failed {
+                     error: "Expected Command step".into(),
+                 },
+                 duration_ms: 0,
+             }
+         }
+     };
+ 
+-    // ╨Я╨╛╨┤╨░╨▓╨╗╨╡╨╜╨╕╨╡ ╨╕╨╜╤В╨╡╤А╨░╨║╤В╨╕╨▓╨╜╨╛╤Б╤В╨╕: npx ╨▒╨╡╨╖ --yes ╤Б╨┐╤А╨░╤И╨╕╨▓╨░╨╡╤В ┬лOk to proceed?
+-    // (y)┬╗ ╨╕ ╨╢╨┤╤С╤В ╨▓╨▓╨╛╨┤╨░, ╤Г╨▒╨╕╨▓╨░╤П ╨░╨▓╤В╨╛╨╝╨░╤В╨╕╤З╨╡╤Б╨║╤Г╤О ╨│╨╡╨╜╨╡╤А╨░╤Ж╨╕╤О. ╨д╨╗╨░╨│ ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╡╤В╤Б╤П
+-    // ╨┐╨╡╤А╨▓╤Л╨╝ ╨░╤А╨│╤Г╨╝╨╡╨╜╤В╨╛╨╝, ╨╡╤Б╨╗╨╕ ╨╡╨│╨╛ ╨╡╤Й╤С ╨╜╨╡╤В (npx --yes nuxt ... ╨╕ ╤В.╨┐.).
+-    let mut args: Vec<String> = raw_args.clone();
+-    if command == "npx" && !args.iter().any(|a| a.starts_with("--yes")) {
+-        args.insert(0, "--yes".into());
+-    }
++    // ╨Р╤А╨│╤Г╨╝╨╡╨╜╤В╤Л ╤А╨╡╤Ж╨╡╨┐╤В╨░ ╨┐╨╡╤А╨╡╨┤╨░╤О╤В╤Б╤П ╨▒╨╡╨╖ ╤Б╨║╤А╤Л╤В╤Л╤Е ╨╝╨╛╨┤╨╕╤Д╨╕╨║╨░╤Ж╨╕╨╣. ╨Т ╤З╨░╤Б╤В╨╜╨╛╤Б╤В╨╕,
++    // ╤А╨╡╤Ж╨╡╨┐╤В ╤Б╨░╨╝ ╨╛╤В╨▓╨╡╤З╨░╨╡╤В ╨╖╨░ ╨╜╨░╨╗╨╕╤З╨╕╨╡ `npx --yes`: ╨│╨╗╨╛╨▒╨░╨╗╤М╨╜╨░╤П ╨╕╨╜╤К╨╡╨║╤Ж╨╕╤П ╨╝╨╡╨╜╤П╨╡╤В
++    // ╨┐╨╛╨╖╨╕╤Ж╨╕╤О/╤Б╨╡╨╝╨░╨╜╤В╨╕╨║╤Г ╨░╤А╨│╤Г╨╝╨╡╨╜╤В╨╛╨▓ ╨╛╤В╨┤╨╡╨╗╤М╨╜╤Л╤Е CLI.
++    let args: Vec<String> = raw_args.clone();
+ 
+     // ╨Ъ╤А╨╛╤Б╤Б╨┐╨╗╨░╤В╤Д╨╛╤А╨╝╨╡╨╜╨╜╤Л╨╣ ╨╖╨░╨┐╤Г╤Б╨║ ╤З╨╡╤А╨╡╨╖ shell
+     let mut cmd = match OS {
+         "windows" => {
+             let is_powershell = command.starts_with("powershell")
+                 || command.starts_with("pwsh")
+                 || command.contains("Get-")
+                 || command.contains("Set-")
+                 || command.contains("Invoke-")
+                 || command.contains("New-");
+ 
+             if is_powershell {
+                 let mut ps_cmd = tokio::process::Command::new("powershell");
+                 ps_cmd.arg("-Command");
+                 ps_cmd.arg(command);
+                 if !args.is_empty() {
+-                    ps_cmd.args(args);
++                    ps_cmd.args(&args);
+                 }
+                 ps_cmd
+             } else {
+                 // ╨Ю╨▒╤Л╤З╨╜╤Л╨╡ ╨║╨╛╨╝╨░╨╜╨┤╤Л ╨╖╨░╨┐╤Г╤Б╨║╨░╨╡╨╝ ╨╜╨░╨┐╤А╤П╨╝╤Г╤О. `cmd /C` ╨╗╨╛╨╝╨░╨╡╤В
+                 // ╨▓╨╗╨╛╨╢╨╡╨╜╨╜╤Л╨╡ ╨║╨░╨▓╤Л╤З╨║╨╕ ╨▓ `node -e`, ╨┐╤Г╤В╤П╤Е venv ╨╕ Composer,
+                 // ╨╕╨╖-╨╖╨░ ╤З╨╡╨│╨╛ ╤И╨░╨│╨╕ ╨╖╨░╨▓╨╡╤А╤И╨░╤О╤В╤Б╤П ╨║╨╛╨┤╨╛╨╝ 1 ╨▒╨╡╨╖ stderr. Batch-╤Д╨░╨╣╨╗╤Л
+                 // npm/npx/composer ╤А╨░╨╖╤А╨╡╤И╨░╤О╤В╤Б╤П ╤З╨╡╤А╨╡╨╖ .cmd/.bat ╨▓ helper.
+                 let program = windows_command_program(command);
+                 let mut win_cmd = if is_windows_batch(&program) {
+                     let mut shell = tokio::process::Command::new("cmd");
+                     shell
+                         .arg("/D")
+                         .arg("/S")
+                         .arg("/C")
+                         .arg(windows_shell_line(&program, &args));
+                     shell
+                 } else {
+-                    tokio::process::Command::new(program)
++                    tokio::process::Command::new(&program)
+                 };
+-                if !is_windows_batch(command) {
++                if !is_windows_batch(&program) {
+                     win_cmd.args(&args);
+                 }
+                 win_cmd
+             }
+         }
+         _ => {
+             let mut unix_cmd = tokio::process::Command::new("sh");
+             unix_cmd.arg("-c");
+             let mut shell_cmd = String::from(command);
+             for arg in args.iter() {
+                 shell_cmd.push(' ');
+                 shell_cmd.push_str(&sh_quote(arg));
+             }
+             unix_cmd.arg(shell_cmd);
+             unix_cmd
+@@ -309,272 +309,171 @@ impl StepExecutor {
+ 
+     // ╨Я╤А╨╕╨╜╤Г╨┤╨╕╤В╨╡╨╗╤М╨╜╤Л╨╣ ╨╜╨╡╨╕╨╜╤В╨╡╤А╨░╨║╤В╨╕╨▓╨╜╤Л╨╣ ╤А╨╡╨╢╨╕╨╝ ╨┤╨╗╤П ╨Т╨б╨Х╨е ╨║╨╛╨╝╨░╨╜╨┤: CI=1 ╨╖╨░╤Б╤В╨░╨▓╨╗╤П╨╡╤В
+     // npm/prisma/create-* CLI (Tauri, Vite, Next.js...) ╨┐╤А╨╛╨┐╤Г╤Б╨║╨░╤В╤М ╨┐╤А╨╛╨╝╨┐╤В╤Л,
+     // NPM_CONFIG_YES ╨╛╤В╨▓╨╡╤З╨░╨╡╤В ┬л╨┤╨░┬╗ ╨╜╨░ ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╨╡ ╤Г╤Б╤В╨░╨╜╨╛╨▓╨║╨╕ ╨┐╨░╨║╨╡╤В╨░ ╤Г npx.
+     // ╨С╨╡╨╖ ╤Н╤В╨╛╨│╨╛ prisma init ╨┐╨╛╨▓╨╕╤Б╨░╨╡╤В ╨╜╨░ ╨▓╨╛╨┐╤А╨╛╤Б╨╡ ╨╛ ╨С╨Ф, create-* ╨╢╨┤╤Г╤В Enter.
+     cmd.env("CI", "1");
+     cmd.env("NPM_CONFIG_YES", "true");
+ 
+     cmd.stdout(Stdio::piped());
+     cmd.stderr(Stdio::piped());
+     cmd.stdin(Stdio::piped());
+ 
+     let start = std::time::Instant::now();
+     let total_steps = plan.step_count();
+ 
+-    // ╨Ю╤В╨┐╤А╨░╨▓╨╗╤П╨╡╨╝ Started
+-    tx.send(ExecutionEvent {
+-        event_type: ExecutionEventType::StepStarted,
+-        step_id: step_id(step),
+-        step_index: index,
+-        total_steps,
+-        step_name: step_label(step),
+-        step_description: step_description(step),
+-        timestamp: local_time(),
+-    })
+-    .await
+-    .ok();
+-
+     let mut child = match cmd.spawn() {
+         Ok(child) => child,
+         Err(e) => {
+-            let error_msg = format!("Failed to spawn command '{}': {}", command, e);
+-            let status = StepStatus::Failed { error: error_msg };
+-            let duration_ms = start.elapsed().as_millis() as u64;
+-
+-            tx.send(ExecutionEvent {
+-                event_type: ExecutionEventType::StepCompleted {
+-                    status: status.clone(),
+-                    duration_ms,
+-                },
+-                step_id: step_id(step),
+-                step_index: index,
+-                total_steps,
+-                step_name: step_label(step),
+-                step_description: step_description(step),
+-                timestamp: local_time(),
+-            })
+-            .await
+-            .ok();
+-
+-            return StepResult {
+-                step_id: step_id(step),
+-                label: step_label(step),
+-                status,
+-                duration_ms,
+-            };
++            return failed_result(
++                step,
++                start,
++                format_command_error(
++                    "failed to spawn",
++                    &command_display(command, &args),
++                    &full_working_dir,
++                    &e.to_string(),
++                ),
++            );
+         }
+     };
+ 
+     let stdout = child.stdout.take().expect("stdout should be piped");
+     let stderr = child.stderr.take().expect("stderr should be piped");
+     let stdin = child.stdin.take().expect("stdin should be piped");
++    let stdout_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+     let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+ 
+     // ╨б╤В╤А╨╛╨╕╨╝ ╨║╨░╤А╤В╤Г ╤В╤А╨╕╨│╨│╨╡╤А╨╛╨▓ ╨╕╨╖ interactive-╨┐╨╛╨╗╤П ╤И╨░╨│╨░
+     let trigger_map = Self::build_trigger_map(step);
+ 
+     // ╨Ч╨░╨┐╤Г╤Б╨║╨░╨╡╨╝ stdout-╤З╨╕╤В╨░╨╗╨║╤Г ╨▓ ╨╛╤В╨┤╨╡╨╗╤М╨╜╨╛╨╝ ╤В╨░╤Б╨║╨╡
+     let tx_stdout = tx.clone();
+     let step_id_out = step_id(step);
+     let step_name_out = step_label(step);
+     let step_desc_out = step_description(step);
++    let stdout_tail_capture = Arc::clone(&stdout_tail);
+ 
+     let stdout_handle = tokio::spawn(async move {
+         Self::read_stdout_loop(
+             stdout,
+             stdin,
+             trigger_map,
++            stdout_tail_capture,
+             tx_stdout,
+             step_id_out,
+             step_name_out,
+             step_desc_out,
+             index,
+             total_steps,
+         )
+         .await;
+     });
+ 
+     // ╨Ф╨╗╤П stderr
+     let tx_stderr = tx.clone();
+     let step_id_err = step_id(step);
+     let step_name_err = step_label(step);
+     let step_desc_err = step_description(step);
+     let stderr_tail_capture = Arc::clone(&stderr_tail);
+ 
+     let stderr_handle = tokio::spawn(async move {
+         use tokio::io::{AsyncBufReadExt, BufReader};
+ 
+         let reader = BufReader::new(stderr);
+         let mut lines = reader.lines();
+ 
+         while let Ok(Some(line)) = lines.next_line().await {
+-            if let Ok(mut tail) = stderr_tail_capture.lock() {
+-                tail.push(line.clone());
+-                if tail.len() > 12 {
+-                    tail.remove(0);
+-                }
+-            }
++            capture_tail(&stderr_tail_capture, &line);
+             tx_stderr
+                 .send(ExecutionEvent {
+                     event_type: ExecutionEventType::StepProgress {
+                         stdout: String::new(),
+                         stderr: line,
+                     },
+                     step_id: step_id_err.clone(),
+                     step_index: index,
+                     total_steps,
+                     step_name: step_name_err.clone(),
+                     step_description: step_desc_err.clone(),
+                     timestamp: local_time(),
+                 })
+                 .await
+                 .ok();
+         }
+     });
+ 
+-    // ╨Ю╨╢╨╕╨┤╨░╨╡╨╝ ╨╖╨░╨▓╨╡╤А╤И╨╡╨╜╨╕╤П ╨┐╤А╨╛╤Ж╨╡╤Б╤Б╨░
+-    let exit_status_result = if let Some(timeout_secs) = timeout_secs {
++    // ╨Ю╨╢╨╕╨┤╨░╨╡╨╝ ╨╖╨░╨▓╨╡╤А╤И╨╡╨╜╨╕╤П ╨┐╤А╨╛╤Ж╨╡╤Б╤Б╨░, ╨╜╨╛ ╨▓ ╨╗╤О╨▒╨╛╨╝ ╤Б╨╗╤Г╤З╨░╨╡ ╨┐╤А╨╕╨▓╨╛╨┤╨╕╨╝ ╨╡╨│╨╛ ╨║ ╨╡╨┤╨╕╨╜╨╛╨╝╤Г
++    // ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╤Г: spawn/wait/timeout/╨╜╨╡╨╜╤Г╨╗╨╡╨▓╨╛╨╣ exit-╨║╨╛╨┤ ╨┤╨╛╨╗╨╢╨╜╤Л ╨╕╨╝╨╡╤В╤М ╨╛╨┤╨╕╨╜╨░╨║╨╛╨▓╤Л╨╣
++    // ╨║╨╛╨╜╤В╨╡╨║╤Б╤В ╨╕ ╤Е╨▓╨╛╤Б╤В╤Л ╨╛╨▒╨╛╨╕╤Е ╨┐╨╛╤В╨╛╨║╨╛╨▓.
++    let wait_result: Result<std::process::ExitStatus, String> = if let Some(timeout_secs) = timeout_secs {
+         let duration = std::time::Duration::from_secs(*timeout_secs);
+ 
+         match tokio::time::timeout(duration, child.wait()).await {
+-            Ok(Ok(status)) => Some(status),
++            Ok(Ok(status)) => Ok(status),
+             Ok(Err(e)) => {
+                 let _ = child.kill().await;
+-
+-                let error_msg = format!("Process wait error: {}", e);
+-                let status = StepStatus::Failed { error: error_msg };
+-                let duration_ms = start.elapsed().as_millis() as u64;
+-
+-                tx.send(ExecutionEvent {
+-                    event_type: ExecutionEventType::StepCompleted {
+-                        status: status.clone(),
+-                        duration_ms,
+-                    },
+-                    step_id: step_id(step),
+-                    step_index: index,
+-                    total_steps,
+-                    step_name: step_label(step),
+-                    step_description: step_description(step),
+-                    timestamp: local_time(),
+-                })
+-                .await
+-                .ok();
+-
+-                return StepResult {
+-                    step_id: step_id(step),
+-                    label: step_label(step),
+-                    status,
+-                    duration_ms,
+-                };
++                Err(format!("process wait failed: {e}"))
+             }
+-            Err(_elapsed) => {
++            Err(_) => {
+                 let _ = child.kill().await;
+-                None
++                Err(format!("timed out after {timeout_secs} seconds"))
+             }
+         }
+     } else {
+         match child.wait().await {
+-            Ok(status) => Some(status),
++            Ok(status) => Ok(status),
+             Err(e) => {
+                 let _ = child.kill().await;
+-                let _ = stdout_handle.await;
+-                let _ = stderr_handle.await;
+-
+-                let error_msg = format!("Process wait error: {}", e);
+-                let status = StepStatus::Failed { error: error_msg };
+-                let duration_ms = start.elapsed().as_millis() as u64;
+-
+-                tx.send(ExecutionEvent {
+-                    event_type: ExecutionEventType::StepCompleted {
+-                        status: status.clone(),
+-                        duration_ms,
+-                    },
+-                    step_id: step_id(step),
+-                    step_index: index,
+-                    total_steps,
+-                    step_name: step_label(step),
+-                    step_description: step_description(step),
+-                    timestamp: local_time(),
+-                })
+-                .await
+-                .ok();
+-
+-                return StepResult {
+-                    step_id: step_id(step),
+-                    label: step_label(step),
+-                    status,
+-                    duration_ms,
+-                };
++                Err(format!("process wait failed: {e}"))
+             }
+         }
+     };
+ 
+     let _ = stdout_handle.await;
+     let _ = stderr_handle.await;
+ 
+-    let final_status = if let Some(exit_status) = exit_status_result {
+-        if exit_status.success() {
+-            StepStatus::Success {
+-                message: format!("Command '{}' completed successfully", command),
+-            }
+-        } else {
+-            let detail = stderr_tail
+-                .lock()
+-                .ok()
+-                .map(|lines| lines.join("\\n"))
+-                .filter(|text| !text.trim().is_empty())
+-                .unwrap_or_else(|| "no stderr output captured".to_string());
+-            StepStatus::Failed {
+-                error: format!(
+-                    "Command '{}' failed with exit code: {}.\\n{}",
+-                    command,
+-                    exit_status.code().unwrap_or(-1),
+-                    detail
+-                ),
+-            }
+-        }
+-    } else {
+-        StepStatus::Failed {
+-            error: format!(
+-                "Command '{}' timed out after {} seconds",
+-                command,
+-                timeout_secs.unwrap_or(0)
++    let command_text = command_display(command, &args);
++    let stdout_detail = tail_text(&stdout_tail);
++    let stderr_detail = tail_text(&stderr_tail);
++    let status = match wait_result {
++        Ok(exit_status) if exit_status.success() => StepStatus::Success {
++            message: format!("Command '{command_text}' completed successfully"),
++        },
++        Ok(exit_status) => StepStatus::Failed {
++            error: format_command_error(
++                &format!("exited with status {}", exit_status_text(&exit_status)),
++                &command_text,
++                &full_working_dir,
++                &format_output_tails(&stdout_detail, &stderr_detail),
+             ),
+-        }
++        },
++        Err(reason) => StepStatus::Failed {
++            error: format_command_error(
++                &reason,
++                &command_text,
++                &full_working_dir,
++                &format_output_tails(&stdout_detail, &stderr_detail),
++            ),
++        },
+     };
+ 
+     let duration_ms = start.elapsed().as_millis() as u64;
+-    tx.send(ExecutionEvent {
+-        event_type: ExecutionEventType::StepCompleted {
+-            status: final_status.clone(),
+-            duration_ms,
+-        },
+-        step_id: step_id(step),
+-        step_index: index,
+-        total_steps,
+-        step_name: step_label(step),
+-        step_description: step_description(step),
+-        timestamp: local_time(),
+-    })
+-    .await
+-    .ok();
+-
+     StepResult {
+         step_id: step_id(step),
+         label: step_label(step),
+-        status: final_status,
++        status,
+         duration_ms,
+     }
+ }
+ 
+     /// ╨Т╤Л╨┐╨╛╨╗╨╜╨╕╤В╤М ╤И╨░╨│ Generate: ╨┤╨╕╤Б╨┐╨╡╤В╤З╨╡╤А╨╕╨╖╨░╤Ж╨╕╤П ╨▓╨╛ ╨▓╤Б╤В╤А╨╛╨╡╨╜╨╜╤Л╨╡ ╨│╨╡╨╜╨╡╤А╨░╤В╨╛╤А╤Л
+     /// ╨┤╨▓╨╕╨╢╨║╨░ (spring-boot, fs-cleanup, cli). ╨Ю╤И╨╕╨▒╨║╨░ ╨│╨╡╨╜╨╡╤А╨░╤В╨╛╤А╨░ (╨╜╨░╨┐╤А╨╕╨╝╨╡╤А,
+     /// ┬лSpring Initializr error: HTTP 400 ...┬╗) ╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤Б╤П Failed-╤Б╤В╨░╤В╤Г╤Б╨╛╨╝
+     /// ╤И╨░╨│╨░ ╨╕ ╨╛╤Б╤В╨░╨╜╨░╨▓╨╗╨╕╨▓╨░╨╡╤В ╨┐╨░╨╣╨┐╨╗╨░╨╣╨╜ ╨┐╤А╨╕ on_error=Abort.
+     pub async fn run_generate(
+         &self,
+         step: &Step,
+         plan: &ExecutionPlan,
+         tx: &mpsc::Sender<ExecutionEvent>,
+         index: usize,
+     ) -> StepResult {
+@@ -584,42 +483,30 @@ impl StepExecutor {
+                 generator_config,
+                 ..
+             } => (generator_id, generator_config),
+             _ => {
+                 return StepResult {
+                     step_id: step_id(step),
+                     label: step_label(step),
+                     status: StepStatus::Failed {
+                         error: "Expected Generate step".into(),
+                     },
+                     duration_ms: 0,
+                 }
+             }
+         };
+ 
+-        tx.send(ExecutionEvent {
+-            event_type: ExecutionEventType::StepStarted,
+-            step_id: step_id(step),
+-            step_index: index,
+-            total_steps: plan.step_count(),
+-            step_name: step_label(step),
+-            step_description: step_description(step),
+-            timestamp: local_time(),
+-        })
+-        .await
+-        .ok();
+-
+         let start = std::time::Instant::now();
+ 
+         let outcome = match self.generators.get(generator_id) {
+             Some(generator) => {
+                 generator
+                     .generate(&plan.context, &plan.project_path, generator_config)
+                     .await
+             }
+             None => Err(format!("Unknown generator '{}'", generator_id)),
+         };
+ 
+         let (status, progress_msg) = match outcome {
+             Ok(report) => (
+                 StepStatus::Success {
+                     message: report.message.clone(),
+@@ -638,93 +525,58 @@ impl StepExecutor {
+         tx.send(ExecutionEvent {
+             event_type: ExecutionEventType::StepProgress {
+                 stdout: progress_msg,
+                 stderr: String::new(),
+             },
+             step_id: step_id(step),
+             step_index: index,
+             total_steps: plan.step_count(),
+             step_name: step_label(step),
+             step_description: step_description(step),
+             timestamp: local_time(),
+         })
+         .await
+         .ok();
+ 
+-        tx.send(ExecutionEvent {
+-            event_type: ExecutionEventType::StepCompleted {
+-                status: status.clone(),
+-                duration_ms,
+-            },
+-            step_id: step_id(step),
+-            step_index: index,
+-            total_steps: plan.step_count(),
+-            step_name: step_label(step),
+-            step_description: step_description(step),
+-            timestamp: local_time(),
+-        })
+-        .await
+-        .ok();
+-
+         StepResult {
+             step_id: step_id(step),
+             label: step_label(step),
+             status,
+             duration_ms,
+         }
+     }
+ 
+     /// ╨Ч╨░╨┐╨╕╤Б╨░╤В╤М ╤Д╨░╨╣╨╗
+     pub async fn write_file(
+         &self,
+         step: &Step,
+         plan: &ExecutionPlan,
+         tx: &mpsc::Sender<ExecutionEvent>,
+         index: usize,
+     ) -> StepResult {
+ 
+         let final_status: StepStatus;
+         let duration: u64;
+ 
+         if let Step::WriteFile {path, content, overwrite, ..} = step {
+             
+-            tx.send(ExecutionEvent { 
+-                event_type: ExecutionEventType::StepStarted,
+-                step_id: step_id(step), 
+-                step_index: index, 
+-                total_steps: plan.step_count(), 
+-                step_name: step_label(step),
+-                step_description: step_description(step), 
+-                timestamp: local_time() 
+-            }).await.ok();
+-
+             let project_path = &plan.project_path.join(path);
+ 
+             let start = std::time::Instant::now();
+ 
+             if let Some(parent) = project_path.parent() {
+                 if let Err(e) = std::fs::create_dir_all(parent) {
+-                    tx.send(ExecutionEvent { 
+-                    event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed { error: format!("Failed create all dirs to project root: {e}")}, duration_ms: start.elapsed().as_millis() as u64 },
+-                    step_id: step_id(step), 
+-                    step_index: index, 
+-                    total_steps: plan.step_count(), 
+-                    step_name: step_label(step),
+-                    step_description: step_description(step), 
+-                    timestamp: local_time() 
+-                }).await.ok();
+-
+                     return StepResult {
+                         step_id: step_id(step), 
+                         label: step_label(step), 
+                         status: StepStatus::Failed { error: format!("Failed create all dirs to project root: {e}")}, duration_ms: start.elapsed().as_millis() as u64};
+                 }        
+             }
+             if !overwrite && project_path.exists() {
+                 final_status = StepStatus::Skipped { reason: "file already exists and overwrite == false".into() };
+             } else {
+                 let success = std::fs::write(project_path, content);
+                 match success {
+                     Ok(_) => {
+                         final_status = StepStatus::Success { message: "Successfully written content".into() };
+ 
+                         tx.send(ExecutionEvent { 
+@@ -737,40 +589,30 @@ impl StepExecutor {
+                             timestamp: local_time() 
+                         }).await.ok();
+ 
+                     }
+                     Err(err) => {
+                         final_status = StepStatus::Failed {error: format!(" Failed write file {err}") };
+                         }
+                     }
+             }      
+             duration = start.elapsed().as_millis() as u64;    
+         } else {
+             final_status = StepStatus::Failed { error: ("Incorrect step type, expected WriteFile".into()) };
+             duration = 0;
+         }
+ 
+-        tx.send(ExecutionEvent { 
+-                event_type: ExecutionEventType::StepCompleted { status: final_status.clone(), duration_ms: duration },
+-                step_id: step_id(step), 
+-                step_index: index, 
+-                total_steps: plan.step_count(), 
+-                step_name: step_label(step),
+-                step_description: step_description(step), 
+-                timestamp: local_time() 
+-        }).await.ok();
+-
+         StepResult {
+             step_id: step_id(step),
+             label: step_label(step),
+             status: final_status,
+             duration_ms: duration
+         }
+     }
+ 
+     // ╨Ю╤В╤А╨╡╨╜╨┤╨╡╤А╨╕╤В╤М ╤И╨░╨▒╨╗╨╛╨╜ ╨╕ ╨╖╨░╨┐╨╕╤Б╨░╤В╤М ╤Д╨░╨╣╨╗
+     // pub async fn render_template(
+     //     &self,
+     //     step: &Step,
+     //     plan: &ExecutionPlan,
+     //     tx: &mpsc::Sender<ExecutionEvent>,
+     //     index: usize,
+@@ -836,120 +678,132 @@ impl StepExecutor {
+     //             },
+     //             duration_ms: 0,
+     //         }
+     //     }
+     // }
+ 
+     /// ╨б╨╛╨╖╨┤╨░╤В╤М ╨┤╨╕╤А╨╡╨║╤В╨╛╤А╨╕╤О
+     pub async fn create_directory(
+         &self,
+         step: &Step,
+         plan: &ExecutionPlan,
+         tx: &mpsc::Sender<ExecutionEvent>,
+         index: usize,
+     ) -> StepResult {
+         if let Step::CreateDirectory { path, .. } = step {
+-            tx.send(ExecutionEvent { 
+-                event_type: ExecutionEventType::StepStarted,
+-                step_id: step_id(step), 
+-                step_index: index, 
+-                total_steps: plan.step_count(), 
+-                step_name: step_label(step),
+-                step_description: step_description(step), 
+-                timestamp: local_time() 
+-            }).await.ok();
+-
+             let start = std::time::Instant::now();
+ 
+             let full_path = plan.project_path.join(path);
+             match std::fs::create_dir_all(&full_path) {
+                 Ok(_) => {
+                     tx.send(ExecutionEvent { 
+                             event_type: ExecutionEventType::StepProgress { stdout: format!("Created {}", full_path.display()), stderr: String::new() },
+                             step_id: step_id(step), 
+                             step_index: index, 
+                             total_steps: plan.step_count(), 
+                             step_name: step_label(step),
+                             step_description: step_description(step), 
+                             timestamp: local_time() 
+                         }).await.ok();
+ 
+-                    tx.send(ExecutionEvent { 
+-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Success {message: format!("Created {}", full_path.display())}, 
+-                        duration_ms: start.elapsed().as_millis() as u64 },
+-                        step_id: step_id(step), 
+-                        step_index: index, 
+-                        total_steps: plan.step_count(), 
+-                        step_name: step_label(step),
+-                        step_description: step_description(step), 
+-                        timestamp: local_time() 
+-                    }).await.ok();
+                     StepResult {
+                         step_id: step_id(step),
+                         label: step_label(step),
+                         status: StepStatus::Success {
+                             message: format!("Created {}", full_path.display()),
+                     },
+                     duration_ms: start.elapsed().as_millis() as u64,
+                     }
+                 },
+                 Err(e) => { 
+-                    tx.send(ExecutionEvent { 
+-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed {
+-                            error: format!("Failed to create directory {}: {}", full_path.display(), e),
+-                        }, 
+-                        duration_ms: start.elapsed().as_millis() as u64 },
+-                        step_id: step_id(step), 
+-                        step_index: index, 
+-                        total_steps: plan.step_count(), 
+-                        step_name: step_label(step),
+-                        step_description: step_description(step), 
+-                        timestamp: local_time() 
+-                    }).await.ok();
+-                    
+                     StepResult {
+                         step_id: step_id(step),
+                         label: step_label(step),
+                         status: StepStatus::Failed {
+                             error: format!("Failed to create directory {}: {}", full_path.display(), e),
+                         },
+                         duration_ms: start.elapsed().as_millis() as u64,
+                     }    
+                 },
+             }
+         } else {
+-            tx.send(ExecutionEvent { 
+-                        event_type: ExecutionEventType::StepCompleted { status: StepStatus::Failed {
+-                            error: "Expected CreateDirectory step".into(),
+-                        }, 
+-                        duration_ms: 0 },
+-                        step_id: step_id(step), 
+-                        step_index: index, 
+-                        total_steps: plan.step_count(), 
+-                        step_name: step_label(step),
+-                        step_description: step_description(step), 
+-                        timestamp: local_time() 
+-                    }).await.ok();
+             StepResult {
+                 step_id: step_id(step),
+                 label: step_label(step),
+                 status: StepStatus::Failed {
+                     error: "Expected CreateDirectory step".into(),
+                 },
+                 duration_ms: 0,
+             }
+         }
+     }
+ }
+ 
+ // Helpers
+ fn step_id(step: &Step) -> String { step.id() }
+ fn step_label(step: &Step) -> String { step.label() }
+ fn step_description(step: &Step) -> String { step.description() }
+ 
++const OUTPUT_TAIL_LINES: usize = 12;
++
++fn capture_tail(tail: &Arc<Mutex<Vec<String>>>, text: &str) {
++    if let Ok(mut lines) = tail.lock() {
++        for line in text.lines() {
++            lines.push(line.to_string());
++            if lines.len() > OUTPUT_TAIL_LINES {
++                lines.remove(0);
++            }
++        }
++    }
++}
++
++fn tail_text(tail: &Arc<Mutex<Vec<String>>>) -> String {
++    tail.lock()
++        .map(|lines| lines.join("\n"))
++        .unwrap_or_default()
++}
++
++fn command_display(command: &str, args: &[String]) -> String {
++    let mut display = command.to_string();
++    for arg in args {
++        display.push(' ');
++        display.push_str(arg);
++    }
++    display
++}
++
++fn format_output_tails(stdout: &str, stderr: &str) -> String {
++    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
++    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
++    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
++}
++
++fn format_command_error(reason: &str, command: &str, working_dir: &std::path::Path, detail: &str) -> String {
++    format!(
++        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
++        working_dir.display()
++    )
++}
++
++fn exit_status_text(status: &std::process::ExitStatus) -> String {
++    match status.code() {
++        Some(code) => code.to_string(),
++        None => "terminated by signal".to_string(),
++    }
++}
++
++fn failed_result(step: &Step, start: std::time::Instant, error: String) -> StepResult {
++    StepResult {
++        step_id: step_id(step),
++        label: step_label(step),
++        status: StepStatus::Failed { error },
++        duration_ms: start.elapsed().as_millis() as u64,
++    }
++}
++
+ fn local_time() -> String {
+     // ╨Я╨╛╨╗╤Г╤З╨░╨╡╨╝ ╤В╨╡╨║╤Г╤Й╨╡╨╡ ╨╗╨╛╨║╨░╨╗╤М╨╜╨╛╨╡ ╨▓╤А╨╡╨╝╤П
+     let local_time = Local::now();
+     
+     // ╨д╨╛╤А╨╝╨░╤В╨╕╤А╤Г╨╡╨╝ ╨▓ ╤Б╤В╤А╨╛╨║╤Г (╨▓ chrono ╨┤╨╗╤П ╨┤╨▓╨╛╨╡╤В╨╛╤З╨╕╤П ╨╜╨╡ ╨╜╤Г╨╢╨╡╨╜ ╤Н╨║╤А╨░╨╜╨╕╤А╤Г╤О╤Й╨╕╨╣ ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б)
+     local_time.format("%H::%M:%S").to_string()
+ }
+diff --git a/src-tauri/src/modules/project_creator/engine/mod.rs b/src-tauri/src/modules/project_creator/engine/mod.rs
+index 22aad52..94a52b8 100644
+--- a/src-tauri/src/modules/project_creator/engine/mod.rs
++++ b/src-tauri/src/modules/project_creator/engine/mod.rs
+@@ -1548,31 +1548,31 @@ fn qt_web_framework_label(context: &WizardContext) -> &'static str {
+         "Svelte"
+     } else {
+         "web UI"
+     }
+ }
+ 
+ fn qt_step_write(id: &str, label: &str, path: &str, content: String) -> Step {
+     Step::WriteFile {
+         id: id.to_string(),
+         label: label.to_string(),
+         description: format!("Create {}", path),
+         path: path.to_string(),
+         content,
+         overwrite: false,
+         condition: None,
+-        on_error: ErrorMode::Skip,
++        on_error: ErrorMode::Abort,
+     }
+ }
+ 
+ fn qt_step_note(id: &str, label: &str, text: String) -> Step {
+     Step::Command {
+         id: id.to_string(),
+         label: label.to_string(),
+         description: text.clone(),
+         command: "echo".into(),
+         args: vec![text],
+         working_dir: None,
+         env: None,
+         timeout_secs: Some(60),
+         condition: None,
+         on_error: ErrorMode::Skip,
+diff --git a/src-tauri/src/modules/project_creator/generators/mod.rs b/src-tauri/src/modules/project_creator/generators/mod.rs
+index 97fa05f..ee78b98 100644
+--- a/src-tauri/src/modules/project_creator/generators/mod.rs
++++ b/src-tauri/src/modules/project_creator/generators/mod.rs
+@@ -763,106 +763,134 @@ impl Generator for VsCodeFoldersMergeGenerator {
+ 
+ // ============================================================================
+ // ╨Ю╨▒╤Й╨╕╨╡ ╨┐╨╛╨╝╨╛╤Й╨╜╨╕╨║╨╕
+ // ============================================================================
+ 
+ /// ╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М CLI-╨║╨╛╨╝╨░╨╜╨┤╤Г ╨║╤А╨╛╤Б╤Б╨┐╨╗╨░╤В╤Д╨╛╤А╨╝╨╡╨╜╨╜╨╛ (cmd /C ╨╜╨░ Windows, sh -c ╨╜╨░ unix)
+ /// ╨╕ ╨┤╨╛╨╢╨┤╨░╤В╤М╤Б╤П ╨╖╨░╨▓╨╡╤А╤И╨╡╨╜╨╕╤П ╤Б ╤В╨░╨╣╨╝╨░╤Г╤В╨╛╨╝. stderr/stdout ╨┐╨╕╤И╤Г╤В╤Б╤П ╨▓ ╨║╨╛╨╜╤Б╨╛╨╗╤М,
+ /// ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╕╨╡ ╤Б╤В╤А╨╛╨║╨╕ ╨┐╨╛╨┐╨░╨┤╨░╤О╤В ╨▓ ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╨╡ ╨╛╨▒ ╨╛╤И╨╕╨▒╨║╨╡.
+ async fn run_cli(
+     command: &str,
+     args: &[String],
+     working_dir: &Path,
+     env: Option<&HashMap<String, String>>,
+     timeout_secs: u64,
+ ) -> Result<GenerationReport, String> {
+-    // npx ╨▒╨╡╨╖ --yes ╨┐╤Л╤В╨░╨╡╤В╤Б╤П ╨╛╤В╨║╤А╤Л╤В╤М ╨╕╨╜╤В╨╡╤А╨░╨║╤В╨╕╨▓╨╜╨╛╨╡ ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╨╡ ╤Г╤Б╤В╨░╨╜╨╛╨▓╨║╨╕
+-    // ╨┐╨░╨║╨╡╤В╨░. ╨г ScaffoldGenerator stdin ╨╛╤В╨║╨╗╤О╤З╤С╨╜, ╨┐╨╛╤Н╤В╨╛╨╝╤Г ╤В╨░╨║╨╛╨╣ ╨┐╤А╨╛╤Ж╨╡╤Б╤Б
+-    // ╨╖╨░╨▓╨╡╤А╤И╨░╨╡╤В╤Б╤П ╤Б ╨║╨╛╨┤╨╛╨╝ 1 ╨▒╨╡╨╖ ╨┐╨╛╨╗╨╡╨╖╨╜╨╛╨│╨╛ ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╤П. ╨Ф╨╛╨▒╨░╨▓╨╗╤П╨╡╨╝ ╤Д╨╗╨░╨│ ╨╖╨┤╨╡╤Б╤М,
+-    // ╨▓ ╨╛╨▒╤Й╨╡╨╝ ╤А╨░╨╜╨╜╨╡╤А╨╡, ╤З╤В╨╛╨▒╤Л ╨╛╨┤╨╕╨╜╨░╨║╨╛╨▓╨╛ ╨╕╤Б╨┐╤А╨░╨▓╨╕╤В╤М Vite/Next/Svelte/Expo ╨╕
+-    // ╨╗╤О╨▒╤Л╨╡ ╨▒╤Г╨┤╤Г╤Й╨╕╨╡ npx-╤Б╨║╨░╤Д╤Д╨╛╨╗╨┤╨╡╤А╤Л.
+-    let mut effective_args = args.to_vec();
+-    if command.eq_ignore_ascii_case("npx")
+-        && !effective_args.iter().any(|a| a == "--yes" || a == "-y")
+-    {
+-        effective_args.insert(0, "--yes".to_string());
+-    }
+-
+-    let mut cmd = spawn_command(command, &effective_args);
++    // ╨Э╨╡ ╨╝╨╛╨┤╨╕╤Д╨╕╤Ж╨╕╤А╤Г╨╡╨╝ ╨░╤А╨│╤Г╨╝╨╡╨╜╤В╤Л ╤А╨╡╤Ж╨╡╨┐╤В╨░: ╨╛╤В╨┤╨╡╨╗╤М╨╜╤Л╨╡ CLI ╨╕╨╝╨╡╤О╤В ╤Б╨╛╨▒╤Б╤В╨▓╨╡╨╜╨╜╤Л╨╣
++    // ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б ╨╕ ╤Б╨░╨╝╨╕ ╤П╨▓╨╜╨╛ ╨╛╨▒╤К╤П╨▓╨╗╤П╤О╤В `--yes`, ╨╡╤Б╨╗╨╕ ╨╛╨╜ ╨╕╨╝ ╨╜╤Г╨╢╨╡╨╜.
++    let mut cmd = spawn_command(command, args);
+     cmd.current_dir(working_dir);
+     if let Some(env) = env {
+         cmd.envs(env);
+     }
+     // CI=1 ╨╖╨░╤Б╤В╨░╨▓╨╗╤П╨╡╤В npx/npm/create-* CLI ╨┐╤А╨╛╨┐╤Г╤Б╨║╨░╤В╤М ╨╕╨╜╤В╨╡╤А╨░╨║╤В╨╕╨▓╨╜╤Л╨╡ ╨┐╤А╨╛╨╝╨┐╤В╤Л.
+     cmd.env("CI", "1");
+     // CI ╨╜╨╡ ╨▓╨╛ ╨▓╤Б╨╡╤Е ╨▓╨╡╤А╤Б╨╕╤П╤Е npm ╨╛╤В╨║╨╗╤О╤З╨░╨╡╤В ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╨╡ ╤Г╤Б╤В╨░╨╜╨╛╨▓╨║╨╕ ╨┐╨░╨║╨╡╤В╨░
+     // ╤З╨╡╤А╨╡╨╖ npx; ╨┐╨╡╤А╨╡╨╝╨╡╨╜╨╜╨░╤П npm ╨│╨░╤А╨░╨╜╤В╨╕╤А╤Г╨╡╤В ╨╜╨╡╨╕╨╜╤В╨╡╤А╨░╨║╤В╨╕╨▓╨╜╤Л╨╣ ╤А╨╡╨╢╨╕╨╝.
+     cmd.env("NPM_CONFIG_YES", "true");
+     cmd.env("npm_config_yes", "true");
+     cmd.stdout(std::process::Stdio::piped());
+     cmd.stderr(std::process::Stdio::piped());
+     cmd.stdin(std::process::Stdio::null());
+ 
+     let mut child = cmd
+         .spawn()
+-        .map_err(|e| format!("Failed to spawn command '{}': {}", command, e))?;
++        .map_err(|e| {
++            format!(
++                "Command failed (failed to spawn)\ncommand: {}\nworking directory: {}\nerror: {}",
++                command_display(command, args),
++                working_dir.display(),
++                e
++            )
++        })?;
+     let stdout = child.stdout.take().expect("stdout should be piped");
+     let stderr = child.stderr.take().expect("stderr should be piped");
+     let out_handle = tokio::spawn(async move { tail_lines(stdout).await });
+     let err_handle = tokio::spawn(async move { tail_lines(stderr).await });
+ 
+     let waited = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await;
+     let status = match waited {
+         Ok(Ok(status)) => status,
+         Ok(Err(e)) => {
+             let _ = child.kill().await;
+-            return Err(format!("Command '{}' process error: {}", command, e));
++            let out_tail = out_handle.await.unwrap_or_default();
++            let err_tail = err_handle.await.unwrap_or_default();
++            return Err(format_command_error(
++                &format!("process wait failed: {e}"),
++                &command_display(command, args),
++                working_dir,
++                &format_output_tails(&out_tail, &err_tail),
++            ));
+         }
+         Err(_) => {
+             let _ = child.kill().await;
+-            return Err(format!(
+-                "Command '{}' timed out after {} seconds",
+-                command, timeout_secs
++            let out_tail = out_handle.await.unwrap_or_default();
++            let err_tail = err_handle.await.unwrap_or_default();
++            return Err(format_command_error(
++                &format!("timed out after {timeout_secs} seconds"),
++                &command_display(command, args),
++                working_dir,
++                &format_output_tails(&out_tail, &err_tail),
+             ));
+         }
+     };
+     let out_tail = out_handle.await.unwrap_or_default();
+     let err_tail = err_handle.await.unwrap_or_default();
+ 
+     if status.success() {
+         return Ok(GenerationReport {
+             created_files: Vec::new(),
+             modified_files: Vec::new(),
+             skipped_files: Vec::new(),
+-            message: format!("Command '{}' completed successfully", command),
++            message: format!("Command '{}' completed successfully", command_display(command, args)),
+         });
+     }
+ 
+-    let mut detail = err_tail;
+-    if detail.trim().is_empty() {
+-        detail = out_tail;
+-    }
+-    let mut detail = truncate(detail.trim(), 500);
+-    if detail.is_empty() {
+-        detail = "process exited without output (check that the CLI is installed and available in PATH)".to_string();
++    Err(format_command_error(
++        &format!("exited with status {}", exit_status_text(&status)),
++        &command_display(command, args),
++        working_dir,
++        &format_output_tails(&out_tail, &err_tail),
++    ))
++}
++
++fn command_display(command: &str, args: &[String]) -> String {
++    std::iter::once(command)
++        .chain(args.iter().map(String::as_str))
++        .collect::<Vec<_>>()
++        .join(" ")
++}
++
++fn format_output_tails(stdout: &str, stderr: &str) -> String {
++    let stdout = if stdout.trim().is_empty() { "<empty>" } else { stdout };
++    let stderr = if stderr.trim().is_empty() { "<empty>" } else { stderr };
++    format!("stdout tail:\n{stdout}\nstderr tail:\n{stderr}")
++}
++
++fn format_command_error(reason: &str, command: &str, working_dir: &Path, detail: &str) -> String {
++    format!(
++        "Command failed ({reason})\ncommand: {command}\nworking directory: {}\n{detail}",
++        working_dir.display()
++    )
++}
++
++fn exit_status_text(status: &std::process::ExitStatus) -> String {
++    match status.code() {
++        Some(code) => code.to_string(),
++        None => "terminated by signal".to_string(),
+     }
+-    Err(format!(
+-        "Command '{}' failed with exit code {}: {}",
+-        command,
+-        status.code().unwrap_or(-1),
+-        detail
+-    ))}
++}
+ 
+ /// ╨б╨╗╨╕╤В╤М .vscode ╨╕╨╖ frontend/ ╨╕ backend/ ╨▓ ╨║╨╛╤А╨╜╨╡╨▓╨╛╨╣ .vscode/ ╨╕ ╤Г╨┤╨░╨╗╨╕╤В╤М
+ /// ╨▓╨╗╨╛╨╢╨╡╨╜╨╜╤Л╨╡ ╨┐╨░╨┐╨║╨╕ (╤Б╨╝. VsCodeFoldersMergeGenerator).
+ ///
+ /// settings.json ╤Б╨╗╨╕╨▓╨░╨╡╤В╤Б╤П ╨│╨╗╤Г╨▒╨╛╨║╨╛ (╨║╨╗╤О╤З╨╕ ╨▓╨╗╨╛╨╢╨╡╨╜╨╜╨╛╨│╨╛ .vscode ╨┐╨╛╨▒╨╡╨╢╨┤╨░╤О╤В тАФ
+ /// ╨║╨╛╨╜╤Д╨╕╨│╨╕ CLI ╨╜╨╡ ╨╖╨░╤В╨╕╤А╨░╤О╤В╤Б╤П), extensions.json ╨╛╨▒╤К╨╡╨┤╨╕╨╜╤П╨╡╤В recommendations
+ /// ╨▒╨╡╨╖ ╨┤╤Г╨▒╨╗╨╕╨║╨░╤В╨╛╨▓. ╨Я╨░╨┐╨║╨░ ╤Б .vscode, ╨╜╨╛ ╨▒╨╡╨╖ ╤Д╨░╨╣╨╗╨╛╨▓ тАФ ╨┐╤А╨╛╤Б╤В╨╛ ╤Г╨┤╨░╨╗╤П╨╡╤В╤Б╤П.
+ fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String> {
+     let mut merged_files: Vec<String> = Vec::new();
+     for dir in ["frontend", "backend"] {
+         let inner = project_path.join(dir).join(".vscode");
+         if !inner.exists() {
+             continue;
+         }
+         let root_vscode = project_path.join(".vscode");
+

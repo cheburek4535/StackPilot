@@ -1,7 +1,7 @@
+use crate::modules::devlauncher::models::*;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
-use crate::modules::devlauncher::models::*;
 
 pub trait ProjectAnalyzer: Send + Sync {
     fn analyze(&self, project_path: &str) -> Result<LaunchProfile, String>;
@@ -38,13 +38,17 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             if entry.file_type().is_dir() {
-                if matches!(filename, "node_modules" | ".git" | "target" | ".venv" | "__pycache__" | ".next") {
+                if matches!(
+                    filename,
+                    "node_modules" | ".git" | "target" | ".venv" | "__pycache__" | ".next"
+                ) {
                     it.skip_current_dir();
                     continue;
                 }
             }
 
-            let cwd = path.parent()
+            let cwd = path
+                .parent()
                 .and_then(|p| p.to_str())
                 .unwrap_or(project_path)
                 .to_string();
@@ -105,7 +109,8 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                 let run_cmd = if has_dep("expo") {
                     "npx expo start".to_string()
                 } else if has_dep("@nestjs/core") {
-                    scripts.and_then(|s| s.get("start:dev"))
+                    scripts
+                        .and_then(|s| s.get("start:dev"))
                         .and_then(|c| c.as_str())
                         .unwrap_or("npm run start:dev")
                         .to_string()
@@ -119,7 +124,9 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
 
                 let mut port: u16 = 3000;
                 if let Some(caps) = port_re.captures(&run_cmd) {
-                    if let Ok(p) = caps[1].parse() { port = p; }
+                    if let Ok(p) = caps[1].parse() {
+                        port = p;
+                    }
                 }
 
                 launch_actions.push(LaunchAction {
@@ -151,10 +158,19 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
                 let value: toml::Value = toml::from_str(&content)
                     .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
-                if value.get("workspace").is_some() { continue; }
+                if value.get("workspace").is_some() {
+                    continue;
+                }
 
-                let has_tauri = value.get("dependencies").and_then(|d| d.get("tauri")).is_some();
-                let cmd = if has_tauri { "cargo tauri dev" } else { "cargo run" };
+                let has_tauri = value
+                    .get("dependencies")
+                    .and_then(|d| d.get("tauri"))
+                    .is_some();
+                let cmd = if has_tauri {
+                    "cargo tauri dev"
+                } else {
+                    "cargo run"
+                };
                 let port = if has_tauri { 1420 } else { 3000 };
 
                 launch_actions.push(LaunchAction {
@@ -256,8 +272,13 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
 
             if filename == "build.gradle" || filename == "build.gradle.kts" {
                 let content = fs::read_to_string(path).unwrap_or_default();
-                let is_spring = content.contains("org.springframework.boot") || content.contains("spring-boot");
-                let cmd = if is_spring { "./gradlew bootRun" } else { "./gradlew run" };
+                let is_spring =
+                    content.contains("org.springframework.boot") || content.contains("spring-boot");
+                let cmd = if is_spring {
+                    "./gradlew bootRun"
+                } else {
+                    "./gradlew run"
+                };
                 launch_actions.push(LaunchAction {
                     id: generate_id(),
                     label: "Run Gradle project".into(),
@@ -284,7 +305,11 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             if filename == "pom.xml" {
                 let content = fs::read_to_string(path).unwrap_or_default();
                 let is_spring = content.contains("spring-boot");
-                let cmd = if is_spring { "mvn spring-boot:run" } else { "mvn exec:java" };
+                let cmd = if is_spring {
+                    "mvn spring-boot:run"
+                } else {
+                    "mvn exec:java"
+                };
                 let port = if is_spring { 8080 } else { 3000 };
                 launch_actions.push(LaunchAction {
                     id: generate_id(),
@@ -391,13 +416,20 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                 id: generate_id(),
                 label: "Open index.html".into(),
                 enabled: true,
-                action_type: ActionType::OpenUrl { url: index_html_path },
+                action_type: ActionType::OpenUrl {
+                    url: index_html_path,
+                },
             });
         }
 
         // IDE detection
         let (ide_name, ide_label, ide_fallback, ide_fb_label) = if has_python_project {
-            ("pycharm", "Open in PyCharm", "code", "Open in VS Code (PyCharm not found)")
+            (
+                "pycharm",
+                "Open in PyCharm",
+                "code",
+                "Open in VS Code (PyCharm not found)",
+            )
         } else if has_sln {
             ("devenv", "Open in Visual Studio", "code", "Open in VS Code")
         } else {
