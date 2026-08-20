@@ -1,4 +1,4 @@
-pub mod content;
+﻿pub mod content;
 pub mod executor;
 pub mod paths;
 pub mod preflight;
@@ -1908,6 +1908,84 @@ def get_nosql_db():
                 &format!("gleam new {}", project_name),
                 "gleam.toml"),
         ],
+        "html" => vec![
+            mkdir("create_html_src", "src"),
+
+            Step::WriteFile {
+                id: "html_index".into(),
+                label: "Create index.html".into(),
+                description: "Create the main static HTML page".into(),
+                path: "index.html".into(),
+                content: format!(
+                    r#"<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{}</title>
+    <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+    <main class="page">
+        <h1>Hello from {}!</h1>
+        <p>Edit <code>index.html</code> to start building your page.</p>
+    </main>
+
+    <script src="src/script.js"></script>
+</body>
+</html>
+"#,
+                    project_name, project_name
+                ),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Abort,
+            },
+
+            Step::WriteFile {
+                id: "html_styles".into(),
+                label: "Create styles.css".into(),
+                description: "Create the initial stylesheet for the static page".into(),
+                path: "src/styles.css".into(),
+                content: r#":root {
+    font-family: system-ui, sans-serif;
+    color: #1f2937;
+    background: #f3f4f6;
+}
+
+body {
+    margin: 0;
+}
+
+.page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem;
+}
+"#
+                .into(),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Abort,
+            },
+
+            Step::WriteFile {
+                id: "html_script".into(),
+                label: "Create script.js".into(),
+                description: "Create the initial JavaScript file for the static page".into(),
+                path: "src/script.js".into(),
+                content: r#"console.log("Static HTML project is ready.");
+"#
+                .into(),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Abort,
+            },
+        ],
+
 
         _ => vec![
             // Для неизвестных языков создаём базовую структуру
