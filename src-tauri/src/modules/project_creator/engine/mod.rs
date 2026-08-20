@@ -1,6 +1,7 @@
 pub mod content;
 pub mod executor;
 pub mod paths;
+pub mod preflight;
 pub mod process;
 pub mod template;
 use std::collections::HashMap;
@@ -608,90 +609,43 @@ fn compose_recipe(
         }
     }
 
-    // Python-префлайт: интерпретатор обязан быть на месте ДО всех
-    // venv/pip/django-admin шагов, а ошибка — показывать версию и путь
-    // интерпретатора, а не «command not found» в середине пайплайна.
-    if context.languages.iter().any(|l| l == "python") {
-        steps.push(Step::Command {
-            id: "python_preflight".into(),
-            label: "Check Python interpreter".into(),
-            description: "Verify the Python interpreter and print its version and path".into(),
-            command: python_command().to_string(),
-            args: vec![
-                "-c".into(),
-                "import sys; print('Python ' + sys.version.split()[0]); print(sys.executable)"
-                    .into(),
-            ],
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(30),
-            condition: None,
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
+    // ========================================================================
+    // Generic toolchain preflight (preflight.rs): единый слой проверки
+    // инструментария вместо пер-фреймворковых патчей.
+    //
+    // Node: node/npm-префлайт ДО любого npm-скаффолда — отсутствие node/npm
+    // останавливает пайплайн, каркасы не «молча пропускаются».
+    // ========================================================================
+    if context_needs_npm(context) {
+        steps.extend(preflight::node_preflight_steps(project_path));
     }
 
-    // Django CLI должен запускаться из проектного Python-окружения. Раньше
-    // venv создавался только в фазе инструментов (из-за Alembic), то есть
-    // уже ПОСЛЕ `django-admin startproject`; на чистой машине команда тихо
-    // падала, а все последующие шаги продолжали работать с пустым backend/.
-    // Подготавливаем окружение сразу после записи requirements.txt и до
-    // любого Python-фреймворка. Полная установка requirements/Alembic
-    // выполняется позже, когда все framework-шаги уже записали зависимости.
-    if context.languages.iter().any(|l| l == "python")
-        && context.frameworks.iter().any(|f| f == "django")
-    {
+    // ========================================================================
+    // Python: ЕДИНСТВЕННЫЙ канонический venv (по python_segment_dir →
+    // ProjectLayout) для всех Python-проектов. Создаётся один раз, маркер
+    // проверяется, pip бутстрапится интерпретатором venv, манифест
+    // (requirements.txt, записан language-скаффолдом выше) устанавливается
+    // РОВНО один раз ДО любых framework-шагов — django-admin/alembic идут
+    // только через этот venv. Отдельного «django-venv» больше нет.
+    // ========================================================================
+    if context.languages.iter().any(|l| l == "python") {
         let python_dir = python_segment_dir(context);
-        let base = std::path::PathBuf::from(project_path);
-        let venv_path = if python_dir == "." {
-            base.join("venv")
-        } else {
-            base.join(&python_dir).join("venv")
-        };
-        let venv_str = venv_path.to_string_lossy().into_owned();
-        // Маркер venv — путь от КОРНЯ проекта (условия root-relative):
-        // сегмент python_dir может быть backend/ — venv живёт в нём.
-        let venv_marker_rel = if python_dir == "." {
-            "venv/pyvenv.cfg".to_string()
-        } else {
-            format!("{}/venv/pyvenv.cfg", python_dir)
-        };
-        steps.push(Step::Command {
-            id: "django_venv_create".into(),
-            label: "Create Python virtual environment".into(),
-            description: format!("Run {} -m venv {}", python_command(), venv_str),
-            command: python_command().to_string(),
-            args: vec!["-m".into(), "venv".into(), venv_str],
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(120),
-            // Повторный запуск рецепта: venv уже существует — не пересоздаём.
-            condition: Some(StepCondition::FileNotExists {
-                path: venv_marker_rel,
-            }),
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
-        // На этом этапе framework-specific шаги ещё не успели записать
-        // requirements.txt (aiogram и инструменты добавляют его позже),
-        // поэтому ставим только Django. Полная установка requirements и
-        // Alembic выполняется штатной фазой tools после всех scaffold-шагов.
-        // Команда идёт через бинарь venv (python -m pip), как и остальные
-        // Python-шаги пайплайна.
-        let pip_args = vec!["-m".into(), "pip".into(), "install".into(), "django".into()];
-        steps.push(Step::Command {
-            id: "django_pip_install".into(),
-            label: "Install Django dependencies".into(),
-            description: "Install Python requirements in the project virtual environment".into(),
-            command: python_venv_bin(project_path, &python_dir, "python"),
-            args: pip_args,
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(600),
-            condition: None,
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
+        steps.push(preflight::python_preflight_step(project_path));
+        steps.extend(preflight::python_environment_steps(
+            project_path,
+            &python_dir,
+        ));
+        // Пост-валидация манифеста: requirements.txt обязан содержать все
+        // выбранные зависимости фреймворков и инструментов.
+        let manifest_entries = preflight::python_manifest_entries(context);
+        let manifest_refs: Vec<&str> = manifest_entries.iter().map(String::as_str).collect();
+        steps.push(preflight::manifest_check_step(
+            "py_requirements_check",
+            "Validate Python requirements manifest",
+            &preflight::requirements_path(&python_dir),
+            "requirements_txt",
+            &manifest_refs,
+        ));
     }
 
     // Обёртки над проектом (ScaffoldOwnership::wraps_existing_project: tauri)
@@ -822,15 +776,10 @@ fn compose_recipe(
     let has_python = context.languages.iter().any(|l| l == "python");
     let has_django = context.frameworks.iter().any(|f| f == "django");
     let py_dir = python_segment_dir(context);
-    // Маркер уже созданного окружения — ТОЧНО как в py_venv_create
-    // (FileNotExists-условие) и django_venv_create: django-ранний venv
-    // создаёт его ДО tools-фазы, поэтому py_venv_create пропускается, а
-    // зависимые pip/alembic-шаги обязаны ВЫПОЛНИТЬСЯ (пост-условие на месте).
-    let venv_marker = if py_dir == "." {
-        "venv/pyvenv.cfg".to_string()
-    } else {
-        format!("{}/venv/pyvenv.cfg", py_dir)
-    };
+    // Маркер канонического venv — ТОЧНО как в py_venv_create (preflight.rs):
+    // создаётся один раз, зависимые verify/pip-шаги выполняются всегда
+    // (пост-условие на месте, даже когда venv переиспользован).
+    let venv_marker = preflight::venv_marker_rel(&py_dir);
     let dep = |step: &str, prereq: &str| StepDependency {
         step_id: step.to_string(),
         prereq_id: prereq.to_string(),
@@ -887,24 +836,42 @@ fn compose_recipe(
         dependencies.push(dep("cobra_init", "go_mod_init"));
     }
 
-    // Python: pip/alembic обязаны видеть готовое окружение. django-ранний
-    // venv (django_venv_create) создаёт маркер ДО tools-фазы — py_venv_create
-    // пропускается (FileNotExists), но pip-шаги ВЫПОЛНЯЮТСЯ (маркер на месте).
+    // Python: pip/alembic/django-admin обязаны видеть готовое каноническое
+    // окружение. py_venv_create создаёт маркер один раз; py_venv_verify
+    // проверяет его; pip-шаги ВЫПОЛНЯЮТСЯ даже когда venv переиспользован
+    // (маркер на месте — FileNotExists-условие скипает только создание).
+    // django_start (root-скаффолд, объявлен раньше по фазе) топологически
+    // переносится ПОСЛЕ установки манифеста.
     if has_python {
+        dependencies.push(dep_file("py_venv_verify", "py_venv_create", &venv_marker));
         dependencies.push(dep_file("py_pip_upgrade", "py_venv_create", &venv_marker));
-        dependencies.push(dep_file("py_pip_install", "py_venv_create", &venv_marker));
+        dependencies.push(dep_file("py_pip_check", "py_venv_create", &venv_marker));
         dependencies.push(dep("py_pip_install", "py_pip_upgrade"));
+        dependencies.push(dep("py_pip_install", "py_pip_check"));
+        dependencies.push(dep("py_requirements_check", "py_pip_install"));
         if context.tools.iter().any(|t| t == "alembic") {
-            dependencies.push(dep_file("alembic_init", "py_venv_create", &venv_marker));
             dependencies.push(dep("alembic_init", "py_pip_install"));
         }
+        if has_django {
+            dependencies.push(dep("django_start", "py_pip_install"));
+        }
     }
-    if has_django {
-        dependencies.push(dep_file(
-            "django_pip_install",
-            "django_venv_create",
-            &venv_marker,
-        ));
+
+    // Пост-валидация package.json: check-шаги читают каркас, созданный
+    // scaffold-генератором соответствующего JS-фреймворка (nest_new,
+    // vite_create и т.п.). Пары фильтруются по фактическому плану в
+    // build_dependencies — ветки без каркаса не дают висячих зависимостей.
+    for fw in &context.frameworks {
+        if framework_npm_dependency(fw).is_some() {
+            if let Some(scaffold_id) = scaffold_step_id_for(fw) {
+                dependencies.push(dep(&format!("{}_pkg_check", fw), scaffold_id));
+            }
+        }
+    }
+    // Prisma: dep-патч package.json строго до prisma init (init читает
+    // манифест и добавляет собственные записи).
+    if context.tools.iter().any(|t| t == "prisma") {
+        dependencies.push(dep("prisma_init", "prisma_deps"));
     }
 
     Ok(Recipe {
@@ -915,6 +882,63 @@ fn compose_recipe(
         steps,
         dependencies,
     })
+}
+
+/// Проекту нужен node/npm (язык JS/TS или фреймворк на них) — перед любым
+/// npm-скаффолдом выполняется общий node/npm-префлайт.
+fn context_needs_npm(context: &WizardContext) -> bool {
+    context
+        .languages
+        .iter()
+        .any(|l| matches!(l.as_str(), "typescript" | "javascript"))
+        || context.frameworks.iter().any(|f| is_js_framework(f))
+}
+
+/// npm-пакет, которым обязан обладать package.json каркаса фреймворка
+/// (для пост-валидации manifest-check). None — пакет неочевиден/нет каркаса
+/// (tauri, react-native, plasmo).
+fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
+    match fw {
+        "react" => Some("react"),
+        "vue" => Some("vue"),
+        "svelte" => Some("svelte"),
+        "nextjs" => Some("next"),
+        "sveltekit" => Some("@sveltejs/kit"),
+        "nuxt" => Some("nuxt"),
+        "solidjs" => Some("@solidjs/start"),
+        "electron" => Some("electron"),
+        "expo" => Some("expo"),
+        "nest" => Some("@nestjs/core"),
+        "express" => Some("express"),
+        "fastify" => Some("fastify"),
+        "telegraf" => Some("telegraf"),
+        _ => None,
+    }
+}
+
+/// Step-id скаффолда, создающего package.json для фреймворка (для
+/// декларации зависимости `<fw>_pkg_check` после него).
+fn scaffold_step_id_for(fw: &str) -> Option<&'static str> {
+    match fw {
+        "nest" => Some("nest_new"),
+        "nextjs" => Some("nextjs_create"),
+        "nuxt" => Some("nuxt_create"),
+        "sveltekit" => Some("sveltekit_create"),
+        "react" | "vue" | "svelte" => Some("vite_create"),
+        "electron" => Some("electron_init"),
+        "expo" => Some("expo_init"),
+        "solidjs" => Some("solid_init"),
+        _ => None,
+    }
+}
+
+/// Путь package.json относительно корня проекта для рабочего каталога
+/// пост-шага (package_name_patch_step / pkg_check).
+fn package_json_rel_path(workdir: Option<&str>) -> String {
+    match workdir {
+        Some(wd) if !wd.is_empty() && wd != "." => format!("{}/package.json", wd),
+        _ => "package.json".to_string(),
+    }
 }
 
 /// Добавить значение в список, если его там ещё нет.
@@ -1467,40 +1491,12 @@ fn steps_for_language(
         },
 
         "python" => {
-            // ЕДИНЫЙ requirements.txt для всего стека: все Python-фреймворки
-            // и Python-инструменты пишутся ОДНИМ шагом ДО venv/pip-фазы
-            // (раньше каждый фреймворк перезаписывал requirements.txt своими
-            // пакетами, и последний пишущий затирал зависимости остальных).
-            // Установка читает ровно этот файл (py_pip_install / ранний
-            // django_pip_install) — дублирования в шагах фреймворков нет.
-            let mut requirements = String::new();
-            let mut add = |line: &str| {
-                if !requirements.is_empty() {
-                    requirements.push('\n');
-                }
-                requirements.push_str(line);
-            };
-            for fw in &context.frameworks {
-                match fw.as_str() {
-                    "django" => add("django"),
-                    "fastapi" => {
-                        add("fastapi[standard]");
-                        add("uvicorn");
-                    }
-                    "flask" => add("flask"),
-                    "aiogram" => add("aiogram"),
-                    _ => {}
-                }
-            }
-            for tool in &context.tools {
-                match tool.as_str() {
-                    "sqlalchemy" => add("sqlalchemy"),
-                    "alembic" => add("alembic"),
-                    "ruff" => add("ruff"),
-                    "pytest" => add("pytest"),
-                    _ => {}
-                }
-            }
+            // ЕДИНЫЙ детерминированный requirements.txt для всего стека
+            // (preflight::python_manifest): все Python-фреймворки и
+            // Python-инструменты пишутся ОДНИМ шагом ДО venv/pip-фазы.
+            // Установка читает ровно этот файл (py_pip_install) — никакие
+            // framework-шаги ничего не дописывают и не перезаписывают.
+            let requirements = preflight::python_manifest(context);
             vec![
                 mkdir("create_src", "src"),
                 Step::WriteFile {
@@ -2691,6 +2687,18 @@ fn steps_for_framework(
                 workdir.as_deref(),
                 project_name,
             ));
+            // Пост-валидация package.json: каркас обязан реально содержать
+            // зависимость фреймворка (npm install финальной фазы установит
+            // её), а не только entry-файл. Зависимость `<fw>_pkg_check` ←
+            // scaffold-шаг объявлена в compose_recipe.
+            if let Some(dep_name) = framework_npm_dependency(fw) {
+                steps.push(preflight::package_json_check_step(
+                    &format!("{}_pkg_check", fw),
+                    &format!("Validate {} package.json", fw),
+                    &package_json_rel_path(workdir.as_deref()),
+                    &[dep_name],
+                ));
+            }
         }
     }
 
@@ -3100,37 +3108,14 @@ fn tauri_identifier(project_name: &str) -> String {
     format!("com.{}", base)
 }
 
-/// PHP-префлайт перед composer create-project: проверяет, что PHP
-/// установлен и загружает расширение fileinfo (composer скачивает дистры
-/// и проверяет их через stream-обёртки, которым нужно ext-fileinfo).
-/// При отсутствии — ОДНА ошибка с путём к php.ini и extension_dir, чтобы
-/// пользователь включил расширение, а не гадал по ошибке Composer.
-fn php_preflight_step(id: &str, label: &str, desc: &str) -> Step {
-    Step::Command {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: desc.to_string(),
-        command: "php".into(),
-        args: vec![
-            "-r".into(),
-            "if (!extension_loaded('fileinfo')) { fwrite(STDERR, 'PHP error: extension fileinfo is not enabled.\n'); fwrite(STDERR, 'php.ini: ' . (php_ini_loaded_file() ?: 'none') . '\n'); fwrite(STDERR, 'extension_dir: ' . ini_get('extension_dir') . '\n'); fwrite(STDERR, 'Enable it (extension=fileinfo) in php.ini and retry.\n'); exit(1); } echo 'PHP OK: fileinfo enabled (' . PHP_VERSION . ')\n';".into(),
-        ],
-        working_dir: None,
-        env: None,
-        timeout_secs: Some(30),
-        condition: None,
-        // Abort: без работающего fileinfo composer create-project падает
-        // невнятной ошибкой — префлайт показывает причину заранее.
-        on_error: ErrorMode::Abort,
-        interactive: vec![],
-    }
-}
-
 /// Шаг «scaffold» через Composer: command/args резолвятся через
 /// composer_launch() — глобальный `composer` или `php <абс. composer.phar>`,
 /// поэтому плейсхолдер ищется по фактическому положению в args.
 /// Composer — creates_named_directory с временной папкой по умолчанию
 /// (temp+move): "." не принимается в непустом каталоге.
+/// Пост-условие — composer.json (валидный манифест каркаса, а не
+/// package.json). Abort: без composer каркас не инициализируется —
+/// префлайт уже проверил доступность и напечатал пути/команду.
 fn composer_scaffold_step(id: &str, label: &str, desc: &str, package: &str) -> Step {
     let (command, prefix) = composer_launch();
     let mut args: Vec<String> = prefix;
@@ -3144,7 +3129,7 @@ fn composer_scaffold_step(id: &str, label: &str, desc: &str, package: &str) -> S
         // minimal Windows PHP installations.
         "--prefer-source".to_string(),
     ]);
-    scaffold_step(
+    let mut step = scaffold_step(
         id,
         label,
         desc,
@@ -3153,9 +3138,13 @@ fn composer_scaffold_step(id: &str, label: &str, desc: &str, package: &str) -> S
         ScaffoldCapability::CreatesNamedDirectory,
         ".",
         ScaffoldExtras::default()
-            .expects(&["package.json"])
+            .expects(&["composer.json"])
             .policy(FilePolicy::SkipIfExists),
-    )
+    );
+    if let Step::Generate { on_error, .. } = &mut step {
+        *on_error = ErrorMode::Abort;
+    }
+    step
 }
 
 /// Дополнительные параметры scaffold-шага (все опциональны; значения по
@@ -3756,11 +3745,9 @@ fn composer_launch() -> (String, Vec<String>) {
     if command_on_path("composer") {
         return ("composer".to_string(), Vec::new());
     }
-    for dir in [
-        "%LOCALAPPDATA%\\StackPilot\\tools\\php",
-        "%APPDATA%\\Composer",
-        "%LOCALAPPDATA%\\Programs\\php",
-    ] {
+    // Единый список каталогов discovery (тот же, что печатает PHP-префлайт
+    // в preflight.rs).
+    for dir in preflight::COMPOSER_PHAR_DIRS {
         let phar = expand_env_path(dir).join("composer.phar");
         if phar.is_file() {
             return ("php".to_string(), vec![phar.to_string_lossy().into_owned()]);
@@ -4095,21 +4082,27 @@ if __name__ == "__main__":
             // django-admin startproject требует валидный Python-идентификатор:
             // «my-project» (дефис) не подходит — заменяем на подчёркивание.
             let safe_name = project_name.replace('-', "_");
-            // При наличии Python-проекта запускаем CLI из его venv. Это
-            // устраняет зависимость от глобальной установки Django и
-            // согласует команду с ранним django_pip_install в compose_recipe.
+            // CLI запускается из КАНОНИЧЕСКОГО venv проекта (никакого
+            // глобального django-admin и никакого отдельного venv-цикла):
+            // каноническое окружение уже создано и манифест установлен
+            // (django_start ← py_pip_install в декларациях зависимостей).
             let django_command = if context.languages.iter().any(|l| l == "python") {
                 python_venv_bin(project_path, seg.unwrap_or("."), "django-admin")
             } else {
                 "django-admin".to_string()
             };
-            vec![cmd(
+            let mut start = cmd(
                 "django_start",
                 "Start Django project",
-                "Create Django project structure",
+                "Create Django project structure (django-admin from the project venv)",
                 &django_command,
                 vec!["startproject", &safe_name, "."],
-            )]
+            );
+            if let Step::Command { on_error, .. } = &mut start {
+                // Обязательный CLI каркаса: провал останавливает пайплайн.
+                *on_error = ErrorMode::Abort;
+            }
+            vec![start]
         }
 
         "flask" => vec![
@@ -4291,13 +4284,20 @@ if __name__ == "__main__":
             )]
         }
 
-        "express" => vec![
-            write_file(
-                "express_index",
-                "Create Express entry",
-                "src/index.js",
-                &format!(
-                    r#"const express = require('express');
+        "express" => {
+            // package.json в каталоге сегмента (into_segment префиксует
+            // WriteFile-путь; condition/конфиг генератора — вручную).
+            let pkg_path = match seg {
+                Some(dir) => format!("{}/package.json", dir),
+                None => "package.json".to_string(),
+            };
+            vec![
+                write_file(
+                    "express_index",
+                    "Create Express entry",
+                    "src/index.js",
+                    &format!(
+                        r#"const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -4309,15 +4309,15 @@ app.listen(PORT, () => {{
     console.log(`Server running on http://localhost:${{PORT}}`);
 }});
 "#,
-                    project_name
+                        project_name
+                    ),
                 ),
-            ),
-            write_file(
-                "express_package",
-                "Express dependencies",
-                "package.json",
-                &format!(
-                    r#"{{
+                write_file(
+                    "express_package",
+                    "Express dependencies",
+                    "package.json",
+                    &format!(
+                        r#"{{
   "name": "{}",
   "version": "1.0.0",
   "main": "src/index.js",
@@ -4330,10 +4330,20 @@ app.listen(PORT, () => {{
   }}
 }}
 "#,
-                    project_name
+                        project_name
+                    ),
                 ),
-            ),
-        ],
+                // Express обязан быть установлен как НАСТОЯЩАЯ зависимость
+                // (финальный npm install), а не только упомянут entry-файлом:
+                // пост-валидация манифеста это подтверждает.
+                preflight::package_json_check_step(
+                    "express_pkg_check",
+                    "Validate Express package.json",
+                    &pkg_path,
+                    &["express"],
+                ),
+            ]
+        }
 
         "electron" => {
             // create-electron-app собирает ПОЛНЫЙ каркас Electron
@@ -4416,10 +4426,18 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
                     working_dir: Some(project_path.to_string()),
                     env: None,
                     timeout_secs: Some(30),
-                    condition: Some(StepCondition::FileExists { path: pkg_path }),
+                    condition: Some(StepCondition::FileExists { path: pkg_path.clone() }),
                     on_error: ErrorMode::Skip,
                     interactive: vec![],
                 });
+                // telegraf — НАСТОЯЩАЯ зависимость после патча: подтверждаем
+                // манифестом (установку выполнит финальный npm install).
+                steps.push(preflight::package_json_check_step(
+                    "telegraf_pkg_check",
+                    "Validate Telegraf dependency",
+                    &pkg_path,
+                    &["telegraf"],
+                ));
             } else {
                 steps.push(write_file(
                     "telegraf_package",
@@ -4437,6 +4455,16 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
 "#,
                         project_name
                     ),
+                ));
+                let pkg_path = match seg {
+                    Some(dir) => format!("{}/package.json", dir),
+                    None => "package.json".to_string(),
+                };
+                steps.push(preflight::package_json_check_step(
+                    "telegraf_pkg_check",
+                    "Validate Telegraf package.json",
+                    &pkg_path,
+                    &["telegraf"],
                 ));
             }
             steps
@@ -4542,13 +4570,18 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
             ),
         ],
 
-        "fastify" => vec![
-            write_file(
-                "fastify_index",
-                "Create Fastify entry",
-                "src/index.js",
-                &format!(
-                    r#"const fastify = require('fastify')({{ logger: true }});
+        "fastify" => {
+            let pkg_path = match seg {
+                Some(dir) => format!("{}/package.json", dir),
+                None => "package.json".to_string(),
+            };
+            vec![
+                write_file(
+                    "fastify_index",
+                    "Create Fastify entry",
+                    "src/index.js",
+                    &format!(
+                        r#"const fastify = require('fastify')({{ logger: true }});
 
 fastify.get('/', async () => {{
     return {{ message: 'Hello from {}!' }};
@@ -4565,15 +4598,15 @@ const start = async () => {{
 }};
 start();
 "#,
-                    project_name
+                        project_name
+                    ),
                 ),
-            ),
-            write_file(
-                "fastify_package",
-                "Fastify package.json",
-                "package.json",
-                &format!(
-                    r#"{{
+                write_file(
+                    "fastify_package",
+                    "Fastify package.json",
+                    "package.json",
+                    &format!(
+                        r#"{{
   "name": "{}",
   "version": "1.0.0",
   "main": "src/index.js",
@@ -4586,10 +4619,19 @@ start();
   }}
 }}
 "#,
-                    project_name
+                        project_name
+                    ),
                 ),
-            ),
-        ],
+                // fastify — НАСТОЯЩАЯ зависимость (финальный npm install),
+                // пост-валидация подтверждает декларацию в package.json.
+                preflight::package_json_check_step(
+                    "fastify_pkg_check",
+                    "Validate Fastify package.json",
+                    &pkg_path,
+                    &["fastify"],
+                ),
+            ]
+        }
 
         "solidjs" => {
             // create-solid полностью неинтерактивен при ПОЛНОМ наборе
@@ -4958,32 +5000,62 @@ fun main() {{
             // composer.phar> в Toolchain store» — относительный composer.phar
             // не существует в рабочем каталоге CLI. Target подставляет
             // ScaffoldGenerator (temp+move): временная папка → программный
-            // перенос в backend/ или корень.
+            // перенос в backend/ или корень. Общий PHP/Composer-префлайт
+            // (preflight.rs) идёт ДО скаффолда и Abort-ит без Composer.
+            let composer_path = match seg {
+                Some(dir) => format!("{}/composer.json", dir),
+                None => "composer.json".to_string(),
+            };
             vec![
-                php_preflight_step(
+                preflight::php_preflight_step(
                     "laravel_php_check",
-                    "Check PHP for Laravel",
-                    "Verify PHP and ext-fileinfo before composer create-project (Laravel needs ext-fileinfo; enable it in php.ini)",
+                    "Check PHP and Composer for Laravel",
+                    "Verify PHP (version, php.ini, extension_dir, fileinfo) and Composer availability before composer create-project",
+                    "laravel/laravel",
                 ),
                 composer_scaffold_step("laravel_new", "Create Laravel project",
                 "Scaffold Laravel application via PHP Composer",
                 "laravel/laravel"),
+                // Каркас обязан содержать валидный composer.json с
+                // laravel/framework — не generic-PHP fallback.
+                preflight::manifest_check_step(
+                    "laravel_composer_check",
+                    "Validate Laravel composer.json",
+                    &composer_path,
+                    "composer_json",
+                    &["laravel/framework"],
+                ),
             ]
         }
 
         "symfony" => {
             // CLI Override (PHP Composer): локальный бинарь symfony не
             // требуется, npm не используется — только composer с
-            // абсолютным путём (см. composer_launch).
+            // абсолютным путём (см. composer_launch). Общий PHP/Composer-
+            // префлайт — preflight.rs.
+            let composer_path = match seg {
+                Some(dir) => format!("{}/composer.json", dir),
+                None => "composer.json".to_string(),
+            };
             vec![
-                php_preflight_step(
+                preflight::php_preflight_step(
                     "symfony_php_check",
-                    "Check PHP for Symfony",
-                    "Verify PHP and ext-fileinfo before composer create-project (Symfony needs ext-fileinfo; enable it in php.ini)",
+                    "Check PHP and Composer for Symfony",
+                    "Verify PHP (version, php.ini, extension_dir, fileinfo) and Composer availability before composer create-project",
+                    "symfony/skeleton",
                 ),
                 composer_scaffold_step("symfony_new", "Create Symfony project",
                 "Scaffold Symfony application via PHP Composer",
                 "symfony/skeleton"),
+                // symfony/skeleton обязан содержать symfony/framework-bundle
+                // в composer.json — не generic-PHP fallback.
+                preflight::manifest_check_step(
+                    "symfony_composer_check",
+                    "Validate Symfony composer.json",
+                    &composer_path,
+                    "composer_json",
+                    &["symfony/framework-bundle"],
+                ),
             ]
         }
 
@@ -5238,6 +5310,24 @@ fn python_segment_dir(context: &WizardContext) -> String {
     ".".to_string()
 }
 
+/// Каталог, где лежит package.json JS-части проекта (для dep-патчей и
+/// пост-валидации prisma/drizzle): сначала каталог JS-фреймворка, затем
+/// каталог JS-языка (None — JS-части в проекте нет).
+fn js_manifest_dir(context: &WizardContext) -> Option<String> {
+    let layout = ProjectLayout::compute(context);
+    for fw in &context.frameworks {
+        if is_js_framework(fw) {
+            return Some(layout.framework_dir(fw).unwrap_or_else(|| ".".to_string()));
+        }
+    }
+    for lang in &context.languages {
+        if matches!(lang.as_str(), "typescript" | "javascript") {
+            return Some(layout.language_dir(lang).unwrap_or_else(|| ".".to_string()));
+        }
+    }
+    None
+}
+
 /// Интерпретатор Python: `python` на Windows (в PATH у установщиков и
 /// StackPilot Toolchain), `python3` на unix (дистрибутивный). ВСЕ
 /// python-шаги пайплайна используют ровно этот выбор — никаких жёстко
@@ -5295,121 +5385,11 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
         }
     };
 
-    // Python-инструменты (alembic) требуют установленных зависимостей в
-    // ОКРУЖЕНИИ: `alembic init` падает с «command not found», если пакет
-    // не установлен в venv. Поэтому для Python-проектов с alembic сначала
-    // создаётся venv и выполняется pip install -r requirements.txt (с
-    // гарантированным alembic) — строго ДО шагов инструментов (порядок
-    // в steps гарантирован: venv-шаги кладутся первыми в этот список).
-    let has_python = context.languages.iter().any(|l| l == "python");
-    // Для Django базовый пакет ставится до CLI-скаффолда, но полная
-    // requirements-фаза всё равно нужна ПОСЛЕ framework-шагов: именно там
-    // aiogram/SQLAlchemy и прочие генераторы дописывают requirements.txt.
-    // Повторный вызов `python -m venv` безопасен и лишь переиспользует готовое
-    // окружение, зато устраняет гонку порядка шагов.
-    // Every Python project gets one isolated environment.  Frameworks and
-    // tools may add requirements at different phases, so conditioning venv on
-    // Alembic left FastAPI-only and Django+Vue projects on the global Python
-    // installation and made failures look like silent skipped steps.
-    let needs_python_venv = has_python;
-    // Каталог python-кода (backend/ в моно-репозитории, иначе корень):
-    // venv создаётся ВНУТРИ него, рядом с requirements.txt. Вычисляется
-    // вне блока — нужен и шагам alembic ниже.
+    // Каталог python-кода (backend/ в моно-репозитории, иначе корень) —
+    // нужен шагам alembic ниже. Канонический venv + установка манифеста
+    // выполняются в compose_recipe ДО всех framework-шагов (preflight.rs) —
+    // здесь окружение не создаётся и не конкурирует с ним.
     let python_dir = python_segment_dir(context);
-    if needs_python_venv {
-        // Абсолютный путь к venv: python -m venv выполняется из project_path,
-        // но каталог окружения обязан лежать ТОЧНО внутри python-сегмента
-        // (backend/venv или ./venv) — относительный путь в шаге + другой
-        // working_dir давали venv не там, где его ищут pip/alembic.
-        let venv_path = if python_dir == "." {
-            PathBuf::from(project_path).join("venv")
-        } else {
-            PathBuf::from(project_path).join(&python_dir).join("venv")
-        };
-        let venv_str = venv_path.to_string_lossy().into_owned();
-        let req_path = if python_dir == "." {
-            PathBuf::from(project_path).join("requirements.txt")
-        } else {
-            PathBuf::from(project_path)
-                .join(&python_dir)
-                .join("requirements.txt")
-        };
-        let req_str = req_path.to_string_lossy().into_owned();
-        // Маркер уже созданного venv: django-ранний venv (django_venv_create)
-        // создал его ДО tools-фазы — повторный python -m venv не нужен
-        // (условие FileNotExists, проверяется по фактическому состоянию).
-        let venv_marker = if python_dir == "." {
-            "venv/pyvenv.cfg".to_string()
-        } else {
-            format!("{}/venv/pyvenv.cfg", python_dir)
-        };
-        steps.push(Step::Command {
-            id: "py_venv_create".into(),
-            label: "Create Python virtual environment".into(),
-            description: format!("Run {} -m venv {}", python_command(), venv_str),
-            command: python_command().to_string(),
-            args: vec!["-m".into(), "venv".into(), venv_str],
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(120),
-            condition: Some(StepCondition::FileNotExists { path: venv_marker }),
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
-        // Bootstrap pip внутри venv: старые окружения (созданные ранним
-        // django-шагом или ранее установленным Python) могут нести устаревший
-        // pip — обновляем ДО установки зависимостей. Идемпотентный шаг,
-        // выполняется всегда (venv обязан существовать к этому моменту).
-        steps.push(Step::Command {
-            id: "py_pip_upgrade".into(),
-            label: "Upgrade pip in virtual environment".into(),
-            description: "Run python -m pip install --upgrade pip inside venv".into(),
-            command: python_venv_bin(project_path, &python_dir, "python"),
-            args: vec![
-                "-m".into(),
-                "pip".into(),
-                "install".into(),
-                "--upgrade".into(),
-                "pip".into(),
-            ],
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(300),
-            condition: None,
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
-        steps.push(Step::Command {
-            id: "py_pip_install".into(),
-            label: "Install Python dependencies".into(),
-            description: "Run pip install -r requirements.txt (plus alembic) inside venv".into(),
-            // Только бинарь venv; alembic ставится явно, если выбран инструмент
-            // alembic — требования scenario C: полный набор в requirements.txt
-            // (union python-скаффолда), alembic дополнительно гарантируется
-            // явным аргументом. Абсолютный путь: команда исполняется из
-            // project_path, но venv живёт внутри python-сегмента (backend/venv).
-            command: python_venv_bin(project_path, &python_dir, "python"),
-            args: {
-                let mut pip_args = vec![
-                    "-m".into(),
-                    "pip".into(),
-                    "install".into(),
-                    "-r".into(),
-                    req_str,
-                ];
-                if tools.iter().any(|t| t == "alembic") {
-                    pip_args.push("alembic".into());
-                }
-                pip_args
-            },
-            working_dir: Some(project_path.to_string()),
-            env: None,
-            timeout_secs: Some(600),
-            condition: None,
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        });
-    }
 
     for tool_id in tools {
         match tool_id.as_str() {
@@ -5494,6 +5474,25 @@ def get_db():
                 } else {
                     "sqlite"
                 };
+                // Prisma-зависимости ДО init: init читает package.json и
+                // добавляет prisma-скрипты; патч гарантирует, что prisma и
+                // @prisma/client попадут в npm install финальной фазы (а не
+                // только транзитно через npx). Патч применяется к package.json
+                // JS-сегмента, когда он существует (FileExists-условие).
+                let prisma_js_dir = js_manifest_dir(context);
+                if let Some(dir) = &prisma_js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "prisma_deps",
+                        "Add Prisma dependencies",
+                        &pkg,
+                        serde_json::json!({
+                            "dependencies": { "@prisma/client": "^6.1.0" },
+                            "devDependencies": { "prisma": "^6.1.0" }
+                        })
+                        .to_string(),
+                    ));
+                }
                 steps.push(Step::Command {
                     id: "prisma_init".into(),
                     label: "Init Prisma".into(),
@@ -5511,7 +5510,10 @@ def get_db():
                     env: None,
                     timeout_secs: Some(120),
                     condition: None,
-                    on_error: ErrorMode::Skip,
+                    // Abort: выбранный инструмент обязан инициализироваться;
+                    // невозможность запустить npx (нет npm) не маскируется
+                    // молчаливым пропуском.
+                    on_error: ErrorMode::Abort,
                     interactive: vec![],
                 });
                 // Подстраховка для версий Prisma без флага --no-skills
@@ -5531,6 +5533,18 @@ def get_db():
                     condition: None,
                     on_error: ErrorMode::Skip,
                 });
+                // Пост-валидация: prisma обязана быть задекларирована в
+                // package.json JS-сегмента после init (Abort).
+                if let Some(dir) = &prisma_js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_check_step(
+                        "prisma_deps_check",
+                        "Validate Prisma dependencies",
+                        &pkg,
+                        "package_json",
+                        &["@prisma/client", "prisma"],
+                    ));
+                }
             }
             "drizzle" => {
                 steps.push(write_file(
@@ -5549,6 +5563,31 @@ export default {
 } satisfies Config;
 "#,
                 ));
+                // drizzle-kit init требует установленные drizzle-kit и
+                // drizzle-orm: патч декларирует их в package.json
+                // JS-сегмента (MergeJson, только когда файл существует) и
+                // пост-валидация подтверждает наличие после npm install.
+                let drizzle_js_dir = js_manifest_dir(context);
+                if let Some(dir) = &drizzle_js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "drizzle_deps",
+                        "Add Drizzle dependencies",
+                        &pkg,
+                        serde_json::json!({
+                            "dependencies": { "drizzle-orm": "^0.36.0" },
+                            "devDependencies": { "drizzle-kit": "^0.28.0" }
+                        })
+                        .to_string(),
+                    ));
+                    steps.push(preflight::manifest_check_step(
+                        "drizzle_deps_check",
+                        "Validate Drizzle dependencies",
+                        &pkg,
+                        "package_json",
+                        &["drizzle-orm", "drizzle-kit"],
+                    ));
+                }
             }
             // Testing tools
             "pytest" => {
@@ -5933,7 +5972,9 @@ fn steps_for_finalize(
             condition: Some(StepCondition::FileNotExists {
                 path: format!("{}/node_modules", if dir == "." { "." } else { dir }),
             }),
-            on_error: ErrorMode::Skip,
+            // Abort: установка выбранных зависимостей (express, fastify,
+            // telegraf, nest...) обязательна — провал не маскируется скипом.
+            on_error: ErrorMode::Abort,
             interactive: vec![],
         });
     }
@@ -8488,9 +8529,9 @@ mod tests {
             _ => panic!("alembic_init — Command"),
         }
 
-        // pip-шаг гарантированно ставит alembic (даже если requirements.txt
-        // его не содержит — он создаётся пустым, fastapi/flask перезаписывают
-        // только своими пакетами).
+        // alembic ставится ЧЕРЕЗ единый манифест (requirements.txt), а не
+        // отдельным pip-вызовом: манифест обязан содержать alembic, а
+        // py_pip_install — единственный pip install рецепта.
         let pip = recipe
             .steps
             .iter()
@@ -8498,9 +8539,27 @@ mod tests {
             .expect("py_pip_install должен быть в плане");
         let pip_args = cmd_args(pip);
         assert!(
-            pip_args.iter().any(|a| a == "alembic"),
-            "pip должен ставить alembic явно: {pip_args:?}"
+            pip_args.iter().any(|a| a == "-r"),
+            "pip ставит РОВНО из манифеста (-r): {pip_args:?}"
         );
+        assert!(
+            !pip_args.iter().any(|a| a == "alembic"),
+            "alembic не ставится отдельно — он в манифесте: {pip_args:?}"
+        );
+        let requirements = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "requirements_txt")
+            .expect("requirements_txt должен быть в плане");
+        match requirements {
+            Step::WriteFile { content, .. } => {
+                assert!(
+                    content.contains("alembic"),
+                    "манифест обязан содержать alembic: {content}"
+                );
+            }
+            _ => panic!("requirements_txt — WriteFile"),
+        }
     }
 
     #[test]
@@ -8738,7 +8797,9 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(generator_id, "scaffold");
-                    assert_eq!(on_error, &ErrorMode::Skip);
+                    // Composer-скаффолд — обязательный шаг: провал
+                    // инициализации фреймворка не маскируется скипом.
+                    assert_eq!(on_error, &ErrorMode::Abort);
                     let command = generator_config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -8795,7 +8856,8 @@ mod tests {
                     );
                     // Способность: composer create-project создаёт именованную
                     // папку; temp+move по умолчанию (composer не принимает "."
-                    // в непустом каталоге). Пост-условие — package.json.
+                    // в непустом каталоге). Пост-условие — НАСТОЯЩИЙ composer.json
+                    // (generic-фолбэк не считается успешным каркасом).
                     assert_eq!(
                         generator_config.get("capability").and_then(|v| v.as_str()),
                         Some("creates_named_directory"),
@@ -8808,8 +8870,8 @@ mod tests {
                         .unwrap_or_default();
                     assert_eq!(
                         expected,
-                        vec!["package.json"],
-                        "composer обязан создать package.json: {generator_config}"
+                        vec!["composer.json"],
+                        "composer обязан создать composer.json (не package.json): {generator_config}"
                     );
                 }
                 _ => panic!("{step_id} — Generate"),
@@ -9511,6 +9573,10 @@ mod tests {
 
     #[test]
     fn django_venv_gated_on_marker() {
+        // Django (как и любой Python-фреймворк) использует ЕДИНСТВЕННЫЙ
+        // канонический venv проекта: py_venv_create гейтится маркером
+        // venv/pyvenv.cfg, повторный запуск не пересоздаёт окружение,
+        // а отдельного django-venv не существует.
         let mut ctx = context();
         ctx.languages = vec!["python".into()];
         ctx.frameworks = vec!["django".into()];
@@ -9518,14 +9584,18 @@ mod tests {
         let create = recipe
             .steps
             .iter()
-            .find(|s| s.id() == "django_venv_create")
-            .expect("django_venv_create в плане");
+            .find(|s| s.id() == "py_venv_create")
+            .expect("py_venv_create в плане");
         assert_eq!(
             create.condition(),
             Some(&StepCondition::FileNotExists {
                 path: "venv/pyvenv.cfg".into()
             }),
             "повторный запуск не пересоздаёт venv"
+        );
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "django_venv_create"),
+            "отдельного django-venv быть не должно — venv единственный"
         );
     }
 
@@ -10416,11 +10486,12 @@ mod tests {
                 .any(|d| d.step_id == step && d.prereq_id == prereq)
         };
         assert!(find("py_pip_upgrade", "py_venv_create"));
-        assert!(find("py_pip_install", "py_venv_create"));
+        assert!(find("py_pip_check", "py_venv_create"));
         assert!(find("py_pip_install", "py_pip_upgrade"));
-        assert!(find("alembic_init", "py_venv_create"));
+        assert!(find("py_pip_install", "py_pip_check"));
         assert!(find("alembic_init", "py_pip_install"));
-        // маркер venv — пост-условие venv-шага (django-ранний venv)
+        assert!(find("py_requirements_check", "py_pip_install"));
+        // маркер venv — пост-условие venv-шагов (единый канонический venv)
         let dep = recipe
             .dependencies
             .iter()
@@ -10434,20 +10505,26 @@ mod tests {
     }
 
     #[test]
-    fn recipe_declares_django_early_venv_dependency() {
+    fn recipe_declares_django_start_dependency() {
+        // django-admin (django_start) — строго ПОСЛЕ установки манифеста
+        // единого venv: отдельного django-venv не существует, пакеты ставятся
+        // ровно один раз через py_pip_install.
         let mut ctx = context();
         ctx.languages = vec!["python".into()];
         ctx.frameworks = vec!["django".into()];
         let recipe = recipe_for(&ctx, "myapp").unwrap();
-        let dep = recipe
-            .dependencies
-            .iter()
-            .find(|d| d.step_id == "django_pip_install" && d.prereq_id == "django_venv_create")
-            .unwrap();
-        assert_eq!(
-            dep.expects_file, "venv/pyvenv.cfg",
+        assert!(
+            recipe
+                .dependencies
+                .iter()
+                .any(|d| d.step_id == "django_start" && d.prereq_id == "py_pip_install"),
             "{:?}",
             recipe.dependencies
+        );
+        assert!(
+            !recipe.steps.iter().any(|s| s.id() == "django_venv_create")
+                && !recipe.steps.iter().any(|s| s.id() == "django_pip_install"),
+            "django использует единый venv, отдельного django-venv нет"
         );
     }
 
@@ -10704,6 +10781,69 @@ mod tests {
     }
 
     #[test]
+    fn express_fastify_telegraf_declare_real_deps_and_validate_manifest() {
+        // Express/Fastify/Telegraf: зависимости — НАСТОЯЩИЕ записи в
+        // package.json (финальный npm install ставит их), а не упоминание в
+        // entry-файле. Каждый каркас получает пост-валидацию manifest-check
+        // (Abort), требующую свой пакет.
+        for (fw, pkg, check_id, package_id) in [
+            ("express", "express", "express_pkg_check", "express_package"),
+            ("fastify", "fastify", "fastify_pkg_check", "fastify_package"),
+            (
+                "telegraf",
+                "telegraf",
+                "telegraf_pkg_check",
+                "telegraf_package",
+            ),
+        ] {
+            let mut ctx = context();
+            ctx.languages = vec!["javascript".into()];
+            ctx.frameworks = vec![fw.into()];
+            let layout = ProjectLayout::compute(&ctx);
+            let pkg_path = match layout.framework_dir(fw) {
+                Some(dir) => format!("{}/package.json", dir),
+                None => "package.json".to_string(),
+            };
+            let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+            match find_step(&recipe, check_id) {
+                Step::Generate {
+                    generator_id,
+                    generator_config,
+                    on_error,
+                    ..
+                } => {
+                    assert_eq!(generator_id, "manifest-check", "{check_id}");
+                    assert_eq!(
+                        generator_config.get("path").and_then(|v| v.as_str()),
+                        Some(pkg_path.as_str()),
+                        "{check_id}"
+                    );
+                    assert!(
+                        gen_strs(generator_config, "required_dependencies")
+                            .contains(&pkg.to_string()),
+                        "{check_id}"
+                    );
+                    assert_eq!(
+                        on_error,
+                        &ErrorMode::Abort,
+                        "отсутствие зависимости фреймворка останавливает пайплайн: {check_id}"
+                    );
+                }
+                _ => panic!("{check_id} — Generate"),
+            }
+            match find_step(&recipe, package_id) {
+                Step::WriteFile { content, .. } => {
+                    assert!(
+                        content.contains(&format!("\"{pkg}\"")),
+                        "{package_id} обязан декларировать {pkg}: {content}"
+                    );
+                }
+                _ => panic!("{package_id} — WriteFile"),
+            }
+        }
+    }
+
+    #[test]
     fn side_frameworks_run_after_main_frameworks() {
         // kind="side" (telegraf, aiogram) выполняется ПОСЛЕ главных
         // фреймворков (nest, django) независимо от порядка карточек в
@@ -10788,9 +10928,19 @@ mod tests {
                 .position(|s| s.id() == id)
                 .unwrap_or_else(|| panic!("{id} должен быть в плане"))
         };
-        assert!(idx("python_preflight") < idx("django_venv_create"));
-        assert!(idx("python_preflight") < idx("django_pip_install"));
         assert!(idx("python_preflight") < idx("py_venv_create"));
+        assert!(idx("python_preflight") < idx("py_pip_install"));
+        // django_start декларируется в фазе 1 (root-скаффолд), но его
+        // предусловие py_pip_install (топологически) ставит django-admin
+        // ПОСЛЕ установки манифеста — venv/pip гарантированно готовы.
+        assert!(
+            recipe
+                .dependencies
+                .iter()
+                .any(|d| d.step_id == "django_start" && d.prereq_id == "py_pip_install"),
+            "{:?}",
+            recipe.dependencies
+        );
         let preflight = &recipe.steps[idx("python_preflight")];
         match preflight {
             Step::Command {
@@ -10891,6 +11041,89 @@ mod tests {
                 );
             }
             _ => panic!("alembic_init — Command"),
+        }
+    }
+
+    #[test]
+    fn python_root_project_uses_canonical_venv_and_manifest_at_root() {
+        // Корневой Python-проект (backend-only, fastapi): единый канонический
+        // venv лежит в <root>/venv, манифест — <root>/requirements.txt,
+        // пост-валидация требует fastapi И ASGI-сервер (uvicorn).
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        assert_file_not_exists(find_step(&recipe, "py_venv_create"), "venv/pyvenv.cfg");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "requirements_txt")),
+            "requirements.txt"
+        );
+        match find_step(&recipe, "requirements_txt") {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("fastapi[standard]"), "{content}");
+                assert!(
+                    content.contains("uvicorn"),
+                    "ASGI-сервер обязателен: {content}"
+                );
+            }
+            _ => unreachable!(),
+        }
+        match find_step(&recipe, "py_requirements_check") {
+            Step::Generate {
+                generator_id,
+                generator_config,
+                ..
+            } => {
+                assert_eq!(generator_id, "manifest-check");
+                assert_eq!(
+                    generator_config.get("path").and_then(|v| v.as_str()),
+                    Some("requirements.txt")
+                );
+                let deps = gen_strs(generator_config, "required_dependencies");
+                assert!(deps.contains(&"fastapi".to_string()), "{deps:?}");
+                assert!(deps.contains(&"uvicorn".to_string()), "{deps:?}");
+            }
+            _ => panic!("py_requirements_check — Generate"),
+        }
+    }
+
+    #[test]
+    fn python_backend_segment_places_venv_and_manifest_in_backend() {
+        // Split-проект (python backend + typescript frontend): venv и
+        // requirements.txt живут ВНУТРИ backend/, маркер — root-relative
+        // backend/venv/pyvenv.cfg, django задекларирован в манифесте.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["django".into(), "react".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        assert_file_not_exists(
+            find_step(&recipe, "py_venv_create"),
+            "backend/venv/pyvenv.cfg",
+        );
+        assert_eq!(
+            write_path_of(find_step(&recipe, "requirements_txt")),
+            "backend/requirements.txt"
+        );
+        match find_step(&recipe, "requirements_txt") {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("django"), "{content}");
+            }
+            _ => unreachable!(),
+        }
+        match find_step(&recipe, "py_requirements_check") {
+            Step::Generate {
+                generator_config, ..
+            } => {
+                assert_eq!(
+                    generator_config.get("path").and_then(|v| v.as_str()),
+                    Some("backend/requirements.txt")
+                );
+                let deps = gen_strs(generator_config, "required_dependencies");
+                assert!(deps.contains(&"django".to_string()), "{deps:?}");
+            }
+            _ => panic!("py_requirements_check — Generate"),
         }
     }
 
@@ -11921,8 +12154,18 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("backend")
         );
-        assert!(gen_strs(gen_config_of_step(laravel), "expected_outputs")
-            .contains(&"package.json".to_string()));
+        // Composer-скаффолд обязан оставить НАСТОЯЩИЙ composer.json
+        // (не generic-фолбэк), иначе каркас не считается успешным.
+        assert!(
+            gen_strs(gen_config_of_step(laravel), "expected_outputs")
+                .contains(&"composer.json".to_string()),
+            "laravel_new обязан ожидать composer.json, а не package.json"
+        );
+        assert!(
+            !gen_strs(gen_config_of_step(laravel), "expected_outputs")
+                .contains(&"package.json".to_string()),
+            "laravel — PHP-каркас, package.json ему не нужен"
+        );
         assert!(matches!(
             gen_policy(laravel),
             Some(FilePolicy::SkipIfExists)
@@ -11965,15 +12208,18 @@ mod tests {
                 "create_src",
                 "pyproject_toml",
                 "requirements_txt",
+                "node_preflight",
+                "npm_preflight",
                 "python_preflight",
-                "django_venv_create",
-                "django_pip_install",
+                "py_venv_create",
+                "py_venv_verify",
+                "py_pip_upgrade",
+                "py_pip_check",
+                "py_pip_install",
+                "py_requirements_check",
                 "django_start",
                 "vite_create",
                 "vue_pkg_name",
-                "py_venv_create",
-                "py_pip_upgrade",
-                "py_pip_install",
                 "alembic_init",
                 "sqlalchemy_config",
                 "git_cleanup_nested",
@@ -11987,12 +12233,13 @@ mod tests {
                 "git_commit",
             ],
         );
+        assert_dep(&recipe, "py_venv_verify", "py_venv_create");
         assert_dep(&recipe, "py_pip_upgrade", "py_venv_create");
-        assert_dep(&recipe, "py_pip_install", "py_venv_create");
         assert_dep(&recipe, "py_pip_install", "py_pip_upgrade");
-        assert_dep(&recipe, "alembic_init", "py_venv_create");
+        assert_dep(&recipe, "py_pip_install", "py_pip_check");
+        assert_dep(&recipe, "py_requirements_check", "py_pip_install");
         assert_dep(&recipe, "alembic_init", "py_pip_install");
-        assert_dep(&recipe, "django_pip_install", "django_venv_create");
+        assert_dep(&recipe, "django_start", "py_pip_install");
 
         // Python-каркас сегментирован в backend/.
         match find_step(&recipe, "create_src") {
@@ -12011,7 +12258,9 @@ mod tests {
         }
 
         // Ранний venv: python -m venv backend/venv, маркер root-relative.
-        let venv_create = find_step(&recipe, "django_venv_create");
+        // Единый канонический venv: python -m venv backend/venv, гейт —
+        // root-relative маркер. Никакого отдельного django-venv.
+        let venv_create = find_step(&recipe, "py_venv_create");
         let (cmd, args) = command_of(venv_create);
         assert_eq!(cmd, python_command());
         assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
@@ -12029,18 +12278,26 @@ mod tests {
         assert_eq!(command_of(start).1, vec!["startproject", "myapp", "."]);
         assert!(wd_of(start).ends_with("/backend"));
 
-        // tools-фаза: тот же маркер venv, требования из backend/requirements.txt + alembic.
-        assert_file_not_exists(
-            find_step(&recipe, "py_venv_create"),
-            "backend/venv/pyvenv.cfg",
-        );
+        // tools-фаза: единый venv, pip ставит РОВНО из манифеста (-r),
+        // alembic задекларирован в манифесте, а не отдельным pip-вызовом.
         let pip = find_step(&recipe, "py_pip_install");
         let (_, pip_args) = command_of(pip);
         assert!(
             pip_args.iter().any(|a| a.contains("requirements.txt")),
             "{pip_args:?}"
         );
-        assert!(pip_args.contains(&"alembic".to_string()), "{pip_args:?}");
+        assert!(pip_args.iter().any(|a| a == "-r"), "{pip_args:?}");
+        assert!(
+            !pip_args.iter().any(|a| a == "alembic"),
+            "alembic ставится из манифеста: {pip_args:?}"
+        );
+        let requirements = find_step(&recipe, "requirements_txt");
+        match requirements {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("alembic"), "{content}");
+            }
+            _ => unreachable!(),
+        }
         let alembic = find_step(&recipe, "alembic_init");
         assert!(command_of(alembic).0.contains("alembic"));
         assert_eq!(command_of(alembic).1, vec!["init", "migrations"]);
@@ -12161,10 +12418,13 @@ mod tests {
                 "pyproject_toml",
                 "requirements_txt",
                 "python_preflight",
-                "fastapi_main",
                 "py_venv_create",
+                "py_venv_verify",
                 "py_pip_upgrade",
+                "py_pip_check",
                 "py_pip_install",
+                "py_requirements_check",
+                "fastapi_main",
                 "alembic_init",
                 "ruff_config",
                 "sqlalchemy_config",
@@ -12199,7 +12459,11 @@ mod tests {
         );
         assert_file_not_exists(find_step(&recipe, "py_venv_create"), "venv/pyvenv.cfg");
         let (_, pip_args) = command_of(find_step(&recipe, "py_pip_install"));
-        assert!(pip_args.contains(&"alembic".to_string()), "{pip_args:?}");
+        assert!(pip_args.iter().any(|a| a == "-r"), "{pip_args:?}");
+        assert!(
+            !pip_args.iter().any(|a| a == "alembic"),
+            "alembic ставится из манифеста: {pip_args:?}"
+        );
         assert!(
             pip_args.iter().any(|a| a.contains("requirements.txt")),
             "{pip_args:?}"
@@ -12675,10 +12939,13 @@ mod tests {
                 "pyproject_toml",
                 "requirements_txt",
                 "python_preflight",
-                "fastapi_main",
                 "py_venv_create",
+                "py_venv_verify",
                 "py_pip_upgrade",
+                "py_pip_check",
                 "py_pip_install",
+                "py_requirements_check",
+                "fastapi_main",
                 "git_cleanup_nested",
                 "git_init",
                 "gitignore",

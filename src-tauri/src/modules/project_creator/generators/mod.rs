@@ -68,6 +68,7 @@ impl GeneratorRegistry {
         registry.register(Arc::new(CliGenerator));
         registry.register(Arc::new(SpringBootGenerator));
         registry.register(Arc::new(FsCleanupGenerator));
+        registry.register(Arc::new(ManifestCheckGenerator));
         registry.register(Arc::new(ScaffoldGenerator));
         registry.register(Arc::new(TauriConfigGenerator));
         registry.register(Arc::new(VsCodeMergeGenerator));
@@ -426,6 +427,214 @@ impl Generator for FsCleanupGenerator {
 }
 
 // ============================================================================
+// ManifestCheckGenerator — пост-валидация манифестов проекта.
+//
+// Подтверждает, что каркас реально создал валидный манифест с обязательными
+// зависимостями фреймворка/инструмента, а не «generic-заглушку». Поддерживает
+// package.json (dependencies + devDependencies + optionalDependencies),
+// composer.json (require + require-dev), requirements.txt, pyproject.toml
+// (поиск имён зависимостей в строковых литералах) и Cargo.toml
+// ([dependencies] / [dev-dependencies]).
+//
+// Конфиг:
+//   {
+//     "path": "frontend/package.json",   // относительно корня проекта
+//     "kind": "package_json",            // package_json | composer_json |
+//                                        // requirements_txt | pyproject_toml | cargo_toml
+//     "required_dependencies": ["express"]
+//   }
+// ============================================================================
+pub struct ManifestCheckGenerator;
+
+#[async_trait]
+impl Generator for ManifestCheckGenerator {
+    fn id(&self) -> &str {
+        "manifest-check"
+    }
+    fn name(&self) -> &str {
+        "Manifest validation"
+    }
+    fn description(&self) -> &str {
+        "Validates project manifests (package.json, composer.json, requirements.txt, pyproject.toml, Cargo.toml) and required dependencies"
+    }
+    async fn generate_with_sink(
+        &self,
+        _context: &WizardContext,
+        project_path: &Path,
+        config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<GenerationReport, String> {
+        let path = config
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ManifestCheckGenerator: missing 'path' in config".to_string())?;
+        let kind = config
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("package_json");
+        let required: Vec<String> = config
+            .get("required_dependencies")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let full =
+            crate::modules::project_creator::engine::paths::resolve_in_root(project_path, path)
+                .ok_or_else(|| {
+                    format!("ManifestCheckGenerator: path '{path}' escapes the project root")
+                })?;
+        let content = std::fs::read_to_string(&full)
+            .map_err(|e| format!("ManifestCheckGenerator: cannot read '{path}': {e}"))?;
+
+        let declared = manifest_dependencies(kind, &content)
+            .map_err(|e| format!("ManifestCheckGenerator: {path}: {e}"))?;
+
+        let missing: Vec<&String> = required
+            .iter()
+            .filter(|r| !declared.iter().any(|d| d == *r))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "manifest validation failed for {path}: missing required dependencies: {}. Declared: {}",
+                missing
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if declared.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    declared.join(", ")
+                }
+            ));
+        }
+
+        if let Some(sink) = sink {
+            sink.emit_stdout(&format!(
+                "manifest {path} is valid: declared {}",
+                declared.join(", ")
+            ))
+            .await;
+        }
+        Ok(GenerationReport::success(format!(
+            "Manifest '{path}' validated (required: {})",
+            required.join(", ")
+        )))
+    }
+}
+
+/// Имена зависимостей, задекларированных в манифесте по его виду.
+fn manifest_dependencies(kind: &str, content: &str) -> Result<Vec<String>, String> {
+    match kind {
+        "package_json" | "composer_json" => {
+            let value: serde_json::Value =
+                serde_json::from_str(content).map_err(|e| format!("invalid JSON: {e}"))?;
+            let obj = value
+                .as_object()
+                .ok_or_else(|| "not a JSON object".to_string())?;
+            let mut names: Vec<String> = Vec::new();
+            let sections: &[&str] = if kind == "package_json" {
+                &["dependencies", "devDependencies", "optionalDependencies"]
+            } else {
+                &["require", "require-dev"]
+            };
+            for section in sections {
+                if let Some(deps) = obj.get(*section).and_then(|d| d.as_object()) {
+                    for key in deps.keys() {
+                        if !names.contains(key) {
+                            names.push(key.clone());
+                        }
+                    }
+                }
+            }
+            Ok(names)
+        }
+        "requirements_txt" => {
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty()
+                    || line.starts_with('#')
+                    || line.starts_with('-')
+                    || line.contains("://")
+                {
+                    continue;
+                }
+                let name = line
+                    .split(['[', '=', '<', '>', '~', '!', ';', ' ', '\t'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                if !name.is_empty() && !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            Ok(names)
+        }
+        "pyproject_toml" => {
+            // Практичная проверка: имя зависимости должно встречаться как
+            // строковый литерал в списке зависимостей [project].
+            let mut names: Vec<String> = Vec::new();
+            let mut in_deps = false;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("dependencies") && line.contains('=') {
+                    in_deps = true;
+                }
+                if in_deps {
+                    for token in line.split(',').map(|t| t.trim()) {
+                        let name = token
+                            .trim_matches(|c| c == '"' || c == '\'' || c == '[' || c == ']')
+                            .split(['[', '=', '<', '>', '~', '!'])
+                            .next()
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+                            && !names.contains(&name)
+                        {
+                            names.push(name);
+                        }
+                    }
+                    if line.starts_with(']') {
+                        in_deps = false;
+                    }
+                }
+            }
+            Ok(names)
+        }
+        "cargo_toml" => {
+            let mut names: Vec<String> = Vec::new();
+            let mut in_deps = false;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_deps = line == "[dependencies]" || line == "[dev-dependencies]";
+                    continue;
+                }
+                if !in_deps || line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let name = line.split('=').next().unwrap_or("").trim();
+                let name = name.trim_matches('"');
+                if !name.is_empty() && !names.contains(&name.to_string()) {
+                    names.push(name.to_string());
+                }
+            }
+            Ok(names)
+        }
+        _ => Err(format!("unsupported manifest kind '{kind}'")),
+    }
+}
+
+// ============================================================================
 // ScaffoldGenerator — выполнение CLI-скаффолдеров по ЯВНЫМ способностям.
 //
 // МОДЕЛЬ СПОСОБНОСТЕЙ (ScaffoldCapability)
@@ -476,7 +685,7 @@ impl Generator for FsCleanupGenerator {
 //   sveltekit                → creates_named_directory + temp, ожидает package.json
 //   nuxt                     → creates_named_directory + temp, ожидает package.json
 //   expo                     → creates_named_directory + temp, ожидает package.json
-//   laravel/symfony          → creates_named_directory + temp (composer), ожидает package.json
+//   laravel/symfony          → creates_named_directory + temp (composer), ожидает composer.json
 //   solidjs                  → creates_project_and_may_prompt + interactive, ожидает package.json
 //   flutter                  → creates_project_and_may_prompt + interactive, ожидает pubspec.yaml
 //   tauri_web_scaffold       → creates_named_directory + temp, ожидает package.json
@@ -2659,6 +2868,198 @@ mod tests {
         assert!(
             !dir.join(".vscode").exists(),
             "корневой .vscode без содержимого не создаётся"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_accepts_valid_package_json() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_ok_pkg");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"app","dependencies":{"express":"^4.18.2","fastify":"^4.28.0"},"devDependencies":{"typescript":"^5.0.0"}}"#,
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "package.json",
+                "kind": "package_json",
+                "required_dependencies": ["express", "typescript"],
+            }),
+        ))
+        .expect("валидный package.json с нужными зависимостями обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_rejects_missing_dependency_in_package_json() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_bad_pkg");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"app","dependencies":{"lodash":"^4.0.0"}}"#,
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let err = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "package.json",
+                "kind": "package_json",
+                "required_dependencies": ["express"],
+            }),
+        ))
+        .expect_err("отсутствие обязательной зависимости — ошибка шага");
+        assert!(err.contains("express"), "{err}");
+        assert!(
+            err.contains("lodash"),
+            "перечисляются реально задекларированные: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_rejects_invalid_json_manifest() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_broken_json");
+        std::fs::write(dir.join("package.json"), "{\"name\": \"app\" trailing").unwrap();
+        let ctx = WizardContext::default();
+        let err = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "package.json",
+                "kind": "package_json",
+                "required_dependencies": ["express"],
+            }),
+        ))
+        .expect_err("битый JSON — ошибка шага, а не молчаливый успех");
+        assert!(err.contains("invalid JSON"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_validates_composer_json_require() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_composer");
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{"require":{"laravel/framework":"^11.0"},"require-dev":{"phpunit/phpunit":"^10.0"}}"#,
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "composer.json",
+                "kind": "composer_json",
+                "required_dependencies": ["laravel/framework"],
+            }),
+        ))
+        .expect("composer.json с laravel/framework обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+        let err = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "composer.json",
+                "kind": "composer_json",
+                "required_dependencies": ["symfony/framework-bundle"],
+            }),
+        ))
+        .expect_err("generic-фолбэк composer.json не проходит для symfony");
+        assert!(err.contains("symfony/framework-bundle"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_parses_requirements_txt() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_requirements");
+        std::fs::write(
+            dir.join("requirements.txt"),
+            "fastapi[standard]\nuvicorn>=0.30\n# comment\n-r base.txt\nalembic==1.13.1\n",
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "requirements.txt",
+                "kind": "requirements_txt",
+                "required_dependencies": ["fastapi", "uvicorn", "alembic"],
+            }),
+        ))
+        .expect("requirements.txt с нужными пакетами обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_check_validates_pyproject_toml_and_cargo_toml() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_toml");
+        std::fs::write(
+            dir.join("pyproject.toml"),
+            "[project]\nname = \"app\"\ndependencies = [\n  \"fastapi[standard]>=0.110\",\n  \"uvicorn\",\n]\n",
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "pyproject.toml",
+                "kind": "pyproject_toml",
+                "required_dependencies": ["fastapi", "uvicorn"],
+            }),
+        ))
+        .expect("pyproject.toml с fastapi и uvicorn обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\ntokio = \"1\"\n",
+        )
+        .unwrap();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "Cargo.toml",
+                "kind": "cargo_toml",
+                "required_dependencies": ["serde", "tokio"],
+            }),
+        ))
+        .expect("Cargo.toml с serde и tokio обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
