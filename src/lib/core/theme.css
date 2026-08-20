@@ -1,0 +1,329 @@
+/*
+ * StackPilot design tokens — single source of truth for the UI.
+ *
+ * Applied globally (imported once from src/routes/+layout.svelte).
+ * The active theme is selected by `data-theme` on <html> (dark | light),
+ * driven by the backend `AppSettings.theme` value via $lib/core/theme.ts.
+ * "system" resolves to prefers-color-scheme and is applied the same way.
+ *
+ * Every component must consume these variables; never hardcode colors,
+ * radii, spacing or shadows inside component styles.
+ */
+
+:root {
+  /* ---- Accent palette (neon, developer-oriented) ---- */
+  --sp-violet: #a78bfa;
+  --sp-violet-strong: #8b5cf6;
+  --sp-violet-deep: #6d28d9;
+  --sp-cyan: #22d3ee;
+  --sp-blue: #60a5fa;
+  --sp-blue-strong: #3b82f6;
+  --sp-lime: #a3e635;
+  --sp-lime-deep: #65a30d;
+  --sp-red: #f87171;
+  --sp-amber: #fbbf24;
+
+  /* ---- Semantic ---- */
+  --sp-success: var(--sp-lime);
+  --sp-info: var(--sp-cyan);
+  --sp-warning: var(--sp-amber);
+  --sp-danger: var(--sp-red);
+  --sp-accent: var(--sp-violet);
+  --sp-accent-strong: var(--sp-violet-strong);
+  --sp-accent-soft: rgba(139, 92, 246, 0.16);
+  --sp-accent-border: rgba(139, 92, 246, 0.4);
+
+  /* ---- Typography ---- */
+  --sp-font-sans:
+    "Inter", "Segoe UI", "SF Pro Display", -apple-system, "Helvetica Neue",
+    Arial, sans-serif;
+  --sp-font-mono:
+    "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular,
+    "Consolas", "Liberation Mono", monospace;
+
+  --sp-text-1: #eceef4;
+  --sp-text-2: #a7adbc;
+  --sp-text-3: #6f7691;
+
+  --sp-fs-xs: 0.75rem;
+  --sp-fs-sm: 0.8125rem;
+  --sp-fs-md: 0.9375rem;
+  --sp-fs-lg: 1.125rem;
+  --sp-fs-xl: 1.375rem;
+  --sp-fs-2xl: 1.75rem;
+
+  --sp-fw-normal: 400;
+  --sp-fw-medium: 500;
+  --sp-fw-semibold: 600;
+  --sp-fw-bold: 700;
+
+  --sp-lh-tight: 1.25;
+  --sp-lh-normal: 1.5;
+
+  /* ---- Spacing scale (4px base) ---- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+  --sp-12: 3rem;
+  --sp-16: 4rem;
+
+  /* ---- Radii ---- */
+  --sp-radius-xs: 0.25rem;
+  --sp-radius-sm: 0.375rem;
+  --sp-radius-md: 0.625rem;
+  --sp-radius-lg: 0.875rem;
+  --sp-radius-xl: 1.25rem;
+  --sp-radius-full: 9999px;
+
+  /* ---- Elevation ---- */
+  --sp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --sp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --sp-shadow-3:
+    0 8px 24px rgba(0, 0, 0, 0.4), 0 16px 48px rgba(0, 0, 0, 0.3);
+  --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
+    0 4px 20px rgba(139, 92, 246, 0.25);
+
+  /* ---- Focus ---- */
+  --sp-focus-ring: 0 0 0 2px var(--sp-bg-0), 0 0 0 4px var(--sp-violet);
+
+  /* ---- Surfaces ---- */
+  --sp-bg-0: #0a0b0f;
+  --sp-bg-1: #10121a;
+  --sp-bg-2: #161a26;
+  --sp-bg-3: #1d2231;
+  --sp-glass-bg: rgba(22, 26, 38, 0.72);
+  --sp-glass-strong: rgba(13, 15, 22, 0.86);
+  --sp-border: rgba(148, 163, 184, 0.14);
+  --sp-border-strong: rgba(148, 163, 184, 0.26);
+  --sp-border-faint: rgba(148, 163, 184, 0.08);
+
+  --sp-code-bg: rgba(148, 163, 184, 0.08);
+
+  /* ---- App chrome ---- */
+  --sp-topbar-h: 3.25rem;
+  --sp-sidebar-w: 14.5rem;
+
+  --sp-scrollbar-thumb: rgba(148, 163, 184, 0.22);
+  --sp-scrollbar-thumb-hover: rgba(148, 163, 184, 0.36);
+}
+
+/*
+ * Light variant — same tokens, adjusted values.
+ * Not the primary design; kept minimal and consistent so the
+ * backend `AppSettings.theme = "light"` value is honored.
+ */
+:root[data-theme="light"] {
+  --sp-violet: #7c3aed;
+  --sp-violet-strong: #6d28d9;
+  --sp-violet-deep: #5b21b6;
+  --sp-cyan: #0891b2;
+  --sp-blue: #2563eb;
+  --sp-blue-strong: #1d4ed8;
+  --sp-lime: #4d7c0f;
+  --sp-lime-deep: #3f6212;
+  --sp-red: #dc2626;
+  --sp-amber: #b45309;
+
+  --sp-success: var(--sp-lime);
+  --sp-info: var(--sp-cyan);
+  --sp-warning: var(--sp-amber);
+  --sp-danger: var(--sp-red);
+  --sp-accent: var(--sp-violet);
+  --sp-accent-strong: var(--sp-violet-strong);
+  --sp-accent-soft: rgba(109, 40, 217, 0.1);
+  --sp-accent-border: rgba(109, 40, 217, 0.35);
+
+  --sp-text-1: #16181f;
+  --sp-text-2: #4b5162;
+  --sp-text-3: #7a8094;
+
+  --sp-shadow-1: 0 1px 2px rgba(15, 20, 40, 0.06);
+  --sp-shadow-2: 0 2px 8px rgba(15, 20, 40, 0.08);
+  --sp-shadow-3: 0 8px 24px rgba(15, 20, 40, 0.12);
+  --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
+    0 4px 20px rgba(109, 40, 217, 0.15);
+
+  --sp-bg-0: #f4f6fa;
+  --sp-bg-1: #ffffff;
+  --sp-bg-2: #f0f2f7;
+  --sp-bg-3: #e6e9f1;
+  --sp-glass-bg: rgba(255, 255, 255, 0.78);
+  --sp-glass-strong: rgba(255, 255, 255, 0.92);
+  --sp-border: rgba(23, 28, 48, 0.1);
+  --sp-border-strong: rgba(23, 28, 48, 0.18);
+  --sp-border-faint: rgba(23, 28, 48, 0.05);
+
+  --sp-code-bg: rgba(23, 28, 48, 0.05);
+
+  --sp-scrollbar-thumb: rgba(23, 28, 48, 0.18);
+  --sp-scrollbar-thumb-hover: rgba(23, 28, 48, 0.3);
+}
+
+/* ---- Base document styles ---- */
+
+:root {
+  color-scheme: dark;
+  background-color: var(--sp-bg-0);
+  color: var(--sp-text-1);
+  font-family: var(--sp-font-sans);
+  font-size: 16px;
+  line-height: var(--sp-lh-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background-color: var(--sp-bg-0);
+  color: var(--sp-text-1);
+  font-family: var(--sp-font-sans);
+  font-size: 16px;
+}
+
+body {
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: var(--sp-accent-soft);
+  color: var(--sp-text-1);
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--sp-focus-ring);
+  border-radius: var(--sp-radius-sm);
+}
+
+a {
+  color: var(--sp-blue);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--sp-font-mono);
+  font-size: 0.92em;
+}
+
+/* ---- Scrollbars ---- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sp-scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--sp-scrollbar-thumb);
+  border-radius: var(--sp-radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--sp-scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ---- Motion ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes sp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sp-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sp-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes sp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sp-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes sp-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}

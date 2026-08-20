@@ -1,157 +1,334 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getCurrentProject, listProcesses, getProcessLogs } from "$lib/modules/workspace/api";
-  import type { ProjectContext, TrackedProcess, ProcessLogs } from "$lib/modules/workspace/types";
+  import { onDestroy } from "svelte";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Badge from "$lib/components/ui/Badge.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import ErrorState from "$lib/components/ui/ErrorState.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import { workspaceContext } from "$lib/modules/workspace/context";
+  import { listProcesses, getProcessLogs } from "$lib/modules/workspace/api";
+  import type { TrackedProcess, ProcessLogs } from "$lib/modules/workspace/types";
+  import {
+    statusTone,
+    statusLabel,
+    statusIcon,
+    formatDuration,
+  } from "$lib/modules/workspace/status";
 
-  let project = $state<ProjectContext | null>(null);
   let processes = $state<TrackedProcess[]>([]);
-  let loading = $state(true);
+  let dataLoaded = $state(false);
+  let error = $state("");
 
-  let selectedProc = $state<string | null>(null);
+  let selectedId = $state<string | null>(null);
   let logs = $state<ProcessLogs | null>(null);
   let logsLoading = $state(false);
+  let logsError = $state("");
 
-  onMount(async () => {
-    project = await getCurrentProject();
-    if (project) {
-      processes = await listProcesses();
+  let autoRefreshId: ReturnType<typeof setInterval> | null = null;
+
+  const project = $derived($workspaceContext.project);
+  const wsLoading = $derived($workspaceContext.loading);
+  const wsError = $derived($workspaceContext.error);
+
+  const selectedProc = $derived(
+    processes.find((p) => p.id === selectedId) ?? null,
+  );
+
+  $effect(() => {
+    if (project && !dataLoaded) {
+      dataLoaded = true;
+      loadProcesses();
+      startAutoRefresh();
+    } else if (!project) {
+      dataLoaded = false;
+      processes = [];
+      selectedId = null;
+      logs = null;
+      stopAutoRefresh();
     }
-    loading = false;
   });
 
+  function startAutoRefresh() {
+    if (autoRefreshId) return;
+    autoRefreshId = setInterval(() => refreshSelectedLogs(), 3000);
+  }
+
+  function stopAutoRefresh() {
+    if (autoRefreshId) {
+      clearInterval(autoRefreshId);
+      autoRefreshId = null;
+    }
+  }
+
+  onDestroy(() => {
+    stopAutoRefresh();
+  });
+
+  async function loadProcesses() {
+    try {
+      processes = await listProcesses();
+    } catch (e) {
+      error = `Failed to load processes: ${e}`;
+    }
+  }
+
+  async function refreshSelectedLogs() {
+    if (!selectedId || !selectedProc || selectedProc.status !== "Running") return;
+    if (logsLoading) return;
+    try {
+      logs = await getProcessLogs(selectedId);
+    } catch {
+      // transient refresh failure — keep the last good logs
+    }
+  }
+
   async function selectProcess(id: string) {
-    selectedProc = id;
+    selectedId = id;
+    logs = null;
+    logsError = "";
     logsLoading = true;
     try {
       logs = await getProcessLogs(id);
-    } catch {
-      logs = null;
+    } catch (e) {
+      logsError = `Failed to load logs: ${e}`;
     }
     logsLoading = false;
   }
-
-  let allLines = $derived.by(() => {
-    if (!logs) return [];
-    const out = logs.stdout_lines.map((l) => ({ stream: "stdout" as const, line: l }));
-    const err = logs.stderr_lines.map((l) => ({ stream: "stderr" as const, line: l }));
-    return [...out, ...err].sort((a, b) => 0); // keep original order
-  });
 </script>
 
-<div class="workspace-layout">
-  <aside class="ws-sidebar">
-    <div class="ws-brand">Workspace</div>
-    <nav class="ws-nav">
-      <a href="/workspace">Overview</a>
-      <a href="/workspace/runtime">Runtime</a>
-      <a href="/workspace/session">Session</a>
-      <a href="/workspace/logs" class="active">Logs</a>
-      <a href="/workspace/problems">Problems</a>
-      <a href="/workspace/info">Info</a>
-      <a href="/workspace/files">Files</a>
-    </nav>
-  </aside>
+<PageContainer width="wide">
+  <PageHeader
+    title="Logs"
+    description="Captured output for the processes under this workspace, from getProcessLogs()."
+    icon="terminal"
+  />
 
-  <main class="ws-content">
-    {#if loading}
-      <p class="ws-empty">Loading...</p>
-    {:else if !project}
-      <p class="ws-empty">No project open.</p>
-    {:else}
-      <h1>Logs</h1>
-      <p class="subtitle">{project.profile_name} — process output logs</p>
+  {#if wsLoading}
+    <LoadingState label="Loading workspace…" />
+  {:else if wsError}
+    <ErrorState title="Failed to load workspace" message={wsError} />
+  {:else if !project}
+    <EmptyState
+      icon="folder"
+      title="No project is open"
+      description="Open a project to browse its process logs."
+    />
+  {:else if error}
+    <ErrorState title="Failed to load processes" message={error} />
+  {:else if processes.length === 0}
+    <EmptyState
+      icon="terminal"
+      title="No processes"
+      description="Spawn a process or run a profile first — its output will appear here."
+    />
+  {:else}
+    <div class="sp-logs-layout">
+      <div class="sp-proc-panel">
+        <h3 class="sp-panel-title">Processes</h3>
+        <div class="sp-proc-select">
+          {#each processes as p (p.id)}
+            <button
+              class="sp-proc-btn"
+              class:sp-proc-btn-active={selectedId === p.id}
+              onclick={() => selectProcess(p.id)}
+            >
+              <span class="sp-proc-btn-icon" aria-hidden="true">
+                <Icon name={statusIcon(p.status)} size={13} />
+              </span>
+              <span class="sp-proc-btn-label">{p.label}</span>
+              <Badge tone={statusTone(p.status)} dot={p.status === "Running"}>
+                {statusLabel(p.status)}
+              </Badge>
+            </button>
+          {/each}
+        </div>
+      </div>
 
-      {#if processes.length === 0}
-        <p class="ws-empty">No processes yet.</p>
-      {:else}
-        <div class="logs-layout">
-          <div class="proc-sidebar">
-            {#each processes as p}
-              <button
-                class="proc-btn"
-                class:active={selectedProc === p.id}
-                onclick={() => selectProcess(p.id)}
-              >
-                <span class="btn-icon">{p.status === "Running" ? "▶" : "⬛"}</span>
-                <span class="btn-label">{p.label}</span>
-                <span class="btn-pid">PID {p.pid}</span>
-              </button>
-            {/each}
-          </div>
-          <div class="log-viewer">
-            {#if !selectedProc}
-              <p class="log-hint">Select a process to view its logs</p>
-            {:else if logsLoading}
-              <p class="log-hint">Loading logs...</p>
-            {:else if logs}
-              <div class="log-content">
-                {#each logs.stdout_lines as line}
-                  <pre class="log-line stdout">{line}</pre>
-                {/each}
-                {#each logs.stderr_lines as line}
-                  <pre class="log-line stderr">{line}</pre>
-                {/each}
-              </div>
-            {:else}
-              <p class="log-hint">No logs available for this process.</p>
+      <Card padding="none" variant="elevated">
+        {#if !selectedId}
+          <div class="sp-log-hint">Select a process to view its captured output.</div>
+        {:else if logsLoading}
+          <div class="sp-log-hint">Loading logs…</div>
+        {:else if logsError}
+          <div class="sp-log-hint sp-log-hint-err">{logsError}</div>
+        {:else if logs}
+          <div class="sp-log-head">
+            <div class="sp-log-head-main">
+              <strong class="sp-log-name">{selectedProc?.label ?? selectedId}</strong>
+              <span class="sp-log-meta">
+                PID {selectedProc?.pid ?? "—"} · {selectedProc
+                  ? formatDuration(selectedProc.duration_secs)
+                  : ""}
+              </span>
+            </div>
+            {#if selectedProc?.status === "Running"}
+              <Badge tone="lime" dot>live</Badge>
             {/if}
           </div>
-        </div>
-      {/if}
-    {/if}
-  </main>
-</div>
+          <div class="sp-log-view">
+            {#if logs.stdout_lines.length === 0 && logs.stderr_lines.length === 0}
+              <div class="sp-log-hint">No output captured for this process.</div>
+            {:else}
+              {#each logs.stdout_lines as line}
+                <pre class="sp-log-line sp-log-out">{line}</pre>
+              {/each}
+              {#each logs.stderr_lines as line}
+                <pre class="sp-log-line sp-log-err">{line}</pre>
+              {/each}
+            {/if}
+          </div>
+        {:else}
+          <div class="sp-log-hint">No logs available.</div>
+        {/if}
+      </Card>
+    </div>
+  {/if}
+</PageContainer>
 
 <style>
-  .workspace-layout { display: flex; min-height: calc(100vh - 49px); }
-  .ws-sidebar {
-    width: 200px; flex-shrink: 0; background: #fff;
-    border-right: 1px solid #e0e0e0; padding: 1.25rem 0;
+  .sp-logs-layout {
+    display: grid;
+    grid-template-columns: minmax(16rem, 22rem) 1fr;
+    gap: var(--sp-4);
+    align-items: start;
   }
-  .ws-brand { font-weight: 700; font-size: 0.9rem; padding: 0 1.25rem 0.75rem; color: #222; border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
-  .ws-nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .ws-nav a { display: block; padding: 0.4rem 1.25rem; text-decoration: none; color: #555; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.1s; }
-  .ws-nav a:hover { background: #f5f5f5; color: #222; }
-  .ws-nav a.active { background: #e8eaf6; color: #283593; border-left-color: #283593; font-weight: 600; }
 
-  .ws-content { flex: 1; padding: 2rem; max-width: 960px; }
-  .ws-empty { color: #999; font-style: italic; font-size: 0.85rem; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; border: 1px dashed #ddd; }
-
-  h1 { margin: 0; font-size: 1.3rem; }
-  .subtitle { color: #888; font-size: 0.85rem; margin: 0.15rem 0 1rem; }
-
-  .logs-layout { display: flex; gap: 1rem; height: calc(100vh - 180px); }
-  .proc-sidebar { width: 200px; flex-shrink: 0; display: flex; flex-direction: column; gap: 0.3rem; overflow-y: auto; }
-  .proc-btn {
-    display: flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.6rem;
-    border: 1px solid #e0e0e0; border-radius: 6px; background: #fff;
-    cursor: pointer; font-size: 0.8rem; text-align: left; transition: all 0.1s;
+  .sp-proc-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
   }
-  .proc-btn:hover { background: #f5f5f5; }
-  .proc-btn.active { background: #e8eaf6; border-color: #283593; }
-  .btn-icon { font-size: 0.7rem; }
-  .btn-label { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .btn-pid { color: #888; font-size: 0.72rem; flex-shrink: 0; }
 
-  .log-viewer {
-    flex: 1; background: #0d1117; border: 1px solid #30363d;
-    border-radius: 8px; overflow-y: auto; padding: 0.75rem;
+  .sp-panel-title {
+    margin: 0;
+    font-size: var(--sp-fs-xs);
+    font-weight: var(--sp-fw-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sp-text-3);
   }
-  .log-hint { color: #8b949e; font-style: italic; font-size: 0.85rem; text-align: center; padding: 2rem; }
-  .log-content { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.78rem; line-height: 1.4; }
-  .log-line { margin: 0; padding: 0; white-space: pre-wrap; word-break: break-all; color: #c9d1d9; }
-  .log-line.stderr { color: #ff7b72; }
 
-  @media (prefers-color-scheme: dark) {
-    .ws-sidebar { background: #1e1e1e; border-right-color: #333; }
-    .ws-brand { color: #eee; border-bottom-color: #333; }
-    .ws-nav a { color: #aaa; }
-    .ws-nav a:hover { background: #333; color: #eee; }
-    .ws-nav a.active { background: #1a237e; color: #c5cae9; }
-    .ws-empty { background: #2a2a2a; border-color: #444; color: #888; }
-    .proc-btn { background: #0f0f0f98; border-color: #444; color: #ccc; }
-    .proc-btn:hover { background: #333; }
-    .proc-btn.active { background: #1a237e; border-color: #5b8def; color: #c5cae9; }
-    .btn-pid { color: #aaa; }
+  .sp-proc-select {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-proc-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-1);
+    font-family: var(--sp-font-sans);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease;
+  }
+
+  .sp-proc-btn:hover {
+    background: var(--sp-bg-2);
+  }
+
+  .sp-proc-btn-active {
+    background: var(--sp-accent-soft);
+    border-color: var(--sp-accent-border);
+  }
+
+  .sp-proc-btn-icon {
+    display: inline-flex;
+    color: var(--sp-text-2);
+    flex-shrink: 0;
+  }
+
+  .sp-proc-btn-label {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-medium);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--sp-border-faint);
+  }
+
+  .sp-log-head-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .sp-log-name {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-log-meta {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .sp-log-view {
+    background: var(--sp-bg-0);
+    padding: var(--sp-3);
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    line-height: var(--sp-lh-normal);
+    max-height: 30rem;
+    overflow-y: auto;
+    border-bottom-left-radius: var(--sp-radius-lg);
+    border-bottom-right-radius: var(--sp-radius-lg);
+  }
+
+  .sp-log-line {
+    margin: 0;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--sp-text-2);
+  }
+
+  .sp-log-err {
+    color: var(--sp-danger);
+  }
+
+  .sp-log-hint {
+    padding: var(--sp-10) var(--sp-4);
+    text-align: center;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+    font-style: italic;
+  }
+
+  .sp-log-hint-err {
+    color: var(--sp-danger);
+  }
+
+  @media (max-width: 760px) {
+    .sp-logs-layout {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

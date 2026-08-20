@@ -1,130 +1,255 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import {
-    getCurrentProject,
-    getSessionInfo,
-    listProcesses,
-  } from "$lib/modules/workspace/api";
-  import type { ProjectContext, SessionInfo, TrackedProcess } from "$lib/modules/workspace/types";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Badge from "$lib/components/ui/Badge.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import ErrorState from "$lib/components/ui/ErrorState.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import { workspaceContext } from "$lib/modules/workspace/context";
+  import { getSessionInfo } from "$lib/modules/workspace/api";
+  import type { SessionInfo } from "$lib/modules/workspace/types";
+  import { formatDuration, formatDateTime } from "$lib/modules/workspace/status";
 
-  let project = $state<ProjectContext | null>(null);
   let session = $state<SessionInfo | null>(null);
-  let processes = $state<TrackedProcess[]>([]);
-  let loading = $state(true);
+  let dataLoaded = $state(false);
+  let error = $state("");
 
-  onMount(async () => {
-    project = await getCurrentProject();
-    if (project) {
-      session = await getSessionInfo();
-      processes = await listProcesses();
+  const project = $derived($workspaceContext.project);
+  const wsLoading = $derived($workspaceContext.loading);
+  const wsError = $derived($workspaceContext.error);
+
+  $effect(() => {
+    if (project && !dataLoaded) {
+      dataLoaded = true;
+      loadSession();
+    } else if (!project) {
+      dataLoaded = false;
+      session = null;
     }
-    loading = false;
   });
 
-  function formatDuration(secs: number): string {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  async function loadSession() {
+    try {
+      session = await getSessionInfo();
+    } catch (e) {
+      error = `Failed to load session: ${e}`;
+    }
   }
 </script>
 
-<div class="workspace-layout">
-  <aside class="ws-sidebar">
-    <div class="ws-brand">Workspace</div>
-    <nav class="ws-nav">
-      <a href="/workspace">Overview</a>
-      <a href="/workspace/runtime">Runtime</a>
-      <a href="/workspace/session" class="active">Session</a>
-      <a href="/workspace/logs">Logs</a>
-      <a href="/workspace/problems">Problems</a>
-      <a href="/workspace/info">Info</a>
-      <a href="/workspace/files">Files</a>
-    </nav>
-  </aside>
+<PageContainer width="wide">
+  <PageHeader
+    title="Session"
+    description="The current development session, straight from backend getSessionInfo()."
+    icon="clock"
+  />
 
-  <main class="ws-content">
-    {#if loading}
-      <p class="ws-empty">Loading...</p>
-    {:else if !project}
-      <p class="ws-empty">No active session. Open a project in workspace first.</p>
-    {:else}
-      <h1>Session</h1>
-      <p class="subtitle">{project.profile_name} — current development session</p>
+  {#if wsLoading}
+    <LoadingState label="Loading workspace…" />
+  {:else if wsError}
+    <ErrorState title="Failed to load workspace" message={wsError} />
+  {:else if !project}
+    <EmptyState
+      icon="folder"
+      title="No project is open"
+      description="Open a project to start a session."
+    />
+  {:else if error}
+    <ErrorState title="Failed to load session" message={error} />
+  {:else if !session}
+    <EmptyState
+      icon="clock"
+      title="No session started"
+      description="A session starts when a project is set as the current workspace. None has been recorded for this project yet — nothing is shown instead of fabricated zeros."
+    />
+  {:else}
+    <div class="sp-session-grid">
+      <div class="sp-session-item">
+        <span class="sp-session-icon sp-session-icon-cyan" aria-hidden="true">
+          <Icon name="clock" size={18} />
+        </span>
+        <span class="sp-session-label">Started</span>
+        <span class="sp-session-value">{formatDateTime(session.started_at)}</span>
+      </div>
+      <div class="sp-session-item">
+        <span class="sp-session-icon sp-session-icon-violet" aria-hidden="true">
+          <Icon name="refresh" size={18} />
+        </span>
+        <span class="sp-session-label">Duration</span>
+        <span class="sp-session-value">{formatDuration(session.duration_secs)}</span>
+      </div>
+      <div class="sp-session-item">
+        <span class="sp-session-icon sp-session-icon-blue" aria-hidden="true">
+          <Icon name="terminal" size={18} />
+        </span>
+        <span class="sp-session-label">Processes</span>
+        <span class="sp-session-value">{session.process_count}</span>
+      </div>
+      <div class="sp-session-item">
+        <span class="sp-session-icon sp-session-icon-red" aria-hidden="true">
+          <Icon name="alert" size={18} />
+        </span>
+        <span class="sp-session-label">Errors</span>
+        <span
+          class="sp-session-value"
+          class:sp-session-value-err={session.error_count > 0}
+        >
+          {session.error_count}
+        </span>
+      </div>
+    </div>
 
-      <div class="session-grid">
-        <div class="s-card">
-          <div class="s-label">Started</div>
-          <div class="s-value">{new Date(Number(session?.started_at ?? "0") * 1000).toLocaleTimeString()}</div>
+    <Card title="Project context">
+      <div class="sp-info-list">
+        <div class="sp-info-row">
+          <span class="sp-info-key">Profile</span>
+          <span class="sp-info-val">
+            {project.profile_name}
+            <Badge tone="violet">current</Badge>
+          </span>
         </div>
-        <div class="s-card">
-          <div class="s-label">Duration</div>
-          <div class="s-value">{session ? formatDuration(session.duration_secs) : "—"}</div>
+        <div class="sp-info-row">
+          <span class="sp-info-key">Path</span>
+          <span class="sp-info-val sp-info-mono">{project.project_path ?? "—"}</span>
         </div>
-        <div class="s-card">
-          <div class="s-label">Processes</div>
-          <div class="s-value">{session?.process_count ?? 0}</div>
+        <div class="sp-info-row">
+          <span class="sp-info-key">Stack</span>
+          <span class="sp-info-val">
+            {#if project.stack.length > 0}
+              <span class="sp-tags">
+                {#each project.stack as tech}
+                  <Badge tone="blue">{tech}</Badge>
+                {/each}
+              </span>
+            {:else}—{/if}
+          </span>
         </div>
-        <div class="s-card">
-          <div class="s-label">Errors</div>
-          <div class="s-value err">{session?.error_count ?? 0}</div>
+        <div class="sp-info-row">
+          <span class="sp-info-key">Opened</span>
+          <span class="sp-info-val">{formatDateTime(project.opened_at)}</span>
         </div>
       </div>
-
-      <section class="ws-section">
-        <h2>Project</h2>
-        <table class="info-table">
-          <tbody>
-            <tr><td>Profile</td><td>{project.profile_name}</td></tr>
-            <tr><td>Path</td><td>{project.project_path ?? "—"}</td></tr>
-            <tr><td>Stack</td><td>{project.stack.join(", ") || "—"}</td></tr>
-          </tbody>
-        </table>
-      </section>
-    {/if}
-  </main>
-</div>
+    </Card>
+  {/if}
+</PageContainer>
 
 <style>
-  .workspace-layout { display: flex; min-height: calc(100vh - 49px); }
-  .ws-sidebar {
-    width: 200px; flex-shrink: 0; background: #fff;
-    border-right: 1px solid #e0e0e0; padding: 1.25rem 0;
+  .sp-session-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-5);
   }
-  .ws-brand { font-weight: 700; font-size: 0.9rem; padding: 0 1.25rem 0.75rem; color: #222; border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
-  .ws-nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .ws-nav a { display: block; padding: 0.4rem 1.25rem; text-decoration: none; color: #555; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.1s; }
-  .ws-nav a:hover { background: #f5f5f5; color: #222; }
-  .ws-nav a.active { background: #e8eaf6; color: #283593; border-left-color: #283593; font-weight: 600; }
-  .ws-content { flex: 1; padding: 2rem; max-width: 860px; }
-  .ws-empty { color: #999; font-style: italic; font-size: 0.85rem; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; border: 1px dashed #ddd; }
 
-  h1 { margin: 0; font-size: 1.3rem; }
-  .subtitle { color: #888; font-size: 0.85rem; margin: 0.15rem 0 1.5rem; }
+  .sp-session-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-1);
+    padding: var(--sp-4);
+    background: var(--sp-glass-bg);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    box-shadow: var(--sp-shadow-1);
+  }
 
-  .session-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
-  .s-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 1rem; text-align: center; }
-  .s-label { font-size: 0.75rem; color: #888; margin-bottom: 0.25rem; }
-  .s-value { font-size: 1.2rem; font-weight: 700; color: #222; }
-  .s-value.err { color: #c62828; }
+  .sp-session-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--sp-radius-md);
+    margin-bottom: var(--sp-1);
+  }
 
-  .ws-section { margin-bottom: 1.5rem; }
-  .ws-section h2 { font-size: 1rem; color: #444; margin: 0 0 0.75rem; }
+  .sp-session-icon-cyan {
+    color: var(--sp-info);
+    background: rgba(34, 211, 238, 0.12);
+    border: 1px solid rgba(34, 211, 238, 0.3);
+  }
 
-  .info-table { width: 100%; border-collapse: collapse; }
-  .info-table td { padding: 0.4rem 0.75rem; font-size: 0.85rem; border-bottom: 1px solid #f0f0f0; }
-  .info-table td:first-child { color: #888; width: 100px; font-weight: 500; }
+  .sp-session-icon-violet {
+    color: var(--sp-violet);
+    background: rgba(139, 92, 246, 0.12);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+  }
 
-  @media (prefers-color-scheme: dark) {
-    .ws-sidebar { background: #1e1e1e; border-right-color: #333; }
-    .ws-brand { color: #eee; border-bottom-color: #333; }
-    .ws-nav a { color: #aaa; }
-    .ws-nav a:hover { background: #333; color: #eee; }
-    .ws-nav a.active { background: #1a237e; color: #c5cae9; }
-    .ws-empty { background: #2a2a2a; border-color: #444; color: #888; }
-    .s-card { background: #0f0f0f98; border-color: #444; }
-    .s-value { color: #eee; }
-    .info-table td { border-bottom-color: #2a2a2a; }
-    .info-table td:first-child { color: #aaa; }
-    .ws-section h2 { color: #bbb; }
+  .sp-session-icon-blue {
+    color: var(--sp-blue);
+    background: rgba(96, 165, 250, 0.12);
+    border: 1px solid rgba(96, 165, 250, 0.3);
+  }
+
+  .sp-session-icon-red {
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+  }
+
+  .sp-session-label {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .sp-session-value {
+    font-size: var(--sp-fs-lg);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    line-height: var(--sp-lh-tight);
+  }
+
+  .sp-session-value-err {
+    color: var(--sp-danger);
+  }
+
+  .sp-info-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sp-info-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    padding: var(--sp-3) 0;
+    border-bottom: 1px solid var(--sp-border-faint);
+  }
+
+  .sp-info-row:last-child {
+    border-bottom: none;
+  }
+
+  .sp-info-key {
+    flex: 0 0 6rem;
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-medium);
+    color: var(--sp-text-3);
+  }
+
+  .sp-info-val {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+    word-break: break-all;
+  }
+
+  .sp-info-mono {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+  }
+
+  .sp-tags {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
   }
 </style>

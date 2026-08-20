@@ -1,11 +1,29 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getCurrentProject, listDirectory, readFile, writeFile, openInVSCode } from "$lib/modules/workspace/api";
-  import type { ProjectContext, FileEntry, FileContent } from "$lib/modules/workspace/types";
+  import { onDestroy } from "svelte";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import ErrorState from "$lib/components/ui/ErrorState.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import type { IconName } from "$lib/components/ui/icons";
+  import { workspaceContext } from "$lib/modules/workspace/context";
+  import {
+    listDirectory,
+    readFile,
+    writeFile,
+    openInVSCode,
+  } from "$lib/modules/workspace/api";
+  import type { FileEntry, FileContent } from "$lib/modules/workspace/types";
+  import { formatFileSize } from "$lib/modules/workspace/status";
+  import {
+    toBreadcrumbs,
+    parentPath,
+  } from "$lib/modules/workspace/paths";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
-
-  let project = $state<ProjectContext | null>(null);
-  let loading = $state(true);
+  import { notifySuccess, notifyError } from "$lib/core/toasts";
 
   let currentDir = $state<string | null>(null);
   let entries = $state<FileEntry[]>([]);
@@ -20,15 +38,41 @@
   let editedContent = $state<string>("");
   let saving = $state(false);
   let saveMsg = $state("");
+  let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let expandedDirs = $state<Set<string>>(new Set());
+  const project = $derived($workspaceContext.project);
+  const wsLoading = $derived($workspaceContext.loading);
+  const wsError = $derived($workspaceContext.error);
 
-  onMount(async () => {
-    project = await getCurrentProject();
-    if (project?.project_path) {
-      await navigateToDir(project.project_path);
+  const projectPath = $derived(project?.project_path ?? null);
+
+  const breadcrumbs = $derived(
+    currentDir ? toBreadcrumbs(currentDir) : [],
+  );
+  const parent = $derived(currentDir ? parentPath(currentDir) : null);
+
+  // Auto-navigate to the project root only when the project itself changes,
+  // never when the user browses deeper into the tree.
+  let lastProjectPath = $state<string | null>(null);
+
+  $effect(() => {
+    if (projectPath && lastProjectPath !== projectPath) {
+      lastProjectPath = projectPath;
+      navigateToDir(projectPath);
+    } else if (!projectPath) {
+      lastProjectPath = null;
+      currentDir = null;
+      entries = [];
+      selectedFile = null;
+      fileContent = null;
     }
-    loading = false;
+  });
+
+  onDestroy(() => {
+    if (saveMsgTimer) {
+      clearTimeout(saveMsgTimer);
+      saveMsgTimer = null;
+    }
   });
 
   async function navigateToDir(path: string) {
@@ -36,22 +80,15 @@
     dirLoading = true;
     dirError = "";
     entries = [];
+    selectedFile = null;
+    fileContent = null;
+    editedContent = "";
     try {
       entries = await listDirectory(path);
     } catch (e) {
       dirError = `Failed to list directory: ${e}`;
     }
     dirLoading = false;
-  }
-
-  function toggleDir(path: string) {
-    if (expandedDirs.has(path)) {
-      expandedDirs.delete(path);
-      expandedDirs = new Set(expandedDirs);
-    } else {
-      expandedDirs.add(path);
-      expandedDirs = new Set(expandedDirs);
-    }
   }
 
   async function openFile(path: string) {
@@ -71,16 +108,25 @@
   async function saveFile() {
     if (!selectedFile) return;
     saving = true;
-    saveMsg = "";
     try {
       await writeFile(selectedFile, editedContent);
-      saveMsg = "Saved";
-      fileContent = { content: editedContent, language: fileContent?.language ?? "plaintext" };
-      setTimeout(() => saveMsg = "", 2000);
+      fileContent = {
+        content: editedContent,
+        language: fileContent?.language ?? "plaintext",
+      };
+      flashSaveMsg("Saved");
     } catch (e) {
-      saveMsg = `Error: ${e}`;
+      flashSaveMsg(`Error: ${e}`);
     }
     saving = false;
+  }
+
+  function flashSaveMsg(msg: string) {
+    saveMsg = msg;
+    if (saveMsgTimer) clearTimeout(saveMsgTimer);
+    saveMsgTimer = setTimeout(() => {
+      saveMsg = "";
+    }, 2500);
   }
 
   function handleEditorChange(val: string) {
@@ -88,251 +134,489 @@
     if (saveMsg === "Saved") saveMsg = "Unsaved changes";
   }
 
-  function getIcon(entry: FileEntry): string {
-    if (entry.is_dir) return expandedDirs.has(entry.path) ? "📂" : "📁";
-    const ext = entry.name.split(".").pop()?.toLowerCase();
-    if (["js", "jsx", "ts", "tsx"].includes(ext ?? "")) return "🟨";
-    if (["py"].includes(ext ?? "")) return "🐍";
-    if (["rs"].includes(ext ?? "")) return "🦀";
-    if (["json"].includes(ext ?? "")) return "📋";
-    if (["html", "htm"].includes(ext ?? "")) return "🌐";
-    if (["css", "scss", "less"].includes(ext ?? "")) return "🎨";
-    if (["md"].includes(ext ?? "")) return "📝";
-    if (["toml", "yaml", "yml", "ini", "cfg"].includes(ext ?? "")) return "⚙️";
-    return "📄";
+  async function openSelectedInVSCode(path: string) {
+    try {
+      await openInVSCode(path);
+      notifySuccess("VS Code", "Opening file in VS Code");
+    } catch (e) {
+      notifyError("VS Code", `Failed to open: ${e}`);
+    }
   }
 
-  let pathBreadcrumbs = $derived.by(() => {
-    if (!currentDir) return [];
-    const parts = currentDir.replace(/\\/g, "/").split("/");
-    const crumbs: { label: string; path: string }[] = [];
-    let acc = "";
-    for (const p of parts) {
-      if (!p) continue;
-      acc += (acc ? "/" : "") + p;
-      crumbs.push({ label: p, path: acc });
+  function baseName(path: string): string {
+    const parts = path.split(/[\\/]/);
+    return parts[parts.length - 1] || path;
+  }
+
+  function fileIcon(entry: FileEntry): IconName {
+    return entry.is_dir ? "folder" : "file";
+  }
+
+  function fileTone(entry: FileEntry): string {
+    if (entry.is_dir) return "sp-file-tone-folder";
+    const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
+    if (["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"].includes(ext)) {
+      return "sp-file-tone-yellow";
     }
-    return crumbs;
-  });
+    if (["py", "pyw"].includes(ext)) return "sp-file-tone-blue";
+    if (["rs"].includes(ext)) return "sp-file-tone-orange";
+    if (["json", "yaml", "yml", "toml", "ini", "cfg"].includes(ext)) return "sp-file-tone-cyan";
+    if (["html", "htm", "xml", "svg"].includes(ext)) return "sp-file-tone-violet";
+    if (["css", "scss", "less"].includes(ext)) return "sp-file-tone-blue";
+    if (["md", "markdown", "txt"].includes(ext)) return "sp-file-tone-lime";
+    if (["sh", "bash", "zsh", "ps1"].includes(ext)) return "sp-file-tone-green";
+    return "sp-file-tone-neutral";
+  }
+
+  const sortedDirs = $derived(
+    entries.filter((e) => e.is_dir).sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  const sortedFiles = $derived(
+    entries.filter((e) => !e.is_dir).sort((a, b) => a.name.localeCompare(b.name)),
+  );
 </script>
 
-<div class="workspace-layout">
-  <aside class="ws-sidebar">
-    <div class="ws-brand">Workspace</div>
-    <nav class="ws-nav">
-      <a href="/workspace">Overview</a>
-      <a href="/workspace/runtime">Runtime</a>
-      <a href="/workspace/session">Session</a>
-      <a href="/workspace/logs">Logs</a>
-      <a href="/workspace/problems">Problems</a>
-      <a href="/workspace/info">Info</a>
-      <a href="/workspace/files" class="active">Files</a>
-    </nav>
-  </aside>
+<PageContainer width="wide">
+  <PageHeader
+    title="File Explorer"
+    description="Browse and edit the project files. Uses listDirectory(), readFile(), writeFile() and openInVSCode() only."
+    icon="folder"
+  />
 
-  <main class="ws-content">
-    {#if loading}
-      <p class="ws-empty">Loading...</p>
-    {:else if !project}
-      <p class="ws-empty">No project open. <a href="/profiles">Open a profile</a> to browse files.</p>
-    {:else if !project.project_path}
-      <p class="ws-empty">This project has no path set. Configure a project path in the profile.</p>
-    {:else}
-      <div class="header-row">
-        <div>
-          <h1>File Explorer</h1>
-          <p class="subtitle">{project.project_path}</p>
-        </div>
-      </div>
-
-      <div class="explorer-layout">
-        <div class="file-tree">
-          <div class="tree-header">Files</div>
-          {#if dirLoading}
-            <p class="tree-empty">Loading...</p>
-          {:else if dirError}
-            <p class="tree-error">{dirError}</p>
-          {:else if !currentDir}
-            <p class="tree-empty">No directory selected</p>
-          {:else}
-            <div class="breadcrumbs">
-              {#each pathBreadcrumbs as crumb, i}
-                {#if i > 0}<span class="bc-sep">/</span>{/if}
-                <button class="bc-link" onclick={() => navigateToDir(crumb.path)}>{crumb.label}</button>
-              {/each}
-            </div>
-            <div class="entries">
-              {#each entries.filter((e) => e.is_dir).sort((a, b) => a.name.localeCompare(b.name)) as entry}
-                <button class="entry-row" onclick={() => navigateToDir(entry.path)}>
-                  <span class="entry-icon">{getIcon(entry)}</span>
-                  <span class="entry-name">{entry.name}/</span>
-                </button>
-              {/each}
-              {#each entries.filter((e) => !e.is_dir).sort((a, b) => a.name.localeCompare(b.name)) as entry}
-                <button
-                  class="entry-row"
-                  class:selected={selectedFile === entry.path}
-                  onclick={() => openFile(entry.path)}
-                >
-                  <span class="entry-icon">{getIcon(entry)}</span>
-                  <span class="entry-name">{entry.name}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <div class="editor-panel">
-          {#if !selectedFile}
-            <div class="editor-placeholder">
-              <p>Select a file to view and edit</p>
-            </div>
-          {:else if fileLoading}
-            <div class="editor-placeholder">
-              <p>Loading file...</p>
-            </div>
-          {:else if fileError}
-            <div class="editor-placeholder error">
-              <p>{fileError}</p>
-            </div>
-          {:else if fileContent}
-            <div class="editor-toolbar">
-              <span class="editor-filename">{selectedFile.split(/[\\/]/).pop()}</span>
-              <div class="editor-actions">
-                {#if saveMsg}
-                  <span class="save-msg">{saveMsg}</span>
-                {/if}
-                <button class="toolbar-btn" onclick={saveFile} disabled={saving}>
-                  {saving ? "Saving..." : "💾 Save"}
-                </button>
-                <button class="toolbar-btn" onclick={() => openInVSCode(selectedFile!)}>
-                  Open in VSCode
-                </button>
-              </div>
-            </div>
-            <div class="editor-wrapper">
-              <CodeEditor
-                value={editedContent}
-                language={fileContent.language}
-                onchange={handleEditorChange}
-                onsave={saveFile}
+  {#if wsLoading}
+    <LoadingState label="Loading workspace…" />
+  {:else if wsError}
+    <ErrorState title="Failed to load workspace" message={wsError} />
+  {:else if !project}
+    <EmptyState
+      icon="folder"
+      title="No project is open"
+      description="Open a project to browse its files."
+    />
+  {:else if !projectPath}
+    <EmptyState
+      icon="external"
+      title="No project path"
+      description="This project has no path set. Configure a project path in the profile to browse files."
+    />
+  {:else}
+    <div class="sp-files-layout">
+      <Card padding="none" variant="elevated" class="sp-tree-card">
+        <div class="sp-tree-head">
+          <div class="sp-breadcrumbs">
+            {#each breadcrumbs as crumb, i}
+              {#if i > 0}
+                <span class="sp-bc-sep">/</span>
+              {/if}
+              <button
+                class="sp-bc-link"
+                onclick={() => navigateToDir(crumb.path)}
+                title={crumb.path}
+              >
+                {crumb.label}
+              </button>
+            {/each}
+          </div>
+          <div class="sp-tree-actions">
+            {#if parent}
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="chevronLeft"
+                label="Up one level"
+                onclick={() => navigateToDir(parent!)}
               />
-            </div>
-          {/if}
+            {/if}
+          </div>
         </div>
-      </div>
-    {/if}
-  </main>
-</div>
+
+        {#if dirLoading}
+          <div class="sp-tree-state">
+            <LoadingState size="sm" label="Loading…" />
+          </div>
+        {:else if dirError}
+          <div class="sp-tree-state sp-tree-error">{dirError}</div>
+        {:else}
+          <div class="sp-tree-body">
+            <div class="sp-tree-section">
+              {#each sortedDirs as entry (entry.path)}
+                <button
+                  class="sp-entry"
+                  onclick={() => navigateToDir(entry.path)}
+                  title={entry.path}
+                >
+                  <span class="sp-entry-icon {fileTone(entry)}" aria-hidden="true">
+                    <Icon name={fileIcon(entry)} size={14} />
+                  </span>
+                  <span class="sp-entry-name">{entry.name}/</span>
+                </button>
+              {/each}
+            </div>
+            <div class="sp-tree-section">
+              {#each sortedFiles as entry (entry.path)}
+                <button
+                  class="sp-entry"
+                  class:sp-entry-active={selectedFile === entry.path}
+                  onclick={() => openFile(entry.path)}
+                  title={entry.path}
+                >
+                  <span class="sp-entry-icon {fileTone(entry)}" aria-hidden="true">
+                    <Icon name={fileIcon(entry)} size={14} />
+                  </span>
+                  <span class="sp-entry-name">{entry.name}</span>
+                  <span class="sp-entry-size">{formatFileSize(entry.size)}</span>
+                </button>
+              {/each}
+            </div>
+            {#if entries.length === 0}
+              <div class="sp-tree-state">Empty directory</div>
+            {/if}
+          </div>
+        {/if}
+      </Card>
+
+      <Card padding="none" variant="elevated" class="sp-editor-card">
+        {#if !selectedFile}
+          <div class="sp-editor-placeholder">
+            <span class="sp-editor-placeholder-icon" aria-hidden="true">
+              <Icon name="file" size={22} />
+            </span>
+            <p>Select a file to view and edit it.</p>
+          </div>
+        {:else if fileLoading}
+          <div class="sp-editor-placeholder">
+            <LoadingState size="sm" label="Loading file…" />
+          </div>
+        {:else if fileError}
+          <div class="sp-editor-placeholder sp-editor-placeholder-err">
+            <p>{fileError}</p>
+          </div>
+        {:else if fileContent}
+          <div class="sp-editor-toolbar">
+            <div class="sp-editor-file">
+              <Icon name="file" size={14} />
+              <span class="sp-editor-filename">{baseName(selectedFile)}</span>
+              <span class="sp-editor-path">{selectedFile}</span>
+            </div>
+            <div class="sp-editor-actions">
+              {#if saveMsg}
+                <span class="sp-save-msg" class:sp-save-msg-err={saveMsg.startsWith("Error")}>
+                  {saveMsg}
+                </span>
+              {/if}
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="external"
+                onclick={() => openSelectedInVSCode(selectedFile!)}
+              >
+                Open in VS Code
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                icon="check"
+                loading={saving}
+                onclick={saveFile}
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+          <div class="sp-editor-wrapper">
+            <CodeEditor
+              value={editedContent}
+              language={fileContent.language}
+              onchange={handleEditorChange}
+              onsave={saveFile}
+            />
+          </div>
+        {/if}
+      </Card>
+    </div>
+  {/if}
+</PageContainer>
 
 <style>
-  .workspace-layout { display: flex; min-height: calc(100vh - 49px); }
-  .ws-sidebar {
-    width: 200px; flex-shrink: 0; background: #fff;
-    border-right: 1px solid #e0e0e0; padding: 1.25rem 0;
+  .sp-files-layout {
+    display: grid;
+    grid-template-columns: minmax(16rem, 24rem) 1fr;
+    gap: var(--sp-4);
+    align-items: start;
   }
-  .ws-brand { font-weight: 700; font-size: 0.9rem; padding: 0 1.25rem 0.75rem; color: #222; border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
-  .ws-nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .ws-nav a { display: block; padding: 0.4rem 1.25rem; text-decoration: none; color: #555; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.1s; }
-  .ws-nav a:hover { background: #f5f5f5; color: #222; }
-  .ws-nav a.active { background: #e8eaf6; color: #283593; border-left-color: #283593; font-weight: 600; }
 
-  .ws-content { flex: 1; padding: 2rem; display: flex; flex-direction: column; }
-  .ws-empty { color: #999; font-style: italic; font-size: 0.85rem; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; border: 1px dashed #ddd; }
-  .ws-empty a { color: #396cd8; }
+  /* ---- tree ---- */
 
-  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
-  h1 { margin: 0; font-size: 1.3rem; }
-  .subtitle { color: #888; font-size: 0.82rem; margin: 0.15rem 0 0; font-family: monospace; }
+  .sp-tree-card {
+    display: flex;
+    flex-direction: column;
+    max-height: 70vh;
+  }
 
-  .explorer-layout { display: flex; gap: 1rem; flex: 1; min-height: 0; }
+  .sp-tree-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-bottom: 1px solid var(--sp-border-faint);
+  }
 
-  .file-tree {
-    width: 260px; flex-shrink: 0; display: flex; flex-direction: column;
-    background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+  .sp-breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+    overflow-x: auto;
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    white-space: nowrap;
+  }
+
+  .sp-bc-sep {
+    color: var(--sp-text-3);
+  }
+
+  .sp-bc-link {
+    background: none;
+    border: none;
+    padding: 0.05rem 0.15rem;
+    color: var(--sp-blue);
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .sp-bc-link:hover {
+    text-decoration: underline;
+  }
+
+  .sp-tree-actions {
+    flex-shrink: 0;
+  }
+
+  .sp-tree-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: var(--sp-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-tree-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-entry {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    padding: var(--sp-1) var(--sp-2);
+    border: none;
+    border-radius: var(--sp-radius-sm);
+    background: transparent;
+    color: var(--sp-text-1);
+    font-family: var(--sp-font-sans);
+    font-size: var(--sp-fs-sm);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+
+  .sp-entry:hover {
+    background: var(--sp-bg-2);
+  }
+
+  .sp-entry-active {
+    background: var(--sp-accent-soft);
+    color: var(--sp-accent);
+  }
+
+  .sp-entry-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .sp-file-tone-folder {
+    color: var(--sp-violet);
+  }
+
+  .sp-file-tone-yellow {
+    color: var(--sp-amber);
+  }
+
+  .sp-file-tone-blue {
+    color: var(--sp-blue);
+  }
+
+  .sp-file-tone-orange {
+    color: #fb923c;
+  }
+
+  .sp-file-tone-cyan {
+    color: var(--sp-cyan);
+  }
+
+  .sp-file-tone-violet {
+    color: var(--sp-violet);
+  }
+
+  .sp-file-tone-lime {
+    color: var(--sp-lime);
+  }
+
+  .sp-file-tone-green {
+    color: #4ade80;
+  }
+
+  .sp-file-tone-neutral {
+    color: var(--sp-text-3);
+  }
+
+  .sp-entry-name {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
-  }
-  .tree-header {
-    padding: 0.5rem 0.75rem; font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.04em; color: #888; background: #fafafa; border-bottom: 1px solid #eee;
-  }
-  .tree-empty, .tree-error { padding: 1rem; font-size: 0.82rem; color: #888; text-align: center; }
-  .tree-error { color: #c62828; }
-
-  .breadcrumbs {
-    padding: 0.35rem 0.6rem; font-size: 0.76rem; background: #fafafa;
-    border-bottom: 1px solid #eee; white-space: nowrap; overflow-x: auto;
-    display: flex; align-items: center; gap: 0.1rem;
-  }
-  .bc-sep { color: #bbb; }
-  .bc-link { background: none; border: none; color: #396cd8; cursor: pointer; font-size: 0.76rem; padding: 0.05rem 0.15rem; white-space: nowrap; }
-  .bc-link:hover { text-decoration: underline; }
-
-  .entries { flex: 1; overflow-y: auto; padding: 0.25rem 0; }
-  .entry-row {
-    display: flex; align-items: center; gap: 0.35rem; width: 100%;
-    padding: 0.3rem 0.6rem; border: none; background: none;
-    cursor: pointer; font-size: 0.82rem; text-align: left; color: #333;
-    transition: background 0.1s;
-  }
-  .entry-row:hover { background: #f5f5f5; }
-  .entry-row.selected { background: #e8eaf6; color: #283593; font-weight: 500; }
-  .entry-icon { font-size: 0.9rem; flex-shrink: 0; }
-  .entry-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .editor-panel {
-    flex: 1; display: flex; flex-direction: column; min-width: 0;
-  }
-  .editor-placeholder {
-    display: flex; align-items: center; justify-content: center;
-    height: 100%; color: #999; font-style: italic; font-size: 0.9rem;
-    background: #fafafa; border: 1px dashed #ddd; border-radius: 8px;
-  }
-  .editor-placeholder.error { color: #c62828; }
-
-  .editor-toolbar {
-    display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.4rem 0.75rem; background: #fafafa;
-    border: 1px solid #e0e0e0; border-bottom: none; border-radius: 8px 8px 0 0;
-  }
-  .editor-filename { font-weight: 600; font-size: 0.85rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .editor-actions { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
-  .save-msg { font-size: 0.75rem; color: #2e7d32; }
-  .toolbar-btn {
-    padding: 0.25rem 0.6rem; border: 1px solid #ccc; border-radius: 5px;
-    background: #fff; color: #444; font-size: 0.78rem; cursor: pointer; transition: all 0.15s;
-  }
-  .toolbar-btn:hover:not(:disabled) { background: #f0f0f0; }
-  .toolbar-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .editor-wrapper {
-    flex: 1; min-height: 0; overflow: hidden;
-    border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .ws-sidebar { background: #1e1e1e; border-right-color: #333; }
-    .ws-brand { color: #eee; border-bottom-color: #333; }
-    .ws-nav a { color: #aaa; }
-    .ws-nav a:hover { background: #333; color: #eee; }
-    .ws-nav a.active { background: #1a237e; color: #c5cae9; }
-    .ws-empty { background: #2a2a2a; border-color: #444; color: #888; }
+  .sp-entry-size {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    flex-shrink: 0;
+  }
 
-    .subtitle { color: #aaa; }
-    .file-tree { background: #0f0f0f98; border-color: #444; }
-    .tree-header { background: #1e1e1e; color: #aaa; border-bottom-color: #333; }
-    .breadcrumbs { background: #1e1e1e; border-bottom-color: #333; }
-    .bc-link { color: #5b8def; }
-    .entry-row { color: #ccc; }
-    .entry-row:hover { background: #333; }
-    .entry-row.selected { background: #1a237e; color: #c5cae9; }
+  .sp-tree-state {
+    padding: var(--sp-8) var(--sp-4);
+    text-align: center;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+    font-style: italic;
+  }
 
-    .editor-placeholder { background: #2a2a2a; border-color: #444; color: #888; }
-    .editor-toolbar { background: #1e1e1e; border-color: #444; }
-    .editor-filename { color: #eee; }
-    .toolbar-btn { background: #2a2a2a; color: #ccc; border-color: #555; }
-    .toolbar-btn:hover:not(:disabled) { background: #333; }
-    .save-msg { color: #81c784; }
-    .editor-wrapper { border-color: #444; }
+  .sp-tree-error {
+    color: var(--sp-danger);
+    font-style: normal;
+    word-break: break-all;
+  }
+
+  /* ---- editor ---- */
+
+  .sp-editor-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-height: 70vh;
+  }
+
+  .sp-editor-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-bottom: 1px solid var(--sp-border-faint);
+  }
+
+  .sp-editor-file {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    color: var(--sp-text-2);
+  }
+
+  .sp-editor-filename {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    white-space: nowrap;
+  }
+
+  .sp-editor-path {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+  }
+
+  .sp-save-msg {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-success);
+  }
+
+  .sp-save-msg-err {
+    color: var(--sp-danger);
+  }
+
+  .sp-editor-wrapper {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: var(--sp-3);
+  }
+
+  .sp-editor-wrapper :global(.cm-container) {
+    height: 100%;
+    min-height: 22rem;
+    border-color: var(--sp-border);
+  }
+
+  .sp-editor-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
+    padding: var(--sp-10) var(--sp-4);
+    text-align: center;
+    color: var(--sp-text-3);
+    font-style: italic;
+    font-size: var(--sp-fs-sm);
+  }
+
+  .sp-editor-placeholder p {
+    margin: 0;
+  }
+
+  .sp-editor-placeholder-err {
+    color: var(--sp-danger);
+    font-style: normal;
+    word-break: break-all;
+  }
+
+  .sp-editor-placeholder-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--sp-radius-full);
+    color: var(--sp-text-3);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+  }
+
+  @media (max-width: 900px) {
+    .sp-files-layout {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

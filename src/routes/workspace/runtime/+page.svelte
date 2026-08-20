@@ -1,223 +1,450 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { goto } from "$app/navigation";
+  import { onDestroy } from "svelte";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import Badge from "$lib/components/ui/Badge.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import ErrorState from "$lib/components/ui/ErrorState.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
+  import { workspaceContext, reloadWorkspaceContext } from "$lib/modules/workspace/context";
   import {
-    getCurrentProject,
     listProcesses,
-    killProcess,
     refreshProcess,
+    killProcess,
+    getProcessLogs,
   } from "$lib/modules/workspace/api";
-  import type { ProjectContext, TrackedProcess } from "$lib/modules/workspace/types";
+  import type { TrackedProcess, ProcessLogs } from "$lib/modules/workspace/types";
+  import {
+    statusTone,
+    statusLabel,
+    statusIcon,
+    formatDuration,
+    formatStarted,
+  } from "$lib/modules/workspace/status";
+  import { notifySuccess, notifyError } from "$lib/core/toasts";
 
-  let project = $state<ProjectContext | null>(null);
   let processes = $state<TrackedProcess[]>([]);
-  let loading = $state(true);
+  let dataLoaded = $state(false);
+  let refreshing = $state(false);
+  let errorMsg = $state("");
 
-  onMount(async () => {
-    project = await getCurrentProject();
-    if (project) {
-      await loadProcesses();
+  let logProcId = $state<string | null>(null);
+  let logProcName = $state("");
+  let logs = $state<ProcessLogs | null>(null);
+  let logsLoading = $state(false);
+  let logsError = $state("");
+
+  let autoRefreshId: ReturnType<typeof setInterval> | null = null;
+
+  const project = $derived($workspaceContext.project);
+  const wsLoading = $derived($workspaceContext.loading);
+  const wsError = $derived($workspaceContext.error);
+
+  $effect(() => {
+    if (project && !dataLoaded) {
+      dataLoaded = true;
+      loadProcesses();
+      startAutoRefresh();
+    } else if (!project) {
+      dataLoaded = false;
+      processes = [];
+      stopAutoRefresh();
     }
-    loading = false;
   });
+
+  onDestroy(() => {
+    stopAutoRefresh();
+  });
+
+  function startAutoRefresh() {
+    if (autoRefreshId) return;
+    autoRefreshId = setInterval(() => {
+      refreshAllStatuses();
+    }, 3000);
+  }
+
+  function stopAutoRefresh() {
+    if (autoRefreshId) {
+      clearInterval(autoRefreshId);
+      autoRefreshId = null;
+    }
+  }
 
   async function loadProcesses() {
     try {
       processes = await listProcesses();
-    } catch {}
+    } catch (e) {
+      errorMsg = `Failed to load processes: ${e}`;
+    }
   }
 
-  async function handleKill(id: string) {
-    try {
-      await killProcess(id);
-      await loadProcesses();
-    } catch {}
+  async function refreshAllStatuses() {
+    if (refreshing) return;
+    refreshing = true;
+    for (const proc of processes) {
+      try {
+        await refreshProcess(proc.id);
+      } catch {
+        // process may be gone — the list reload below reconciles it
+      }
+    }
+    await loadProcesses();
+    refreshing = false;
   }
 
   async function handleRefresh(id: string) {
     try {
       await refreshProcess(id);
       await loadProcesses();
-    } catch {}
-  }
-
-  function statusLabel(s: TrackedProcess["status"]): string {
-    if (s === "Running") return "Running";
-    if (s === "Killed") return "Killed";
-    if (s === "Crashed") return "Crashed";
-    if (typeof s === "object" && "Exited" in s) {
-      return s.Exited === 0 ? "Success" : `Exit ${s.Exited}`;
+    } catch (e) {
+      errorMsg = `Refresh failed: ${e}`;
     }
-    return "?";
   }
 
-  function statusClass(s: TrackedProcess["status"]): string {
-    if (s === "Running") return "running";
-    if (s === "Killed") return "killed";
-    if (s === "Crashed") return "crashed";
-    if (typeof s === "object" && "Exited" in s) {
-      return s.Exited === 0 ? "ok" : "err";
+  async function handleKill(id: string) {
+    try {
+      await killProcess(id);
+      notifySuccess("Process killed", `PID ${processes.find((p) => p.id === id)?.pid ?? ""}`);
+      await loadProcesses();
+    } catch (e) {
+      notifyError("Kill process", `Failed to kill: ${e}`);
     }
-    return "";
   }
 
-  function formatDuration(secs: number): string {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  async function openLogs(id: string) {
+    const proc = processes.find((p) => p.id === id);
+    logProcId = id;
+    logProcName = proc?.label ?? id;
+    logs = null;
+    logsError = "";
+    logsLoading = true;
+    try {
+      logs = await getProcessLogs(id);
+    } catch (e) {
+      logsError = `Failed to load logs: ${e}`;
+    }
+    logsLoading = false;
   }
 
-  function openLogs(id: string) {
-    goto(`/processes?log=${id}`);
+  function closeLogs() {
+    logProcId = null;
+    logs = null;
+    logsError = "";
   }
 </script>
 
-<div class="workspace-layout">
-  <aside class="ws-sidebar">
-    <div class="ws-brand">Workspace</div>
-    <nav class="ws-nav">
-      <a href="/workspace">Overview</a>
-      <a href="/workspace/runtime" class="active">Runtime</a>
-      <a href="/workspace/session">Session</a>
-      <a href="/workspace/logs">Logs</a>
-      <a href="/workspace/problems">Problems</a>
-      <a href="/workspace/info">Info</a>
-      <a href="/workspace/files">Files</a>
-    </nav>
-  </aside>
+<PageContainer width="wide">
+  <PageHeader
+    title="Runtime"
+    description="Processes under this workspace — status, logs and control. Data comes from listProcesses()/refreshProcess()/killProcess()/getProcessLogs()."
+    icon="play"
+  >
+    {#snippet actions()}
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="refresh"
+        loading={refreshing}
+        onclick={refreshAllStatuses}
+      >
+        Refresh
+      </Button>
+    {/snippet}
+  </PageHeader>
 
-  <main class="ws-content">
-    {#if loading}
-      <p class="ws-empty">Loading...</p>
-    {:else if !project}
-      <p class="ws-empty">No project open. <a href="/profiles">Open a profile</a> to see its runtime.</p>
+  {#if wsLoading}
+    <LoadingState label="Loading workspace…" />
+  {:else if wsError}
+    <ErrorState
+      title="Failed to load workspace"
+      message={wsError}
+      retry={() => {
+        reloadWorkspaceContext();
+        dataLoaded = false;
+        loadProcesses();
+      }}
+    />
+  {:else if !project}
+    <EmptyState
+      icon="folder"
+      title="No project is open"
+      description="Open a project to see its runtime processes here."
+    />
+  {:else}
+    {#if errorMsg}
+      <div class="sp-banner sp-banner-err">{errorMsg}</div>
+    {/if}
+
+    {#if !dataLoaded}
+      <LoadingState label="Loading processes…" />
+    {:else if processes.length === 0}
+      <EmptyState
+        icon="terminal"
+        title="No processes"
+        description="Nothing has been spawned for this workspace yet. Use the DevLauncher Process Manager to spawn or run a profile."
+      >
+        {#snippet action()}
+          <Button variant="secondary" icon="terminal" href="/devlauncher/processes">
+            Open Process Manager
+          </Button>
+        {/snippet}
+      </EmptyState>
     {:else}
-      <div class="header-row">
-        <div>
-          <h1>Runtime</h1>
-          <p class="subtitle">{project.profile_name} — running processes</p>
-        </div>
-        <button class="refresh-btn" onclick={loadProcesses}>⟳ Refresh</button>
-      </div>
-
-      {#if processes.length === 0}
-        <p class="ws-empty">No processes. Spawn one from the <a href="/processes">Process Manager</a> or run a profile.</p>
-      {:else}
-        <div class="proc-list">
-          {#each processes as p}
-            <div class="proc-card">
-              <div class="proc-main">
-                <div class="proc-head">
-                  <span class="proc-icon">{p.status === "Running" ? "▶" : "⬛"}</span>
-                  <strong>{p.label}</strong>
-                  <span class="badge {statusClass(p.status)}">{statusLabel(p.status)}</span>
+      <div class="sp-proc-list">
+        {#each processes as p (p.id)}
+          <Card padding="md">
+            <div class="sp-proc-card">
+              <div class="sp-proc-main">
+                <div class="sp-proc-head">
+                  <span class="sp-proc-icon sp-proc-icon-{statusIcon(p.status)}" aria-hidden="true">
+                    <Icon name={statusIcon(p.status)} size={15} />
+                  </span>
+                  <strong class="sp-proc-label">{p.label}</strong>
+                  <Badge tone={statusTone(p.status)} dot={p.status === "Running"}>
+                    {statusLabel(p.status)}
+                  </Badge>
                 </div>
-                <div class="proc-meta">
-                  PID <code>{p.pid}</code>
-                  <span class="sep">·</span>
-                  {formatDuration(p.duration_secs)}
-                  <span class="sep">·</span>
-                  started {((Date.now() / 1000) - Number(p.started_at)).toFixed(0)}s ago
+                <div class="sp-proc-meta">
+                  <span>PID <code>{p.pid}</code></span>
+                  <span class="sp-sep">·</span>
+                  <span>{formatDuration(p.duration_secs)}</span>
+                  <span class="sp-sep">·</span>
+                  <span>started {formatStarted(p.started_at)}</span>
+                  {#if p.restarts > 0}
+                    <span class="sp-sep">·</span>
+                    <span class="sp-restarts">restarts {p.restarts}</span>
+                  {/if}
                 </div>
-                {#if p.restarts > 0}
-                  <span class="restart-badge">restarts: {p.restarts}</span>
-                {/if}
                 {#if p.last_error}
-                  <div class="proc-error">{p.last_error}</div>
+                  <div class="sp-proc-error">{p.last_error}</div>
                 {/if}
               </div>
-              <div class="proc-actions">
-                <button class="action-btn" onclick={() => openLogs(p.id)} title="View logs">📋</button>
-                <button class="action-btn" onclick={() => handleRefresh(p.id)} title="Refresh">⟳</button>
-                <button class="action-btn kill" onclick={() => handleKill(p.id)} disabled={p.status !== "Running"} title="Kill">✕</button>
+              <div class="sp-proc-actions">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="terminal"
+                  onclick={() => openLogs(p.id)}
+                >
+                  Logs
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="refresh"
+                  label="Refresh status"
+                  onclick={() => handleRefresh(p.id)}
+                />
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon="x"
+                  disabled={p.status !== "Running"}
+                  onclick={() => handleKill(p.id)}
+                >
+                  Kill
+                </Button>
               </div>
             </div>
-          {/each}
-        </div>
-      {/if}
+          </Card>
+        {/each}
+      </div>
     {/if}
-  </main>
-</div>
+  {/if}
+</PageContainer>
+
+<Modal
+  open={logProcId !== null}
+  onclose={closeLogs}
+  title="Process logs"
+  description={logProcName}
+  size="lg"
+>
+  {#if logsLoading}
+    <div class="sp-log-hint">Loading logs…</div>
+  {:else if logsError}
+    <div class="sp-log-hint sp-log-hint-err">{logsError}</div>
+  {:else if logs}
+    <div class="sp-log-view">
+      {#if logs.stdout_lines.length === 0 && logs.stderr_lines.length === 0}
+        <div class="sp-log-hint">No output captured for this process.</div>
+      {:else}
+        {#each logs.stdout_lines as line}
+          <pre class="sp-log-line sp-log-out">{line}</pre>
+        {/each}
+        {#each logs.stderr_lines as line}
+          <pre class="sp-log-line sp-log-err">{line}</pre>
+        {/each}
+      {/if}
+    </div>
+  {:else}
+    <div class="sp-log-hint">No logs available.</div>
+  {/if}
+</Modal>
 
 <style>
-  .workspace-layout { display: flex; min-height: calc(100vh - 49px); }
-  .ws-sidebar {
-    width: 200px; flex-shrink: 0; background: #fff;
-    border-right: 1px solid #e0e0e0; padding: 1.25rem 0;
+  .sp-banner {
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--sp-radius-md);
+    font-size: var(--sp-fs-sm);
+    margin-bottom: var(--sp-4);
   }
-  .ws-brand { font-weight: 700; font-size: 0.9rem; padding: 0 1.25rem 0.75rem; color: #222; border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
-  .ws-nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .ws-nav a { display: block; padding: 0.4rem 1.25rem; text-decoration: none; color: #555; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.1s; }
-  .ws-nav a:hover { background: #f5f5f5; color: #222; }
-  .ws-nav a.active { background: #e8eaf6; color: #283593; border-left-color: #283593; font-weight: 600; }
 
-  .ws-content { flex: 1; padding: 2rem; max-width: 860px; }
-  .ws-empty { color: #999; font-style: italic; font-size: 0.85rem; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; border: 1px dashed #ddd; }
-  .ws-empty a { color: #396cd8; }
-
-  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; }
-  h1 { margin: 0; font-size: 1.3rem; }
-  .subtitle { color: #888; font-size: 0.85rem; margin: 0.15rem 0 0; }
-  .refresh-btn { padding: 0.35rem 1rem; border: 1px solid #ccc; border-radius: 6px; background: #fff; color: #444; font-size: 0.82rem; cursor: pointer; }
-  .refresh-btn:hover { background: #f0f0f0; }
-
-  .proc-list { display: flex; flex-direction: column; gap: 0.4rem; }
-  .proc-card {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    padding: 0.7rem 0.9rem; background: #fff; border: 1px solid #e0e0e0;
-    border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); gap: 0.75rem;
+  .sp-banner-err {
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.35);
   }
-  .proc-main { flex: 1; min-width: 0; }
-  .proc-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.15rem; }
-  .proc-icon { font-size: 0.8rem; }
-  .proc-meta { font-size: 0.78rem; color: #888; display: flex; gap: 0.3rem; align-items: center; flex-wrap: wrap; }
-  .proc-meta code { background: #f0f0f0; padding: 0.05rem 0.3rem; border-radius: 3px; color: #555; font-size: 0.76rem; }
-  .sep { color: #ccc; }
 
-  .badge { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; padding: 0.1rem 0.4rem; border-radius: 4px; letter-spacing: 0.02em; }
-  .badge.running { background: #e8f5e9; color: #2e7d32; }
-  .badge.ok { background: #e8eaf6; color: #283593; }
-  .badge.err { background: #fff3e0; color: #e65100; }
-  .badge.killed { background: #fce4ec; color: #c62828; }
-  .badge.crashed { background: #ffebee; color: #b71c1c; }
-
-  .restart-badge { font-size: 0.72rem; background: #fff3e0; color: #e65100; padding: 0.05rem 0.4rem; border-radius: 3px; display: inline-block; margin-top: 0.15rem; }
-
-  .proc-error { margin-top: 0.3rem; font-size: 0.76rem; color: #c62828; background: #ffebee; padding: 0.25rem 0.5rem; border-radius: 4px; white-space: pre-wrap; word-break: break-all; max-height: 2.5rem; overflow-y: auto; }
-
-  .proc-actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
-  .action-btn {
-    padding: 0.25rem 0.5rem; border: 1px solid #e0e0e0; border-radius: 5px;
-    background: transparent; color: #888; cursor: pointer; font-size: 0.8rem; transition: all 0.15s;
+  .sp-proc-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
   }
-  .action-btn:hover:not(:disabled) { background: #f5f5f5; color: #333; }
-  .action-btn.kill:hover:not(:disabled) { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
-  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  @media (prefers-color-scheme: dark) {
-    .ws-sidebar { background: #1e1e1e; border-right-color: #333; }
-    .ws-brand { color: #eee; border-bottom-color: #333; }
-    .ws-nav a { color: #aaa; }
-    .ws-nav a:hover { background: #333; color: #eee; }
-    .ws-nav a.active { background: #1a237e; color: #c5cae9; }
+  .sp-proc-card {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-4);
+  }
 
-    .ws-empty { background: #2a2a2a; border-color: #444; color: #888; }
-    .refresh-btn { background: #2a2a2a; color: #ccc; border-color: #555; }
-    .refresh-btn:hover { background: #333; }
+  .sp-proc-main {
+    flex: 1;
+    min-width: 0;
+  }
 
-    .proc-card { background: #0f0f0f98; border-color: #444; }
-    .proc-meta code { background: #2a2a2a; color: #aaa; }
+  .sp-proc-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-1);
+  }
 
-    .restart-badge { background: #3e2723; color: #ffb74d; }
+  .sp-proc-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--sp-radius-sm);
+    flex-shrink: 0;
+  }
 
-    .badge.running { background: #1b3a1b; color: #81c784; }
-    .badge.ok { background: #1a237e; color: #c5cae9; }
-    .badge.err { background: #3e2723; color: #ffb74d; }
-    .badge.killed { background: #3a1a1a; color: #ef9a9a; }
-    .badge.crashed { background: #3a1a1a; color: #ef9a9a; }
+  .sp-proc-icon-play {
+    color: var(--sp-success);
+    background: rgba(163, 230, 53, 0.12);
+  }
 
-    .action-btn { border-color: #444; color: #888; }
-    .action-btn:hover:not(:disabled) { background: #333; color: #eee; }
-    .action-btn.kill:hover:not(:disabled) { background: #3a1a1a; color: #ff7b72; border-color: #da3633; }
+  .sp-proc-icon-check {
+    color: var(--sp-blue);
+    background: rgba(96, 165, 250, 0.12);
+  }
+
+  .sp-proc-icon-x,
+  .sp-proc-icon-alert {
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+  }
+
+  .sp-proc-label {
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-proc-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+  }
+
+  .sp-proc-meta code {
+    font-size: var(--sp-fs-xs);
+    background: var(--sp-code-bg);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--sp-radius-xs);
+    color: var(--sp-text-1);
+  }
+
+  .sp-sep {
+    color: var(--sp-text-3);
+  }
+
+  .sp-restarts {
+    background: rgba(251, 191, 36, 0.14);
+    color: var(--sp-warning);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--sp-radius-xs);
+  }
+
+  .sp-proc-error {
+    margin-top: var(--sp-2);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-sm);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 4rem;
+    overflow-y: auto;
+  }
+
+  .sp-proc-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-shrink: 0;
+  }
+
+  /* log viewer */
+
+  .sp-log-view {
+    background: var(--sp-bg-0);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+    padding: var(--sp-3);
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    line-height: var(--sp-lh-normal);
+    max-height: 24rem;
+    overflow-y: auto;
+  }
+
+  .sp-log-line {
+    margin: 0;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--sp-text-2);
+  }
+
+  .sp-log-err {
+    color: var(--sp-danger);
+  }
+
+  .sp-log-hint {
+    padding: var(--sp-8) var(--sp-4);
+    text-align: center;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+    font-style: italic;
+  }
+
+  .sp-log-hint-err {
+    color: var(--sp-danger);
   }
 </style>

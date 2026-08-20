@@ -1,0 +1,780 @@
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { page } from "$app/stores";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { Terminal } from "@xterm/xterm";
+  import "@xterm/xterm/css/xterm.css";
+  import {
+    listProcesses,
+    spawnProcess,
+    killProcess,
+    refreshProcess,
+    getProcessLogs,
+  } from "$lib/modules/workspace/api";
+  import type {
+    TrackedProcess,
+    ProcessStatus,
+    ProcessLogs,
+    ProcessOutputEvent,
+    ProcessStatusEvent,
+  } from "$lib/modules/workspace/types";
+
+  let processes = $state<TrackedProcess[]>([]);
+  let loading = $state(true);
+
+  let command = $state("");
+  let argsStr = $state("");
+  let label = $state("");
+  let spawning = $state(false);
+  let errorMsg = $state("");
+
+  let logProcessId = $state<string | null>(null);
+  let terminalEl = $state<HTMLDivElement | null>(null);
+  let terminal = $state<Terminal | null>(null);
+  let logModalOpen = $state(false);
+
+  let autoRefreshId: ReturnType<typeof setInterval> | null = null;
+  let unlistenOutput: UnlistenFn | null = null;
+  let unlistenStatus: UnlistenFn | null = null;
+  let destroyed = false;
+
+  let resultMsg = $state("");
+  let resultType = $state<"ok" | "err" | "">("");
+
+  let logProcessName = $derived(() => {
+    if (!logProcessId) return "";
+    const p = processes.find((pr) => pr.id === logProcessId);
+    return p?.label ?? logProcessId;
+  });
+
+  onMount(async () => {
+    await loadProcesses();
+
+    // Register listeners up-front and resolve them together so that a
+    // mid-await unmount cannot leave a late-registered listener leaking.
+    const regOutput = listen<ProcessOutputEvent>("process-output", (event) => {
+      const { process_id, stream, line } = event.payload;
+      if (logProcessId === process_id && terminal) {
+        const prefix = stream === "stderr" ? "\x1b[31m" : "";
+        const suffix = stream === "stderr" ? "\x1b[0m" : "";
+        terminal.writeln(`${prefix}${line}${suffix}`);
+      }
+    });
+
+    const regStatus = listen<ProcessStatusEvent>("process-status", (event) => {
+      const { process_id, status, error } = event.payload;
+      const idx = processes.findIndex((p) => p.id === process_id);
+      if (idx >= 0) {
+        const updated = { ...processes[idx], status, last_error: error ?? null };
+        processes = [...processes.slice(0, idx), updated, ...processes.slice(idx + 1)];
+      }
+    });
+
+    const [outFn, statusFn] = await Promise.all([regOutput, regStatus]);
+    if (destroyed) {
+      outFn();
+      statusFn();
+      return;
+    }
+    unlistenOutput = outFn;
+    unlistenStatus = statusFn;
+
+    autoRefreshId = setInterval(() => refreshAllStatuses(), 3000);
+
+    // Support the workspace deep link `/devlauncher/processes?log=<id>`.
+    const logId = $page.url.searchParams.get("log");
+    if (logId) {
+      const proc = processes.find((p) => p.id === logId);
+      if (proc) await openLogs(logId);
+    }
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    if (autoRefreshId) clearInterval(autoRefreshId);
+    unlistenOutput?.();
+    unlistenStatus?.();
+    terminal?.dispose();
+  });
+
+  async function loadProcesses() {
+    try {
+      processes = await listProcesses();
+    } catch (e) {
+      errorMsg = `Failed to load processes: ${e}`;
+    }
+    loading = false;
+  }
+
+  async function refreshAllStatuses() {
+    const updated: TrackedProcess[] = [];
+    for (const proc of processes) {
+      try {
+        await refreshProcess(proc.id);
+      } catch {
+        // process might be gone
+      }
+    }
+    try {
+      processes = await listProcesses();
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleSpawn() {
+    if (!command) return;
+    spawning = true;
+    errorMsg = "";
+    resultMsg = "";
+    resultType = "";
+    try {
+      const argList = argsStr
+        .split(/\s+/)
+        .filter((a) => a.length > 0);
+      await spawnProcess(command, argList, label || command);
+      await loadProcesses();
+      command = "";
+      argsStr = "";
+      label = "";
+      resultMsg = `✓ Spawned successfully`;
+      resultType = "ok";
+    } catch (e) {
+      resultMsg = `✗ Spawn failed: ${e}`;
+      resultType = "err";
+    }
+    spawning = false;
+    setTimeout(() => { resultMsg = ""; resultType = ""; }, 4000);
+  }
+
+  async function handleKill(id: string) {
+    const proc = processes.find((p) => p.id === id);
+    if (!proc) return;
+    try {
+      await killProcess(id);
+      await loadProcesses();
+    } catch (e) {
+      errorMsg = `Kill failed: ${e}`;
+    }
+  }
+
+  async function handleRefresh(id: string) {
+    try {
+      await refreshProcess(id);
+      await loadProcesses();
+    } catch (e) {
+      errorMsg = `Refresh failed: ${e}`;
+    }
+  }
+
+  async function openLogs(id: string) {
+    logProcessId = id;
+    logModalOpen = true;
+
+    // Wait for DOM to render the terminal div
+    await tick();
+
+    if (terminalEl) {
+      if (terminal) terminal.dispose();
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+        theme: {
+          background: "#0d1117",
+          foreground: "#c9d1d9",
+          cursor: "#58a6ff",
+          selectionBackground: "#264f78",
+          black: "#484f58",
+          red: "#ff7b72",
+          green: "#3fb950",
+          yellow: "#d29922",
+          blue: "#58a6ff",
+          magenta: "#bc8cff",
+          cyan: "#39c5cf",
+          white: "#b1bac4",
+          brightBlack: "#6e7681",
+          brightRed: "#ffa198",
+          brightGreen: "#56d364",
+          brightYellow: "#e3b341",
+          brightBlue: "#79c0ff",
+          brightMagenta: "#d2a8ff",
+          brightCyan: "#56d4dd",
+          brightWhite: "#f0f6fc",
+        },
+        allowTransparency: true,
+      });
+      term.open(terminalEl);
+      terminal = term;
+
+      // Write existing logs
+      try {
+        const logs = await getProcessLogs(id);
+        for (const line of logs.stdout_lines) {
+          term.writeln(line);
+        }
+        for (const line of logs.stderr_lines) {
+          term.writeln(`\x1b[31m${line}\x1b[0m`);
+        }
+      } catch (e) {
+        term.writeln(`\x1b[33mFailed to load logs: ${e}\x1b[0m`);
+      }
+    }
+  }
+
+  async function tick() {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+
+  function closeLogs() {
+    logModalOpen = false;
+    logProcessId = null;
+    terminal?.dispose();
+    terminal = null;
+  }
+
+  function statusLabel(status: ProcessStatus): string {
+    if (status === "Running") return "Running";
+    if (status === "Killed") return "Killed";
+    if (status === "Crashed") return "Crashed";
+    if (typeof status === "object" && "Exited" in status) {
+      const code = (status as { Exited: number }).Exited;
+      return code === 0 ? "Success" : `Failed (${code})`;
+    }
+    return "Unknown";
+  }
+
+  function statusClass(status: ProcessStatus): string {
+    if (status === "Running") return "running";
+    if (status === "Killed") return "killed";
+    if (status === "Crashed") return "crashed";
+    if (typeof status === "object" && "Exited" in status) {
+      const code = (status as { Exited: number }).Exited;
+      return code === 0 ? "exited-ok" : "exited-err";
+    }
+    return "";
+  }
+
+  function formatDuration(secs: number): string {
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+
+  function formatStarted(timestamp: string): string {
+    if (!timestamp) return "—";
+    const secs = Math.floor(Date.now() / 1000 - Number(timestamp));
+    if (secs < 60) return `${secs}s ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+    return `${Math.floor(secs / 86400)}d ago`;
+  }
+
+  function copyCommand(proc: TrackedProcess) {
+    navigator.clipboard.writeText(`${proc.label} (PID: ${proc.pid})`);
+  }
+</script>
+
+<main>
+  <div class="page-header">
+    <div>
+      <h1>Process Manager</h1>
+      <p class="subtitle">Full control over running processes — spawn, monitor, view logs, terminate</p>
+    </div>
+    <button class="refresh-btn" onclick={refreshAllStatuses} title="Refresh all">
+      ⟳ Refresh
+    </button>
+  </div>
+
+  {#if errorMsg}
+    <div class="msg err">{errorMsg}</div>
+  {/if}
+
+  {#if resultMsg}
+    <div class="msg {resultType}">{resultMsg}</div>
+  {/if}
+
+  <!-- Spawn form -->
+  <section class="card spawn-card">
+    <h2>▶ Spawn Process</h2>
+    <div class="spawn-form">
+      <div class="field-row">
+        <div class="field flex-2">
+          <label for="cmd-input">Command *</label>
+          <input id="cmd-input" type="text" bind:value={command} placeholder="npm run dev" />
+        </div>
+        <div class="field flex-1">
+          <label for="label-input">Label</label>
+          <input id="label-input" type="text" bind:value={label} placeholder="Dev Server" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="args-input">Arguments</label>
+        <input id="args-input" type="text" bind:value={argsStr} placeholder="--port 3000 --mode dev" />
+      </div>
+      <button class="primary" onclick={handleSpawn} disabled={spawning || !command}>
+        {spawning ? "Spawning..." : "▶ Spawn"}
+      </button>
+    </div>
+  </section>
+
+  <!-- Process list -->
+  <section>
+    <h2>Processes ({processes.length})</h2>
+
+    {#if loading}
+      <p class="empty">Loading...</p>
+    {:else if processes.length === 0}
+      <div class="empty-state">
+        <p class="empty">No processes running.</p>
+        <p class="hint">Use the form above to start a process.</p>
+      </div>
+    {:else}
+      <div class="process-list">
+        {#each processes as proc (proc.id)}
+          <div class="process-card" class:exited={proc.status !== "Running"}>
+            <div class="card-top">
+              <div class="proc-main">
+                <div class="proc-label-row">
+                  <span class="proc-icon">
+                    {#if proc.status === "Running"}▶{:else}⬛{/if}
+                  </span>
+                  <strong class="proc-label">{proc.label}</strong>
+                  <span class="status-badge {statusClass(proc.status)}">
+                    {statusLabel(proc.status)}
+                  </span>
+                </div>
+                <div class="proc-meta-row">
+                  <span class="meta-item">PID <code>{proc.pid}</code></span>
+                  <span class="meta-item sep">·</span>
+                  <span class="meta-item">{formatDuration(proc.duration_secs)}</span>
+                  <span class="meta-item sep">·</span>
+                  <span class="meta-item">started {formatStarted(proc.started_at)}</span>
+                  {#if proc.restarts > 0}
+                    <span class="meta-item sep">·</span>
+                    <span class="meta-item restart-count">restarts: {proc.restarts}</span>
+                  {/if}
+                </div>
+                {#if proc.last_error}
+                  <div class="proc-error">{proc.last_error}</div>
+                {/if}
+              </div>
+              <div class="proc-actions">
+                <button class="action-btn logs" onclick={() => openLogs(proc.id)} title="View logs">
+                  📋 Logs
+                </button>
+                <button class="action-btn refresh" onclick={() => handleRefresh(proc.id)} title="Refresh status">
+                  ⟳
+                </button>
+                <button
+                  class="action-btn kill"
+                  onclick={() => handleKill(proc.id)}
+                  disabled={proc.status !== "Running"}
+                  title="Kill process"
+                >
+                  ✕ Kill
+                </button>
+              </div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+</main>
+
+<!-- Log Viewer Modal -->
+{#if logModalOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="modal-overlay" onclick={closeLogs} role="presentation">
+    <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
+    <div class="modal-content" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Process logs">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-icon">📋</span>
+          <span>Logs: {logProcessName()}</span>
+          <span class="modal-pid">PID {processes.find(p => p.id === logProcessId)?.pid ?? "—"}</span>
+        </div>
+        <div class="modal-actions">
+          <button class="modal-close" onclick={closeLogs}>✕</button>
+        </div>
+      </div>
+      <div class="terminal-wrapper" bind:this={terminalEl}></div>
+      <div class="modal-footer">
+        <span class="footer-hint">Real-time output · stderr shown in red</span>
+        <button class="secondary" onclick={closeLogs}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2rem;
+    color: var(--sp-text-1);
+  }
+
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
+  }
+
+  h1 { margin: 0; font-size: var(--sp-fs-xl); color: var(--sp-text-1); }
+  .subtitle { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.2rem 0 0; }
+
+  .refresh-btn {
+    padding: 0.4rem 1rem;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
+    font-size: var(--sp-fs-sm);
+    font-family: var(--sp-font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .refresh-btn:hover { background: var(--sp-bg-3); }
+
+  .msg {
+    padding: 0.5rem 1rem;
+    border-radius: var(--sp-radius-sm);
+    margin-bottom: 1rem;
+    font-size: var(--sp-fs-sm);
+  }
+  .msg.ok { background: rgba(163, 230, 53, 0.12); color: var(--sp-success); border: 1px solid rgba(163, 230, 53, 0.35); }
+  .msg.err { background: rgba(248, 113, 113, 0.12); color: var(--sp-danger); border: 1px solid rgba(248, 113, 113, 0.35); }
+
+  .card {
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    padding: 1.25rem;
+    box-shadow: var(--sp-shadow-1);
+    margin-bottom: 1.5rem;
+  }
+
+  h2 {
+    font-size: var(--sp-fs-md);
+    margin: 0 0 0.75rem;
+    color: var(--sp-text-1);
+  }
+
+  .spawn-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .field-row {
+    display: flex;
+    gap: 0.75rem;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .flex-2 { flex: 2; }
+  .flex-1 { flex: 1; }
+
+  .field label {
+    font-size: var(--sp-fs-xs);
+    font-weight: var(--sp-fw-medium);
+    color: var(--sp-text-2);
+  }
+
+  .field input {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--sp-border-strong);
+    border-radius: var(--sp-radius-sm);
+    font-size: var(--sp-fs-sm);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-1);
+    transition: border-color 0.15s;
+  }
+
+  .field input:focus {
+    outline: none;
+    border-color: var(--sp-accent);
+    box-shadow: var(--sp-shadow-accent);
+  }
+
+  button.primary {
+    padding: 0.5rem 1.2rem;
+    border-radius: var(--sp-radius-md);
+    border: none;
+    background: var(--sp-accent-strong);
+    color: #fff;
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    cursor: pointer;
+    transition: background 0.15s;
+    align-self: flex-start;
+  }
+  button.primary:hover:not(:disabled) { background: var(--sp-accent); }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .empty-state {
+    text-align: center;
+    padding: 2rem 1rem;
+  }
+
+  .empty {
+    color: var(--sp-text-3);
+    font-style: italic;
+    font-size: var(--sp-fs-sm);
+    text-align: center;
+    padding: 2rem;
+  }
+
+  .hint {
+    color: var(--sp-text-3);
+    font-size: var(--sp-fs-sm);
+    margin: 0.5rem 0 0;
+  }
+
+  .process-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .process-card {
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    padding: 0.85rem 1rem;
+    box-shadow: var(--sp-shadow-1);
+    transition: border-color 0.15s;
+  }
+  .process-card:hover { border-color: var(--sp-border-strong); }
+  .process-card.exited { opacity: 0.75; }
+
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .proc-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .proc-label-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .proc-icon {
+    font-size: var(--sp-fs-sm);
+    flex-shrink: 0;
+  }
+
+  .proc-label {
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .proc-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    flex-wrap: wrap;
+  }
+
+  .meta-item code {
+    font-size: var(--sp-fs-xs);
+    background: var(--sp-code-bg);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--sp-radius-xs);
+    color: var(--sp-text-1);
+  }
+
+  .meta-item.sep { color: var(--sp-text-3); }
+
+  .restart-count {
+    background: rgba(251, 191, 36, 0.14);
+    color: var(--sp-warning);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--sp-radius-xs);
+    font-size: var(--sp-fs-xs);
+  }
+
+  .proc-error {
+    margin-top: 0.35rem;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    padding: 0.3rem 0.6rem;
+    border-radius: var(--sp-radius-xs);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 3rem;
+    overflow-y: auto;
+  }
+
+  .status-badge {
+    font-size: var(--sp-fs-xs);
+    font-weight: var(--sp-fw-bold);
+    text-transform: uppercase;
+    padding: 0.15rem 0.45rem;
+    border-radius: var(--sp-radius-xs);
+    letter-spacing: 0.03em;
+    flex-shrink: 0;
+  }
+
+  .status-badge.running { background: rgba(163, 230, 53, 0.14); color: var(--sp-success); }
+  .status-badge.exited-ok { background: rgba(96, 165, 250, 0.14); color: var(--sp-blue); }
+  .status-badge.exited-err { background: rgba(251, 191, 36, 0.14); color: var(--sp-warning); }
+  .status-badge.killed { background: rgba(248, 113, 113, 0.14); color: var(--sp-danger); }
+  .status-badge.crashed { background: rgba(248, 113, 113, 0.2); color: var(--sp-danger); }
+
+  .proc-actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .action-btn {
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    background: transparent;
+    color: var(--sp-text-2);
+    cursor: pointer;
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-sans);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .action-btn:hover:not(:disabled) { background: var(--sp-bg-2); color: var(--sp-text-1); border-color: var(--sp-border-strong); }
+  .action-btn.logs:hover { background: rgba(96, 165, 250, 0.14); color: var(--sp-blue); border-color: rgba(96, 165, 250, 0.4); }
+  .action-btn.refresh:hover { background: rgba(139, 92, 246, 0.14); color: var(--sp-violet); border-color: rgba(139, 92, 246, 0.4); }
+  .action-btn.kill:hover:not(:disabled) { background: rgba(248, 113, 113, 0.14); color: var(--sp-danger); border-color: rgba(248, 113, 113, 0.4); }
+  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(2px);
+  }
+
+  .modal-content {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: var(--sp-radius-lg);
+    width: 90vw;
+    max-width: 900px;
+    height: 80vh;
+    max-height: 700px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--sp-shadow-3);
+    overflow: hidden;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.7rem 1rem;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+  }
+
+  .modal-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #c9d1d9;
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+  }
+
+  .modal-icon { font-size: 1rem; }
+
+  .modal-pid {
+    color: #8b949e;
+    font-size: var(--sp-fs-xs);
+    font-weight: 400;
+    background: #21262d;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--sp-radius-xs);
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    border-radius: var(--sp-radius-xs);
+    transition: all 0.15s;
+  }
+  .modal-close:hover { background: #21262d; color: #f0f6fc; }
+
+  .terminal-wrapper {
+    flex: 1;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .terminal-wrapper :global(.xterm) {
+    height: 100%;
+    padding: 4px;
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: #161b22;
+    border-top: 1px solid #30363d;
+    flex-shrink: 0;
+  }
+
+  .footer-hint {
+    color: #8b949e;
+    font-size: var(--sp-fs-xs);
+  }
+
+  button.secondary {
+    padding: 0.35rem 1rem;
+    border-radius: var(--sp-radius-sm);
+    border: 1px solid #30363d;
+    background: #21262d;
+    color: #c9d1d9;
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-sans);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button.secondary:hover { background: #30363d; }
+</style>

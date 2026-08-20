@@ -1,0 +1,71 @@
+<script lang="ts">
+  import type { Snippet } from "svelte";
+  import { page } from "$app/stores";
+  import { goto } from "$app/navigation";
+  import Tabs from "$lib/components/ui/Tabs.svelte";
+  import type { TabDef } from "$lib/components/ui/Tabs.svelte";
+
+  let { children }: { children: Snippet } = $props();
+
+  const tabs: TabDef[] = [
+    { id: "overview", label: "Overview", icon: "home" },
+    { id: "analyze", label: "Analyze", icon: "search" },
+    { id: "profiles", label: "Profiles", icon: "bookmark" },
+    { id: "processes", label: "Processes", icon: "terminal" },
+  ];
+
+  const pathname = $derived($page.url.pathname);
+
+  const active = $derived(
+    pathname === "/devlauncher"
+      ? "overview"
+      : pathname.startsWith("/devlauncher/analyze")
+        ? "analyze"
+        : pathname.startsWith("/devlauncher/profiles")
+          ? "profiles"
+          : pathname.startsWith("/devlauncher/processes")
+            ? "processes"
+            : "overview",
+  );
+
+  function onTab(id: string) {
+    goto(id === "overview" ? "/devlauncher" : `/devlauncher/${id}`);
+  }
+</script>
+
+<div class="sp-dl">
+  <div class="sp-dl-nav">
+    <div class="sp-dl-nav-inner">
+      <Tabs tabs={tabs} value={active} onchange={onTab} />
+    </div>
+  </div>
+  <div class="sp-dl-content">
+    {@render children()}
+  </div>
+</div>
+
+<style>
+  .sp-dl {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sp-dl-nav {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--sp-bg-0);
+    border-bottom: 1px solid var(--sp-border);
+  }
+
+  .sp-dl-nav-inner {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: var(--sp-3) var(--sp-8);
+  }
+
+  .sp-dl-content {
+    flex: 1 1 auto;
+  }
+</style>

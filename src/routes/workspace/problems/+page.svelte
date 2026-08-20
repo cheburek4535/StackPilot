@@ -1,137 +1,237 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getCurrentProject, listProcesses } from "$lib/modules/workspace/api";
-  import type { ProjectContext, TrackedProcess } from "$lib/modules/workspace/types";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Badge from "$lib/components/ui/Badge.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import ErrorState from "$lib/components/ui/ErrorState.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import { workspaceContext } from "$lib/modules/workspace/context";
+  import { listProcesses } from "$lib/modules/workspace/api";
+  import type { TrackedProcess } from "$lib/modules/workspace/types";
+  import { statusLabel, formatStarted } from "$lib/modules/workspace/status";
 
-  let project = $state<ProjectContext | null>(null);
   let processes = $state<TrackedProcess[]>([]);
-  let loading = $state(true);
+  let dataLoaded = $state(false);
+  let error = $state("");
 
-  onMount(async () => {
-    project = await getCurrentProject();
-    if (project) {
-      processes = await listProcesses();
+  const project = $derived($workspaceContext.project);
+  const wsLoading = $derived($workspaceContext.loading);
+  const wsError = $derived($workspaceContext.error);
+
+  $effect(() => {
+    if (project && !dataLoaded) {
+      dataLoaded = true;
+      loadProcesses();
+    } else if (!project) {
+      dataLoaded = false;
+      processes = [];
     }
-    loading = false;
   });
 
-  let problems = $derived(
+  async function loadProcesses() {
+    try {
+      processes = await listProcesses();
+    } catch (e) {
+      error = `Failed to load processes: ${e}`;
+    }
+  }
+
+  // Problems are derived client-side from real process state (the backend
+  // get_problems command has no frontend wrapper — contract E).
+  const problems = $derived(
     processes.filter((p) => {
       if (p.status === "Crashed") return true;
-      if (typeof p.status === "object" && "Exited" in p.status && p.status.Exited !== 0) return true;
+      if (
+        typeof p.status === "object" &&
+        "Exited" in p.status &&
+        p.status.Exited !== 0
+      )
+        return true;
       if (p.last_error) return true;
       return false;
     }),
   );
 
-  function statusLabel(s: TrackedProcess["status"]): string {
-    if (s === "Crashed") return "Crashed";
-    if (typeof s === "object" && "Exited" in s) return `Exit ${s.Exited}`;
-    return "—";
+  function problemReason(p: TrackedProcess): string {
+    if (p.last_error) return p.last_error;
+    if (p.status === "Crashed") return "Process crashed.";
+    if (typeof p.status === "object" && "Exited" in p.status) {
+      return `Process exited with code ${p.status.Exited}.`;
+    }
+    return "Process reported a problem.";
   }
 </script>
 
-<div class="workspace-layout">
-  <aside class="ws-sidebar">
-    <div class="ws-brand">Workspace</div>
-    <nav class="ws-nav">
-      <a href="/workspace">Overview</a>
-      <a href="/workspace/runtime">Runtime</a>
-      <a href="/workspace/session">Session</a>
-      <a href="/workspace/logs">Logs</a>
-      <a href="/workspace/problems" class="active">Problems</a>
-      <a href="/workspace/info">Info</a>
-      <a href="/workspace/files">Files</a>
-    </nav>
-  </aside>
+<PageContainer width="wide">
+  <PageHeader
+    title="Problems"
+    description="Issues derived from the real process state under this workspace (backend get_problems has no frontend wrapper, so this is computed from listProcesses())."
+    icon="alert"
+  />
 
-  <main class="ws-content">
-    {#if loading}
-      <p class="ws-empty">Loading...</p>
-    {:else if !project}
-      <p class="ws-empty">No project open.</p>
-    {:else}
-      <h1>Problems</h1>
-      <p class="subtitle">{project.profile_name} — errors and issues</p>
-
-      {#if problems.length === 0}
-        <div class="all-clear">
-          <span class="clear-icon">✓</span>
-          <p>No problems detected.</p>
+  {#if wsLoading}
+    <LoadingState label="Loading workspace…" />
+  {:else if wsError}
+    <ErrorState title="Failed to load workspace" message={wsError} />
+  {:else if !project}
+    <EmptyState
+      icon="folder"
+      title="No project is open"
+      description="Open a project to review its process issues."
+    />
+  {:else if error}
+    <ErrorState title="Failed to load processes" message={error} />
+  {:else if problems.length === 0}
+    <Card variant="elevated" padding="lg">
+      <div class="sp-clear">
+        <span class="sp-clear-icon" aria-hidden="true">
+          <Icon name="check" size={22} />
+        </span>
+        <div>
+          <h3 class="sp-clear-title">No problems detected</h3>
+          <p class="sp-clear-desc">
+            None of the {processes.length} tracked process
+            {processes.length === 1 ? "" : "es"} is crashed, failed or reported
+            an error.
+          </p>
         </div>
-      {:else}
-        <div class="problem-list">
-          {#each problems as p}
-            <div class="problem-card">
-              <div class="problem-head">
-                <span class="problem-status">{statusLabel(p.status)}</span>
-                <strong>{p.label}</strong>
-                <span class="problem-pid">PID {p.pid}</span>
-              </div>
-              {#if p.last_error}
-                <div class="problem-error">{p.last_error}</div>
-              {:else}
-                <div class="problem-error">Process exited with non-zero code.</div>
+      </div>
+    </Card>
+  {:else}
+    <div class="sp-problem-list">
+      {#each problems as p (p.id)}
+        <Card padding="md">
+          <div class="sp-problem">
+            <div class="sp-problem-head">
+              <span class="sp-problem-icon" aria-hidden="true">
+                <Icon name="alert" size={15} />
+              </span>
+              <strong class="sp-problem-label">{p.label}</strong>
+              <Badge tone="red">{statusLabel(p.status)}</Badge>
+            </div>
+            <div class="sp-problem-meta">
+              <span>PID <code>{p.pid}</code></span>
+              <span class="sp-sep">·</span>
+              <span>started {formatStarted(p.started_at)}</span>
+              {#if p.restarts > 0}
+                <span class="sp-sep">·</span>
+                <span>restarts {p.restarts}</span>
               {/if}
             </div>
-          {/each}
-        </div>
-      {/if}
-    {/if}
-  </main>
-</div>
+            <div class="sp-problem-error">{problemReason(p)}</div>
+          </div>
+        </Card>
+      {/each}
+    </div>
+  {/if}
+</PageContainer>
 
 <style>
-  .workspace-layout { display: flex; min-height: calc(100vh - 49px); }
-  .ws-sidebar {
-    width: 200px; flex-shrink: 0; background: #fff;
-    border-right: 1px solid #e0e0e0; padding: 1.25rem 0;
-  }
-  .ws-brand { font-weight: 700; font-size: 0.9rem; padding: 0 1.25rem 0.75rem; color: #222; border-bottom: 1px solid #eee; margin-bottom: 0.5rem; }
-  .ws-nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .ws-nav a { display: block; padding: 0.4rem 1.25rem; text-decoration: none; color: #555; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.1s; }
-  .ws-nav a:hover { background: #f5f5f5; color: #222; }
-  .ws-nav a.active { background: #e8eaf6; color: #283593; border-left-color: #283593; font-weight: 600; }
-
-  .ws-content { flex: 1; padding: 2rem; max-width: 860px; }
-  .ws-empty { color: #999; font-style: italic; font-size: 0.85rem; padding: 2rem; text-align: center; background: #fafafa; border-radius: 8px; border: 1px dashed #ddd; }
-
-  h1 { margin: 0; font-size: 1.3rem; }
-  .subtitle { color: #888; font-size: 0.85rem; margin: 0.15rem 0 1.5rem; }
-
-  .all-clear { text-align: center; padding: 3rem; color: #2e7d32; }
-  .clear-icon { font-size: 2rem; display: block; margin-bottom: 0.5rem; }
-  .all-clear p { font-size: 0.9rem; margin: 0; }
-
-  .problem-list { display: flex; flex-direction: column; gap: 0.4rem; }
-  .problem-card {
-    background: #fff; border: 1px solid #ef9a9a; border-radius: 8px;
-    padding: 0.7rem 0.9rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-  .problem-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.3rem; }
-  .problem-status {
-    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
-    padding: 0.1rem 0.4rem; border-radius: 4px;
-    background: #ffebee; color: #b71c1c;
-  }
-  .problem-pid { color: #888; font-size: 0.75rem; margin-left: auto; }
-  .problem-error {
-    font-size: 0.78rem; color: #c62828; background: #ffebee;
-    padding: 0.3rem 0.6rem; border-radius: 4px;
-    white-space: pre-wrap; word-break: break-all; max-height: 4rem; overflow-y: auto;
+  .sp-clear {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
   }
 
-  @media (prefers-color-scheme: dark) {
-    .ws-sidebar { background: #1e1e1e; border-right-color: #333; }
-    .ws-brand { color: #eee; border-bottom-color: #333; }
-    .ws-nav a { color: #aaa; }
-    .ws-nav a:hover { background: #333; color: #eee; }
-    .ws-nav a.active { background: #1a237e; color: #c5cae9; }
-    .ws-empty { background: #2a2a2a; border-color: #444; color: #888; }
-    .all-clear { color: #81c784; }
-    .problem-card { background: #0f0f0f98; border-color: #c62828; }
-    .problem-status { background: #3a1a1a; color: #ef9a9a; }
-    .problem-pid { color: #aaa; }
-    .problem-error { background: #3a1a1a; color: #ff7b72; }
+  .sp-clear-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--sp-radius-full);
+    color: var(--sp-success);
+    background: rgba(163, 230, 53, 0.12);
+    border: 1px solid rgba(163, 230, 53, 0.3);
+    flex-shrink: 0;
+  }
+
+  .sp-clear-title {
+    margin: 0;
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .sp-clear-desc {
+    margin: var(--sp-1) 0 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+  }
+
+  .sp-problem-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+
+  .sp-problem {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .sp-problem-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-problem-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--sp-radius-sm);
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    flex-shrink: 0;
+  }
+
+  .sp-problem-label {
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-problem-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+  }
+
+  .sp-problem-meta code {
+    font-size: var(--sp-fs-xs);
+    background: var(--sp-code-bg);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--sp-radius-xs);
+    color: var(--sp-text-1);
+  }
+
+  .sp-sep {
+    color: var(--sp-text-3);
+  }
+
+  .sp-problem-error {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-sm);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 6rem;
+    overflow-y: auto;
   }
 </style>
