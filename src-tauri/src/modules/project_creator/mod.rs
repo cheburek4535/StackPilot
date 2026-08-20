@@ -4,6 +4,7 @@ pub mod engine;
 pub mod generators;
 pub mod knowledge;
 pub mod models;
+pub mod normalize;
 pub mod packs;
 pub mod recommend;
 pub mod validate;

@@ -69,6 +69,7 @@ impl GeneratorRegistry {
         registry.register(Arc::new(SpringBootGenerator));
         registry.register(Arc::new(FsCleanupGenerator));
         registry.register(Arc::new(ManifestCheckGenerator));
+        registry.register(Arc::new(HostToolCheckGenerator));
         registry.register(Arc::new(ScaffoldGenerator));
         registry.register(Arc::new(TauriConfigGenerator));
         registry.register(Arc::new(VsCodeMergeGenerator));
@@ -631,113 +632,224 @@ fn manifest_dependencies(kind: &str, content: &str) -> Result<Vec<String>, Strin
             Ok(names)
         }
         // Валидация «файловых» манифестов без структурированного синтаксиса
-// зависимостей (build.gradle.kts, .csproj, dbt_project.yml, main.tf,
-// firebase.json): «декларацией» считается наличие конкретного токена,
-// который вызывающая сторона передаёт в required_dependencies ТОЧНО так,
-// как он выглядит в реальном файле.
-"gradle_kts" => {
-    // Строковые литералы деклараций: id("..."), implementation("..."), ...
-    // Версия координаты (цифры или $интерполяция) отбрасывается:
-    // "io.ktor:ktor-server-core:3.0.3" -> "io.ktor:ktor-server-core".
-    let mut names: Vec<String> = Vec::new();
-    for line in content.lines() {
-        let mut rest = line;
-        while let Some(start) = rest.find('"') {
-            let after = &rest[start + 1..];
-            let Some(end) = after.find('"') else { break };
-            let literal = &after[..end];
-            rest = &after[end + 1..];
-            let token: Vec<&str> = literal
-                .split(':')
-                .filter(|part| {
-                    !part.is_empty()
-                        && !part.starts_with('$')
-                        && !part
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_digit())
-                })
-                .collect();
-            let token = token.join(":");
-            if !token.is_empty() && !names.contains(&token) {
-                names.push(token);
-            }
-        }
-    }
-    Ok(names)
-}
-"csproj_xml" => {
-    // Include-атрибуты PackageReference: <PackageReference Include="X" .../>.
-    let mut names: Vec<String> = Vec::new();
-    for line in content.lines() {
-        let mut rest = line;
-        while let Some(start) = rest.find("Include=\"") {
-            let after = &rest[start + "Include=\"".len()..];
-            let Some(end) = after.find('"') else { break };
-            let name = after[..end].to_string();
-            rest = &after[end + 1..];
-            if !name.is_empty() && !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-    Ok(names)
-}
-"yaml" => {
-    // Ключи верхнего уровня: "name: ..." -> "name". Комментарии и
-    // пустые строки игнорируются.
-    let mut names: Vec<String> = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some(key) = line.split(':').next() else { continue };
-        let key = key.trim();
-        if !key.is_empty()
-            && key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            && !names.contains(&key.to_string())
-        {
-            names.push(key.to_string());
-        }
-    }
-    Ok(names)
-}
-"terraform" => {
-    // Блоки провайдеров: `provider "docker" {` -> `provider "docker"`.
-    let mut names: Vec<String> = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if !line.starts_with("provider ") {
-            continue;
-        }
-        let Some(start) = line.find('"') else { continue };
-        let after = &line[start + 1..];
-        let Some(end) = after.find('"') else { continue };
-        let name = format!("provider \"{}\"", &after[..end]);
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    Ok(names)
-}
-"firebase" => {
-    // Ключи верхнего уровня firebase.json.
-    let mut names: Vec<String> = Vec::new();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
-        if let Some(obj) = value.as_object() {
-            for key in obj.keys() {
-                if !names.contains(key) {
-                    names.push(key.clone());
+        // зависимостей (build.gradle.kts, .csproj, dbt_project.yml, main.tf,
+        // firebase.json): «декларацией» считается наличие конкретного токена,
+        // который вызывающая сторона передаёт в required_dependencies ТОЧНО так,
+        // как он выглядит в реальном файле.
+        "gradle_kts" => {
+            // Строковые литералы деклараций: id("..."), implementation("..."), ...
+            // Версия координаты (цифры или $интерполяция) отбрасывается:
+            // "io.ktor:ktor-server-core:3.0.3" -> "io.ktor:ktor-server-core".
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let mut rest = line;
+                while let Some(start) = rest.find('"') {
+                    let after = &rest[start + 1..];
+                    let Some(end) = after.find('"') else { break };
+                    let literal = &after[..end];
+                    rest = &after[end + 1..];
+                    let token: Vec<&str> = literal
+                        .split(':')
+                        .filter(|part| {
+                            !part.is_empty()
+                                && !part.starts_with('$')
+                                && !part.chars().next().is_some_and(|c| c.is_ascii_digit())
+                        })
+                        .collect();
+                    let token = token.join(":");
+                    if !token.is_empty() && !names.contains(&token) {
+                        names.push(token);
+                    }
                 }
             }
+            Ok(names)
         }
+        "csproj_xml" => {
+            // Include-атрибуты PackageReference: <PackageReference Include="X" .../>.
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let mut rest = line;
+                while let Some(start) = rest.find("Include=\"") {
+                    let after = &rest[start + "Include=\"".len()..];
+                    let Some(end) = after.find('"') else { break };
+                    let name = after[..end].to_string();
+                    rest = &after[end + 1..];
+                    if !name.is_empty() && !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+            Ok(names)
+        }
+        "yaml" => {
+            // Ключи верхнего уровня: "name: ..." -> "name". Комментарии и
+            // пустые строки игнорируются.
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some(key) = line.split(':').next() else {
+                    continue;
+                };
+                let key = key.trim();
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    && !names.contains(&key.to_string())
+                {
+                    names.push(key.to_string());
+                }
+            }
+            Ok(names)
+        }
+        "terraform" => {
+            // Блоки провайдеров: `provider "docker" {` -> `provider "docker"`.
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if !line.starts_with("provider ") {
+                    continue;
+                }
+                let Some(start) = line.find('"') else {
+                    continue;
+                };
+                let after = &line[start + 1..];
+                let Some(end) = after.find('"') else { continue };
+                let name = format!("provider \"{}\"", &after[..end]);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            Ok(names)
+        }
+        "firebase" => {
+            // Ключи верхнего уровня firebase.json.
+            let mut names: Vec<String> = Vec::new();
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
+                if let Some(obj) = value.as_object() {
+                    for key in obj.keys() {
+                        if !names.contains(key) {
+                            names.push(key.clone());
+                        }
+                    }
+                }
+            }
+            Ok(names)
+        }
+        _ => Err(format!("unsupported manifest kind '{kind}'")),
     }
-    Ok(names)
 }
-_ => Err(format!("unsupported manifest kind '{kind}'")),
+
+// ============================================================================
+// HostToolCheckGenerator — generic-префлайт инструментов хоста.
+//
+// Единая проверка обязательного инструментария (dart, cargo, go, dotnet,
+// zig, mix, maven, gradle...) ДО любых скаффолдов, вместо пер-фреймворковых
+// патчей. Инструмент ищется через `where` (Windows) / `which` (Unix);
+// отсутствие обязательного инструмента останавливает пайплайн (Abort) с
+// понятной причиной, а не валит скаффолд серединой пайплайна.
+//
+// Конфиг (Step::Generate.generator_config):
+//   {
+//     "tools": ["maven", "gradle"],   // имена инструментов в PATH
+//     "mode": "any" | "all",          // any: нужен хотя бы один (альтернативы
+//                                     // required_tools: maven ИЛИ gradle);
+//                                     // all: нужны все (языковые скаффолды)
+//   }
+// ============================================================================
+pub struct HostToolCheckGenerator;
+
+#[async_trait]
+impl Generator for HostToolCheckGenerator {
+    fn id(&self) -> &str {
+        "host-tool-check"
+    }
+    fn name(&self) -> &str {
+        "Host toolchain check"
+    }
+    fn description(&self) -> &str {
+        "Verifies required host tools (dart, cargo, go, dotnet, zig, maven, gradle...) via where/which"
+    }
+    async fn generate_with_sink(
+        &self,
+        _context: &WizardContext,
+        _project_path: &Path,
+        config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<GenerationReport, String> {
+        let tools: Vec<String> = config
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tools.is_empty() {
+            return Err("HostToolCheckGenerator: missing 'tools' in config".to_string());
+        }
+        let mode_all = config
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(|m| m == "all")
+            .unwrap_or(false);
+
+        let finder = if std::env::consts::OS == "windows" {
+            "where"
+        } else {
+            "which"
+        };
+        let mut found: Vec<String> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+        for tool in &tools {
+            let spec = ProcessSpec {
+                command: finder.to_string(),
+                args: vec![tool.clone()],
+                working_dir: None,
+                env: None,
+                timeout: Some(Duration::from_secs(15)),
+                stdin: StdinMode::Null,
+                ci_mode: false,
+            };
+            match ProcessRunner::run(spec, None).await {
+                Ok(output) if !output.stdout_tail.trim().is_empty() => found.push(tool.clone()),
+                _ => missing.push(tool.clone()),
+            }
+        }
+        if mode_all && !missing.is_empty() {
+            return Err(format!(
+                "Missing required host tools: {}. Install them and add to PATH — generation cannot proceed.",
+                missing.join(", ")
+            ));
+        }
+        if !mode_all && found.is_empty() {
+            return Err(format!(
+                "Missing required host tool: none of [{}] found in PATH (checked via {finder}). Install one of them and retry — generation cannot proceed.",
+                tools.join(", ")
+            ));
+        }
+        if let Some(sink) = sink {
+            let status = if mode_all {
+                format!("all present: {}", found.join(", "))
+            } else {
+                format!(
+                    "found: {} (alternatives: {})",
+                    found.join(", "),
+                    tools.join(", ")
+                )
+            };
+            sink.emit_stdout(&format!("host toolchain check: {status}"))
+                .await;
+        }
+        Ok(GenerationReport::success(format!(
+            "Host toolchain verified ({}): {}",
+            if mode_all { "required" } else { "alternative" },
+            found.join(", ")
+        )))
     }
 }
 
@@ -2065,6 +2177,36 @@ mod tests {
         let result =
             tokio_test_block_on(gen.generate(&ctx, Path::new("."), &serde_json::json!({})));
         assert!(result.is_err(), "конфиг без command обязан падать");
+    }
+
+    #[test]
+    fn host_tool_check_reports_missing_tools() {
+        // Отсутствующий инструмент обязателен → Err с именем инструмента
+        // (где/которые-поиск в PATH детерминированно не находит).
+        let gen = HostToolCheckGenerator;
+        let ctx = WizardContext::default();
+        let result = tokio_test_block_on(gen.generate(
+            &ctx,
+            Path::new("."),
+            &serde_json::json!({
+                "tools": ["definitely-not-a-real-tool-xyz"],
+                "mode": "all"
+            }),
+        ));
+        let err = result.expect_err("инструмент отсутствует — проверка обязана упасть");
+        assert!(
+            err.contains("definitely-not-a-real-tool-xyz"),
+            "ошибка называет инструмент: {err}"
+        );
+    }
+
+    #[test]
+    fn host_tool_check_rejects_empty_config() {
+        let gen = HostToolCheckGenerator;
+        let ctx = WizardContext::default();
+        let result =
+            tokio_test_block_on(gen.generate(&ctx, Path::new("."), &serde_json::json!({})));
+        assert!(result.is_err(), "конфиг без tools обязан падать");
     }
 
     fn tokio_test_block_on<F: std::future::Future>(fut: F) -> F::Output {

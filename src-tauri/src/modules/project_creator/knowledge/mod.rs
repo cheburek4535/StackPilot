@@ -134,11 +134,7 @@ impl KnowledgeBase for DefaultKnowledgeBase {
                     || e.content.to_lowercase().contains(&q)
             })
             .collect();
-        found.sort_by(|a, b| {
-            a.title
-                .to_lowercase()
-                .cmp(&b.title.to_lowercase())
-        });
+        found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         found.into_iter().cloned().collect()
     }
 }

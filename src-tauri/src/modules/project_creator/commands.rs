@@ -3,7 +3,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
-use super::engine::duplicate_framework_write_paths;
 use super::models::*;
 use super::{ProjectCreatorState, EXECUTION_SNAPSHOT_LIMIT};
 
@@ -53,7 +52,9 @@ pub fn get_host_platform() -> String {
 }
 
 /// Проверяет выбранный стек на ограничения (лимиты, конфликты,
-/// платформы, типы проектов, языки по сторонам). Возвращает все проблемы.
+/// платформы, типы проектов, языки по сторонам, целостность генерации).
+/// Возвращает все проблемы — единый путь validate_context (нормализация +
+/// validate_stack + duplicate_framework_write_paths).
 #[tauri::command]
 pub fn validate_project_stack(
     state: State<'_, ProjectCreatorState>,
@@ -62,29 +63,16 @@ pub fn validate_project_stack(
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
 ) -> Vec<super::validate::StackIssue> {
-    let mut issues = super::validate::validate_stack(
+    super::validate::validate_context(
         state.wizard.get_wizard_tree(),
-        project_type.as_deref(),
-        &backend_languages,
-        &frontend_languages,
-        &frameworks,
-        super::validate::current_os(),
-    );
-    // Guard движка: два фреймворка, пишущие один файл, сломают генерацию.
-    issues.extend(
-        duplicate_framework_write_paths(&guard_context(
+        &mut guard_context(
             project_type,
             &backend_languages,
             &frontend_languages,
             &frameworks,
-        ))
-        .into_iter()
-        .map(|message| super::validate::StackIssue {
-            severity: super::validate::StackSeverity::Error,
-            message,
-        }),
-    );
-    issues
+        ),
+        super::validate::current_os(),
+    )
 }
 
 /// Контекст для guard-проверки движка (пути генерации считаются только по
@@ -128,26 +116,15 @@ pub fn validate_project_stack_error(
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
 ) -> Option<String> {
-    let mut issues = super::validate::validate_stack(
+    let issues = super::validate::validate_context(
         state.wizard.get_wizard_tree(),
-        project_type.as_deref(),
-        &backend_languages,
-        &frontend_languages,
-        &frameworks,
-        super::validate::current_os(),
-    );
-    issues.extend(
-        duplicate_framework_write_paths(&guard_context(
+        &mut guard_context(
             project_type,
             &backend_languages,
             &frontend_languages,
             &frameworks,
-        ))
-        .into_iter()
-        .map(|message| super::validate::StackIssue {
-            severity: super::validate::StackSeverity::Error,
-            message,
-        }),
+        ),
+        super::validate::current_os(),
     );
     super::validate::first_error(&issues)
 }
@@ -186,19 +163,15 @@ pub fn preview_project_recipe(
     context: WizardContext,
     project_path: String,
 ) -> Result<RecipePreview, String> {
-    if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
+    // Единый барьер: нормализация + правила стека + целостность генерации
+    // (два фреймворка, пишущие один файл, — Error). Контекст нормализуется
+    // in-place и в каноническом виде уходит в plan().
+    let mut context = context;
+    if let Some(err) = super::validate::first_error(&super::validate::validate_context(
         state.wizard.get_wizard_tree(),
-        context.project_type.as_deref(),
-        &context.backend_languages,
-        &context.frontend_languages,
-        &context.frameworks,
+        &mut context,
         super::validate::current_os(),
     )) {
-        return Err(err);
-    }
-    // Легальные правила прошли, но фреймворки могут писать один файл —
-    // такой стек сломает генерацию, отсекаем до предпросмотра.
-    if let Some(err) = duplicate_framework_write_paths(&context).into_iter().next() {
         return Err(err);
     }
     let path = PathBuf::from(&project_path);
@@ -213,18 +186,14 @@ pub async fn start_project_execution(
     context: WizardContext,
     project_path: String,
 ) -> Result<ExecutionPlan, String> {
-    if let Some(err) = super::validate::first_error(&super::validate::validate_stack(
+    // Единый барьер перед выполнением: нормализация + правила стека +
+    // целостность генерации. Контекст нормализуется in-place.
+    let mut context = context;
+    if let Some(err) = super::validate::first_error(&super::validate::validate_context(
         state.wizard.get_wizard_tree(),
-        context.project_type.as_deref(),
-        &context.backend_languages,
-        &context.frontend_languages,
-        &context.frameworks,
+        &mut context,
         super::validate::current_os(),
     )) {
-        return Err(err);
-    }
-    // Финальная проверка целостности генерации (дублирование файлов).
-    if let Some(err) = duplicate_framework_write_paths(&context).into_iter().next() {
         return Err(err);
     }
     let path = PathBuf::from(&project_path);

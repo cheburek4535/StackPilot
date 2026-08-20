@@ -1,4 +1,5 @@
 use crate::modules::project_creator::models::*;
+use crate::modules::project_creator::normalize::normalize_context;
 
 /// WizardEngine — управляет мастером создания проекта.
 ///
@@ -118,6 +119,17 @@ impl WizardEngine {
             }
             "features" => {
                 ctx.features = answers;
+                // Каноническое отображение фич в флаги контекста: мастер не
+                // решает за пользователя, какие фичи включены (default() — всё
+                // выключено), а только применяет явный выбор. requires_docker-
+                // инструменты включают docker и без явной отметки (см. ниже).
+                ctx.docker = ctx.features.contains(&"docker".to_string());
+                ctx.testing = ctx.features.contains(&"testing".to_string());
+                ctx.git_init = ctx.features.contains(&"git".to_string())
+                    || ctx.features.contains(&"git_init".to_string());
+                ctx.vscode_config = ctx.features.contains(&"vscode".to_string())
+                    || ctx.features.contains(&"vscode_config".to_string());
+                ctx.ci = ctx.features.contains(&"ci".to_string());
             }
             "confirm" => {}
             "__back__" => {
@@ -128,6 +140,13 @@ impl WizardEngine {
             }
             _ => {}
         }
+
+        // Каноническая нормализация после КАЖДОГО шага: дедупликация, вывод
+        // сторон для языков без явного назначения, объединение languages,
+        // пересчёт docker. Без неё backend_languages/frontend_languages
+        // остаются пустыми после шага «languages», и следующий шаг видит
+        // неполный контекст.
+        normalize_context(&self.tree, &mut ctx);
 
         let next_step = if question_id == "confirm" {
             session.current_step

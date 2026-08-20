@@ -405,11 +405,16 @@ impl Default for WizardContext {
             local_infra_tools: Vec::new(),
             features: Vec::new(),
             infrastructure: Vec::new(),
-            docker: true,
-            testing: true,
+            // Фичи по умолчанию ВЫКЛЮЧЕНЫ: мастер (wizard/mod.rs::submit_answer)
+            // и фронтенд включают их явно (features/флаги). Пока пользователь
+            // не принял решение — фича не включается (см. normalize_context:
+            // docker активируется автоматически только выбранным инструментом
+            // с requires_docker).
+            docker: false,
+            testing: false,
             ci: false,
-            git_init: true,
-            vscode_config: true,
+            git_init: false,
+            vscode_config: false,
             answers: std::collections::HashMap::new(),
         }
     }

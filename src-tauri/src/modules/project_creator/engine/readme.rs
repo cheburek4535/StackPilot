@@ -80,6 +80,9 @@ pub enum Architecture {
     BackendOnly,
     /// Только клиентская часть.
     FrontendOnly,
+    /// Неинтегрированная клиентская оболочка (electron, expo, react-native,
+    /// plasmo) + REST API-бэкенд: клиент в frontend/, API в backend/.
+    ShellClientApi,
     /// Пустой/нетипичный стек.
     Other,
 }
@@ -91,6 +94,7 @@ impl Architecture {
             Self::Separated => "separated",
             Self::BackendOnly => "backend-only",
             Self::FrontendOnly => "frontend-only",
+            Self::ShellClientApi => "shell + api",
             Self::Other => "other",
         }
     }
@@ -254,20 +258,23 @@ fn architecture(ctx: &ReadmeContext) -> Architecture {
         return Architecture::Other;
     }
     // Оболочка, встраивающая веб-фронтенд, делает стек connected независимо
-    // от раскладки (tauri/electron всегда; Qt — только в WebEngine-режиме,
-    // остальные режимы Qt не встраивают веб-UI).
+    // от раскладки (tauri; Qt — только в WebEngine-режиме, остальные режимы
+    // Qt не встраивают веб-UI). Electron — НЕ connected: это клиентская
+    // оболочка, живущая в frontend/ (см. LayoutClass::ShellClientApi).
     match embedded_shell(ctx) {
-        Some("Tauri") | Some("Electron") => return Architecture::Connected,
+        Some("Tauri") => return Architecture::Connected,
         Some("Qt WebEngine") | Some("Qt") if qt_is_webengine(ctx) => {
             return Architecture::Connected;
         }
         _ => {}
     }
     match ctx.layout.class {
-        LayoutClass::Split => Architecture::Separated,
-        LayoutClass::Integrated => Architecture::Connected,
+        LayoutClass::Separated => Architecture::Separated,
+        LayoutClass::Connected => Architecture::Connected,
         LayoutClass::BackendOnly => Architecture::BackendOnly,
         LayoutClass::FrontendOnly => Architecture::FrontendOnly,
+        LayoutClass::ShellClientApi => Architecture::ShellClientApi,
+        LayoutClass::Custom => Architecture::Other,
     }
 }
 
@@ -319,7 +326,6 @@ fn embedded_shell(ctx: &ReadmeContext) -> Option<&'static str> {
     for fw in fws {
         match fw {
             "tauri" => return Some("Tauri"),
-            "electron" => return Some("Electron"),
             "qt-webengine" => return Some("Qt WebEngine"),
             "qt" | "qt-qml" | "qt-widgets" | "qt-kirigami" => return Some("Qt"),
             _ => {}
@@ -1775,6 +1781,13 @@ fn section_architecture(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
              be developed, tested and deployed on its own."
                 .to_string()
         }
+        Architecture::ShellClientApi => {
+            "The project has a **shell + api** architecture: a desktop/mobile client shell \
+             (Electron, Expo, React Native, Plasmo) lives in `frontend/` and talks to a REST \
+             API backend in `backend/` over HTTP. The client is a standalone application — \
+             the backend serves only API traffic and does not render pages."
+                .to_string()
+        }
         Architecture::BackendOnly => {
             "The project is **backend-only**: everything lives in the project root, and there \
              is no separate frontend application. All user interaction happens through the API \
@@ -2089,7 +2102,7 @@ fn framework_relationship(ctx: &ReadmeContext, fw: &str) -> String {
         );
     }
     if let Some(shell_label) = shell {
-        if fw == "tauri" || fw == "electron" || fw == "qt" || fw.starts_with("qt-") {
+        if fw == "tauri" || fw == "qt" || fw.starts_with("qt-") {
             return format!(
                 "{} is the desktop shell of this project — it hosts the native window \
                  and embeds the web frontend.",
@@ -2104,6 +2117,14 @@ fn framework_relationship(ctx: &ReadmeContext, fw: &str) -> String {
                 shell_label
             );
         }
+    }
+    // Неинтегрированные клиентские оболочки (electron, expo, react-native,
+    // plasmo) НЕ встроены в корень проекта: они standalone-клиенты,
+    // общающиеся с API по HTTP (LayoutClass::ShellClientApi / FrontendOnly).
+    if matches!(fw, "electron" | "expo" | "react-native" | "plasmo") {
+        return "A client shell: a standalone desktop/mobile application that hosts its own \
+                UI. It is not embedded into another shell and can be deployed independently."
+            .to_string();
     }
     let frontends: Vec<&str> = ctx
         .context
@@ -2898,6 +2919,10 @@ mod tests {
             local_infra_tools: local_infra.iter().map(|s| s.to_string()).collect(),
             project_type: Some(project_type.to_string()),
             docker,
+            // Полная сессия мастера: git и vscode включены явно (default() —
+            // всё off).
+            git_init: true,
+            vscode_config: true,
             ..Default::default()
         }
     }
@@ -2985,8 +3010,9 @@ mod tests {
     }
 
     #[test]
-    fn electron_react_typescript_is_connected() {
-        // 4. Electron + React + TypeScript.
+    fn electron_react_typescript_is_frontend_only() {
+        // 4. Electron + React + TypeScript. Electron — НЕ integrated-оболочка
+        // (как tauri): это клиентская оболочка в frontend/, standalone-приложение.
         let ctx = ctx_with(
             "desktop-app",
             &["typescript"],
@@ -3000,9 +3026,34 @@ mod tests {
         let md = render(&ctx);
         assert!(md.contains("Electron"), "{md}");
         assert!(md.contains("React"), "{md}");
-        assert!(md.contains("connected"), "{md}");
-        assert!(md.contains("standalone website"), "{md}");
+        assert!(md.contains("frontend-only"), "{md}");
+        assert!(md.contains("client shell"), "{md}");
         assert!(md.contains("npm start"), "{md}");
+    }
+
+    #[test]
+    fn electron_with_django_is_shell_plus_api() {
+        // 4b. Electron + Django: неинтегрированная клиентская оболочка +
+        // REST API-бэкенд → "shell + api" (клиент в frontend/, API в backend/).
+        let ctx = ctx_with(
+            "desktop-app",
+            &["typescript", "python"],
+            &["python"],
+            &["typescript"],
+            &["electron", "django"],
+            &[],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(md.contains("Electron"), "{md}");
+        assert!(md.contains("Django"), "{md}");
+        assert!(md.contains("shell + api"), "{md}");
+        assert!(
+            md.contains("`frontend/`") && md.contains("`backend/`"),
+            "{md}"
+        );
+        assert!(!md.contains("connected"), "{md}");
     }
 
     #[test]

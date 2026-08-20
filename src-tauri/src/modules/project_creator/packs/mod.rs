@@ -73,7 +73,15 @@ fn infra_categories() -> &'static [&'static str] {
 }
 
 fn tooling_categories() -> &'static [&'static str] {
-    &["testing", "build", "linting", "formatting", "package-manager", "cli", "security"]
+    &[
+        "testing",
+        "build",
+        "linting",
+        "formatting",
+        "package-manager",
+        "cli",
+        "security",
+    ]
 }
 
 pub trait PackRegistry: Send + Sync {
@@ -138,9 +146,7 @@ impl PackRegistry for DefaultPackRegistry {
             Some(k) => self
                 .packs
                 .iter()
-                .filter(|p| {
-                    std::mem::discriminant(&p.kind) == std::mem::discriminant(&k)
-                })
+                .filter(|p| std::mem::discriminant(&p.kind) == std::mem::discriminant(&k))
                 .cloned()
                 .collect(),
             None => self.packs.clone(),

@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 
 use crate::modules::project_creator::engine::paths;
 use crate::modules::project_creator::engine::process::{
-    command_display, local_time, ExecutionEventSink, InteractiveRules, ProcessRunner, ProcessSpec,
-    StdinMode,
+    command_display, local_time, CommandRunner, ExecutionEventSink, InteractiveRules,
+    ProcessRunner, ProcessSpec, StdinMode,
 };
 use crate::modules::project_creator::engine::ExecutionPlan;
 use crate::modules::project_creator::generators::GeneratorRegistry;
@@ -17,17 +17,29 @@ pub struct StepExecutor {
     /// Встроенные генераторы для шагов Step::Generate
     /// (spring-boot, fs-cleanup, cli).
     pub generators: Arc<GeneratorRegistry>,
+    /// Шина запуска CLI-команд (реальный ProcessRunner или мок в тестах).
+    pub command_runner: Arc<dyn CommandRunner>,
 }
 
 impl StepExecutor {
     pub fn new() -> Self {
-        Self {
-            generators: Arc::new(GeneratorRegistry::with_defaults()),
-        }
+        Self::with_command_runner(Arc::new(ProcessRunner))
     }
 
     pub fn with_generators(generators: Arc<GeneratorRegistry>) -> Self {
-        Self { generators }
+        Self {
+            generators,
+            command_runner: Arc::new(ProcessRunner),
+        }
+    }
+
+    /// Экзекутор с переопределённой шиной процессов — единственная точка
+    /// мока CLI в тестах исполнения (MockCommandRunner).
+    pub fn with_command_runner(command_runner: Arc<dyn CommandRunner>) -> Self {
+        Self {
+            generators: Arc::new(GeneratorRegistry::with_defaults()),
+            command_runner,
+        }
     }
 
     /// Событийный приёмник шага: маршрутизирует вывод процесса в канал
@@ -122,7 +134,7 @@ impl StepExecutor {
         let start = std::time::Instant::now();
         let command_text = command_display(command, &spec.args);
 
-        match ProcessRunner::run(spec, Some(&sink)).await {
+        match self.command_runner.run(spec, Some(&sink)).await {
             Ok(output) => StepResult {
                 step_id: step_id(step),
                 label: step_label(step),

@@ -22,7 +22,9 @@
 //      full-stack фреймворка, backend + Electron) — не блокируют
 //      генерацию, только поясняют и советуют альтернативу.
 
-use super::models::{FrameworkDef, WizardTreeData};
+use super::engine::duplicate_framework_write_paths;
+use super::models::{FrameworkDef, WizardContext, WizardTreeData};
+use super::normalize::normalize_context;
 
 /// Одна найденная проблема стека.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -82,10 +84,104 @@ fn conflict_note<'a>(fw: &'a FrameworkDef, other: &'a FrameworkDef) -> Option<&'
         .map(String::as_str)
 }
 
+/// Сторона языка, СОГЛАСОВАННАЯ С ДВИЖКОМ (ProjectLayout::side_for_language):
+///   1. явное назначение мастера (backend_languages/frontend_languages);
+///   2. язык, требуемый фреймворком РОВНО одной стороны, — но только для
+///      ВЫБРАННЫХ и НЕ назначенных языков (zig+dart+flutter: dart выбран и
+///      не назначен — нужен только flutter → frontend; nest+cpp+ts: ts
+///      назначен на фронтенд, а невыбранный js не может «спасти» nest);
+///   3. вывод по category ("backend"/"both" → backend, "frontend"/"static" →
+///      frontend; неизвестный язык → None).
+fn language_side(
+    tree: &WizardTreeData,
+    backend_langs: &[String],
+    frontend_langs: &[String],
+    selected_langs: &[String],
+    selected_frameworks: &[&FrameworkDef],
+    lang: &str,
+) -> Option<&'static str> {
+    if backend_langs.iter().any(|l| l == lang) {
+        return Some("backend");
+    }
+    if frontend_langs.iter().any(|l| l == lang) {
+        return Some("frontend");
+    }
+    if selected_langs.iter().any(|l| l == lang) {
+        let mut required_by: Vec<&'static str> = Vec::new();
+        for fw in selected_frameworks {
+            if !fw.languages.iter().any(|l| l == lang) {
+                continue;
+            }
+            match fw.side.as_str() {
+                "backend" if !required_by.contains(&"backend") => required_by.push("backend"),
+                "frontend" if !required_by.contains(&"frontend") => required_by.push("frontend"),
+                _ => {}
+            }
+        }
+        if required_by.len() == 1 {
+            return Some(required_by[0]);
+        }
+    }
+    match tree
+        .languages
+        .iter()
+        .find(|l| &l.id == lang)
+        .and_then(|l| l.category.as_deref())
+    {
+        Some("backend") | Some("both") => Some("backend"),
+        Some("frontend") | Some("static") => Some("frontend"),
+        _ => None,
+    }
+}
+
+/// ЕДИНСТВЕННЫЙ полный барьер валидации контекста. Три слоя в одном вызове:
+///   1. каноническая нормализация (normalize_context): неизвестные id,
+///      язык на обеих сторонах, вывод сторон, пересчёт docker;
+///   2. правила стека (validate_stack): платформы, конфликты, типы проектов,
+///      лимиты главных фреймворков, языки по сторонам, warning_pairs;
+///   3. целостность генерации (duplicate_framework_write_paths): два
+///      фреймворка, пишущие один файл/каталог, сломают выполнение.
+/// Контекст нормализуется in-place: после вызова у вызывающего — КАНОНИЧЕСКИЙ
+/// вид, тот же, что видит движок (plan). Все потребители (tauri-команды,
+/// пресеты, plan) идут только через эту функцию — валидация и планирование
+/// всегда говорят одно и то же.
+pub fn validate_context(
+    tree: &WizardTreeData,
+    context: &mut WizardContext,
+    os: &str,
+) -> Vec<StackIssue> {
+    let mut issues: Vec<StackIssue> = normalize_context(tree, context)
+        .into_iter()
+        .map(|message| StackIssue {
+            severity: StackSeverity::Error,
+            message,
+        })
+        .collect();
+    issues.extend(validate_stack(
+        tree,
+        context.project_type.as_deref(),
+        &context.languages,
+        &context.backend_languages,
+        &context.frontend_languages,
+        &context.frameworks,
+        os,
+    ));
+    issues.extend(
+        duplicate_framework_write_paths(context)
+            .into_iter()
+            .map(|message| StackIssue {
+                severity: StackSeverity::Error,
+                message,
+            }),
+    );
+    issues
+}
+
 /// Проверяет стек и возвращает найденные проблемы (порядок значимый).
 pub fn validate_stack(
     tree: &WizardTreeData,
     project_type: Option<&str>,
+    languages: &[String],
     backend_langs: &[String],
     frontend_langs: &[String],
     frameworks: &[String],
@@ -230,14 +326,27 @@ pub fn validate_stack(
         }
     }
 
-    // 5. Язык(и) стороны должны подходить фреймворку
+    // 5. Язык(и) стороны должны подходить фреймворку. Сторона языка
+    //    разрешается ТАК ЖЕ, как в движке (ProjectLayout::side_for_language):
+    //    явное назначение мастера > язык, требуемый фреймворком ровно одной
+    //    стороны (только выбранный и не назначенный) > category. Валидация и
+    //    планирование классифицируют язык ОДИНАКОВО (иначе: zig+dart+flutter
+    //    без явных сторон валиден для движка, но отклонялся валидацией —
+    //    и наоборот).
     for fw in &selected {
+        let side_ok = |lang: &str, side: &str| {
+            language_side(
+                tree,
+                backend_langs,
+                frontend_langs,
+                languages,
+                &selected,
+                lang,
+            ) == Some(side)
+        };
         match fw.side.as_str() {
             "backend" => {
-                if !backend_langs
-                    .iter()
-                    .any(|l| fw.languages.iter().any(|x| x == l))
-                {
+                if !fw.languages.iter().any(|l| side_ok(l, "backend")) {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -250,10 +359,7 @@ pub fn validate_stack(
                 }
             }
             "frontend" => {
-                if !frontend_langs
-                    .iter()
-                    .any(|l| fw.languages.iter().any(|x| x == l))
-                {
+                if !fw.languages.iter().any(|l| side_ok(l, "frontend")) {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
                         message: format!(
@@ -266,10 +372,12 @@ pub fn validate_stack(
                 }
             }
             _ => {
-                let any_ok = fw
-                    .languages
-                    .iter()
-                    .any(|x| backend_langs.contains(x) || frontend_langs.contains(x));
+                let any_ok = fw.languages.iter().any(|x| {
+                    matches!(
+                        language_side(tree, backend_langs, frontend_langs, languages, &selected, x),
+                        Some("backend") | Some("frontend")
+                    )
+                });
                 if !any_ok {
                     issues.push(StackIssue {
                         severity: StackSeverity::Error,
@@ -348,7 +456,10 @@ mod tests {
         let fws: Vec<String> = fws.iter().map(|s| s.to_string()).collect();
         let b_langs: Vec<String> = b.map(|s| s.to_string()).into_iter().collect();
         let f_langs: Vec<String> = f.map(|s| s.to_string()).into_iter().collect();
-        validate_stack(tree, pt, &b_langs, &f_langs, &fws, os)
+        // Выбранные языки = объединение сторон (тестовый помощник).
+        let mut langs = b_langs.clone();
+        langs.extend(f_langs.iter().cloned());
+        validate_stack(tree, pt, &langs, &b_langs, &f_langs, &fws, os)
     }
 
     // ----------------------------------------------------------

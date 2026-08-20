@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use super::{python_command, python_venv_bin};
+use super::{framework_def, language_scaffold_suppressed, python_command, python_venv_bin};
 use crate::modules::project_creator::models::*;
 
 /// Каталоги, в которых ищется composer.phar (единый список с composer_launch
@@ -353,6 +353,138 @@ pub fn node_preflight_steps(project_path: &str) -> Vec<Step> {
             interactive: vec![],
         },
     ]
+}
+
+// ============================================================================
+// Generic host tools: где/которые-префлайт для всего, что движок реально
+// вызывает при генерации (dart, cargo, go, dotnet, zig, mix, gleam, maven,
+// gradle...). node/npm/python/php+composer покрыты специализированными
+// префлайтами — generic-проверка их не дублирует.
+// ============================================================================
+
+/// Инструмент хоста, который вызывает language-скаффолд языка (по тем же
+/// правилам, что steps_for_language в engine/mod.rs). None — язык не
+/// вызывает CLI при генерации (kotlin, c/cpp — только файлы) или покрыт
+/// специализированным префлайтом (node/npm/python/php).
+fn language_host_tool(lang: &str) -> Option<&'static str> {
+    match lang {
+        "rust" => Some("cargo"),
+        "go" => Some("go"),
+        "java" => Some("mvn"),
+        "csharp" => Some("dotnet"),
+        "zig" => Some("zig"),
+        "dart" => Some("dart"),
+        "swift" => Some("swift"),
+        "elixir" => Some("mix"),
+        "gleam" => Some("gleam"),
+        _ => None,
+    }
+}
+
+/// Инструмент покрыт специализированным префлайтом (node/npm —
+/// node_preflight_steps, python — python_preflight_step, php+composer —
+/// php_preflight_step): generic-проверка не дублирует его.
+fn host_tool_covered_by_dedicated_preflight(tool: &str) -> bool {
+    matches!(tool, "node" | "npm" | "python" | "php" | "composer")
+}
+
+/// Generic-префлайт инструментов хоста: по одному Abort-шагу на группу
+/// требований. Группы:
+///   - «все» (mode=all): инструменты языковых скаффолдов + единственные
+///     required_tools фреймворков (ktor→gradle) — каждый обязан быть в PATH;
+///   - «хотя бы один» (mode=any): альтернативные required_tools фреймворка
+///     (spring-boot: maven ИЛИ gradle).
+/// Отсутствие инструмента останавливает пайплайн с понятной причиной —
+/// каркасы не «молча пропускаются» из-за невозможности запустить CLI.
+pub fn host_tool_preflight_steps(context: &WizardContext) -> Vec<Step> {
+    let mut all_tools: Vec<String> = Vec::new();
+    let mut any_groups: Vec<Vec<String>> = Vec::new();
+
+    for lang in &context.languages {
+        if language_scaffold_suppressed(lang, context) {
+            continue;
+        }
+        if let Some(tool) = language_host_tool(lang) {
+            push_unique(&mut all_tools, tool.to_string());
+        }
+    }
+    for fw in &context.frameworks {
+        let Some(def) = framework_def(fw) else {
+            continue;
+        };
+        let mut required: Vec<String> = def
+            .required_tools
+            .iter()
+            .filter(|t| !host_tool_covered_by_dedicated_preflight(t))
+            .cloned()
+            .collect();
+        if required.is_empty() {
+            continue;
+        }
+        required.sort();
+        required.dedup();
+        if required.len() == 1 {
+            push_unique(&mut all_tools, required[0].clone());
+        } else if !any_groups.contains(&required) {
+            any_groups.push(required);
+        }
+    }
+    all_tools.sort();
+    all_tools.dedup();
+
+    let mut steps: Vec<Step> = Vec::new();
+    if !all_tools.is_empty() {
+        steps.push(host_tool_check_step(
+            "host_tools_preflight",
+            "Check host toolchain",
+            "Verify required host tools (where/which) before scaffolding",
+            &all_tools,
+            true,
+        ));
+    }
+    for group in any_groups {
+        steps.push(host_tool_check_step(
+            &format!("host_tool_{}_preflight", group.join("_or_")),
+            &format!("Check {} toolchain", group.join("/")),
+            &format!(
+                "Verify one of the required host tools is available: {}",
+                group.join(", ")
+            ),
+            &group,
+            false,
+        ));
+    }
+    steps
+}
+
+/// Один Abort-шаг проверки инструментов через генератор "host-tool-check".
+fn host_tool_check_step(
+    id: &str,
+    label: &str,
+    desc: &str,
+    tools: &[String],
+    mode_all: bool,
+) -> Step {
+    Step::Generate {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: desc.to_string(),
+        generator_id: "host-tool-check".into(),
+        generator_config: serde_json::json!({
+            "tools": tools,
+            "mode": if mode_all { "all" } else { "any" },
+        }),
+        policy: None,
+        condition: None,
+        on_error: ErrorMode::Abort,
+    }
+}
+
+/// Добавить значение в список, если его там ещё нет.
+fn push_unique(list: &mut Vec<String>, value: String) {
+    if !list.contains(&value) {
+        list.push(value);
+    }
 }
 
 // ============================================================================
@@ -731,5 +863,120 @@ mod tests {
             }
             _ => panic!("патч — WriteFile"),
         }
+    }
+
+    #[test]
+    fn host_tool_preflight_covers_language_scaffold_tools() {
+        // rust+go: language-скаффолды вызывают cargo init и go mod init —
+        // generic-префлайт обязан проверить оба инструмента (mode=all).
+        let steps = host_tool_preflight_steps(&ctx(&["rust", "go"], &[], &[]));
+        assert_eq!(steps.len(), 1, "все инструменты — в одном all-шаге");
+        let Step::Generate {
+            generator_id,
+            generator_config,
+            on_error,
+            ..
+        } = &steps[0]
+        else {
+            panic!("host-tool префлайт — Generate");
+        };
+        assert_eq!(generator_id, "host-tool-check");
+        assert_eq!(on_error, &ErrorMode::Abort);
+        let tools: Vec<String> = generator_config
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(tools, vec!["cargo".to_string(), "go".to_string()]);
+        assert_eq!(
+            generator_config.get("mode").and_then(|v| v.as_str()),
+            Some("all")
+        );
+    }
+
+    #[test]
+    fn host_tool_preflight_merges_single_required_tools_and_keeps_alternatives() {
+        // flutter требует dart (tree), spring-boot — maven ИЛИ gradle:
+        // dart уходит в общий all-шаг, maven/gradle остаются отдельным
+        // any-шагом (альтернативы).
+        let steps = host_tool_preflight_steps(&ctx(&["dart"], &["flutter", "spring-boot"], &[]));
+        let groups: Vec<(&str, Vec<String>, &str)> = steps
+            .iter()
+            .map(|s| match s {
+                Step::Generate {
+                    generator_id,
+                    generator_config,
+                    ..
+                } => {
+                    let tools: Vec<String> = generator_config
+                        .get("tools")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|t| t.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (
+                        generator_id.as_str(),
+                        tools,
+                        generator_config
+                            .get("mode")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                    )
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(
+            groups.contains(&("host-tool-check", vec!["dart".to_string()], "all")),
+            "dart — обязательный инструмент: {groups:?}"
+        );
+        assert!(
+            groups.contains(&(
+                "host-tool-check",
+                vec!["gradle".to_string(), "maven".to_string()],
+                "any"
+            )),
+            "maven/gradle — альтернативы (any): {groups:?}"
+        );
+    }
+
+    #[test]
+    fn host_tool_preflight_skips_dedicated_and_suppressed_tools() {
+        // typescript: node/npm покрыты node_preflight_steps — не дублируются;
+        // dart при flutter: language-скаффолд подавлен (flutter генерирует
+        // каркас сам), но dart остаётся через required_tools фреймворка.
+        let steps = host_tool_preflight_steps(&ctx(&["typescript", "dart"], &["flutter"], &[]));
+        let configs: Vec<serde_json::Value> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Generate {
+                    generator_config, ..
+                } => Some(generator_config.clone()),
+                _ => None,
+            })
+            .collect();
+        let all_tools = configs
+            .iter()
+            .flat_map(|c| {
+                c.get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)))
+                    .into_iter()
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !all_tools.iter().any(|t| t == "node" || t == "npm"),
+            "{all_tools:?}"
+        );
+        assert!(all_tools.contains(&"dart".to_string()), "{all_tools:?}");
+        assert_eq!(configs.len(), 1, "только dart: {configs:?}");
     }
 }

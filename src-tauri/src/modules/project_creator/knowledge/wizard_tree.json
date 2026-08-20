@@ -1073,7 +1073,9 @@
       "knowledge_key": "aspnetcore",
       "scaffold": "subdir",
       "output_subdir": "backend",
-      "required_tools": [],
+      "required_tools": [
+        "dotnet"
+      ],
       "suppresses_language_scaffold": true,
       "kind": "app",
       "recommends": []
@@ -1098,7 +1100,9 @@
       "knowledge_key": "maui",
       "scaffold": "subdir",
       "output_subdir": "frontend",
-      "required_tools": [],
+      "required_tools": [
+        "dotnet"
+      ],
       "suppresses_language_scaffold": true,
       "kind": "app",
       "recommends": []
@@ -1293,7 +1297,9 @@
       "knowledge_key": "flutter",
       "scaffold": "subdir",
       "output_subdir": "frontend",
-      "required_tools": [],
+      "required_tools": [
+        "dart"
+      ],
       "suppresses_language_scaffold": true,
       "kind": "app",
       "recommends": []

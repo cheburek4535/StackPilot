@@ -265,6 +265,30 @@ impl ExecutionEventSink {
 /// внутренних буферов или состояния между запусками.
 pub struct ProcessRunner;
 
+/// Шина запуска процессов: абстракция над ProcessRunner для тестов.
+/// StepExecutor и генераторы запускают CLI только через CommandRunner —
+/// мок-реализации подменяют реальные процессы в тестах исполнения
+/// (см. MockCommandRunner в engine/mod.rs).
+#[async_trait::async_trait]
+pub trait CommandRunner: Send + Sync {
+    async fn run(
+        &self,
+        spec: ProcessSpec,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<ProcessOutput, ProcessExecutionError>;
+}
+
+#[async_trait::async_trait]
+impl CommandRunner for ProcessRunner {
+    async fn run(
+        &self,
+        spec: ProcessSpec,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<ProcessOutput, ProcessExecutionError> {
+        ProcessRunner::run(spec, sink).await
+    }
+}
+
 impl ProcessRunner {
     pub async fn run(
         spec: ProcessSpec,
