@@ -1,21 +1,23 @@
-pub mod content;
+﻿pub mod content;
 pub mod executor;
 pub mod paths;
 pub mod preflight;
 pub mod process;
+mod readme;
 pub mod template;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Instant;
-
+use std::collections::HashSet;
 use chrono::Local;
 use tokio::sync::mpsc;
 
 use crate::modules::project_creator::generators::GeneratorRegistry;
 use crate::modules::project_creator::generators::SCAFFOLD_TARGET;
 use crate::modules::project_creator::models::*;
+
 
 /// Полный движок рецептов:
 ///   1. plan() — составить план выполнения на основе WizardContext
@@ -525,6 +527,26 @@ fn compose_recipe(
 ) -> Result<Recipe, String> {
     // project_name может отличаться от folder_name (при auto-rename папки)
     let project_name = context.project_name.as_deref().unwrap_or(folder_name);
+    // Неизвестные фреймворки/языки — явная ошибка, а не «echo-заглушка»:
+    // движок обязан либо реализовать выбранную технологию, либо отказать с
+    // понятной причиной. (html входит в wizard_tree.json, поэтому проходит
+    // проверку; его echo-ветка — предмет отдельной ручной доработки.)
+    for fw in &context.frameworks {
+        if framework_def(fw).is_none() {
+            return Err(format!(
+                "Framework '{}' is not supported: no implementation is available in this build",
+                fw
+            ));
+        }
+    }
+    for lang in &context.languages {
+        if language_def(lang).is_none() {
+            return Err(format!(
+                "Language '{}' is not supported: no implementation is available in this build",
+                lang
+            ));
+        }
+    }
     let mut steps: Vec<Step> = Vec::new();
     let project_path = context
         .project_path
@@ -827,13 +849,13 @@ fn compose_recipe(
         dependencies.push(dep("qt_cmake_build", "qt_cmake_configure"));
     }
 
-    // Go: go get / cobra-cli init работают в каталоге модуля — строго после
+    // Go: go get / cobra работают в каталоге модуля — строго после
     // go mod init (language-фаза), иначе «go.mod file not found».
     if context.frameworks.iter().any(|f| f == "gin") {
         dependencies.push(dep("get_gin", "go_mod_init"));
     }
     if context.frameworks.iter().any(|f| f == "cobra") {
-        dependencies.push(dep("cobra_init", "go_mod_init"));
+        dependencies.push(dep("get_cobra", "go_mod_init"));
     }
 
     // Python: pip/alembic/django-admin обязаны видеть готовое каноническое
@@ -874,6 +896,20 @@ fn compose_recipe(
         dependencies.push(dep("prisma_init", "prisma_deps"));
     }
 
+    // Gradle-каркасы: пост-валидация manifest-файлов строго ПОСЛЕ генерации
+    // wrapper'а — иначе gradlew/build-файлы могут ещё не существовать.
+    if context.frameworks.iter().any(|f| f == "ktor") {
+        dependencies.push(dep("ktor_deps_check", "ktor_gradle_wrapper"));
+    }
+    if context.frameworks.iter().any(|f| f == "android" || f == "jetpack-compose") {
+        dependencies.push(dep("android_build_check", "android_gradle_wrapper"));
+    }
+    // Terraform: init обязан выполниться до пост-валидации main.tf (проверка
+    // не зависит от init, но порядок фиксирует контракт шагов).
+    if context.tools.iter().any(|t| t == "terraform") {
+        dependencies.push(dep("terraform_check", "terraform_init"));
+    }
+
     Ok(Recipe {
         id: format!("recipe_{}", project_name),
         name: format!("{:?} project", context.project_type),
@@ -896,7 +932,7 @@ fn context_needs_npm(context: &WizardContext) -> bool {
 
 /// npm-пакет, которым обязан обладать package.json каркаса фреймворка
 /// (для пост-валидации manifest-check). None — пакет неочевиден/нет каркаса
-/// (tauri, react-native, plasmo).
+/// (tauri).
 fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
     match fw {
         "react" => Some("react"),
@@ -912,6 +948,10 @@ fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
         "express" => Some("express"),
         "fastify" => Some("fastify"),
         "telegraf" => Some("telegraf"),
+        // RN-каркас декларирует react-native в dependencies, плазменный —
+        // plasmo в devDependencies (проверка сканирует оба раздела).
+        "react-native" => Some("react-native"),
+        "plasmo" => Some("plasmo"),
         _ => None,
     }
 }
@@ -928,6 +968,8 @@ fn scaffold_step_id_for(fw: &str) -> Option<&'static str> {
         "electron" => Some("electron_init"),
         "expo" => Some("expo_init"),
         "solidjs" => Some("solid_init"),
+        "react-native" => Some("rn_init"),
+        "plasmo" => Some("plasmo_init"),
         _ => None,
     }
 }
@@ -1491,38 +1533,128 @@ fn steps_for_language(
         },
 
         "python" => {
-            // ЕДИНЫЙ детерминированный requirements.txt для всего стека
-            // (preflight::python_manifest): все Python-фреймворки и
-            // Python-инструменты пишутся ОДНИМ шагом ДО venv/pip-фазы.
-            // Установка читает ровно этот файл (py_pip_install) — никакие
-            // framework-шаги ничего не дописывают и не перезаписывают.
-            let requirements = preflight::python_manifest(context);
-            vec![
-                mkdir("create_src", "src"),
-                Step::WriteFile {
-                    id: "pyproject_toml".into(),
-                    label: "Create pyproject.toml".into(),
-                    description: "Initialize Python project configuration".into(),
-                    path: "pyproject.toml".into(),
-                    content: format!("[project]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"\"\nrequires-python = \">=3.10\"\n", project_name),
-                    overwrite: false,
-                    policy: None,
-                    condition: None,
-                    on_error: ErrorMode::Skip,
-                },
-                Step::WriteFile {
-                    id: "requirements_txt".into(),
-                    label: "Create requirements.txt".into(),
-                    description: "Initialize requirements file".into(),
-                    path: "requirements.txt".into(),
-                    content: requirements,
-                    overwrite: false,
-                    policy: None,
-                    condition: None,
-                    on_error: ErrorMode::Skip,
-                },
-            ]
+    // ЕДИНЫЙ детерминированный requirements.txt для всего стека
+    let requirements = preflight::python_manifest(context);
+
+    // Список поддерживаемых реляционных БД
+    let sql_dbs: HashSet<&str> = ["postgresql", "postgres", "mysql", "sqlite"]
+        .into_iter()
+        .collect();
+
+    // Проверяем, какая именно БД выбрана (ищем первое совпадение)
+    let detected_db = context.frameworks.iter().find(|fw| sql_dbs.contains(fw.as_str()));
+    let has_mongo = context.frameworks.iter().any(|fw| fw == "mongo" || fw == "mongodb");
+
+    // Базовый вектор шагов
+    let mut base_vec = vec![
+        mkdir("create_src", "src"),
+        Step::WriteFile {
+            id: "pyproject_toml".into(),
+            label: "Create pyproject.toml".into(),
+            description: "Initialize Python project configuration".into(),
+            path: "pyproject.toml".into(),
+            content: format!("[project]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"\"\nrequires-python = \">=3.10\"\n", project_name),
+            overwrite: false,
+            policy: None,
+            condition: None,
+            on_error: ErrorMode::Skip,
         },
+        Step::WriteFile {
+            id: "requirements_txt".into(),
+            label: "Create requirements.txt".into(),
+            description: "Initialize requirements file".into(),
+            path: "requirements.txt".into(),
+            content: requirements,
+            overwrite: false,
+            policy: None,
+            condition: None,
+            on_error: ErrorMode::Skip,
+        },
+    ];
+
+    // Если найдена реляционная БД, генерируем для нее структуру
+    if let Some(db_type) = detected_db {
+        // Формируем дефолтную строку подключения в зависимости от типа БД
+        let default_url = match db_type.as_str() {
+            "postgresql" | "postgres" => "postgresql+asyncpg://user:password@localhost:5432/dbname",
+            "mysql" | "mariadb" => "mysql+aiomysql://user:password@localhost:3306/dbname",
+            "sqlite" => "sqlite+aiosqlite:///./sql_app.db",
+            "mssql" => "mssql+aioodbc://user:password@localhost:1433/dbname?driver=ODBC+Driver+17+for+SQL+Server",
+            _ => "sqlite+aiosqlite:///./sql_app.db", // фолбек на sqlite
+        };
+
+        // Шаблон содержимого database.py
+        let db_content = format!(
+            r#"import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase
+
+DATABASE_URL = os.getenv("DATABASE_URL", "{}")
+
+engine = create_async_engine(DATABASE_URL, echo=True)
+async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+class Base(DeclarativeBase):
+    pass
+
+async def get_db():
+    async with async_session() as session:
+        yield session
+"#,
+            default_url
+        );
+
+        let db_steps = vec![
+            mkdir("create_db", "src/db"), // Хорошая практика: держать модули внутри папки src
+            Step::WriteFile {
+                id: "database_py".into(),
+                label: "Create database.py".into(),
+                description: "Create folder with basic database configuration".into(),
+                path: "src/db/database.py".into(),
+                content: db_content,
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+        ];
+        base_vec.extend(db_steps);
+    } 
+    // Отдельный шаблон, если используется MongoDB
+    else if has_mongo {
+        let mongo_content = r#"import os
+from motor.motor_asyncio import AsyncIOMotorClient
+
+MONGO_URL = os.getenv("DATABASE_URL", "mongodb://localhost:27017")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "app_db")
+
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DATABASE_NAME]
+
+def get_nosql_db():
+    return db
+"#.to_string();
+
+        let mongo_steps = vec![
+            mkdir("create_db", "src/db"),
+            Step::WriteFile {
+                id: "database_py".into(),
+                label: "Create database.py".into(),
+                description: "Create folder with basic MongoDB configuration".into(),
+                path: "src/db/database.py".into(),
+                content: mongo_content,
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+        ];
+        base_vec.extend(mongo_steps);
+    }
+
+    base_vec
+},
+
 
         "go" => vec![
             cmd_once("go_mod_init", "Init Go module",
@@ -2100,24 +2232,6 @@ fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
     })
 }
 
-/// Шаги CLI-генераторов, которые сами создают подпапку с именем проекта
-/// (mix phx.new <name>, vapor new <name> и т.п.).
-/// Индекс — позиция имени создаваемой подпапки в args.
-/// При сегментации в такой команде подменяется имя создаваемой подпапки
-/// (индекс в args), а рабочая директория остаётся корнем проекта;
-/// остальные шаги (write_file, остальные команды) переносятся в сегмент.
-/// Фронтенд-скаффолдеры (create-vite, create-next-app, nuxi init, expo,
-/// electron, laravel/symfony через composer, solidjs, flutter) из этого
-/// списка УБРАНЫ — их каталогом управляет ScaffoldGenerator
-/// (Step::Generate "scaffold", см. генератор), который знает способность
-/// каждого CLI.
-const FOLDER_MAKER_STEPS: &[(&str, usize)] = &[
-    ("rn_init", 2),     // npx @react-native-community/cli init <имя>
-    ("plasmo_init", 2), // npx plasmo init <имя>
-    ("phoenix_new", 1), // mix phx.new <имя>
-    ("vapor_new", 1),   // vapor new <имя>
-];
-
 /// Степ-иды языковых инициализаций, чьи FileNotExists-маркеры
 /// относительны РАБОЧЕЙ ДИРЕКТОРИИ шага (cargo init создаёт
 /// Cargo.toml рядом с собой и т.п.). При сегментации (into_segment)
@@ -2151,18 +2265,13 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
     steps
         .into_iter()
         .map(|step| {
-            let folder_maker_index = FOLDER_MAKER_STEPS
-                .iter()
-                .find(|(sid, _)| matches!(&step, Step::Command { id, .. } if *sid == id.as_str()))
-                .map(|(_, idx)| *idx);
-            let replaces = folder_maker_index.is_some();
             match step {
                 Step::Command {
                     id,
                     label,
                     description,
                     command,
-                    mut args,
+                    args,
                     working_dir,
                     env,
                     timeout_secs,
@@ -2170,27 +2279,7 @@ fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     on_error,
                     interactive,
                 } => {
-                    if replaces {
-                        if let Some(idx) = folder_maker_index {
-                            if let Some(arg) = args.get_mut(idx) {
-                                // генератор сам создаст подпапку — рабочая директория остаётся корневой
-                                *arg = dir.to_string();
-                            }
-                        }
-                        Step::Command {
-                            id,
-                            label,
-                            description,
-                            command,
-                            args,
-                            working_dir,
-                            env,
-                            timeout_secs,
-                            condition,
-                            on_error,
-                            interactive,
-                        }
-                    } else if id.starts_with("tauri_web_") || id.starts_with("qt_web_") {
+                    if id.starts_with("tauri_web_") || id.starts_with("qt_web_") {
                         // Веб-часть tauri (tauri_web_*) живёт в frontend/
                         // независимо от сегмента самого tauri (backend/ в
                         // моно-репозитории); qt_web_* — сборка веб-части Qt
@@ -2383,6 +2472,8 @@ const SCAFFOLD_GENERATOR_FRAMEWORKS: &[&str] = &[
     "electron",
     "laravel",
     "symfony",
+    "react-native",
+    "plasmo",
 ];
 
 /// Каталог, куда ScaffoldGenerator кладёт проект: при сегментации — каталог
@@ -3392,7 +3483,13 @@ fn xml_escape(text: &str) -> String {
 /// создаваться фреймворком "android" (java/kotlin, с Compose при связке
 /// с jetpack-compose) или самим "jetpack-compose" (kotlin + Compose).
 /// Все пути относительны — сегментация (frontend/) применяется движком.
-fn android_steps(project_name: &str, compose: bool, java_lang: bool) -> Vec<Step> {
+fn android_steps(
+    project_name: &str,
+    project_path: &str,
+    compose: bool,
+    java_lang: bool,
+    seg: Option<&str>,
+) -> Vec<Step> {
     // Compose доступен только в Kotlin-модуле; при java-языке — обычный
     // Activity (связка android+compose+java не возникает в мастере).
     let compose = compose && !java_lang;
@@ -3687,6 +3784,43 @@ include(":app")
 </manifest>
 "#)),
         wf("android_main", "Create MainActivity", &main_path, main_content),
+        // Wrapper (gradlew) обязателен для ./gradlew assembleDebug — без него
+        // у пользователя нет ни одной команды сборки, а Gradle может вообще
+        // не стоять локально. Abort: отсутствие Gradle останавливает пайплайн
+        // с понятной причиной, а не тихо скипает каркас.
+        Step::Command {
+            id: "android_gradle_wrapper".into(),
+            label: "Generate Gradle wrapper".into(),
+            description: "Create gradlew + gradle/wrapper for the Android project".into(),
+            command: "gradle".into(),
+            args: vec!["wrapper".into()],
+            working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+            env: None,
+            timeout_secs: Some(300),
+            condition: None,
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        },
+        // Пост-валидация: build.gradle.kts обязан декларировать Android-плагин
+        // (и Compose-артефакты в compose-проекте) — «каркас» без плагина не
+        // собирается.
+        {
+            let build_path = match seg {
+                Some(dir) => format!("{}/build.gradle.kts", dir),
+                None => "build.gradle.kts".to_string(),
+            };
+            let mut required = vec!["com.android.application"];
+            if compose {
+                required.push("androidx.compose.ui:ui");
+            }
+            preflight::manifest_check_step(
+                "android_build_check",
+                "Validate Android build.gradle.kts",
+                &build_path,
+                "gradle_kts",
+                &required,
+            )
+        },
     ]
 }
 
@@ -4135,10 +4269,20 @@ if __name__ == "__main__":
                 "src/bot.py",
                 &format!(
                     r#"import asyncio
+import os
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-bot = Bot(token="YOUR_BOT_TOKEN")
+load_dotenv()
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN is not set. Copy .env.example to .env and fill in the token."
+    )
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 @dp.message(Command("start"))
@@ -4155,6 +4299,7 @@ if __name__ == "__main__":
                 ),
             ),
             // aiogram попадает в union requirements.txt python-скаффолда
+            // (python-dotenv — тоже, см. preflight.python_manifest_lines)
         ],
 
         // ==================== Vite: React / Vue / Svelte ====================
@@ -4394,8 +4539,16 @@ app.listen(PORT, () => {{
                 "Create Telegram bot",
                 "src/bot.js",
                 &format!(
-                    r#"const {{ Telegraf }} = require('telegraf');
-const bot = new Telegraf('YOUR_BOT_TOKEN');
+                    r#"require('dotenv').config();
+const {{ Telegraf }} = require('telegraf');
+
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (!token) {{
+    console.error('TELEGRAM_BOT_TOKEN is not set. Copy .env.example to .env and fill in the token.');
+    process.exit(1);
+}}
+
+const bot = new Telegraf(token);
 
 bot.start((ctx) => ctx.reply('Hello from {}!'));
 
@@ -4421,7 +4574,7 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
                     command: "node".into(),
                     args: vec![
                         "-e".into(),
-                        "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies=j.dependencies||{};j.dependencies['telegraf']='^4.16.3';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\\n')".into(),
+                        "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies=j.dependencies||{};j.dependencies['telegraf']='^4.16.3';j.dependencies['dotenv']='^16.4.5';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\\n')".into(),
                     ],
                     working_dir: Some(project_path.to_string()),
                     env: None,
@@ -4449,7 +4602,8 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
   "version": "1.0.0",
   "main": "src/bot.js",
   "dependencies": {{
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5"
   }}
 }}
 "#,
@@ -4471,21 +4625,40 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
         }
 
         "react-native" => {
-            let rn_name = project_name.replace('-', "_");
-            vec![
-                cmd_i("rn_init", "Init React Native", "Create React Native project",
-                    "npx", vec!["@react-native-community/cli", "init", &rn_name, "--skip-install"],
-                    vec![
-                        InteractiveEntry {
-                            trigger: "Do you want to install CocoaPods dependencies?".into(),
-                            response_type: ResponseType::Confirm(false),
-                        },
-                        InteractiveEntry {
-                            trigger: "Downloading and installing the modern architecture dependencies. Proceed?".into(),
-                            response_type: ResponseType::Confirm(false),
-                        },
+            // RN CLI создаёт каталог с именем проекта и интерактивно
+            // спрашивает про CocoaPods / modern architecture — ответы
+            // передаются явно (ScaffoldExtras.interact). temp_dir_allowed=false:
+            // имя создаваемого каталога = имя каталога назначения (как в
+            // FOLDER_MAKER-режиме раньше), иначе app.json внутри каркаса
+            // назывался бы temp_frontend. Пост-условие package.json + мердж
+            // во frontend/ (матрёшка нормализуется генератором).
+            vec![scaffold_step(
+                "rn_init",
+                "Init React Native",
+                "Create React Native project",
+                "npx",
+                vec![
+                    "@react-native-community/cli",
+                    "init",
+                    SCAFFOLD_TARGET,
+                    "--skip-install",
+                ],
+                ScaffoldCapability::CreatesNamedDirectory,
+                "frontend",
+                ScaffoldExtras::default()
+                    .expects(&["package.json"])
+                    .temp_dir(false)
+                    .interact(vec![
+                        serde_json::json!({
+                            "trigger": "Do you want to install CocoaPods dependencies?",
+                            "response_type": "n",
+                        }),
+                        serde_json::json!({
+                            "trigger": "Downloading and installing the modern architecture dependencies. Proceed?",
+                            "response_type": "n",
+                        }),
                     ]),
-            ]
+            )]
         }
 
         "expo" => {
@@ -4515,27 +4688,31 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
                 ScaffoldExtras::default().expects(&["package.json"]),
             )]
         }
-
-        "plasmo" => vec![cmd_i(
+        "plasmo" => vec![scaffold_step(
             "plasmo_init",
             "Init Plasmo",
             "Create browser extension with Plasmo",
             "npx",
-            vec!["plasmo", "init", project_name],
-            vec![
-                InteractiveEntry {
-                    trigger: "Project name".into(),
-                    response_type: ResponseType::Text(project_name.into()),
-                },
-                InteractiveEntry {
-                    trigger: "Select your primary framework/compiler".into(),
-                    response_type: if has_typescript || has_javascript {
-                        ResponseType::Text("React (Next-like)".to_string())
-                    } else {
-                        ResponseType::Text("Vanilla".to_string())
-                    },
-                },
-            ],
+            vec!["plasmo", "init", SCAFFOLD_TARGET],
+            ScaffoldCapability::CreatesNamedDirectory,
+            "frontend",
+            ScaffoldExtras::default()
+                .expects(&["package.json"])
+                .temp_dir(false)
+                .interact(vec![
+                    serde_json::json!({
+                        "trigger": "Project name",
+                        "response_type": project_name,
+                    }),
+                    serde_json::json!({
+                        "trigger": "Select your primary framework/compiler",
+                        "response_type": if has_typescript || has_javascript {
+                            "React (Next-like)"
+                        } else {
+                            "Vanilla"
+                        },
+                    }),
+                ]),
         )],
 
         "nest" => vec![
@@ -4728,56 +4905,33 @@ func main() {{
                 ("cmd/main.go", "cobra_main", "Create CLI entry")
             };
             // go.mod живёт в каталоге сегмента (backend/ в mono-репозитории);
-            // cobra-cli init обязателен строго после go mod init (language-фаза),
-            // иначе генератор падает «go.mod file not found». Условия FileExists
-            // скипают шаги, если модуль не создался — без каскада ошибок.
+            // `go get github.com/spf13/cobra@latest` обязателен строго после
+            // go mod init (language-фаза), иначе зависимость cobra никогда
+            // не попадает в go.mod и проект не собирается. Условие FileExists
+            // скипает шаг, если модуль не создался — без каскада ошибок.
+            // (Раньше здесь был WriteFile go.mod — он молча скипался, т.к.
+            // go.mod уже создал go mod init с overwrite=false, а cobra-cli
+            // init не добавлял cobra в go.mod — зависимости не было вовсе.)
             let go_mod_path = match seg {
                 Some(dir) => format!("{}/go.mod", dir),
                 None => "go.mod".to_string(),
             };
             vec![
-                Step::WriteFile {
-                    id: "go_mod".into(),
-                    label: "Create Go module".into(),
-                    description: "Initialize go.mod for the project".into(),
-                    path: "go.mod".into(),
-                    content: format!(
-                        "module {}\n\ngo 1.22\n\nrequire github.com/spf13/cobra v1.0.0\n",
-                        project_name
-                    ),
-                    overwrite: false,
-                    policy: None,
-                    condition: None,
-                    on_error: ErrorMode::Abort,
-                },
-                // Устаревший `go get github.com/spf13/cobra/cobra` больше не
-                // работает (пакет разделён): генератор ставится как отдельный
-                // бинарь cobra-cli, а проект инициализируется его командой.
                 Step::Command {
-                    id: "cobra_install".into(),
-                    label: "Install Cobra CLI".into(),
-                    description: "Install cobra-cli generator".into(),
+                    id: "get_cobra".into(),
+                    label: "Add Cobra dependency".into(),
+                    description: "Add cobra to go.mod (modern go get pkg@latest)".into(),
                     command: "go".into(),
-                    args: vec!["install".into(), "github.com/spf13/cobra-cli@latest".into()],
+                    args: vec![
+                        "get".into(),
+                        "github.com/spf13/cobra@latest".into(),
+                    ],
                     working_dir: Some(project_path.to_string()),
                     env: None,
                     timeout_secs: Some(300),
                     condition: Some(StepCondition::FileExists {
-                        path: go_mod_path.clone(),
+                        path: go_mod_path,
                     }),
-                    on_error: ErrorMode::Abort,
-                    interactive: vec![],
-                },
-                Step::Command {
-                    id: "cobra_init".into(),
-                    label: "Init Cobra CLI".into(),
-                    description: "Initialize Cobra CLI project".into(),
-                    command: "cobra-cli".into(),
-                    args: vec!["init".into()],
-                    working_dir: Some(project_path.to_string()),
-                    env: None,
-                    timeout_secs: Some(60),
-                    condition: Some(StepCondition::FileExists { path: go_mod_path }),
                     on_error: ErrorMode::Abort,
                     interactive: vec![],
                 },
@@ -4864,28 +5018,94 @@ func main() {{
             // duplicate_framework_write_paths).
             let compose = context.frameworks.iter().any(|f| f == "jetpack-compose");
             let java_lang = context.languages.iter().any(|l| l == "java");
-            android_steps(project_name, compose, java_lang)
+            android_steps(project_name, project_path, compose, java_lang, seg)
         }
 
         // ==================== C# ====================
         // -o .: проект создаётся НЕ в вложенной папке <project_name>/,
         // а прямо в рабочей директории (backend/ или frontend/ при
         // сегментации) — иначе aspnetcore + maui давали test16/test16.
-        "aspnetcore" => vec![cmd(
-            "aspnet_new",
-            "Create ASP.NET Core Web API",
-            "Scaffold Web API project",
-            "dotnet",
-            vec!["new", "webapi", "-n", project_name, "-o", ".", "--force"],
-        )],
+        // dotnet new — детерминированный каркас: on_error=Abort (отсутствие
+        // .NET SDK останавливает пайплайн) + пост-валидация csproj
+        // (manifest-check "csproj_xml") — каркас обязан реально задекларировать
+        // фреймворк, а не «молча» скипнуться.
+        "aspnetcore" => {
+            let csproj_path = match seg {
+                Some(dir) => format!("{}/{}.csproj", dir, project_name),
+                None => format!("{}.csproj", project_name),
+            };
+            vec![
+                Step::Command {
+                    id: "aspnet_new".into(),
+                    label: "Create ASP.NET Core Web API".into(),
+                    description: "Scaffold Web API project".into(),
+                    command: "dotnet".into(),
+                    args: vec![
+                        "new".into(),
+                        "webapi".into(),
+                        "-n".into(),
+                        project_name.into(),
+                        "-o".into(),
+                        ".".into(),
+                        "--force".into(),
+                    ],
+                    // into_segment сработает только при Some: рабочий каталог
+                    // становится <project_path>/backend при сегментации.
+                    working_dir: Some(project_path.to_string()),
+                    env: None,
+                    timeout_secs: Some(300),
+                    condition: None,
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                },
+                preflight::manifest_check_step(
+                    "aspnet_csproj_check",
+                    "Validate ASP.NET Core csproj",
+                    &csproj_path,
+                    "csproj_xml",
+                    &["Microsoft.AspNetCore.OpenApi"],
+                ),
+            ]
+        }
 
-        "maui" => vec![cmd(
-            "maui_new",
-            "Create MAUI app",
-            "Scaffold .NET MAUI project",
-            "dotnet",
-            vec!["new", "maui", "-n", project_name, "-o", ".", "--force"],
-        )],
+        "maui" => {
+            let csproj_path = match seg {
+                Some(dir) => format!("{}/{}.csproj", dir, project_name),
+                None => format!("{}.csproj", project_name),
+            };
+            vec![
+                Step::Command {
+                    id: "maui_new".into(),
+                    label: "Create MAUI app".into(),
+                    description: "Scaffold .NET MAUI project".into(),
+                    command: "dotnet".into(),
+                    args: vec![
+                        "new".into(),
+                        "maui".into(),
+                        "-n".into(),
+                        project_name.into(),
+                        "-o".into(),
+                        ".".into(),
+                        "--force".into(),
+                    ],
+                    // into_segment сработает только при Some: рабочий каталог
+                    // становится <project_path>/frontend при сегментации.
+                    working_dir: Some(project_path.to_string()),
+                    env: None,
+                    timeout_secs: Some(300),
+                    condition: None,
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                },
+                preflight::manifest_check_step(
+                    "maui_csproj_check",
+                    "Validate MAUI csproj",
+                    &csproj_path,
+                    "csproj_xml",
+                    &["Microsoft.Maui.Controls"],
+                ),
+            ]
+        }
 
         // ==================== C++ / Qt ====================
         // Qt — фреймворк с собственным UI-стеком: режим (QML/Widgets/
@@ -4956,40 +5176,119 @@ func main() {{
             if context.frameworks.iter().any(|f| f == "android") {
                 vec![]
             } else {
-                android_steps(project_name, true, false)
+                android_steps(project_name, project_path, true, false, seg)
             }
         }
 
-        "ktor" => vec![
-            // Пишем В Application.kt, а в Main.kt: kotlin language-скаффолд
-            // создаёт src/main/kotlin/Main.kt с main() — второй main()
-            // в Application.kt не дал бы проекту собраться. Inplace-фреймворк
-            // перезаписывает заглушку (overwrite выставляется в steps_for_framework).
-            write_file(
-                "ktor_main",
-                "Create Ktor entry",
-                "src/main/kotlin/Main.kt",
-                &format!(
-                    r#"import io.ktor.application.*
-import io.ktor.response.*
-import io.ktor.routing.*
+        "ktor" => {
+            // Kotlin language-скаффолд создаёт только src/main/kotlin/Main.kt
+            // без системы сборки — проект не собрать. Здесь — полный Gradle-
+            // каркас (settings + build + Ktor 3.x зависимости + wrapper),
+            // Main.kt перезаписывается inplace-фреймворком (overwrite=true
+            // выставляется в steps_for_framework). Пост-валидация
+            // build.gradle.kts подтверждает декларацию ktor-зависимостей.
+            let safe_name = project_name.replace(['-', ' '], "_");
+            vec![
+                write_file(
+                    "ktor_settings",
+                    "Create Gradle settings",
+                    "settings.gradle.kts",
+                    &format!(
+                        "rootProject.name = \"{}\"\n",
+                        safe_name.replace('"', "_")
+                    ),
+                ),
+                write_file(
+                    "ktor_build",
+                    "Create Gradle build file",
+                    "build.gradle.kts",
+                    r#"plugins {
+    kotlin("jvm") version "2.0.21"
+    application
+}
+
+group = "app"
+version = "0.1.0"
+
+repositories {
+    mavenCentral()
+}
+
+val ktorVersion = "3.0.3"
+
+dependencies {
+    implementation("io.ktor:ktor-server-core:$ktorVersion")
+    implementation("io.ktor:ktor-server-netty:$ktorVersion")
+}
+
+application {
+    mainClass.set("MainKt")
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+"#,
+                ),
+                write_file(
+                    "ktor_main",
+                    "Create Ktor entry",
+                    "src/main/kotlin/Main.kt",
+                    &format!(
+                        r#"import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
 
 fun main() {{
     embeddedServer(Netty, port = 3000) {{
         routing {{
             get("/") {{
-                call.respond(mapOf("message" to "Hello from {}!"))
+                call.respondText("Hello from {}!")
             }}
         }}
     }}.start(wait = true)
 }}
 "#,
-                    project_name
+                        project_name
+                    ),
                 ),
-            ),
-        ],
+                Step::Command {
+                    id: "ktor_gradle_wrapper".into(),
+                    label: "Generate Gradle wrapper".into(),
+                    description: "Create gradlew + gradle/wrapper (requires Gradle installed; the project builds with ./gradlew run)".into(),
+                    command: "gradle".into(),
+                    args: vec!["wrapper".into()],
+                    // Wrapper обязан лежать рядом с build.gradle.kts — в каталоге
+                    // сегмента (backend/ в mono-репозитории), иначе gradlew
+                    // создаётся в корне без проекта.
+                    working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+                    env: None,
+                    timeout_secs: Some(300),
+                    condition: None,
+                    // Abort вместо Skip: без gradle невозможен ни wrapper, ни
+                    // сборка — провал обязан быть явным, а не «тихим скипом».
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                },
+                // ktor — НАСТОЯЩАЯ зависимость после wrapper: build.gradle.kts
+                // обязан содержать координаты ktor-server-core/netty.
+                {
+                    let build_path = match seg {
+                        Some(dir) => format!("{}/build.gradle.kts", dir),
+                        None => "build.gradle.kts".to_string(),
+                    };
+                    preflight::manifest_check_step(
+                        "ktor_deps_check",
+                        "Validate Ktor dependencies",
+                        &build_path,
+                        "gradle_kts",
+                        &["io.ktor:ktor-server-core", "io.ktor:ktor-server-netty"],
+                    )
+                },
+            ]
+        }
 
         // ==================== PHP ====================
         "laravel" => {
@@ -5060,35 +5359,165 @@ fun main() {{
         }
 
         // ==================== Swift ====================
-        "swiftui" => vec![cmd(
-            "swiftui_hint",
-            "SwiftUI project hint",
-            "SwiftUI projects are created through Xcode",
-            "echo",
-            vec!["Create this project through Xcode with SwiftUI template"],
-        )],
-
-        "vapor" => vec![cmd_i(
-            "vapor_new",
-            "Create Vapor project",
-            "Scaffold Vapor application",
-            "vapor",
-            vec!["new", project_name],
+        "swiftui" => {
+            // Реальный SwiftPM-каркас (macOS-платформа SwiftUI): executable-
+            // пакет, который собирается через swift build и запускается
+            // swift run (раньше здесь был echo-хинт «create through Xcode»).
+            // Имя типа и пакета — валидный Swift-идентификатор из project_name.
+            let safe_name: String = project_name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let mut type_name: String = project_name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            if type_name.is_empty()
+                || type_name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            {
+                type_name = format!("App{}", type_name);
+            }
             vec![
-                InteractiveEntry {
-                    trigger: "Would you like to use Fluent?".into(),
-                    response_type: ResponseType::Confirm(true),
+                write_file(
+                    "swiftui_manifest",
+                    "Create Swift package manifest",
+                    "Package.swift",
+                    &format!(
+                        r#"// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "{}",
+    platforms: [.macOS(.v13)],
+    targets: [
+        .executableTarget(
+            name: "{}",
+            path: "Sources/{}"
+        )
+    ]
+)
+"#,
+                        safe_name, safe_name, safe_name
+                    ),
+                ),
+                write_file(
+                    "swiftui_app",
+                    "Create SwiftUI app entry",
+                    &format!("Sources/{}/App.swift", safe_name),
+                    &format!(
+                        r#"import SwiftUI
+
+@main
+struct {}App: App {{
+    var body: some Scene {{
+        WindowGroup {{
+            ContentView()
+        }}
+    }}
+}}
+"#,
+                        type_name
+                    ),
+                ),
+                write_file(
+                    "swiftui_view",
+                    "Create SwiftUI content view",
+                    &format!("Sources/{}/ContentView.swift", safe_name),
+                    &format!(
+                        r#"import SwiftUI
+
+struct ContentView: View {{
+    var body: some View {{
+        VStack(spacing: 16) {{
+            Text("Hello from {}!")
+                .font(.title)
+            Text("Built with SwiftUI")
+                .foregroundStyle(.secondary)
+        }}
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }}
+}}
+
+#Preview {{
+    ContentView()
+}}
+"#,
+                        project_name
+                    ),
+                ),
+                Step::Command {
+                    id: "swiftui_build".into(),
+                    label: "Build SwiftUI package".into(),
+                    description: "Verify the package compiles (swift build; requires the Xcode toolchain — SwiftUI targets macOS)".into(),
+                    command: "swift".into(),
+                    args: vec!["build".into()],
+                    // Пакет живёт в каталоге сегмента (frontend/ в
+                    // mono-репозитории) — сборка выполняется там же.
+                    working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+                    env: None,
+                    timeout_secs: Some(600),
+                    condition: None,
+                    // Abort вместо Skip: без Swift-тулчейна (или не на macOS)
+                    // SwiftUI-каркас бесполезен — ошибка обязана быть явной.
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
                 },
-                InteractiveEntry {
-                    trigger: "Choose a database engine:".into(),
-                    response_type: ResponseType::Text("SQLite".to_string()),
-                },
-                InteractiveEntry {
-                    trigger: "Would you like to use Leaf?".into(),
-                    response_type: ResponseType::Confirm(false),
-                },
-            ],
-        )],
+            ]
+        }
+
+        "vapor" => {
+            // vapor new <имя> интерактивен (Fluent/БД/Leaf) — ответы передаются
+            // явно; temp_dir_allowed=false: имя пакета внутри каркаса = имя
+            // каталога назначения (как в FOLDER_MAKER-режиме раньше), иначе
+            // Package.swift назывался бы temp_*. Пост-условие Package.swift
+            // валидирует каркас (раньше провал vapor молча скипался).
+            vec![scaffold_step(
+                "vapor_new",
+                "Create Vapor project",
+                "Scaffold Vapor application",
+                "vapor",
+                vec!["new", SCAFFOLD_TARGET],
+                ScaffoldCapability::CreatesNamedDirectory,
+                ".",
+                ScaffoldExtras::default()
+                    .expects(&["Package.swift"])
+                    .temp_dir(false)
+                    .interact(vec![
+                        serde_json::json!({
+                            "trigger": "Would you like to use Fluent?",
+                            "response_type": "y",
+                        }),
+                        serde_json::json!({
+                            "trigger": "Choose a database engine:",
+                            "response_type": "SQLite",
+                        }),
+                        serde_json::json!({
+                            "trigger": "Would you like to use Leaf?",
+                            "response_type": "n",
+                        }),
+                    ]),
+            )]
+        }
 
         // ==================== Zig ====================
         "zig-cli" => {
@@ -5267,23 +5696,35 @@ pub fn build(b: *std.Build) !void {{
         }
 
         // ==================== Elixir ====================
-        "phoenix" => vec![cmd_i(
-            "phoenix_new",
-            "Create Phoenix project",
-            "Scaffold Phoenix application",
-            "mix",
-            vec!["phx.new", project_name],
-            vec![
-                InteractiveEntry {
-                    trigger: "Fetch and install dependencies?".into(),
-                    response_type: ResponseType::Confirm(true),
-                },
-                InteractiveEntry {
-                    trigger: "Would you like to build assets?".into(),
-                    response_type: ResponseType::Confirm(true),
-                },
-            ],
-        )],
+        "phoenix" => {
+            // mix phx.new <имя> интерактивен (зависимости/сборка assets) —
+            // ответы передаются явно; temp_dir_allowed=false: имя приложения
+            // внутри каркаса = имя каталога назначения (как в FOLDER_MAKER-
+            // режиме раньше), иначе mix.exs назывался бы temp_*. Пост-условие
+            // mix.exs валидирует каркас (раньше провал mix молча скипался).
+            vec![scaffold_step(
+                "phoenix_new",
+                "Create Phoenix project",
+                "Scaffold Phoenix application",
+                "mix",
+                vec!["phx.new", SCAFFOLD_TARGET],
+                ScaffoldCapability::CreatesNamedDirectory,
+                ".",
+                ScaffoldExtras::default()
+                    .expects(&["mix.exs"])
+                    .temp_dir(false)
+                    .interact(vec![
+                        serde_json::json!({
+                            "trigger": "Fetch and install dependencies?",
+                            "response_type": "y",
+                        }),
+                        serde_json::json!({
+                            "trigger": "Would you like to build assets?",
+                            "response_type": "y",
+                        }),
+                    ]),
+            )]
+        }
 
         _ => vec![cmd(
             "fw_unknown",
@@ -5368,6 +5809,7 @@ fn python_venv_bin(project_path: &str, python_dir: &str, name: &str) -> String {
 
 fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let tools = &context.tools;
+    let project_name = context.project_name.as_deref().unwrap_or("app");
     let mut steps = Vec::new();
     let mut infra_envs: Vec<String> = Vec::new();
 
@@ -5395,14 +5837,31 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
         match tool_id.as_str() {
             // Database tools
             "sqlalchemy" => {
+                // database.py читает DATABASE_URL из окружения (docker-compose
+                // передаёт его app-сервису, локально — .env через python-dotenv),
+                // а не хардкодит учётные данные. Путь учитывает каталог python-
+                // сегмента (backend/ в mono-репозитории).
+                let db_path = if python_dir == "." {
+                    "src/database.py".to_string()
+                } else {
+                    format!("{}/src/database.py", python_dir)
+                };
                 steps.push(write_file(
                     "sqlalchemy_config",
                     "SQLAlchemy config",
-                    "src/database.py",
-                    r#"from sqlalchemy import create_engine
+                    &db_path,
+                    r#"import os
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-DATABASE_URL = "postgresql://user:password@localhost:5432/dbname"
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Copy .env.example to .env and fill in the connection string."
+    )
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -5418,6 +5877,16 @@ def get_db():
         db.close()
 "#,
                 ));
+                // .env.example: DATABASE_URL уже приходит из postgresql-инструмента
+                // (get_env_example). Без него (например sqlalchemy + mysql) —
+                // добавляем строку сами, иначе у пользователя нет ни одной
+                // подсказки для строки подключения.
+                if !tools.contains(&"postgresql".to_string()) {
+                    infra_envs.push(
+                        "# Database connection string (adjust for your DB engine)\nDATABASE_URL=postgresql://postgres:12345@localhost:5432/postgres\n"
+                            .to_string(),
+                    );
+                }
             }
             "alembic" => {
                 steps.push(Step::Command {
@@ -5506,7 +5975,26 @@ def get_db():
                         provider.into(),
                         "--no-skills".into(),
                     ],
-                    working_dir: Some(project_path.to_string()),
+                    // init читает/патчит package.json JS-сегмента (backend/
+                    // в split-раскладке): рабочая директория — каталог
+                    // сегмента, иначе prisma/ + schema.prisma ложились бы в
+                    // корень мимо манифеста.
+                    working_dir: Some(
+                        prisma_js_dir
+                            .as_ref()
+                            .map(|dir| {
+                                if dir == "." {
+                                    project_path.to_string()
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        project_path.trim_end_matches(['/', '\\']),
+                                        dir
+                                    )
+                                }
+                            })
+                            .unwrap_or_else(|| project_path.to_string()),
+                    ),
                     env: None,
                     timeout_secs: Some(120),
                     condition: None,
@@ -5547,10 +6035,17 @@ def get_db():
                 }
             }
             "drizzle" => {
+                // Конфиг лежит в каталоге JS-сегмента (backend/ в split-
+                // раскладке) рядом с package.json — schema/out-пути внутри
+                // него относительны каталога конфига.
+                let drizzle_path = match js_manifest_dir(context) {
+                    Some(dir) if dir != "." => format!("{}/drizzle.config.ts", dir),
+                    _ => "drizzle.config.ts".to_string(),
+                };
                 steps.push(write_file(
                     "drizzle_config",
                     "Drizzle config",
-                    "drizzle.config.ts",
+                    &drizzle_path,
                     r#"import type { Config } from "drizzle-kit";
 
 export default {
@@ -5591,10 +6086,23 @@ export default {
             }
             // Testing tools
             "pytest" => {
+                // Конфиг и каталог тестов живут в python-сегменте (backend/
+                // в mono-репозитории) рядом с requirements.txt и venv — иначе
+                // `python -m pytest` из backend/ не видит ни конфиг, ни тесты.
+                let ini_path = if python_dir == "." {
+                    "pytest.ini".to_string()
+                } else {
+                    format!("{}/pytest.ini", python_dir)
+                };
+                let tests_path = if python_dir == "." {
+                    "tests".to_string()
+                } else {
+                    format!("{}/tests", python_dir)
+                };
                 steps.push(write_file(
                     "pytest_config",
                     "Pytest config",
-                    "pytest.ini",
+                    &ini_path,
                     r#"[pytest]
 testpaths = tests
 python_files = test_*.py
@@ -5607,16 +6115,21 @@ addopts = -v --tb=short
                     id: "create_tests_dir".into(),
                     label: "Create tests/".into(),
                     description: "Create tests directory".into(),
-                    path: "tests".into(),
+                    path: tests_path,
                     condition: None,
                     on_error: ErrorMode::Skip,
                 });
             }
             "ruff" => {
+                let ruff_path = if python_dir == "." {
+                    "ruff.toml".to_string()
+                } else {
+                    format!("{}/ruff.toml", python_dir)
+                };
                 steps.push(write_file(
                     "ruff_config",
                     "Ruff config",
-                    "ruff.toml",
+                    &ruff_path,
                     r#"[lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = []
@@ -5680,30 +6193,396 @@ with DAG(
                     infra_envs.push(content::get_env_example(tool_id));
                 }
             }
-            "grafana" | "opentelemetry" => {
-                if tool_id == "grafana" {
-                    if context.local_infra_tools.contains(tool_id) {
-                        infra_envs.push(content::get_local_env_example(tool_id));
-                    } else {
-                        infra_envs.push(content::get_env_example(tool_id));
+            "grafana" => {
+                if context.local_infra_tools.contains(tool_id) {
+                    infra_envs.push(content::get_local_env_example(tool_id));
+                } else {
+                    infra_envs.push(content::get_env_example(tool_id));
+                }
+                // Реальный provisioning-конфиг Grafana: датасорсы для каждого
+                // выбранного БД-инструмента + каталоги дашбордов. Учётные
+                // данные совпадают с docker-compose.yaml (контейнеры).
+                let mut ds_lines = String::new();
+                for t in tools {
+                    match t.as_str() {
+                        "postgresql" => ds_lines.push_str(
+                            r#"      - name: postgres
+        type: postgres
+        access: proxy
+        url: postgres:5432
+        database: postgres
+        user: postgres
+        secureJsonData:
+          password: "12345"
+        jsonData:
+          sslmode: disable
+"#,
+                        ),
+                        "mysql" => ds_lines.push_str(
+                            r#"      - name: mysql
+        type: mysql
+        access: proxy
+        url: mysql:3306
+        database: mydb
+        user: root
+        secureJsonData:
+          password: "root_pwd"
+"#,
+                        ),
+                        "mongodb" => ds_lines.push_str(
+                            r#"      - name: mongodb
+        type: grafana-mongodb-datasource
+        access: proxy
+        url: mongo:27017
+        jsonData:
+          defaultAuthType: "NONE"
+"#,
+                        ),
+                        "clickhouse" => ds_lines.push_str(
+                            r#"      - name: clickhouse
+        type: vertamedia-clickhouse-datasource
+        access: proxy
+        url: http://clickHouse:8123
+"#,
+                        ),
+                        _ => {}
                     }
                 }
                 steps.push(write_file(
-                    &format!("config_{}", tool_id),
-                    &format!("Config hint for {}", tool_id),
-                    &format!("config/{}.md", tool_id),
+                    "grafana_datasources",
+                    "Grafana datasource provisioning",
+                    "config/grafana/provisioning/datasources/datasources.yaml",
                     &format!(
-                        "# {} configuration\n\nSee documentation for setup details.\n",
-                        tool_id
+                        r#"apiVersion: 1
+
+datasources:
+{}
+"#,
+                        ds_lines
                     ),
+                ));
+                steps.push(write_file(
+                    "grafana_dashboards",
+                    "Grafana dashboards provisioning",
+                    "config/grafana/provisioning/dashboards/dashboards.yaml",
+                    r#"apiVersion: 1
+
+providers:
+  - name: "default"
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+"#,
+                ));
+                steps.push(Step::CreateDirectory {
+                    id: "grafana_dashboards_dir".into(),
+                    label: "Create Grafana dashboards dir".into(),
+                    description: "Create config/grafana/dashboards/ for custom dashboards".into(),
+                    path: "config/grafana/dashboards".into(),
+                    condition: None,
+                    on_error: ErrorMode::Skip,
+                });
+            }
+            "opentelemetry" => {
+                // Реальный конфиг OpenTelemetry Collector (OTLP-приёмник →
+                // консоль): сервис docker-compose (otel-collector) монтирует
+                // этот файл в контейнер. Раньше здесь был md-хинт
+                // «See documentation for setup details».
+                infra_envs.push(
+                    "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n".to_string(),
+                );
+                steps.push(write_file(
+                    "otel_collector",
+                    "OpenTelemetry Collector config",
+                    "config/otel-collector.yaml",
+                    r#"receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  logging:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+"#,
+                ));
+            }
+            "dbt" => {
+                // Реальный dbt-проект: dbt_project.yml + profiles.yml (учётные
+                // данные — из переменных окружения) + модель-пример. Пакеты
+                // dbt-core/dbt-postgres попадают в requirements.txt
+                // (preflight.python_manifest_lines); пост-валидация — по
+                // dbt_project.yml (manifest-check "yaml").
+                let safe_name: String = project_name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            c.to_ascii_lowercase()
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                steps.push(write_file(
+                    "dbt_project",
+                    "dbt project config",
+                    "dbt_project.yml",
+                    &format!(
+                        r#"name: '{safe_name}'
+version: '1.0.0'
+config-version: 2
+profile: '{safe_name}'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  {safe_name}:
+    +materialized: view
+"#,
+                    ),
+                ));
+                steps.push(write_file(
+                    "dbt_profiles",
+                    "dbt profiles",
+                    "profiles.yml",
+                    &format!(
+                        r#"# Пользовательские профили dbt (обычно хранятся в ~/.dbt/).
+# Учётные данные читаются из переменных окружения — заполните их в .env.
+{safe_name}:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{{{ env_var('POSTGRES_HOST', 'localhost') }}}}"
+      port: 5432
+      user: "{{{{ env_var('POSTGRES_USER', 'postgres') }}}}"
+      password: "{{{{ env_var('POSTGRES_PASSWORD', '') }}}}"
+      dbname: "{{{{ env_var('POSTGRES_DB', 'postgres') }}}}"
+      schema: public
+      threads: 4
+"#,
+                    ),
+                ));
+                steps.push(write_file(
+                    "dbt_model",
+                    "dbt example model",
+                    "models/example.sql",
+                    r#"-- Пример модели: выборка из таблицы sources.
+-- Дополните моделями под ваши источники и запустите: dbt run
+SELECT
+    current_date AS report_date,
+    'hello from dbt' AS message
+"#,
+                ));
+                steps.push(preflight::manifest_check_step(
+                    "dbt_project_check",
+                    "Validate dbt_project.yml",
+                    "dbt_project.yml",
+                    "yaml",
+                    &["name", "profile"],
+                ));
+            }
+            "terraform" => {
+                // Реальный Terraform-проект для локальной инфраструктуры
+                // (docker-провайдер совпадает с docker-compose): main.tf +
+                // переменные + пример tfvars. `terraform init` обязан
+                // выполниться (Abort) — выбранный инструмент не маскируется
+                // «тихим» скипом.
+                steps.push(write_file(
+                    "tf_main",
+                    "Terraform main config",
+                    "terraform/main.tf",
+                    r#"# Локальная инфраструктура проекта через docker-провайдер.
+# Переменные задаются в terraform/terraform.tfvars (см. terraform.tfvars.example).
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "docker" {}
+
+resource "docker_container" "example" {
+  name  = "stackpilot_example"
+  image = "nginx:alpine"
+  ports {
+    internal = 80
+    external = var.app_port
+  }
+}
+
+output "example_url" {
+  value = "http://localhost:${var.app_port}"
+}
+"#,
+                ));
+                steps.push(write_file(
+                    "tf_variables",
+                    "Terraform variables",
+                    "terraform/variables.tf",
+                    r#"variable "app_port" {
+  description = "Порт, на который публикуется пример-контейнер"
+  type        = number
+  default     = 8081
+}
+"#,
+                ));
+                steps.push(write_file(
+                    "tf_tfvars_example",
+                    "Terraform tfvars example",
+                    "terraform/terraform.tfvars.example",
+                    "# Скопируйте в terraform.tfvars и заполните под ваш стек\napp_port = 8081\n",
+                ));
+                steps.push(Step::Command {
+                    id: "terraform_init".into(),
+                    label: "Init Terraform".into(),
+                    description: "Run terraform init (downloads the docker provider; requires Terraform installed)".into(),
+                    command: "terraform".into(),
+                    args: vec!["init".into()],
+                    working_dir: Some(format!("{}/terraform", project_path)),
+                    env: None,
+                    timeout_secs: Some(300),
+                    condition: None,
+                    on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                });
+                steps.push(preflight::manifest_check_step(
+                    "terraform_check",
+                    "Validate Terraform main.tf",
+                    "terraform/main.tf",
+                    "terraform",
+                    &["provider \"docker\""],
+                ));
+            }
+            "firebase" => {
+                // Реальный конфиг Firebase Hosting + Firestore/Security Rules:
+                // firebase.json + правила БД и Storage. CLI (firebase-tools)
+                // подключается по Firebase-проекту — инструкция в README.
+                steps.push(write_file(
+                    "firebase_config",
+                    "Firebase config",
+                    "firebase.json",
+                    r#"{
+  "hosting": {
+    "public": "frontend",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  }
+}
+"#,
+                ));
+                steps.push(write_file(
+                    "firestore_rules",
+                    "Firestore rules",
+                    "firestore.rules",
+                    r#"rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      // Закомментируйте и настройте под свой доступ: allow read, write: if true;
+      allow read, write: if false;
+    }
+  }
+}
+"#,
+                ));
+                steps.push(write_file(
+                    "storage_rules",
+                    "Storage rules",
+                    "storage.rules",
+                    r#"rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+"#,
+                ));
+                steps.push(preflight::manifest_check_step(
+                    "firebase_check",
+                    "Validate firebase.json",
+                    "firebase.json",
+                    "firebase",
+                    &["hosting", "firestore"],
                 ));
             }
             "npm" | "gradle" | "maven" => {
                 // Инструменты сборки — уже учтены в language/framework
                 // Можно пропустить или добавить файлы конфигурации
             }
+            "docker" => {
+                // Сам инструмент «docker» (containerization): Dockerfile,
+                // .dockerignore и docker-compose.yaml для app-сервиса
+                // генерирует steps_for_docker — включая случай, когда
+                // выбран только docker-инструмент без БД (requires_docker
+                // у него false, поэтому context.docker сам по себе не
+                // поднимается). Отдельная конфигурация не нужна.
+            }
+            "sqlite" => {
+                // SQLite — встроенная БД: сервис и переменные окружения
+                // не нужны (файл базы создаёт приложение). Используется
+                // prisma-провайдером по умолчанию, когда БД-сервис не выбран.
+            }
             _ => {
                 // Для неизвестных — просто создаём директорию config/
+                // (защитный fallback; все выбираемые инструменты мастера
+                // имеют явные ветки — см. audit-тест selectable_tools_*).
                 steps.push(Step::CreateDirectory {
                     id: format!("config_dir_{}", tool_id),
                     label: format!("Create config dir for {}", tool_id),
@@ -5714,6 +6593,19 @@ with DAG(
                 });
             }
         }
+    }
+
+    // Telegram-боты (aiogram/telegraf): токен читается сгенерированным кодом
+    // из окружения — он обязан быть в .env.example, иначе у пользователя нет
+    // подсказки. Push-ится отдельно от инфра-сервисов.
+    let has_telegram = context
+        .frameworks
+        .iter()
+        .any(|f| f == "aiogram" || f == "telegraf");
+    if has_telegram {
+        infra_envs.push(
+            "# Telegram bot token from @BotFather\nTELEGRAM_BOT_TOKEN=your_bot_token\n".to_string(),
+        );
     }
 
     // Один .env.example на все инфра-сервисы (пишется один раз — в цикле
@@ -5757,7 +6649,23 @@ fn steps_for_docker(
     _project_path: &str,
     project_name: &str,
 ) -> Vec<Step> {
-    if context.docker == false {
+    // Локально установленные инфра-инструменты исключаются из docker-compose:
+    // их сервисы уже запущены на машине, контейнер просто займёт порт.
+    let docker_tools: Vec<String> = context
+        .tools
+        .iter()
+        .filter(|t| !context.local_infra_tools.contains(t))
+        .cloned()
+        .collect();
+    let services = content::collect_docker_services(&docker_tools);
+    // Контейнерная фаза активна, если (а) поднят флаг context.docker (выбран
+    // любой requires_docker инструмент), (б) выбран инструмент «docker»
+    // (containerization), либо (в) выбранные инструменты разворачивают
+    // контейнеры (opentelemetry → otel-collector, grafana, airflow и т.д.).
+    let docker_phase_active = context.docker
+        || context.tools.iter().any(|t| t == "docker")
+        || !services.is_empty();
+    if !docker_phase_active {
         return Vec::new();
     }
 
@@ -5813,26 +6721,28 @@ fn steps_for_docker(
         .cloned()
         .collect();
     let services = content::collect_docker_services(&docker_tools);
-    if !services.is_empty() {
-        let app_port = match primary_fw {
-            Some("django") | Some("fastapi") => "8000",
-            Some("spring-boot") | Some("ktor") | Some("aspnetcore") => "8080",
-            Some("laravel") | Some("symfony") => "8000",
-            Some("phoenix") => "4000",
-            _ => "3000",
-        };
-        result.push(Step::WriteFile {
-            id: "docker_compose".into(),
-            label: "Create docker-compose".into(),
-            description: "Generate docker-compose file".into(),
-            path: "docker-compose.yaml".into(),
-            content: content::generate_docker_compose(&services, project_name, app_port, &app_dir),
-            overwrite: true,
-            policy: None,
-            condition: None,
-            on_error: ErrorMode::Skip,
-        })
-    }
+    // App-сервис добавляется в compose ВСЕГДА (generate_docker_compose пишет
+    // его безусловно), а инфра-сервисы — по мере наличия. Раньше compose
+    // генерировался только при непустых сервисах, поэтому docker-инструмент
+    // без БД оставлял проект без compose вообще.
+    let app_port = match primary_fw {
+        Some("django") | Some("fastapi") => "8000",
+        Some("spring-boot") | Some("ktor") | Some("aspnetcore") => "8080",
+        Some("laravel") | Some("symfony") => "8000",
+        Some("phoenix") => "4000",
+        _ => "3000",
+    };
+    result.push(Step::WriteFile {
+        id: "docker_compose".into(),
+        label: "Create docker-compose".into(),
+        description: "Generate docker-compose file".into(),
+        path: "docker-compose.yaml".into(),
+        content: content::generate_docker_compose(&services, project_name, app_port, &app_dir),
+        overwrite: true,
+        policy: None,
+        condition: None,
+        on_error: ErrorMode::Skip,
+    });
 
     result
 }
@@ -6056,64 +6966,16 @@ fn steps_for_ci(context: &WizardContext, _project_path: &str, project_name: &str
     steps
 }
 
-/// Текстовая карта структуры проекта для README — из канонической
-/// раскладки (ProjectLayout): каталоги сегментов и файлы каждого фреймворка.
-/// Текстовая карта структуры проекта для README — из канонической
-/// раскладки (ProjectLayout): каталоги сегментов и файлы каждого фреймворка.
-fn layout_structure_text(layout: &ProjectLayout, context: &WizardContext) -> String {
-    // каталог → фреймворки, чьи файлы там лежат
-    let mut by_dir: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for placement in layout.to_summary(context).framework_placement {
-        let dir = if placement.directory == "." {
-            ".".to_string()
-        } else {
-            placement.directory.clone()
-        };
-        by_dir.entry(dir).or_default().push(placement.framework);
-    }
-    if let Some(owner) = &layout.root_owner {
-        by_dir
-            .entry("src-tauri".to_string())
-            .or_default()
-            .push(owner.clone());
-    }
-    if by_dir.is_empty() {
-        return String::new();
-    }
-    let mut lines: Vec<String> = Vec::new();
-    for (dir, fws) in by_dir {
-        lines.push(format!("├── {:<12} # {}", dir, fws.join(" + ")));
-    }
-    lines.join("\n")
-}
-
 fn steps_for_readme(
     layout: &ProjectLayout,
     context: &WizardContext,
     _project_path: &str,
     project_name: &str,
 ) -> Vec<Step> {
-    let primary_lang = context
-        .languages
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("python");
-    let primary_fw = context.frameworks.first().map(|s| s.as_str());
-    let project_type = context.project_type.as_deref().unwrap_or("project");
-
-    // Структура проекта в README — из канонической раскладки: каталоги
-    // сегментов и куда ложится каждый фреймворк.
-    let structure = layout_structure_text(layout, context);
-
-    let readme = content::generate_readme(
-        project_name,
-        primary_lang,
-        primary_fw,
-        project_type,
-        &context.tools,
-        &structure,
-    );
+    // README генерируется ТИПИЗИРОВАННОЙ подсистемой readme.rs: полный
+    // WizardContext + каноническая раскладка (ProjectLayout), детерминированная
+    // композиция секций и провайдеры для языков/фреймворков/инструментов.
+    let readme = readme::generate_readme(layout, context, project_name);
 
     vec![Step::WriteFile {
         id: "readme".into(),
@@ -10468,7 +11330,7 @@ mod tests {
         assert!(recipe
             .dependencies
             .iter()
-            .any(|d| d.step_id == "cobra_init" && d.prereq_id == "go_mod_init"));
+            .any(|d| d.step_id == "get_cobra" && d.prereq_id == "go_mod_init"));
     }
 
     #[test]
@@ -11689,27 +12551,37 @@ mod tests {
 
     #[test]
     fn cobra_steps_gated_on_gomod_in_backend_segment() {
-        // cobra-cli init падает «go.mod file not found» без модуля: оба шага
-        // (install + init) имеют условие FileExists go.mod (seg-префикс).
+        // go get github.com/spf13/cobra падает «go.mod file not found» без
+        // модуля: шаг имеет условие FileExists go.mod (seg-префикс) и Abort —
+        // каркас без реальной зависимости не проходит молча.
         let mut ctx = context();
         ctx.languages = vec!["go".into(), "typescript".into()];
         ctx.frameworks = vec!["cobra".into(), "solidjs".into()];
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
-        for id in ["cobra_install", "cobra_init"] {
-            let step = recipe
-                .steps
-                .iter()
-                .find(|s| s.id() == id)
-                .unwrap_or_else(|| panic!("{id} должен быть в плане"));
-            match step {
-                Step::Command { condition, .. } => match condition {
+        let step = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "get_cobra")
+            .expect("get_cobra должен быть в плане");
+        match step {
+            Step::Command {
+                args, condition, ..
+            } => {
+                assert_eq!(
+                    args,
+                    &vec![
+                        "get".to_string(),
+                        "github.com/spf13/cobra@latest".to_string()
+                    ]
+                );
+                match condition {
                     Some(StepCondition::FileExists { path }) => {
-                        assert_eq!(path, "backend/go.mod", "{id}: условие seg-префиксовано")
+                        assert_eq!(path, "backend/go.mod", "get_cobra: условие seg-префиксовано")
                     }
-                    other => panic!("{id}: ожидали FileExists backend/go.mod: {other:?}"),
-                },
-                _ => panic!("{id} — Command"),
+                    other => panic!("get_cobra: ожидали FileExists backend/go.mod: {other:?}"),
+                }
             }
+            _ => panic!("get_cobra — Command"),
         }
     }
 
@@ -11912,6 +12784,18 @@ mod tests {
             Step::WriteFile { path, .. } => path.clone(),
             other => panic!("expected WriteFile, got {:?}", other.id()),
         }
+    }
+
+    /// Все (путь, содержимое) записываемых движком файлов.
+    fn written_files(recipe: &Recipe) -> Vec<(String, String)> {
+        recipe
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::WriteFile { path, content, .. } => Some((path.clone(), content.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     fn assert_file_exists(step: &Step, path: &str) {
@@ -12303,11 +13187,12 @@ mod tests {
         assert_eq!(command_of(alembic).1, vec!["init", "migrations"]);
         assert!(wd_of(alembic).ends_with("/backend"));
 
-        // ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ (фиксируем текущее поведение): sqlalchemy_config пишется
-        // в корень, а НЕ в backend/ (steps_for_tools не сегментируется).
+        // ИСПРАВЛЕНО в аудите 11.2: sqlalchemy_config сегментируется вместе
+        // с python-частью — database.py лежит в backend/ рядом с
+        // requirements.txt и venv (каталог python-сегмента).
         assert_eq!(
             write_path_of(find_step(&recipe, "sqlalchemy_config")),
-            "src/database.py"
+            "backend/src/database.py"
         );
 
         assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
@@ -12797,9 +13682,7 @@ mod tests {
                 "main_go",
                 "gin_main",
                 "get_gin",
-                "go_mod",
-                "cobra_install",
-                "cobra_init",
+                "get_cobra",
                 "cobra_cli",
                 "solid_init",
                 "solidjs_pkg_name",
@@ -12816,7 +13699,7 @@ mod tests {
             ],
         );
         assert_dep(&recipe, "get_gin", "go_mod_init");
-        assert_dep(&recipe, "cobra_init", "go_mod_init");
+        assert_dep(&recipe, "get_cobra", "go_mod_init");
 
         // go mod init живёт в backend/ вместе со своим маркером (rerun-guard сегментирован).
         let go_mod = find_step(&recipe, "go_mod_init");
@@ -12839,16 +13722,10 @@ mod tests {
         assert_file_exists(get_gin, "backend/go.mod");
         assert!(matches!(error_mode_of(get_gin), ErrorMode::Abort));
 
-        // cobra (inplace-фреймворк): go.mod пишется поверх go-каркаса; шаги cobra
-        // проходят override overwrite=true (scaffold не задан), как и gin_main.
-        let cobra_mod = find_step(&recipe, "go_mod");
-        assert_eq!(write_path_of(cobra_mod), "backend/go.mod");
-        assert!(
-            matches!(step_file_policy_of(cobra_mod), FilePolicy::Overwrite),
-            "go_mod policy: {:?}",
-            step_file_policy_of(cobra_mod)
-        );
-        assert_file_exists(find_step(&recipe, "cobra_init"), "backend/go.mod");
+        // cobra: реальная зависимость через go get @latest (go.mod обновляет
+        // сам go get, WriteFile-заглушки go.mod больше нет) — FileExists
+        // go.mod + Abort.
+        assert_file_exists(find_step(&recipe, "get_cobra"), "backend/go.mod");
         assert_eq!(
             write_path_of(find_step(&recipe, "cobra_cli")),
             "backend/cmd/cli/main.go"
@@ -13268,5 +14145,437 @@ mod tests {
         );
         assert!(dir.is_dir(), "корень проекта должен существовать");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ============================================================
+    // Audit 11.2: каждый выбираемый в мастере фреймворк/инструмент
+    // обязан иметь реальную реализацию — ни echo-заглушек, ни
+    // config-hint .md, ни хардкод-секретов, ни «тихих» скипов.
+    // ============================================================
+
+    fn wizard_framework_ids() -> Vec<(String, String)> {
+        let tree: serde_json::Value =
+            serde_json::from_str(include_str!("../knowledge/wizard_tree.json")).unwrap();
+        tree["frameworks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|fw| {
+                let id = fw["id"].as_str().unwrap().to_string();
+                let lang = fw["languages"][0]
+                    .as_str()
+                    .unwrap_or("typescript")
+                    .to_string();
+                (id, lang)
+            })
+            .collect()
+    }
+
+    fn wizard_tool_ids() -> Vec<String> {
+        let tree: serde_json::Value =
+            serde_json::from_str(include_str!("../knowledge/wizard_tree.json")).unwrap();
+        tree["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn audit_every_selectable_framework_builds_a_real_recipe() {
+        for (fw, lang) in wizard_framework_ids() {
+            let ctx = ctx_scenario(&[lang.as_str()], &[fw.as_str()], &[]);
+            let recipe =
+                recipe_for(&ctx, "myapp").unwrap_or_else(|e| panic!("framework '{fw}': {e}"));
+            let ids = plan_ids(&recipe);
+            assert!(
+                !ids.contains(&"fw_unknown".to_string()),
+                "framework '{fw}' hits the echo fallback: {ids:?}"
+            );
+            assert!(
+                ids.iter().any(|id| id.contains("readme") || id != "fw_unknown"),
+                "framework '{fw}' produces an empty plan: {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_no_echo_or_config_hint_placeholders_anywhere() {
+        for (fw, lang) in wizard_framework_ids() {
+            let ctx = ctx_scenario(&[lang.as_str()], &[fw.as_str()], &[]);
+            let recipe = recipe_for(&ctx, "myapp").unwrap();
+            for (path, content) in written_files(&recipe) {
+                assert!(
+                    !content.contains("See documentation for setup details"),
+                    "framework '{fw}': config-hint placeholder in {path}"
+                );
+                assert!(
+                    !content.contains("No automated setup available"),
+                    "framework '{fw}': echo placeholder leaked into {path}"
+                );
+            }
+        }
+        for tool in wizard_tool_ids() {
+            let ctx = ctx_scenario(&["typescript"], &["nextjs"], &[tool.as_str()]);
+            let recipe = recipe_for(&ctx, "myapp").unwrap();
+            let ids = plan_ids(&recipe);
+            assert!(
+                !ids.iter().any(|id| id.starts_with("config_dir_")),
+                "tool '{tool}' falls into the defensive config/ fallback: {ids:?}"
+            );
+            for (path, content) in written_files(&recipe) {
+                assert!(
+                    !content.contains("See documentation for setup details"),
+                    "tool '{tool}': config-hint placeholder in {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn audit_cobra_gets_real_go_dependency() {
+        let ctx = ctx_scenario(&["go"], &["cobra"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"get_cobra".to_string()), "{ids:?}");
+        assert!(!ids.contains(&"cobra_init".to_string()), "{ids:?}");
+        let (cmd, args) = command_of(find_step(&recipe, "get_cobra"));
+        assert_eq!(cmd, "go");
+        assert!(
+            args.iter().any(|a| a == "github.com/spf13/cobra@latest"),
+            "{args:?}"
+        );
+        assert_dep(&recipe, "get_cobra", "go_mod_init");
+    }
+
+    #[test]
+    fn audit_ktor_has_gradle_build_system() {
+        let ctx = ctx_scenario(&["kotlin"], &["ktor"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"ktor_gradle_wrapper".to_string()), "{ids:?}");
+        assert!(ids.contains(&"ktor_deps_check".to_string()), "{ids:?}");
+        let (cmd, _) = command_of(find_step(&recipe, "ktor_gradle_wrapper"));
+        assert_eq!(cmd, "gradle");
+        assert_eq!(
+            error_mode_of(find_step(&recipe, "ktor_gradle_wrapper")),
+            ErrorMode::Abort
+        );
+        let files = written_files(&recipe);
+        assert!(
+            files.iter().any(|(p, _)| p.ends_with("settings.gradle.kts")),
+            "ktor must write settings.gradle.kts, got {:?}",
+            files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+        assert!(
+            files.iter().any(|(p, c)| {
+                p.ends_with("build.gradle.kts") && c.contains("io.ktor:ktor-server-core")
+            }),
+            "build.gradle.kts must declare ktor-server-core"
+        );
+        assert_dep(&recipe, "ktor_deps_check", "ktor_gradle_wrapper");
+    }
+
+    #[test]
+    fn audit_swiftui_is_real_swiftpm_package() {
+        let ctx = ctx_scenario(&["swift"], &["swiftui"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let files = written_files(&recipe);
+        assert!(
+            files.iter().any(|(p, c)| p.ends_with("Package.swift") && c.contains("swift-tools-version")),
+            "swiftui must write a real Package.swift"
+        );
+        assert!(
+            files.iter().any(|(p, _)| p.ends_with("/Sources/") && p.ends_with("App.swift") || p.ends_with("/App.swift")),
+            "swiftui must write Sources/<name>/App.swift"
+        );
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"swiftui_build".to_string()), "{ids:?}");
+        let (cmd, args) = command_of(find_step(&recipe, "swiftui_build"));
+        assert_eq!(cmd, "swift");
+        assert_eq!(args, vec!["build"]);
+        assert_eq!(
+            error_mode_of(find_step(&recipe, "swiftui_build")),
+            ErrorMode::Abort
+        );
+        // пакет живёт в frontend/ (swiftui — frontend-сторона) — сборка там же.
+        assert!(
+            wd_of(find_step(&recipe, "swiftui_build")).ends_with("/frontend"),
+            "{}",
+            wd_of(find_step(&recipe, "swiftui_build"))
+        );
+    }
+
+    #[test]
+    fn audit_scaffold_frameworks_validate_expected_outputs() {
+        // vapor: mix/vapor new + пост-валидация Package.swift в каталоге
+        // назначения (имя каркаса = имя папки, не temp_*).
+        let ctx = ctx_scenario(&["swift"], &["vapor"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let vapor = find_step(&recipe, "vapor_new");
+        let cfg = gen_config_of_step(vapor);
+        let expects = cfg["expected_outputs"].as_array().cloned().unwrap_or_default();
+        assert!(
+            expects.iter().any(|v| v == "Package.swift"),
+            "vapor scaffold must expect Package.swift: {cfg}"
+        );
+        assert!(
+            cfg["temp_dir_allowed"] == false,
+            "vapor must use the destination dir name: {cfg}"
+        );
+
+        // phoenix: mix phx.new + пост-валидация mix.exs.
+        let ctx = ctx_scenario(&["elixir"], &["phoenix"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let phoenix = find_step(&recipe, "phoenix_new");
+        let cfg = gen_config_of_step(phoenix);
+        let expects = cfg["expected_outputs"].as_array().cloned().unwrap_or_default();
+        assert!(
+            expects.iter().any(|v| v == "mix.exs"),
+            "phoenix scaffold must expect mix.exs: {cfg}"
+        );
+
+        // react-native / plasmo: CLI-каркасы с пост-валидацией package.json.
+        let ctx = ctx_scenario(&["typescript"], &["react-native"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let rn = find_step(&recipe, "rn_init");
+        let cfg = gen_config_of_step(rn);
+        let expects = cfg["expected_outputs"].as_array().cloned().unwrap_or_default();
+        assert!(
+            expects.iter().any(|v| v == "package.json"),
+            "react-native scaffold must expect package.json: {cfg}"
+        );
+        let ids = plan_ids(&recipe);
+        assert!(
+            ids.iter().any(|id| id.starts_with("npm_install")),
+            "react-native needs a final npm install: {ids:?}"
+        );
+
+        let ctx = ctx_scenario(&["typescript"], &["plasmo"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let plasmo = find_step(&recipe, "plasmo_init");
+        let cfg = gen_config_of_step(plasmo);
+        let expects = cfg["expected_outputs"].as_array().cloned().unwrap_or_default();
+        assert!(
+            expects.iter().any(|v| v == "package.json"),
+            "plasmo scaffold must expect package.json: {cfg}"
+        );
+    }
+
+    #[test]
+    fn audit_telegram_bots_read_token_from_env() {
+        let ctx = ctx_scenario(&["python"], &["aiogram"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let (path, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "src/bot.py")
+            .expect("aiogram must write src/bot.py");
+        assert!(
+            content.contains("TELEGRAM_BOT_TOKEN") && content.contains("os.getenv"),
+            "aiogram bot.py must read TELEGRAM_BOT_TOKEN from env: {path}"
+        );
+        assert!(
+            !content.contains("YOUR_BOT_TOKEN"),
+            "aiogram bot.py must not hardcode the token"
+        );
+        let env = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == ".env.example")
+            .expect(".env.example must exist for aiogram");
+        assert!(env.1.contains("TELEGRAM_BOT_TOKEN"), "{:?}", env.1);
+
+        let ctx = ctx_scenario(&["typescript"], &["telegraf"], &["nest"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let (_, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "backend/src/bot.js")
+            .expect("telegraf must write backend/src/bot.js");
+        assert!(
+            content.contains("process.env.TELEGRAM_BOT_TOKEN"),
+            "telegraf bot.js must read TELEGRAM_BOT_TOKEN from env"
+        );
+        assert!(
+            content.contains("dotenv"),
+            "telegraf bot.js must load dotenv"
+        );
+        let env = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == ".env.example")
+            .expect(".env.example must exist for telegraf");
+        assert!(env.1.contains("TELEGRAM_BOT_TOKEN"), "{:?}", env.1);
+    }
+
+    #[test]
+    fn audit_tools_write_real_configs() {
+        // grafana: provisioning-конфиг вместо .md-хинта.
+        let ctx = ctx_scenario(&["typescript"], &["nextjs"], &["grafana", "postgresql"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        assert!(
+            written_files(&recipe)
+                .iter()
+                .any(|(p, c)| p == "config/grafana/provisioning/datasources/datasources.yaml"
+                    && c.contains("type: postgres")),
+            "grafana must provision a postgres datasource"
+        );
+
+        // opentelemetry: реальный конфиг коллектора, монтируемый в compose.
+        let ctx = ctx_scenario(&["typescript"], &["nextjs"], &["opentelemetry"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let (path, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "config/otel-collector.yaml")
+            .expect("opentelemetry must write config/otel-collector.yaml");
+        assert!(content.contains("receivers:") && content.contains("otlp"), "{path}");
+        let compose = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "docker-compose.yaml" || p == "docker-compose.yml");
+        assert!(
+            compose.is_some(),
+            "opentelemetry must trigger docker-compose generation"
+        );
+
+        // dbt: реальный dbt-проект + пост-валидация yaml.
+        let ctx = ctx_scenario(&["python"], &["fastapi"], &["dbt"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        assert!(plan_ids(&recipe).contains(&"dbt_project_check".to_string()));
+        let (_, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "dbt_project.yml")
+            .expect("dbt must write dbt_project.yml");
+        assert!(content.contains("name:"), "{content}");
+        assert!(
+            written_files(&recipe)
+                .iter()
+                .any(|(p, _)| p == "models/example.sql"),
+            "dbt must write a model"
+        );
+
+        // terraform: real main.tf + init + пост-валидация.
+        let ctx = ctx_scenario(&["typescript"], &["nextjs"], &["terraform"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"terraform_init".to_string()), "{ids:?}");
+        assert!(ids.contains(&"terraform_check".to_string()), "{ids:?}");
+        let (_, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "terraform/main.tf")
+            .expect("terraform must write terraform/main.tf");
+        assert!(content.contains("provider \"docker\""), "{content}");
+
+        // firebase: firebase.json + rules + пост-валидация.
+        let ctx = ctx_scenario(&["typescript"], &["nextjs"], &["firebase"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        assert!(plan_ids(&recipe).contains(&"firebase_check".to_string()));
+        let files = written_files(&recipe);
+        assert!(
+            files.iter().any(|(p, _)| p == "firebase.json"),
+            "firebase must write firebase.json"
+        );
+        assert!(
+            files.iter().any(|(p, _)| p == "firestore.rules"),
+            "firebase must write firestore.rules"
+        );
+    }
+
+    #[test]
+    fn audit_sqlalchemy_uses_env_database_url() {
+        let ctx = ctx_scenario(&["python"], &["fastapi"], &["sqlalchemy"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let (path, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == "src/database.py")
+            .expect("sqlalchemy must write src/database.py");
+        assert!(content.contains("os.getenv(\"DATABASE_URL\")"), "{content}");
+        assert!(
+            !content.contains("user:password"),
+            "sqlalchemy must not hardcode credentials: {path}"
+        );
+        // без postgresql инструмент обязан добавить DATABASE_URL в .env.example
+        let env = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p == ".env.example")
+            .expect(".env.example must exist");
+        assert!(env.1.contains("DATABASE_URL"), "{:?}", env.1);
+    }
+
+    #[test]
+    fn audit_no_hardcoded_secrets_in_generated_content() {
+        let scenarios: Vec<Vec<&str>> = vec![
+            vec!["postgresql"],
+            vec!["mysql"],
+            vec!["postgresql", "redis", "mongodb"],
+        ];
+        for tools in scenarios {
+            let ctx = ctx_scenario(&["typescript"], &["nextjs"], &tools);
+            let recipe = recipe_for(&ctx, "myapp").unwrap();
+            for (path, content) in written_files(&recipe) {
+                assert!(
+                    !content.contains("user:password"),
+                    "placeholder credentials leaked into {path} ({tools:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn audit_android_validates_build_gradle() {
+        let ctx = ctx_scenario(&["kotlin"], &["android"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"android_gradle_wrapper".to_string()), "{ids:?}");
+        assert!(ids.contains(&"android_build_check".to_string()), "{ids:?}");
+
+        let ctx = ctx_scenario(&["kotlin"], &["jetpack-compose"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"android_build_check".to_string()), "{ids:?}");
+        let (_, content) = written_files(&recipe)
+            .into_iter()
+            .find(|(p, _)| p.ends_with("app/build.gradle.kts"))
+            .expect("compose must write app/build.gradle.kts");
+        assert!(content.contains("androidx.compose.ui:ui"), "{content}");
+    }
+
+    #[test]
+    fn audit_dotnet_frameworks_validate_csproj() {
+        let ctx = ctx_scenario(&["csharp"], &["aspnetcore"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"aspnet_new".to_string()), "{ids:?}");
+        assert!(ids.contains(&"aspnet_csproj_check".to_string()), "{ids:?}");
+        assert_eq!(
+            error_mode_of(find_step(&recipe, "aspnet_new")),
+            ErrorMode::Abort
+        );
+
+        let ctx = ctx_scenario(&["csharp"], &["maui"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"maui_new".to_string()), "{ids:?}");
+        assert!(ids.contains(&"maui_csproj_check".to_string()), "{ids:?}");
+        assert_eq!(
+            error_mode_of(find_step(&recipe, "maui_new")),
+            ErrorMode::Abort
+        );
+    }
+
+    #[test]
+    fn audit_docker_tool_alone_triggers_compose() {
+        let ctx = ctx_scenario(&["typescript"], &["nextjs"], &["docker"]);
+        let recipe = recipe_for(&ctx, "myapp").unwrap();
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"docker_compose".to_string()), "{ids:?}");
+        assert!(ids.contains(&"dockerfile".to_string()), "{ids:?}");
+    }
+
+    #[test]
+    fn audit_unknown_framework_is_rejected_explicitly() {
+        let ctx = ctx_scenario(&["typescript"], &["not-a-real-framework"], &[]);
+        let err = recipe_for(&ctx, "myapp").expect_err("unknown framework must be rejected");
+        assert!(
+            err.contains("not-a-real-framework") && err.contains("not supported"),
+            "{err}"
+        );
     }
 }

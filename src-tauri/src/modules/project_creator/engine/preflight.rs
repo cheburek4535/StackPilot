@@ -81,16 +81,33 @@ fn python_manifest_lines(context: &WizardContext) -> Vec<String> {
                 add("uvicorn");
             }
             "flask" => add("flask"),
-            "aiogram" => add("aiogram"),
+            // python-dotenv: сгенерированный код (src/bot.py, src/database.py)
+            // читает TELEGRAM_BOT_TOKEN / DATABASE_URL из .env — без
+            // загрузчика переменные окружения не применяются.
+            "aiogram" => {
+                add("aiogram");
+                add("python-dotenv");
+            }
             _ => {}
         }
     }
     for tool in &context.tools {
         match tool.as_str() {
-            "sqlalchemy" => add("sqlalchemy"),
+            "sqlalchemy" => {
+                add("sqlalchemy");
+                add("python-dotenv");
+            }
             "alembic" => add("alembic"),
             "ruff" => add("ruff"),
             "pytest" => add("pytest"),
+            // dags/example_dag.py импортирует airflow — без пакета каталог
+            // dags/ не запускается.
+            "airflow" => add("apache-airflow"),
+            // dbt_project.yml + profiles.yml требуют dbt-core и адаптер БД.
+            "dbt" => {
+                add("dbt-core");
+                add("dbt-postgres");
+            }
             _ => {}
         }
     }

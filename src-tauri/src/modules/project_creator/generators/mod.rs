@@ -630,7 +630,114 @@ fn manifest_dependencies(kind: &str, content: &str) -> Result<Vec<String>, Strin
             }
             Ok(names)
         }
-        _ => Err(format!("unsupported manifest kind '{kind}'")),
+        // Валидация «файловых» манифестов без структурированного синтаксиса
+// зависимостей (build.gradle.kts, .csproj, dbt_project.yml, main.tf,
+// firebase.json): «декларацией» считается наличие конкретного токена,
+// который вызывающая сторона передаёт в required_dependencies ТОЧНО так,
+// как он выглядит в реальном файле.
+"gradle_kts" => {
+    // Строковые литералы деклараций: id("..."), implementation("..."), ...
+    // Версия координаты (цифры или $интерполяция) отбрасывается:
+    // "io.ktor:ktor-server-core:3.0.3" -> "io.ktor:ktor-server-core".
+    let mut names: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let mut rest = line;
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('"') else { break };
+            let literal = &after[..end];
+            rest = &after[end + 1..];
+            let token: Vec<&str> = literal
+                .split(':')
+                .filter(|part| {
+                    !part.is_empty()
+                        && !part.starts_with('$')
+                        && !part
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_digit())
+                })
+                .collect();
+            let token = token.join(":");
+            if !token.is_empty() && !names.contains(&token) {
+                names.push(token);
+            }
+        }
+    }
+    Ok(names)
+}
+"csproj_xml" => {
+    // Include-атрибуты PackageReference: <PackageReference Include="X" .../>.
+    let mut names: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let mut rest = line;
+        while let Some(start) = rest.find("Include=\"") {
+            let after = &rest[start + "Include=\"".len()..];
+            let Some(end) = after.find('"') else { break };
+            let name = after[..end].to_string();
+            rest = &after[end + 1..];
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+"yaml" => {
+    // Ключи верхнего уровня: "name: ..." -> "name". Комментарии и
+    // пустые строки игнорируются.
+    let mut names: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(key) = line.split(':').next() else { continue };
+        let key = key.trim();
+        if !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !names.contains(&key.to_string())
+        {
+            names.push(key.to_string());
+        }
+    }
+    Ok(names)
+}
+"terraform" => {
+    // Блоки провайдеров: `provider "docker" {` -> `provider "docker"`.
+    let mut names: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.starts_with("provider ") {
+            continue;
+        }
+        let Some(start) = line.find('"') else { continue };
+        let after = &line[start + 1..];
+        let Some(end) = after.find('"') else { continue };
+        let name = format!("provider \"{}\"", &after[..end]);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+"firebase" => {
+    // Ключи верхнего уровня firebase.json.
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(obj) = value.as_object() {
+            for key in obj.keys() {
+                if !names.contains(key) {
+                    names.push(key.clone());
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+_ => Err(format!("unsupported manifest kind '{kind}'")),
     }
 }
 

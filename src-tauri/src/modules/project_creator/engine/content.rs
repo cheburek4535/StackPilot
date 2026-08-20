@@ -7,11 +7,14 @@
 
 pub fn get_env_example(tool_id: &str) -> String {
     match tool_id {
-        "postgresql" => r#"POSTGRES_USER=user
-POSTGRES_PASSWORD=password
-POSTGRES_DB=dbname
+        // Значения docker-режима обязаны совпадать с docker-compose.yaml
+        // (collect_docker_services / generate_docker_compose): app-сервис
+        // подключается к контейнерам именно с этими учётками.
+        "postgresql" => r#"POSTGRES_USER=postgres
+POSTGRES_PASSWORD=12345
+POSTGRES_DB=postgres
 POSTGRES_PORT=5432
-DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+DATABASE_URL=postgresql://postgres:12345@localhost:5432/postgres
 "#
         .to_string(),
         "redis" => r#"REDIS_URL=redis://localhost:6379/0
@@ -21,11 +24,18 @@ DATABASE_URL=postgresql://user:password@localhost:5432/dbname
 MONGODB_DB=dbname
 "#
         .to_string(),
-        "mysql" => r#"MYSQL_ROOT_PASSWORD=rootpassword
-MYSQL_DATABASE=dbname
-MYSQL_USER=user
-MYSQL_PASSWORD=password
+        "mysql" => r#"MYSQL_ROOT_PASSWORD=root_pwd
+MYSQL_DATABASE=mydb
+MYSQL_USER=root
+MYSQL_PASSWORD=root_pwd
 MYSQL_PORT=3306
+"#
+        .to_string(),
+        "kafka" => r#"KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+"#
+        .to_string(),
+        "clickhouse" => r#"CLICKHOUSE_HTTP_URL=http://localhost:8123
+CLICKHOUSE_NATIVE_URL=localhost:9000
 "#
         .to_string(),
         "airflow" => r#"AIRFLOW__CORE__EXECUTOR=LocalExecutor
@@ -302,6 +312,15 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                 ports: vec!["1025:1025".into(), "8025:8025".into()],
                 environment: Vec::new(),
                 volumes: Vec::new(),
+                depends_on: Vec::new(),
+            }),
+
+            "opentelemetry" => services.push(DockerService {
+                name: "otel-collector".into(),
+                image: "otel/opentelemetry-collector-contrib:0.114.0".into(),
+                ports: vec!["4317:4317".into(), "4318:4318".into()],
+                environment: Vec::new(),
+                volumes: vec!["./config/otel-collector.yaml:/etc/otelcol/config.yaml".into()],
                 depends_on: Vec::new(),
             }),
 
@@ -864,7 +883,7 @@ pub fn generate_docker_compose(
         for service in services.iter() {
             match service.name.as_str() {
                 "postgres" => result.push_str(
-                    "      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname\n",
+                    "      - DATABASE_URL=postgresql://postgres:12345@postgres:5432/postgres\n",
                 ),
                 "redis" => result.push_str("      - REDIS_URL=redis://redis:6379/0\n"),
                 _ => {}
@@ -1378,78 +1397,13 @@ jobs:
 // ---------------------------------------------------------------------------
 // README content
 // ---------------------------------------------------------------------------
-
-pub fn generate_readme(
-    name: &str,
-    lang: &str,
-    framework: Option<&str>,
-    project_type: &str,
-    tools: &[String],
-    structure: &str,
-) -> String {
-    let fw_str = framework
-        .map(|f| format!(" with {}", f))
-        .unwrap_or_default();
-    let tools_str = if tools.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\n## Tools & Services\n\n{}",
-            tools
-                .iter()
-                .map(|t| format!("- {}", t))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
-    // Реальная структура проекта — из канонической раскладки движка
-    // (ProjectLayout): каталоги сегментов и файлы каждого фреймворка.
-    let structure_str = if structure.is_empty() {
-        String::new()
-    } else {
-        format!("\n{}", structure)
-    };
-
-    format!(
-        r#"# {name}
-
-A {project_type} built on {lang}{fw_str}.
-
-## Getting Started
-
-### Prerequisites
-
-- {lang} installed on your system
-
-### Installation
-
-```bash
-# Clone the repository
-git clone <repo-url>
-cd {name}
-
-# Install dependencies
-# (instructions depend on the language)
-```bash
-
-### Running the application
-```bash
-# Run the application
-# (add specific instructions here)
-```bash
-
-###Project Structure
-```text
-{name}/
-{structure_str}
-```text
-
-{tools_str}
-
-
-***Made with StackPilot***"#
-    )
-}
+//
+// README generation was replaced by the typed, composable subsystem in
+// engine/readme.rs (see readme::generate_readme). The old single-purpose
+// generate_readme(name, lang, framework, project_type, tools, structure) only
+// saw the FIRST language and FIRST framework, so it has been removed — all
+// README content now comes from the new module, which receives the complete
+// WizardContext and ProjectLayout.
 
 // ---------------------------------------------------------------------------
 // VS Code settings
