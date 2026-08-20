@@ -11,8 +11,6 @@ pub(crate) struct WizardLanguage {
     pub(crate) id: String,
     #[allow(dead_code)]
     pub(crate) label: String,
-    #[allow(dead_code)]
-    pub(crate) description: String,
 }
 
 #[derive(Deserialize)]
@@ -30,7 +28,7 @@ struct WizardFramework {
     #[allow(dead_code)]
     kind: Option<String>,
     #[allow(dead_code)]
-    recommends: Vec<String>,
+    recommends: Vec<FrameworkRecommendation>,
 }
 
 #[derive(Deserialize)]
@@ -136,5 +134,18 @@ impl KnowledgeBase for DefaultKnowledgeBase {
             .collect();
         found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         found.into_iter().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_tree_parses_and_builds_entries() {
+        let kb = DefaultKnowledgeBase::new();
+        assert!(!kb.entries.is_empty());
+        assert!(kb.get_entry("framework:tauri").is_some());
+        assert!(kb.get_entry("tool:postgresql").is_some());
     }
 }

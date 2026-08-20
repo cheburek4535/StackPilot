@@ -23,7 +23,7 @@ struct WizardFramework {
     #[allow(dead_code)]
     kind: Option<String>,
     #[allow(dead_code)]
-    recommends: Vec<String>,
+    recommends: Vec<FrameworkRecommendation>,
     #[allow(dead_code)]
     required_tools: Vec<String>,
     #[allow(dead_code)]
@@ -101,7 +101,7 @@ impl DefaultPackRegistry {
         for fw in &tree.frameworks {
             let mut dependencies = fw.languages.clone();
             dependencies.extend(fw.required_tools.clone());
-            dependencies.extend(fw.recommends.clone());
+            dependencies.extend(fw.recommends.iter().map(|r| r.framework.clone()));
             packs.push(PackInfo {
                 id: format!("framework:{}", fw.id),
                 name: format!("{} (framework)", fw.label),
@@ -160,5 +160,18 @@ impl PackRegistry for DefaultPackRegistry {
                 .find(|p| p.id.ends_with(&format!(":{}", id)))
                 .cloned()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_tree_parses_and_builds_packs() {
+        let registry = DefaultPackRegistry::new();
+        assert!(!registry.packs.is_empty());
+        assert!(registry.get_pack("framework:tauri").is_some());
+        assert!(registry.get_pack("tool:postgresql").is_some());
     }
 }
