@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { goto } from "$app/navigation";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
@@ -31,6 +32,7 @@
   let session = $state<SessionInfo | null>(null);
   let dataLoaded = $state(false);
   let openingPath = $state<string | null>(null);
+  let pollId: ReturnType<typeof setInterval> | null = null;
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -40,12 +42,35 @@
     if (project && !dataLoaded) {
       dataLoaded = true;
       loadData();
+      startPolling();
     } else if (!project) {
       dataLoaded = false;
       processes = [];
       session = null;
+      stopPolling();
     }
   });
+
+  onDestroy(() => {
+    stopPolling();
+  });
+
+  /** Живое обновление: таймеры (процессы, сессия) считаются на бэкенде,
+   *  поэтому страница опрашивает их, пока открыта. Раз в 2 секунды —
+   *  статусы процессов и длительность сессии обновляются без перезахода. */
+  function startPolling() {
+    if (pollId) return;
+    pollId = setInterval(() => {
+      loadData();
+    }, 2000);
+  }
+
+  function stopPolling() {
+    if (pollId) {
+      clearInterval(pollId);
+      pollId = null;
+    }
+  }
 
   async function loadData() {
     const [procs, sess] = await Promise.all([

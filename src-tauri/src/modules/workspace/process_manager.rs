@@ -159,19 +159,68 @@ impl ProcessManager for OsProcessManager {
     }
 
     fn list(&self) -> Vec<TrackedProcess> {
-        let lock = self.processes.lock().expect("processes lock poisoned");
-        lock.iter()
-            .map(|p| {
-                let mut info = p.info.clone();
-                let started = info.started_at.parse::<u64>().unwrap_or(0);
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                info.duration_secs = now.saturating_sub(started);
-                info
-            })
-            .collect()
+        let mut lock = self.processes.lock().expect("processes lock poisoned");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Живое обновление статусов: try_wait не блокирует, поэтому каждый
+        // вызов list() фиксирует завершённые процессы без отдельного
+        // refresh_status (раньше статусы «зависали» на Running, пока
+        // какая-нибудь страница не опросит их вручную — таймер сессии
+        // продолжал тикать после смерти всех процессов).
+        let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
+        let handle = handle_guard.clone();
+        for entry in lock.iter_mut() {
+            let mut finished: Option<(ProcessStatus, Option<String>)> = None;
+            if let Some(ref mut child) = entry.child {
+                match child.try_wait() {
+                    Ok(None) => {}
+                    Ok(Some(status)) => {
+                        entry.child = None;
+                        let (new_status, error_msg) = if status.success() {
+                            (ProcessStatus::Exited(status.code().unwrap_or(0)), None)
+                        } else {
+                            let stderr = entry
+                                .stderr_buffer
+                                .lock()
+                                .expect("stderr lock poisoned")
+                                .join("\n");
+                            let err_msg = if stderr.is_empty() {
+                                format!(
+                                    "Process exited with code {}",
+                                    status.code().unwrap_or(-1)
+                                )
+                            } else {
+                                stderr
+                            };
+                            (ProcessStatus::Crashed, Some(err_msg))
+                        };
+                        entry.info.status = new_status.clone();
+                        entry.info.last_error = error_msg.clone();
+                        finished = Some((new_status, error_msg));
+                    }
+                    Err(_) => {}
+                }
+            }
+            if let Some((new_status, error_msg)) = finished {
+                if let Some(handle) = handle.as_ref() {
+                    let _ = handle.emit(
+                        PROCESS_EVENT_STATUS,
+                        ProcessStatusEvent {
+                            process_id: entry.info.id.clone(),
+                            status: new_status,
+                            error: error_msg,
+                        },
+                    );
+                }
+            }
+            let started = entry.info.started_at.parse::<u64>().unwrap_or(0);
+            entry.info.duration_secs = now.saturating_sub(started);
+        }
+
+        lock.iter().map(|p| p.info.clone()).collect()
     }
 
     fn kill(&self, id: &str) -> Result<(), String> {

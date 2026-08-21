@@ -878,15 +878,24 @@ pub fn generate_docker_compose(
         for service in services.iter() {
             result.push_str(&format!("      - {}\n", service.name));
         }
-        result.push_str("    environment:\n");
-        // Стандартные переменные окружения для подключения к сервисам
+        // Стандартные переменные окружения для подключения к сервисам.
+        // environment: пишется ТОЛЬКО при наличии записей — пустой блок
+        // парсится как null и ломает compose («environment must be a
+        // mapping») при сервисах вроде zookeeper/kafka, для которых
+        // переменных нет.
+        let mut app_env: Vec<&str> = Vec::new();
         for service in services.iter() {
             match service.name.as_str() {
-                "postgres" => result.push_str(
-                    "      - DATABASE_URL=postgresql://postgres:12345@postgres:5432/postgres\n",
-                ),
-                "redis" => result.push_str("      - REDIS_URL=redis://redis:6379/0\n"),
+                "postgres" => app_env
+                    .push("DATABASE_URL=postgresql://postgres:12345@postgres:5432/postgres"),
+                "redis" => app_env.push("REDIS_URL=redis://redis:6379/0"),
                 _ => {}
+            }
+        }
+        if !app_env.is_empty() {
+            result.push_str("    environment:\n");
+            for line in app_env {
+                result.push_str(&format!("      - {}\n", line));
             }
         }
     }

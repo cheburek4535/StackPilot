@@ -106,50 +106,77 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         || dev_deps.and_then(|d| d.get(pkg)).is_some()
                 };
 
-                let run_cmd = if has_dep("expo") {
-                    "npx expo start".to_string()
+                // Выбираем ТОЛЬКО существующий npm-скрипт: "dev" → "start" →
+                // "serve" → первый из списка. Раньше тут подставлялся
+                // несуществующий "dev" вслепую — профиль падал с
+                // "Missing script: dev"/"Missing script: nuxt".
+                let run_cmd: Option<String> = if has_dep("expo") {
+                    Some("npx expo start".to_string())
                 } else if has_dep("@nestjs/core") {
-                    scripts
-                        .and_then(|s| s.get("start:dev"))
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("npm run start:dev")
-                        .to_string()
+                    Some(
+                        scripts
+                            .and_then(|s| s.get("start:dev"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("npm run start:dev")
+                            .to_string(),
+                    )
+                } else if let Some(scripts) = scripts {
+                    let chosen = ["dev", "start", "serve"]
+                        .iter()
+                        .find(|k| scripts.get(*k).is_some())
+                        .map(|k| k.to_string())
+                        .or_else(|| {
+                            scripts
+                                .as_object()
+                                .and_then(|m| m.keys().next())
+                                .cloned()
+                        });
+                    match chosen {
+                        Some(key) => Some(format!("npm run {}", key)),
+                        // Скриптов нет вообще: пробуем прямой запуск main
+                        None => value
+                            .get("main")
+                            .and_then(|m| m.as_str())
+                            .map(|main| format!("node {}", main)),
+                    }
                 } else {
-                    let chosen = scripts
-                        .and_then(|s| s.get("dev").or_else(|| s.get("start")))
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("dev");
-                    format!("npm run {}", chosen)
+                    // Секции scripts нет — main, если есть, иначе нечего запускать
+                    value
+                        .get("main")
+                        .and_then(|m| m.as_str())
+                        .map(|main| format!("node {}", main))
                 };
 
-                let mut port: u16 = 3000;
-                if let Some(caps) = port_re.captures(&run_cmd) {
-                    if let Ok(p) = caps[1].parse() {
-                        port = p;
+                if let Some(run_cmd) = run_cmd {
+                    let mut port: u16 = 3000;
+                    if let Some(caps) = port_re.captures(&run_cmd) {
+                        if let Ok(p) = caps[1].parse() {
+                            port = p;
+                        }
                     }
-                }
 
-                launch_actions.push(LaunchAction {
-                    id: generate_id(),
-                    label: "Run Node.js project".into(),
-                    enabled: true,
-                    action_type: ActionType::RunCommand {
-                        command: run_cmd,
-                        working_dir: Some(cwd.clone()),
-                    },
-                });
-
-                if !has_dep("expo") {
                     launch_actions.push(LaunchAction {
                         id: generate_id(),
-                        label: "Wait for Node.js port".into(),
+                        label: "Run Node.js project".into(),
                         enabled: true,
-                        action_type: ActionType::WaitForPort {
-                            host: "127.0.0.1".into(),
-                            port,
-                            timeout_secs: 30,
+                        action_type: ActionType::RunCommand {
+                            command: run_cmd,
+                            working_dir: Some(cwd.clone()),
                         },
                     });
+
+                    if !has_dep("expo") {
+                        launch_actions.push(LaunchAction {
+                            id: generate_id(),
+                            label: "Wait for Node.js port".into(),
+                            enabled: true,
+                            action_type: ActionType::WaitForPort {
+                                host: "127.0.0.1".into(),
+                                port,
+                                timeout_secs: 30,
+                            },
+                        });
+                    }
                 }
             }
 
@@ -464,7 +491,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             .unwrap_or("Project");
 
         Ok(LaunchProfile {
-            name: format!("Project {}", project_name),
+            name: project_name.to_string(),
             description: format!("Auto-detected profile for {}", project_path),
             project_path: Some(project_path.to_string()),
             actions: launch_actions,

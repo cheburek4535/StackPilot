@@ -130,12 +130,17 @@ pub fn validate_project_stack_error(
 }
 
 #[tauri::command]
-pub fn analyze_project_technologies(
+pub async fn analyze_project_technologies(
     state: State<'_, ProjectCreatorState>,
     path: String,
 ) -> Result<AnalysisReport, String> {
-    let p = PathBuf::from(&path);
-    state.analyzer.analyze(&p)
+    // Обход дерева проекта — потенциально секунды; выполняем вне главного
+    // потока, чтобы UI не зависал во время анализа.
+    let analyzer = Arc::clone(&state.analyzer);
+    let path_buf = PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || analyzer.analyze(&path_buf))
+        .await
+        .map_err(|e| format!("Analyze task failed: {e}"))?
 }
 
 /// Рекомендации для текущего выбора стека: парные фреймворки,

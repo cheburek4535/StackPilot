@@ -11,11 +11,16 @@ use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
 
 pub trait LaunchEngine: Send + Sync {
+    /// Executes a single action.
+    ///
+    /// Returns the action status and, when the action spawned a tracked
+    /// process (RunCommand / ExecuteScript), that process's id — the caller
+    /// links it to the session so the session timer can see its lifecycle.
     fn execute_action(
         &self,
         action: &LaunchAction,
         session_id: Option<String>,
-    ) -> Result<ActionStatus, String>;
+    ) -> Result<(ActionStatus, Option<String>), String>;
 }
 
 pub struct ProcessLaunchEngine {
@@ -32,11 +37,14 @@ impl LaunchEngine for ProcessLaunchEngine {
         &self,
         action: &LaunchAction,
         session_id: Option<String>,
-    ) -> Result<ActionStatus, String> {
+    ) -> Result<(ActionStatus, Option<String>), String> {
         if !action.enabled {
-            return Ok(ActionStatus::Skipped {
-                reason: format!("Action '{}' disabled", action.label),
-            });
+            return Ok((
+                ActionStatus::Skipped {
+                    reason: format!("Action '{}' disabled", action.label),
+                },
+                None,
+            ));
         }
 
         match &action.action_type {
@@ -53,20 +61,26 @@ impl LaunchEngine for ProcessLaunchEngine {
                     &action.label,
                     session_id,
                 ) {
-                    Ok(tracked_proc) => Ok(ActionStatus::Success {
-                        message: format!(
-                            "Процесс запущен под контролем менеджера. ID: {}",
-                            tracked_proc.id
-                        ),
-                    }),
+                    Ok(tracked_proc) => Ok((
+                        ActionStatus::Success {
+                            message: format!(
+                                "Процесс запущен под контролем менеджера. ID: {}",
+                                tracked_proc.id
+                            ),
+                        },
+                        Some(tracked_proc.id),
+                    )),
                     Err(e) => Err(format!("Менеджер не смог запустить команду: {}", e)),
                 }
             }
 
             ActionType::OpenUrl { url } => match webbrowser::open(url) {
-                Ok(_) => Ok(ActionStatus::Success {
-                    message: format!("Browser opened: {}", url),
-                }),
+                Ok(_) => Ok((
+                    ActionStatus::Success {
+                        message: format!("Browser opened: {}", url),
+                    },
+                    None,
+                )),
                 Err(e) => Err(format!("Failed to open browser: {}", e)),
             },
 
@@ -77,9 +91,12 @@ impl LaunchEngine for ProcessLaunchEngine {
                     cmd.args(args_str.split_whitespace());
                 }
                 match cmd.spawn() {
-                    Ok(_) => Ok(ActionStatus::Success {
-                        message: format!("App launched: {}", path),
-                    }),
+                    Ok(_) => Ok((
+                        ActionStatus::Success {
+                            message: format!("App launched: {}", path),
+                        },
+                        None,
+                    )),
                     Err(e) => Err(format!("Failed to launch '{}': {}", path, e)),
                 }
             }
@@ -114,9 +131,15 @@ impl LaunchEngine for ProcessLaunchEngine {
                             if let Some(code_str) = parts.get(1) {
                                 if let Ok(code) = code_str.parse::<u16>() {
                                     if (200..400).contains(&code) {
-                                        return Ok(ActionStatus::Success {
-                                            message: format!("URL {} responded with {}", url, code),
-                                        });
+                                        return Ok((
+                                            ActionStatus::Success {
+                                                message: format!(
+                                                    "URL {} responded with {}",
+                                                    url, code
+                                                ),
+                                            },
+                                            None,
+                                        ));
                                     }
                                 }
                             }
@@ -144,9 +167,12 @@ impl LaunchEngine for ProcessLaunchEngine {
                 for _ in 0..*timeout_secs {
                     for addr in &addrs {
                         if TcpStream::connect_timeout(addr, Duration::from_secs(1)).is_ok() {
-                            return Ok(ActionStatus::Success {
-                                message: format!("Port {}:{} is open", host, port),
-                            });
+                            return Ok((
+                                ActionStatus::Success {
+                                    message: format!("Port {}:{} is open", host, port),
+                                },
+                                None,
+                            ));
                         }
                     }
                     thread::sleep(Duration::from_secs(1));
@@ -159,9 +185,12 @@ impl LaunchEngine for ProcessLaunchEngine {
 
             ActionType::Delay { seconds } => {
                 thread::sleep(Duration::from_secs(*seconds));
-                Ok(ActionStatus::Success {
-                    message: format!("Delay {}s completed", seconds),
-                })
+                Ok((
+                    ActionStatus::Success {
+                        message: format!("Delay {}s completed", seconds),
+                    },
+                    None,
+                ))
             }
 
             ActionType::ExecuteScript { script, shell } => {
@@ -193,26 +222,39 @@ impl LaunchEngine for ProcessLaunchEngine {
                         }
                         Ok(ProcessStatus::Exited(0)) => {
                             // Скрипт успешно завершился! Выходим из цикла с успехом
-                            return Ok(ActionStatus::Success {
-                                message: format!("Скрипт успешно выполнен: {}", script),
-                            });
+                            return Ok((
+                                ActionStatus::Success {
+                                    message: format!("Скрипт успешно выполнен: {}", script),
+                                },
+                                Some(proc_id),
+                            ));
                         }
                         Ok(ProcessStatus::Exited(code)) => {
                             // Скрипт завершился, но с ошибкой
-                            return Ok(ActionStatus::Failed {
-                                error: format!("Скрипт завершился с кодом ошибки {}", code),
-                            });
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: format!("Скрипт завершился с кодом ошибки {}", code),
+                                },
+                                Some(proc_id),
+                            ));
                         }
                         Ok(ProcessStatus::Crashed) => {
-                            return Ok(ActionStatus::Failed {
-                                error: "Скрипт аварийно завершил работу (Crashed)".to_string(),
-                            });
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: "Скрипт аварийно завершил работу (Crashed)"
+                                        .to_string(),
+                                },
+                                Some(proc_id),
+                            ));
                         }
                         Ok(ProcessStatus::Killed) => {
-                            return Ok(ActionStatus::Failed {
-                                error: "Выполнение скрипта было принудительно остановлено"
-                                    .to_string(),
-                            });
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: "Выполнение скрипта было принудительно остановлено"
+                                        .to_string(),
+                                },
+                                Some(proc_id),
+                            ));
                         }
                         Err(e) => {
                             // Произошла какая-то системная ошибка при проверке

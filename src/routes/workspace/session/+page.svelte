@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -15,6 +16,7 @@
   let session = $state<SessionInfo | null>(null);
   let dataLoaded = $state(false);
   let error = $state("");
+  let pollId: ReturnType<typeof setInterval> | null = null;
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -24,11 +26,33 @@
     if (project && !dataLoaded) {
       dataLoaded = true;
       loadSession();
+      startPolling();
     } else if (!project) {
       dataLoaded = false;
       session = null;
+      stopPolling();
     }
   });
+
+  onDestroy(() => {
+    stopPolling();
+  });
+
+  /** Сессионный таймер живёт на бэкенде — опрашиваем его, пока страница
+   *  открыта, чтобы duration обновлялся и останавливался без перезахода. */
+  function startPolling() {
+    if (pollId) return;
+    pollId = setInterval(() => {
+      loadSession();
+    }, 2000);
+  }
+
+  function stopPolling() {
+    if (pollId) {
+      clearInterval(pollId);
+      pollId = null;
+    }
+  }
 
   async function loadSession() {
     try {

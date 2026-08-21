@@ -64,18 +64,6 @@ fn is_main_limit_exempt(tree: &WizardTreeData, id: &str) -> bool {
     tree.main_limit_exempt.iter().any(|x| x == id)
 }
 
-/// «Клиентская оболочка» (expo, react-native, plasmo, electron, tauri):
-/// standalone-клиент, для которого серверная сторона имеет смысл только
-/// как разделённый REST API.
-fn is_client_shell(tree: &WizardTreeData, id: &str) -> bool {
-    tree.client_shell_frameworks.iter().any(|x| x == id)
-}
-
-/// Бэкенд-фреймворк способен выступать чистым REST API (есть в project_types).
-fn is_rest_api_framework(fw: &FrameworkDef) -> bool {
-    fw.project_types.iter().any(|p| p == "rest-api")
-}
-
 /// Человеческое объяснение конфликта (conflict_notes) в обе стороны.
 fn conflict_note<'a>(fw: &'a FrameworkDef, other: &'a FrameworkDef) -> Option<&'a str> {
     fw.conflict_notes
@@ -267,24 +255,6 @@ pub fn validate_stack(
                     message: format!(
                         "«{}» и «{}» — оба главные фреймворки {}. На сторону можно выбрать только один главный фреймворк.",
                         a.label, b.label, side
-                    ),
-                });
-            }
-        }
-    }
-
-    // 4b. «Клиентские оболочки» (expo, react-native, plasmo, electron, tauri):
-    //      standalone-клиент, серверная сторона для него имеет смысл только
-    //      как разделённый REST API. Бэкенд-фреймворк без rest-api в
-    //      project_types (cli, боты, инструменты) с таким клиентом — Error.
-    if let Some(client_shell) = selected.iter().find(|f| is_client_shell(tree, &f.id)) {
-        for fw in &selected {
-            if fw.side == "backend" && fw.id != client_shell.id && !is_rest_api_framework(fw) {
-                issues.push(StackIssue {
-                    severity: StackSeverity::Error,
-                    message: format!(
-                        "«{}» — серверный фреймворк, но не REST API. «{}» — мобильный/десктопный клиент: связка возможна только через разделённую (API + Client) архитектуру. Выберите REST-API-бэкенд или уберите серверную сторону.",
-                        fw.label, client_shell.label
                     ),
                 });
             }
@@ -698,13 +668,15 @@ mod tests {
     }
 
     #[test]
-    fn client_shell_blocks_non_rest_backend() {
+    fn client_shell_allows_non_rest_backend() {
         let t = tree();
         assert!(
             !t.client_shell_frameworks.is_empty(),
             "client_shell_frameworks должны быть заданы"
         );
-        // Expo (клиентская оболочка) + zig-cli (не REST API) — Error
+        // Expo (клиентская оболочка) + zig-cli (не REST API) — больше не
+        // блокируется: мон-репо с клиентом и CLI/ботом — легальная структура,
+        // движок раскладывает их по frontend//backend/ (ShellClientApi).
         let issues = validate(
             &t,
             Some("custom"),
@@ -714,26 +686,10 @@ mod tests {
             "windows",
         );
         assert!(
-            issues
-                .iter()
-                .any(|i| matches!(i.severity, StackSeverity::Error)),
-            "expo + zig-cli должны блокироваться: {:?}",
-            issues
-        );
-        // Expo + Zap (REST API) — не блокируется (может быть только Warning)
-        let issues = validate(
-            &t,
-            Some("custom"),
-            Some("zig"),
-            Some("typescript"),
-            &["expo", "zap"],
-            "windows",
-        );
-        assert!(
             !issues
                 .iter()
                 .any(|i| matches!(i.severity, StackSeverity::Error)),
-            "expo + zap (REST API) не должны блокироваться: {:?}",
+            "expo + zig-cli не должны блокироваться: {:?}",
             issues
         );
         // Electron + Django (не-JS бэкенд, REST API) — не блокируется,

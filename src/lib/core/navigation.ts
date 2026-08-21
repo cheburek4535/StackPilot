@@ -1,9 +1,10 @@
 /**
  * Canonical navigation model.
  *
- * Nav items point at routes that render content TODAY. DevLauncher now owns
- * the canonical `/devlauncher` hub (Overview / Analyze / Profiles / Processes);
- * the legacy aliases still work (SPA redirects), so the match rules cover both:
+ * Nav items point at routes that render content TODAY. DevLauncher owns the
+ * canonical `/devlauncher` hub (Overview / Profiles / Processes) — Analyze is
+ * its own module and lives outside the DevLauncher group; the legacy aliases
+ * still work (SPA redirects), so the match rules cover both:
  *   /devlauncher/**                                -> DevLauncher
  *   /analyze, /profiles/**, /processes             -> DevLauncher (legacy)
  *   /workspace/**                                  -> Workspace
@@ -58,13 +59,6 @@ export const NAV_GROUPS: NavGroup[] = [
         match: exact(["/devlauncher"]),
       },
       {
-        id: "analyze",
-        label: "Analyze",
-        href: "/devlauncher/analyze",
-        icon: "search",
-        match: exact(["/devlauncher/analyze", "/analyze"]),
-      },
-      {
         id: "profiles",
         label: "Profiles",
         href: "/devlauncher/profiles",
@@ -77,6 +71,19 @@ export const NAV_GROUPS: NavGroup[] = [
         href: "/devlauncher/processes",
         icon: "terminal",
         match: prefix(["/devlauncher/processes", "/processes"]),
+      },
+    ],
+  },
+  {
+    id: "analyze",
+    label: null,
+    items: [
+      {
+        id: "analyze",
+        label: "Analyze",
+        href: "/devlauncher/analyze",
+        icon: "search",
+        match: exact(["/devlauncher/analyze", "/analyze"]),
       },
     ],
   },

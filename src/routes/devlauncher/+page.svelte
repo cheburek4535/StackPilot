@@ -20,7 +20,11 @@
     deleteProfile,
     executeAction,
   } from "$lib/modules/devlauncher/api";
-  import type { LaunchProfile } from "$lib/modules/devlauncher/types";
+  import type {
+    LaunchProfile,
+    LaunchAction,
+    ActionStatus,
+  } from "$lib/modules/devlauncher/types";
   import {
     actionIcon,
     actionTypeLabel,
@@ -38,10 +42,23 @@
   let actionResults = $state<Map<string, string>>(new Map());
   let running = $state<Set<string>>(new Set());
   let deleting = $state(false);
+  let launching = $state(false);
+  let launchCurrent = $state<string | null>(null);
 
   const selectedProfile = $derived(
     profiles.find((p) => p.name === selectedName) ?? null,
   );
+
+  const launchSummary = $derived.by(() => {
+    if (actionResults.size === 0 || !selectedProfile) return null;
+    let ok = 0, err = 0, skip = 0;
+    for (const v of actionResults.values()) {
+      if (v.startsWith("✓")) ok++;
+      else if (v.startsWith("✗")) err++;
+      else if (v.startsWith("—")) skip++;
+    }
+    return { ok, err, skip };
+  });
 
   onMount(async () => {
     await Promise.all([loadProject(), loadProfiles()]);
@@ -77,6 +94,44 @@
 
   function openWorkspace() {
     goto("/workspace");
+  }
+
+  function formatResultSafe(r: ActionStatus): string {
+    if ("Success" in r) return `✓ ${r.Success.message}`;
+    if ("Failed" in r) return `✗ ${r.Failed.error}`;
+    if ("Skipped" in r) return `— ${r.Skipped.reason}`;
+    return "?";
+  }
+
+  /** Запуск всего профиля: действия выполняются по очереди, результат
+   *  каждого показывается сразу по завершении (бэкенд больше не блокирует
+   *  UI, но долгие WaitForPort/Delay всё равно идут последовательно). */
+  async function launchProfile(profile: LaunchProfile) {
+    if (launching) return;
+    launching = true;
+    actionResults = new Map();
+    try {
+      // Привязываем запуск к проекту профиля: процессы попадут в Workspace,
+      // а таймер сессии увидит их завершение.
+      if (profile.project_path && profile.name !== project?.profile_name) {
+        await setCurrentProject(profile.name, profile.project_path, profile.description, []);
+        project = await getCurrentProject();
+      }
+    } catch {
+      // не критично — запуск продолжится без привязки
+    }
+    for (const action of profile.actions) {
+      if (!action.enabled) continue;
+      launchCurrent = action.label;
+      try {
+        const result = await executeAction(action);
+        actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
+      } catch (e) {
+        actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);
+      }
+    }
+    launchCurrent = null;
+    launching = false;
   }
 
   async function openProjectInVSCode(path: string) {
@@ -137,7 +192,7 @@
 <PageContainer width="wide">
   <PageHeader
     title="DevLauncher Overview"
-    description="Current project, saved profiles and individual actions. Actions run one at a time via executeAction — there is no single “launch whole profile” command."
+    description="Current project, saved profiles and actions. Launch the whole project or run actions individually."
     icon="layers"
   />
 
@@ -182,11 +237,18 @@
           </div>
         </div>
       {:else}
+        {#snippet emptyAction()}
+          <Button icon="bookmark" href="/devlauncher/profiles">Open a profile</Button>
+          <Button variant="secondary" icon="search" href="/devlauncher/analyze">
+            Analyze a project
+          </Button>
+        {/snippet}
         <EmptyState
           compact
           icon="folder"
           title="No project is open"
-          description="Open a project from recent history or from a saved profile to work with it here."
+          description="Open a saved profile to launch it as a project, or analyze a project to build a launch profile."
+          action={emptyAction}
         />
       {/if}
     </Card>
@@ -230,34 +292,56 @@
         </div>
 
         {#if selectedProfile}
-          <Card padding="md">
-            <div class="sp-profile-head">
-              <div>
-                <h4 class="sp-profile-name">{selectedProfile.name}</h4>
-                <p class="sp-project-desc">{selectedProfile.description}</p>
-                <p class="sp-project-path">
-                  {selectedProfile.project_path ?? "No project path attached"}
-                </p>
+          <Card padding="md" variant="elevated">
+            <div class="sp-launch-head">
+              <div class="sp-profile-head">
+                <div>
+                  <h4 class="sp-profile-name">{selectedProfile.name}</h4>
+                  <p class="sp-project-desc">{selectedProfile.description}</p>
+                  <p class="sp-project-path">
+                    {selectedProfile.project_path ?? "No project path attached"}
+                  </p>
+                </div>
               </div>
-              <div class="sp-actions">
-                {#if selectedProfile.project_path}
-                  <Button
-                    variant="secondary"
-                    icon="layers"
-                    onclick={() => openProfileInWorkspace(selectedProfile!)}
-                  >
-                    Open in Workspace
-                  </Button>
-                {/if}
+              <Button
+                variant="primary"
+                size="lg"
+                icon="play"
+                block
+                loading={launching}
+                disabled={launching || selectedProfile.actions.every((a) => !a.enabled)}
+                onclick={() => launchProfile(selectedProfile!)}
+              >
+                {launching ? "Launching…" : `Launch ${selectedProfile.name}`}
+              </Button>
+            </div>
+            {#if launchCurrent}
+              <p class="sp-launch-current">▶ {launchCurrent}…</p>
+            {/if}
+            {#if launchSummary}
+              <p class="sp-launch-summary">
+                ✓ {launchSummary.ok} · ✗ {launchSummary.err} · — {launchSummary.skip}
+              </p>
+            {/if}
+
+            <div class="sp-actions sp-launch-actions">
+              {#if selectedProfile.project_path}
                 <Button
-                  variant="danger"
-                  icon="trash"
-                  disabled={deleting}
-                  onclick={() => handleDelete(selectedProfile!)}
+                  variant="secondary"
+                  icon="layers"
+                  onclick={() => openProfileInWorkspace(selectedProfile!)}
                 >
-                  Delete
+                  Open in Workspace
                 </Button>
-              </div>
+              {/if}
+              <Button
+                variant="danger"
+                icon="trash"
+                disabled={deleting || launching}
+                onclick={() => handleDelete(selectedProfile!)}
+              >
+                Delete
+              </Button>
             </div>
 
             <h5 class="sp-sub-title">
@@ -280,7 +364,7 @@
                     size="sm"
                     variant="primary"
                     icon="play"
-                    disabled={!action.enabled || running.has(action.id)}
+                    disabled={!action.enabled || running.has(action.id) || launching}
                     loading={running.has(action.id)}
                     onclick={() => runAction(selectedProfile!, action.id)}
                   >
@@ -422,6 +506,37 @@
     justify-content: space-between;
     align-items: flex-start;
     gap: var(--sp-4);
+  }
+
+  .sp-launch-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--sp-6);
+    flex-wrap: wrap;
+    margin-bottom: var(--sp-3);
+  }
+
+  .sp-launch-head .sp-btn-lg {
+    min-width: 16rem;
+    font-size: var(--sp-fs-lg);
+    padding: var(--sp-3) var(--sp-6);
+  }
+
+  .sp-launch-actions {
+    margin-top: var(--sp-2);
+  }
+
+  .sp-launch-current {
+    margin: 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-accent);
+  }
+
+  .sp-launch-summary {
+    margin: var(--sp-1) 0 0;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
   }
 
   .sp-profile-name {

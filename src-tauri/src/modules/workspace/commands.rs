@@ -104,8 +104,30 @@ pub fn open_project_from_path(state: State<'_, WorkspaceState>, path: String) ->
 
 // ===== Session commands =====
 
+/// Сессия автоматически завершается, когда все привязанные к ней процессы
+/// завершились (в т.ч. с ошибкой) — таймер не должен тикать вечно.
+/// Сессия без процессов живёт, пока проект открыт.
+fn auto_end_session_if_idle(state: &WorkspaceState) {
+    let linked = state.session.get_linked_processes();
+    if linked.is_empty() {
+        return;
+    }
+    let procs = state.process_manager.list();
+    let all_done = linked.iter().all(|id| {
+        procs
+            .iter()
+            .find(|p| &p.id == id)
+            .map(|p| p.status != ProcessStatus::Running)
+            .unwrap_or(true)
+    });
+    if all_done {
+        state.session.end_session();
+    }
+}
+
 #[tauri::command]
 pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo> {
+    auto_end_session_if_idle(&state);
     state.session.get_session()
 }
 
@@ -158,6 +180,7 @@ pub fn clear_problems(state: State<'_, WorkspaceState>) {
 // other
 #[tauri::command]
 pub fn get_workspace_overview(state: State<'_, WorkspaceState>) -> OverviewData {
+    auto_end_session_if_idle(&state);
     let processes = state.process_manager.list();
     let session_started = state
         .session

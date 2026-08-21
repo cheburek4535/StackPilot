@@ -44,18 +44,6 @@ function isMainLimitExempt(tree: WizardTreeData, id: string): boolean {
   return tree.main_limit_exempt.includes(id);
 }
 
-/** Фреймворк — «клиентская оболочка» (expo, react-native, plasmo, electron,
- *  tauri): standalone-клиент, для которого серверная сторона имеет смысл
- *  только как разделённый REST API. */
-function isClientShell(tree: WizardTreeData, id: string): boolean {
-  return tree.client_shell_frameworks.includes(id);
-}
-
-/** Бэкенд-фреймворк способен выступать чистым REST API (есть в project_types) */
-function isRestApiFramework(fw: FrameworkDef): boolean {
-  return (fw.project_types ?? []).includes("rest-api");
-}
-
 /** Объяснение конфликта (conflict_notes) в обе стороны */
 function conflictNote(
   tree: WizardTreeData,
@@ -159,26 +147,6 @@ export function validateStack(
         issues.push({
           severity: "Error",
           message: `«${a.fw.label}» и «${b.fw.label}» — оба главные фреймворки ${a.side}. На сторону можно выбрать только один главный фреймворк.`,
-        });
-      }
-    }
-  }
-
-  // 4b. «Клиентские оболочки» (expo, react-native, plasmo, electron, tauri):
-  //      standalone-клиент, серверная сторона для него имеет смысл только
-  //      как разделённый REST API. Бэкенд-фреймворк без rest-api в
-  //      project_types (cli, боты, инструменты) с таким клиентом — Error.
-  const clientShell = selected.find((f) => isClientShell(tree, f.id));
-  if (clientShell) {
-    for (const fw of selected) {
-      if (
-        fw.side === "backend" &&
-        fw.id !== clientShell.id &&
-        !isRestApiFramework(fw)
-      ) {
-        issues.push({
-          severity: "Error",
-          message: `«${fw.label}» — серверный фреймворк, но не REST API. «${clientShell.label}» — мобильный/десктопный клиент: связка возможна только через разделённую (API + Client) архитектуру. Выберите REST-API-бэкенд или уберите серверную сторону.`,
         });
       }
     }

@@ -11,6 +11,7 @@
   let errorMsg = $state("");
   let actionResults = $state<Map<string, string>>(new Map());
   let runningAll = $state(false);
+  let currentAction = $state<string | null>(null);
 
   let summary = $derived.by(() => {
     if (actionResults.size === 0) return null;
@@ -76,36 +77,44 @@
   }
 
   async function runAll() {
-    if (!profile) return;
+    if (!profile || runningAll) return;
     runningAll = true;
     const results = new Map<string, string>();
     for (const action of profile.actions) {
+      if (!action.enabled) continue;
+      currentAction = action.label;
       try {
         const result = await executeAction(action);
         results.set(action.id, formatResult(result));
       } catch (e) {
         results.set(action.id, `✗ ${e}`);
       }
+      // Показываем результат каждого действия сразу — профиль может идти
+      // долго (WaitForPort до 60с), пользователь видит прогресс, а не
+      // «зависшую» кнопку.
+      actionResults = new Map(results);
     }
-    actionResults = results;
+    currentAction = null;
     runningAll = false;
   }
 
   async function retryFailed() {
-    if (!profile) return;
+    if (!profile || runningAll) return;
     runningAll = true;
     const results = new Map(actionResults);
     for (const id of failedIds) {
       const action = profile.actions.find((a) => a.id === id);
       if (!action) continue;
+      currentAction = action.label;
       try {
         const result = await executeAction(action);
         results.set(action.id, formatResult(result));
       } catch (e) {
         results.set(action.id, `✗ ${e}`);
       }
+      actionResults = new Map(results);
     }
-    actionResults = results;
+    currentAction = null;
     runningAll = false;
   }
 
@@ -222,6 +231,10 @@
       </div>
     </div>
 
+    {#if currentAction}
+      <p class="running-hint">▶ {currentAction}…</p>
+    {/if}
+
     <section>
       <h2>Actions ({profile.actions.length})</h2>
       <div class="action-list">
@@ -334,6 +347,12 @@
     color: var(--sp-text-3);
     font-size: var(--sp-fs-sm);
     margin: 0.15rem 0 0;
+  }
+
+  .running-hint {
+    margin: 0 0 1rem;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-accent);
   }
 
   .empty {

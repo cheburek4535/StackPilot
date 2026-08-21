@@ -16,7 +16,8 @@
 //     самостоятельная фича);
 //   - фичи-флаги (docker/testing/git_init/vscode_config/ci) выводятся из
 //     features, когда пользователь явно их выбрал;
-//   - консистентность: один язык не может быть назначен обеим сторонам;
+//   - консистентность: один и тот же язык может стоять на обеих сторонах
+//     (full-stack TS: nest + react) — сторона решается фреймворками;
 //   - неизвестные id (язык/фреймворк/инструмент) — ошибки с тем же текстом,
 //     что у compose_recipe ("not supported"), чтобы план и валидация
 //     говорили одно и то же.
@@ -43,16 +44,9 @@ pub fn normalize_context(tree: &WizardTreeData, ctx: &mut WizardContext) -> Vec<
     dedup_stable(&mut ctx.features);
     dedup_stable(&mut ctx.infrastructure);
 
-    // 2. Один язык на двух сторонах — неоднозначно, план не может решить,
-    //    куда писать код (backend/ vs frontend/). Это ошибка.
-    for l in &ctx.backend_languages {
-        if ctx.frontend_languages.contains(l) {
-            errors.push(format!(
-                "Language '{}' is assigned to both backend and frontend sides",
-                l
-            ));
-        }
-    }
+    // 2. Один язык на двух сторонах — штатный full-stack стек (TypeScript на
+    //    бэкенде и фронтенде: nest + react). Раскладка решается фреймворками
+    //    (backend/-frontend/), а не языком — движок это поддерживает.
 
     // 3. Неизвестные id — те же формулировки, что в compose_recipe:
     //    "… is not supported: no implementation is available in this build".
@@ -218,19 +212,19 @@ mod tests {
     }
 
     #[test]
-    fn same_language_on_both_sides_is_an_error() {
+    fn same_language_on_both_sides_is_allowed() {
         let t = tree();
         let mut c = ctx();
-        c.languages = vec!["python".into()];
-        c.backend_languages = vec!["python".into()];
-        c.frontend_languages = vec!["python".into()];
+        c.languages = vec!["typescript".into()];
+        c.backend_languages = vec!["typescript".into()];
+        c.frontend_languages = vec!["typescript".into()];
         let errors = normalize_context(&t, &mut c);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("both backend and frontend")),
-            "{errors:?}"
-        );
+        assert!(errors.is_empty(), "{errors:?}");
+        // TypeScript на обеих сторонах — штатный full-stack стек (nest + react):
+        // сторона языка остаётся явной на каждой стороне, ошибки нет.
+        assert_eq!(c.backend_languages, vec!["typescript"]);
+        assert_eq!(c.frontend_languages, vec!["typescript"]);
+        assert_eq!(c.languages, vec!["typescript"]);
     }
 
     #[test]
