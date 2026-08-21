@@ -69,6 +69,15 @@ pub fn run() {
             let toolchain_state = ToolchainState::new(data_dir.join("toolchain"));
             app.manage(toolchain_state);
 
+            // Канонический движок заданий: глобальный приёмник событий
+            // (toolchainx:job_event) регистрируется один раз на приложение.
+            if let Some(tc_state) = app.try_state::<ToolchainState>() {
+                modules::toolchain::commands::register_tcx_event_sink(
+                    &tc_state,
+                    app.handle().clone(),
+                );
+            }
+
             // Приложение стартует с PATH момента запуска — инструменты,
             // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
             // winget, SDK), могут остаться вне него. Подтягиваем свежий
@@ -162,6 +171,23 @@ pub fn run() {
             modules::toolchain::commands::tc_take_new_secrets,
             modules::toolchain::commands::tc_get_metadata,
             modules::toolchain::commands::tc_get_health_report,
+            // ToolchainManager: read-only scan/diagnostics engine (tcx_*)
+            modules::toolchain::commands::tcx_get_environment_snapshot,
+            modules::toolchain::commands::tcx_start_scan,
+            modules::toolchain::commands::tcx_get_scan_job,
+            modules::toolchain::commands::tcx_get_latest_scan_job,
+            modules::toolchain::commands::tcx_cancel_scan,
+            modules::toolchain::commands::tcx_get_tool_details,
+            modules::toolchain::commands::tcx_run_health_checks,
+            modules::toolchain::commands::tcx_profile_resolve,
+            // ToolchainManager: canonical job engine (tcx_*)
+            modules::toolchain::commands::tcx_build_plan,
+            modules::toolchain::commands::tcx_start_job,
+            modules::toolchain::commands::tcx_get_job,
+            modules::toolchain::commands::tcx_list_jobs,
+            modules::toolchain::commands::tcx_cancel_job,
+            modules::toolchain::commands::tcx_retry_job,
+            modules::toolchain::commands::tcx_adopt_tool,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

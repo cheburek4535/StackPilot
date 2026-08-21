@@ -188,10 +188,7 @@ impl ProcessManager for OsProcessManager {
                                 .expect("stderr lock poisoned")
                                 .join("\n");
                             let err_msg = if stderr.is_empty() {
-                                format!(
-                                    "Process exited with code {}",
-                                    status.code().unwrap_or(-1)
-                                )
+                                format!("Process exited with code {}", status.code().unwrap_or(-1))
                             } else {
                                 stderr
                             };

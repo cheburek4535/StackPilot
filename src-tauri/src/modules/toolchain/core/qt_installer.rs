@@ -211,10 +211,11 @@ async fn fetch_text(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<String, String> {
-    let dest = std::env::temp_dir().join(format!("tc-qt-fetch-{}.txt", std::process::id()));
+    let dest = console::tracked_temp_file("qt-fetch", ".txt");
     let script = format!(
         r#"$ErrorActionPreference = 'Stop'
 $code = & curl.exe -sS -L -m 120 -o {1} -w '%{{http_code}}' {0}
@@ -226,8 +227,17 @@ if ($LASTEXITCODE -ne 0 -or $code -ne '200') {{
         ps_quote(url),
         ps_quote(&dest.to_string_lossy())
     );
-    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort)
-        .await?;
+    let res = console::run_tool_script(
+        tool_id,
+        &script,
+        Some(task_id),
+        index,
+        total,
+        session_id,
+        sink,
+        abort,
+    )
+    .await?;
     if !res.success {
         let msg = res
             .error_line
@@ -254,11 +264,12 @@ async fn updates_exist(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> bool {
     let url = format!("{repo}/desktop/{version_dir}/{version_dir}/Updates.xml");
-    let dest = std::env::temp_dir().join(format!("tc-qt-head-{}.txt", std::process::id()));
+    let dest = console::tracked_temp_file("qt-head", ".txt");
     let script = format!(
         r#"$code = & curl.exe -s -L -o NUL -w '%{{http_code}}' -I {0}
 if ($code -eq '200') {{
@@ -270,8 +281,17 @@ exit 1
         ps_quote(&url),
         ps_quote(&dest.to_string_lossy())
     );
-    let res =
-        console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await;
+    let res = console::run_tool_script(
+        tool_id,
+        &script,
+        Some(task_id),
+        index,
+        total,
+        session_id,
+        sink,
+        abort,
+    )
+    .await;
     let ok = matches!(res, Ok(r) if r.success);
     let _ = std::fs::remove_file(&dest);
     ok
@@ -285,6 +305,7 @@ async fn resolve_latest_version(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<(String, String), String> {
@@ -296,6 +317,7 @@ async fn resolve_latest_version(
         total,
         task_id,
         tool_id,
+        session_id,
         sink,
         Arc::clone(&abort),
     )
@@ -317,6 +339,7 @@ async fn resolve_latest_version(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
         }
     }
@@ -330,6 +353,7 @@ async fn resolve_latest_version(
             total,
             task_id,
             tool_id,
+            session_id,
             sink,
             Arc::clone(&abort),
         )
@@ -343,8 +367,9 @@ async fn resolve_latest_version(
     Err("Не удалось определить доступную версию Qt 6.8 в репозитории".to_string())
 }
 
-/// Распаковка 7z встроенным tar (Windows 10+). Каталог создаётся
-/// заранее: tar не умеет -C в несуществующий путь.
+/// Распаковка архива Qt (7z-контейнеры читает встроенный tar Windows 10+)
+/// через traversal-безопасный слой archive.rs: список записей проверяется
+/// ДО извлечения (zip-slip/tar-slip/симлинки отклоняются fail-closed).
 async fn extract_archive(
     archive: &Path,
     target: &Path,
@@ -352,33 +377,14 @@ async fn extract_archive(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let script = format!(
-        r#"$ErrorActionPreference = 'Stop'
-New-Item -ItemType Directory -Force -Path {1} | Out-Null
-tar -xf {0} -C {1}
-if ($LASTEXITCODE -ne 0) {{
-    Write-Output "tc:error tar -xf не смог распаковать {0} (код $LASTEXITCODE)"
-    exit 1
-}}
-"#,
-        ps_quote(&archive.to_string_lossy()),
-        ps_quote(&target.to_string_lossy())
-    );
-    let res = console::run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort)
-        .await?;
-    if res.success {
-        Ok(())
-    } else if let Some(line) = res.error_line {
-        Err(line)
-    } else {
-        Err(format!(
-            "Распаковка {archive:?} завершилась с кодом {}",
-            res.code
-        ))
-    }
+    super::archive::extract_tar_safe(
+        archive, target, tool_id, task_id, index, total, session_id, sink, abort,
+    )
+    .await
 }
 
 // ------------------------------------------------------------
@@ -395,6 +401,7 @@ pub async fn install_qt_online(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<(String, Option<String>), String> {
@@ -402,6 +409,8 @@ pub async fn install_qt_online(
         .url
         .as_deref()
         .ok_or_else(|| format!("{}: Qt-источник без url", source.id))?;
+    // Репозиторий Qt — внешняя граница доверия: только https.
+    console::validate_download_url(repo)?;
     let install_dir = source
         .install_dir
         .as_deref()
@@ -417,6 +426,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
     sink.emit(console::event(
         ToolchainEventType::TaskProgress {
@@ -426,6 +436,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
 
     // 1. Самая свежая версия 6.8.x
@@ -435,6 +446,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
         sink,
         Arc::clone(&abort),
     )
@@ -447,6 +459,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
 
     // 2. Список пакетов: base + qtshadertools + модули по опциям.
@@ -485,6 +498,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
         sink,
         Arc::clone(&abort),
     )
@@ -500,6 +514,7 @@ pub async fn install_qt_online(
             total,
             task_id,
             tool_id,
+            session_id,
             sink,
             Arc::clone(&abort),
         )
@@ -548,6 +563,7 @@ pub async fn install_qt_online(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         for (target_arg, archive) in &pkg.extracts {
             done_archives += 1;
@@ -560,7 +576,13 @@ pub async fn install_qt_online(
                 "{repo}/{}/{}/{}{archive}",
                 pkg.base_path, pkg.name, pkg.version
             );
-            let dest = std::env::temp_dir().join(format!("tc-qt-{tool_id}-{archive}"));
+            // Уникальный temp-файл на каждый архив (без предсказуемого имени).
+            let ext = Path::new(archive)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_else(|| ".bin".to_string());
+            let dest = console::tracked_temp_file("qt-pkg", &ext);
 
             sink.emit(console::event(
                 ToolchainEventType::TaskProgress {
@@ -572,14 +594,17 @@ pub async fn install_qt_online(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
             console::download(
                 &url,
                 &dest,
+                None, // у репозитория Qt нет контрольных сумм в Updates.xml — честный unverified
                 index,
                 total,
                 task_id,
                 tool_id,
+                session_id,
                 sink,
                 Arc::clone(&abort),
             )
@@ -594,6 +619,7 @@ pub async fn install_qt_online(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
             extract_archive(
                 &dest,
@@ -602,6 +628,7 @@ pub async fn install_qt_online(
                 total,
                 task_id,
                 tool_id,
+                session_id,
                 sink,
                 Arc::clone(&abort),
             )
@@ -622,6 +649,7 @@ pub async fn install_qt_online(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         if let Err(e) = path_service::add_to_user_path(&def.path_entries).await {
             eprintln!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
@@ -640,6 +668,7 @@ pub async fn install_qt_online(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
     match discovery::detect_tool(def).await {
         ToolStatus::Installed { version } => Ok((version, None)),
@@ -803,7 +832,7 @@ mod tests {
         let abort = Arc::new(AtomicBool::new(false));
 
         let (version_dir, qt_version) =
-            resolve_latest_version(repo, 0, 1, "qt", "qt", &sink, abort.clone())
+            resolve_latest_version(repo, 0, 1, "qt", "qt", "s-live", &sink, abort.clone())
                 .await
                 .expect("resolve_latest_version");
         eprintln!("live: version_dir={version_dir}, version={qt_version}");
@@ -825,6 +854,7 @@ mod tests {
             1,
             "qt",
             "qt",
+            "s-live",
             &sink,
             abort.clone(),
         )
@@ -866,9 +896,18 @@ exit 1
 "#,
             ps_quote(&url)
         );
-        let res = console::run_tool_script("qt", &script, Some("qt"), 0, 1, &sink, abort.clone())
-            .await
-            .expect("head script");
+        let res = console::run_tool_script(
+            "qt",
+            &script,
+            Some("qt"),
+            0,
+            1,
+            "s-live",
+            &sink,
+            abort.clone(),
+        )
+        .await
+        .expect("head script");
         assert!(res.success, "HEAD {url} должен отвечать 200");
         eprintln!("live: OK — {url}, target={target}");
         let _ = std::fs::remove_file(&dest);

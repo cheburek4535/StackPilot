@@ -6,21 +6,25 @@
 //
 // Что храним:
 //   - tools   — что и когда установлено (версия, путь, каталоги PATH);
-//   - secrets — пароль PostgreSQL и прочие секреты, сгенерированные
-//               при установке. В проект никогда не попадают;
 //   - prefs   — свободные пользовательские настройки.
+//
+// СЕКРЕТЫ здесь больше НЕ хранятся: они живут в изолированном
+// хранилище core/secrets.rs (отдельный файл, DPAPI на Windows).
+// Поле secrets в ToolchainMetadata осталось только для обратной
+// совместимости загрузки старых state.json: при загрузке plaintext-
+// секреты переносятся в SecretStore и вычищаются из state.json.
 //
 // Гарантии:
 //   - файл отсутствует/битый → пустое состояние (не падаем);
 //   - запись через временный файл + rename — не развалится на
-//     полпути (и app не потеряет данные при сбое);
-//   - работаем только с app_data-каталогом приложения — файл
-//     принадлежит пользователю, поэтому секреты здесь хранимы,
-//     но ничего не отправляется наружу.
+//     полпути;
+//   - наружу отдаётся только ToolchainMetadataView (без секретов).
 
 use std::path::{Path, PathBuf};
 
-use crate::modules::toolchain::models::{InstalledToolInfo, ToolchainMetadata};
+use crate::modules::toolchain::models::{
+    InstalledToolInfo, ToolchainMetadata, ToolchainMetadataView,
+};
 
 /// Путь к файлу состояния относительно корня данных.
 const STATE_FILE: &str = "state.json";
@@ -51,7 +55,11 @@ impl MetadataStore {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Не удалось создать {}: {e}", parent.display()))?;
 
-        let pretty = serde_json::to_string_pretty(&self.data)
+        // Секреты в state.json не пишутся никогда: даже унаследованное
+        // поле при сохранении обнуляется (миграция в SecretStore).
+        let mut snapshot = self.data.clone();
+        snapshot.secrets.clear();
+        let pretty = serde_json::to_string_pretty(&snapshot)
             .map_err(|e| format!("Не удалось сериализовать state.json: {e}"))?;
 
         let tmp = self.path.with_extension("json.tmp");
@@ -62,9 +70,24 @@ impl MetadataStore {
         Ok(())
     }
 
-    /// Полная копия данных (для команд tauri и отладки).
+    /// Санитизированная копия данных для команд tauri: БЕЗ секретов.
+    /// Это единственная форма, покидающая бэкенд через tc_get_metadata.
+    pub fn view(&self) -> ToolchainMetadataView {
+        ToolchainMetadataView::from(&self.data)
+    }
+
+    /// Полная копия данных (только для внутренних потребителей ядра;
+    /// поле secrets после миграции всегда пустое).
     pub fn data(&self) -> &ToolchainMetadata {
         &self.data
+    }
+
+    /// Унаследованные plaintext-секреты из старого state.json (для
+    /// однократной миграции в SecretStore при старте приложения).
+    /// Единственный легальный способ достать legacy-секреты из стора:
+    /// после миграции поле всегда пустое и в view не попадает.
+    pub fn take_legacy_secrets(&mut self) -> std::collections::HashMap<String, String> {
+        std::mem::take(&mut self.data.secrets)
     }
 
     /// Записывает факт установки инструмента (перезаписывает прежнюю).
@@ -80,27 +103,17 @@ impl MetadataStore {
         self.data.tools.get(tool_id)
     }
 
-    /// Сохраняет секрет (например пароль PostgreSQL).
-    pub fn set_secret(&mut self, key: &str, value: &str) {
-        self.data.secrets.insert(key.to_string(), value.to_string());
-    }
-
-    /// Покрыто тестами; этап 8 — пароль PostgreSQL для генерации БД.
-    #[allow(dead_code)]
-    pub fn get_secret(&self, key: &str) -> Option<&str> {
-        self.data.secrets.get(key).map(|s| s.as_str())
-    }
-
-    /// Все секреты — для передачи в сессию установки.
-    /// Покрыто тестами; понадобится странице окружения.
-    #[allow(dead_code)]
-    pub fn secrets(&self) -> &std::collections::HashMap<String, String> {
-        &self.data.secrets
-    }
-
     /// Отмечает время последней проверки окружения.
     pub fn touch_last_scan(&mut self, at: String) {
         self.data.last_scan = Some(at);
+    }
+
+    /// Явное «усыновление» найденной ручной установки (adopt/track).
+    /// Не создаёт запись об установке StackPilot — только метку
+    /// наблюдения с моментом усыновления. Состояние выдаётся наружу
+    /// через ToolchainMetadataView.adopted (tc_get_metadata).
+    pub fn record_adoption(&mut self, tool_id: &str, at: String) {
+        self.data.adopted.insert(tool_id.to_string(), at);
     }
 }
 
@@ -155,7 +168,6 @@ mod tests {
         let mut store = MetadataStore::load(&dir);
 
         store.record_tool_installed("node", sample_info());
-        store.set_secret("postgres_password", "0123456789abcdef");
         store.touch_last_scan("2026-08-05T12:00:00Z".to_string());
         store.save().unwrap();
 
@@ -165,10 +177,6 @@ mod tests {
         assert_eq!(
             reloaded.tool("node").unwrap().path,
             "C:\\Program Files\\nodejs"
-        );
-        assert_eq!(
-            reloaded.get_secret("postgres_password"),
-            Some("0123456789abcdef")
         );
         assert_eq!(
             reloaded.data().last_scan.as_deref(),
@@ -187,5 +195,50 @@ mod tests {
 
         assert_eq!(store.tool("node").unwrap().version, "v23.0.0");
         assert_eq!(store.tool("node").unwrap().path_entries.len(), 1);
+    }
+
+    /// Регрессия безопасности: секреты не должны попадать в state.json
+    /// и в санитизированную выдачу tc_get_metadata.
+    #[test]
+    fn view_excludes_secrets_and_save_strips_them() {
+        let dir = temp_dir("no-secrets");
+        let mut store = MetadataStore::load(&dir);
+
+        // Симулируем старый state.json с plaintext-секретом.
+        store.data.secrets.insert(
+            "postgres_password".to_string(),
+            "LegacyPw123456".to_string(),
+        );
+
+        // Выдача наружу секрета не содержит.
+        let view = store.view();
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(
+            !json.contains("LegacyPw123456"),
+            "секрет утёк во view: {json}"
+        );
+        assert!(serde_json::from_str::<serde_json::Value>(&json)
+            .unwrap()
+            .get("secrets")
+            .is_none());
+
+        // Сохранение вычищает секрет из файла.
+        store.save().unwrap();
+        let raw = std::fs::read_to_string(dir.join(STATE_FILE)).unwrap();
+        assert!(
+            !raw.contains("LegacyPw123456"),
+            "секрет остался в state.json"
+        );
+        assert!(
+            !raw.contains("\"secrets\""),
+            "пустая секция секретов не пишется"
+        );
+
+        // Миграция забирает унаследованные секреты один раз.
+        let legacy = store.take_legacy_secrets();
+        assert_eq!(legacy.len(), 1);
+        assert!(store.take_legacy_secrets().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

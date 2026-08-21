@@ -14,54 +14,72 @@
 //   - winget ставится ПЕРВЫМ: пока его нет, все остальные пакеты
 //     на Windows поставить нечем.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::modules::toolchain::models::*;
 
-/// Строит план установки из отчёта проверки окружения.
-/// Порядок требований сохраняется из check (языки → фреймворки →
-/// тулы → флаги), кроме winget, который выносится вперёд.
+// ------------------------------------------------------------
+// Канонизация плана (бэкенд — авторитет)
+// ------------------------------------------------------------
+
+/// Пересобирает план из КАТАЛОГА: фронтенд присылает только список
+/// tool_id (и опции Qt), всё остальное — display, размер, admin-флаг,
+/// описание источника — берётся из tools.json бэкенда. Подделать
+/// источник установки/URL/аргументы через payload невозможно.
 ///
-/// `selected` ограничивает набор инструментов: None или Some([]) —
-/// все «не готовые» требования; Some(list) — только перечисленные
-/// (для кастомизации установки: пользователь может выбрать часть).
-pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> InstallPlan {
+/// Правила:
+///   - неизвестный id → ошибка (план отклоняется целиком);
+///   - дубликаты id схлопываются;
+///   - manual_install-инструменты не ставятся никогда;
+///   - инструменты без источников для текущей ОС отбрасываются;
+///   - os берётся у платформенного слоя, не из payload.
+pub fn canonicalize_plan(
+    definitions: &[ToolDefinition],
+    requested_ids: &[String],
+    install_options: &HashMap<String, Vec<String>>,
+) -> Result<InstallPlan, String> {
+    let os = crate::modules::toolchain::platforms::current_platform().os_name();
     let mut tasks: Vec<InstallTask> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut total_size_mb: u64 = 0;
 
-    for req in &check.requirements {
-        if req.status.is_ok() {
+    for id in requested_ids {
+        if !seen.insert(id.clone()) {
+            continue; // дубликат
+        }
+        let Some(def) = definitions.iter().find(|d| d.id == *id) else {
+            return Err(format!("Неизвестный инструмент в плане: {id}"));
+        };
+        // Ручная установка не автоматизируется никогда.
+        if def.manual_install.is_some() {
             continue;
         }
-        // ManualInstall — ручная установка, автозадачу не создаём,
-        // даже если фронт случайно передал id в selected.
-        if matches!(req.status, ToolStatus::ManualInstall { .. }) {
+        let os_sources: &[InstallSource] = match os.as_str() {
+            "windows" => def.sources.windows.as_slice(),
+            "linux" => def.sources.linux.as_slice(),
+            "macos" => def.sources.macos.as_slice(),
+            _ => &[],
+        };
+        // Нет источников на этой ОС — задача бессмысленна.
+        if os_sources.is_empty() {
             continue;
-        }
-        // RunInDocker — docker-инструмент мастера, разворачивается
-        // docker-compose.yaml проекта; локальная установка не нужна.
-        if matches!(req.status, ToolStatus::RunInDocker) {
-            continue;
-        }
-        if let Some(list) = selected {
-            if !list.iter().any(|id| id == &req.tool_id) {
-                continue;
-            }
         }
 
-        total_size_mb += req.size_mb as u64;
+        total_size_mb += def.size_mb as u64;
         tasks.push(InstallTask {
-            // task_id равен tool_id: каждый инструмент участвует в плане один раз
-            task_id: req.tool_id.clone(),
-            tool_id: req.tool_id.clone(),
-            display: req.display.clone(),
-            icon: req.icon.clone(),
-            size_mb: req.size_mb,
-            needs_admin: req.needs_admin,
-            source_description: req.source_description.clone(),
-            install_options: req.install_options.clone(),
+            task_id: def.id.clone(),
+            tool_id: def.id.clone(),
+            display: def.display.clone(),
+            icon: def.icon.clone(),
+            size_mb: def.size_mb,
+            needs_admin: def.needs_admin,
+            source_description: source_description_for(def, &os),
+            install_options: install_options.get(&def.id).cloned().unwrap_or_default(),
             state: TaskState::Pending,
         });
     }
 
+    // winget всегда первым (как и в build_plan).
     if let Some(i) = tasks.iter().position(|t| t.tool_id == "winget") {
         if i != 0 {
             let winget = tasks.remove(i);
@@ -69,10 +87,37 @@ pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> Inst
         }
     }
 
-    InstallPlan {
+    Ok(InstallPlan {
         tasks,
         total_size_mb,
-        os: check.os.clone(),
+        os,
+        session_id: String::new(),
+    })
+}
+
+/// Человекочитаемое описание первого источника на указанной ОС
+/// (дублирует логику check::source_description, но работает с явной ОС).
+fn source_description_for(def: &ToolDefinition, os: &str) -> String {
+    if def.manual_install.is_some() {
+        return "Устанавливается вручную".to_string();
+    }
+    if !def.installable() {
+        return "Отдельная установка не требуется".to_string();
+    }
+    let sources: &[InstallSource] = match os {
+        "windows" => def.sources.windows.as_slice(),
+        "linux" => def.sources.linux.as_slice(),
+        "macos" => def.sources.macos.as_slice(),
+        _ => &[],
+    };
+    let Some(first) = sources.first() else {
+        return "Установка на этой ОС не предусмотрена".to_string();
+    };
+    match first.kind {
+        InstallSourceKind::PkgManager => format!("Менеджер пакетов: {}", first.id),
+        InstallSourceKind::Official => format!("Официальный установщик: {}", first.id),
+        InstallSourceKind::Script => format!("Скрипт установки: {}", first.id),
+        InstallSourceKind::QtOnline => "Официальный репозиторий Qt (online)".to_string(),
     }
 }
 
@@ -84,171 +129,129 @@ pub fn build_plan(check: &EnvironmentCheck, selected: Option<&[String]>) -> Inst
 mod tests {
     use super::*;
 
-    fn requirement(tool_id: &str, status: ToolStatus) -> ToolRequirement {
-        ToolRequirement {
-            tool_id: tool_id.to_string(),
-            display: tool_id.to_string(),
+    // ------------------------------------------------------------
+    // Канонизация (защита от подделки плана фронтендом)
+    //
+    // Семантика планирования («пропущены установленные», «winget первый»,
+    // «manual/docker не ставятся») покрыта тестами канонического
+    // планировщика engine/planner.rs — здесь проверяется только
+    // пересборка содержимого задач из каталога.
+    // ------------------------------------------------------------
+
+    fn catalog_def(id: &str) -> ToolDefinition {
+        ToolDefinition {
+            id: id.to_string(),
             category: "utility".to_string(),
+            display: format!("Display {id}"),
+            description: String::new(),
             icon: None,
-            status,
-            size_mb: 10,
-            needs_admin: false,
-            source_description: "test".to_string(),
-            install_options: vec![],
-        }
-    }
-
-    fn check_with(requirements: Vec<ToolRequirement>) -> EnvironmentCheck {
-        EnvironmentCheck {
-            os: "windows".to_string(),
-            requirements,
-            optional_requirements: vec![],
-            total_size_mb: 0,
-            free_space_mb: 0,
-            enough_space: true,
-            needs_admin_any: false,
-            all_ready: false,
-        }
-    }
-
-    #[test]
-    fn installed_tools_are_not_scheduled() {
-        let check = check_with(vec![requirement(
-            "git",
-            ToolStatus::Installed {
-                version: "2.48".to_string(),
+            detection: DetectionRules {
+                version_probes: vec![],
+                known_paths: vec![],
+                registry_keys: vec![],
             },
-        )]);
-        let plan = build_plan(&check, None);
-        assert!(plan.tasks.is_empty());
-        assert_eq!(plan.total_size_mb, 0);
+            versions: Default::default(),
+            sources: InstallSources {
+                windows: vec![InstallSource {
+                    kind: InstallSourceKind::Official,
+                    id: "src".to_string(),
+                    url: Some("https://example.com/x.exe".to_string()),
+                    args: vec![],
+                    extra_args: vec![],
+                    dynamic_args: false,
+                    install_dir: None,
+                    needs_admin: None,
+                    file_name: None,
+                    execution: None,
+                    sha256: None,
+                }],
+                linux: vec![],
+                macos: vec![],
+            },
+            size_mb: 42,
+            needs_admin: true,
+            path_entries: vec![],
+            bundled_with: None,
+            health_checks: vec![],
+            notes: None,
+            manual_install: None,
+            extended: Default::default(),
+        }
     }
 
     #[test]
-    fn missing_and_outdated_become_tasks() {
-        let check = check_with(vec![
-            requirement(
-                "git",
-                ToolStatus::Installed {
-                    version: "2.48".to_string(),
-                },
-            ),
-            requirement("node", ToolStatus::Missing),
-            requirement(
-                "python",
-                ToolStatus::UpdateAvailable {
-                    installed: "3.9".to_string(),
-                    recommended: "3.13".to_string(),
-                },
-            ),
-        ]);
+    fn canonical_plan_rebuilds_content_from_catalog() {
+        let defs = vec![catalog_def("node"), catalog_def("winget")];
+        let plan = canonicalize_plan(
+            &defs,
+            &["node".to_string(), "winget".to_string()],
+            &HashMap::new(),
+        )
+        .unwrap();
 
-        let plan = build_plan(&check, None);
-        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
-        assert_eq!(ids, vec!["node", "python"]);
-        assert_eq!(plan.total_size_mb, 20);
-        assert!(plan
-            .tasks
-            .iter()
-            .all(|t| matches!(t.state, TaskState::Pending)));
-    }
-
-    #[test]
-    fn selected_ids_restrict_the_plan() {
-        let check = check_with(vec![
-            requirement("node", ToolStatus::Missing),
-            requirement("python", ToolStatus::Missing),
-            requirement("git", ToolStatus::Missing),
-        ]);
-
-        let plan = build_plan(&check, Some(&["python".to_string()]));
-        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
-        assert_eq!(ids, vec!["python"]);
-        assert_eq!(plan.total_size_mb, 10);
-
-        // пустой список — ничего не ставим
-        let empty = build_plan(&check, Some(&[]));
-        assert!(empty.tasks.is_empty());
-    }
-
-    #[test]
-    fn selected_ids_never_include_installed() {
-        let check = check_with(vec![
-            requirement(
-                "node",
-                ToolStatus::Installed {
-                    version: "24".to_string(),
-                },
-            ),
-            requirement("git", ToolStatus::Missing),
-        ]);
-        // даже если фронт случайно попросил установить node — он уже готов
-        let plan = build_plan(&check, Some(&["node".to_string(), "git".to_string()]));
-        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
-        assert_eq!(ids, vec!["git"]);
-    }
-
-    #[test]
-    fn winget_goes_first() {
-        let check = check_with(vec![
-            requirement("node", ToolStatus::Missing),
-            requirement("winget", ToolStatus::Missing),
-            requirement("git", ToolStatus::Missing),
-        ]);
-
-        let plan = build_plan(&check, None);
+        // winget вынесен вперёд, содержимое задач — из каталога.
         assert_eq!(plan.tasks[0].tool_id, "winget");
-        // порядок остальных не меняется (относительный)
-        let rest: Vec<&str> = plan
-            .tasks
-            .iter()
-            .skip(1)
-            .map(|t| t.tool_id.as_str())
-            .collect();
-        assert_eq!(rest, vec!["node", "git"]);
+        assert_eq!(plan.tasks[1].tool_id, "node");
+        assert_eq!(plan.tasks[1].display, "Display node");
+        assert_eq!(plan.tasks[1].size_mb, 42);
+        assert!(plan.tasks[1].needs_admin);
+        assert_eq!(plan.total_size_mb, 84);
+        // os берётся у платформенного слоя, не из payload.
+        assert_eq!(
+            plan.os,
+            crate::modules::toolchain::platforms::current_platform().os_name()
+        );
     }
 
     #[test]
-    fn winget_already_first_stays_put() {
-        let check = check_with(vec![
-            requirement("winget", ToolStatus::Missing),
-            requirement("git", ToolStatus::Missing),
-        ]);
-        let plan = build_plan(&check, None);
-        assert_eq!(plan.tasks[0].tool_id, "winget");
-        assert_eq!(plan.tasks.len(), 2);
+    fn canonical_plan_rejects_unknown_tool() {
+        let defs = vec![catalog_def("node")];
+        let err = canonicalize_plan(
+            &defs,
+            &["node".to_string(), "evil-tool".to_string()],
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("evil-tool"),
+            "неизвестный id отклоняется: {err}"
+        );
     }
 
     #[test]
-    fn manual_install_tools_never_scheduled() {
-        let check = check_with(vec![
-            requirement("git", ToolStatus::Missing),
-            requirement(
-                "unity",
-                ToolStatus::ManualInstall {
-                    reason: "вручную".to_string(),
-                },
-            ),
-        ]);
+    fn canonical_plan_dedupes_and_skips_manual_and_unsupported() {
+        let mut manual = catalog_def("unity");
+        manual.manual_install = Some("ставится вручную".to_string());
+        let mut no_sources = catalog_def("xcodebuild");
+        no_sources.sources = InstallSources::default();
+        let defs = vec![catalog_def("node"), manual, no_sources];
 
-        // даже если фронт попросил — manual-тул не ставится автоматически
-        let plan = build_plan(&check, Some(&["unity".to_string(), "git".to_string()]));
+        let plan = canonicalize_plan(
+            &defs,
+            &[
+                "node".to_string(),
+                "node".to_string(),       // дубликат
+                "unity".to_string(),      // manual — мимо
+                "xcodebuild".to_string(), // нет источников на ОС — мимо
+            ],
+            &HashMap::new(),
+        )
+        .unwrap();
+
         let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
-        assert_eq!(ids, vec!["git"]);
-        assert_eq!(plan.total_size_mb, 10);
+        assert_eq!(ids, vec!["node"]);
     }
 
     #[test]
-    fn run_in_docker_tools_never_scheduled() {
-        // Опциональные docker-инструменты (postgresql и т.п.) в план
-        // установки не попадают: их разворачивает docker-compose проекта.
-        let check = check_with(vec![
-            requirement("postgresql", ToolStatus::RunInDocker),
-            requirement("git", ToolStatus::Missing),
-        ]);
-        let plan = build_plan(&check, Some(&["postgresql".to_string(), "git".to_string()]));
-        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
-        assert_eq!(ids, vec!["git"]);
-        assert_eq!(plan.total_size_mb, 10);
+    fn canonical_plan_carries_install_options_for_requested_tool_only() {
+        let defs = vec![catalog_def("qt"), catalog_def("node")];
+        let mut options = HashMap::new();
+        options.insert("qt".to_string(), vec!["qt-webengine".to_string()]);
+        let plan =
+            canonicalize_plan(&defs, &["qt".to_string(), "node".to_string()], &options).unwrap();
+        let qt = plan.tasks.iter().find(|t| t.tool_id == "qt").unwrap();
+        let node = plan.tasks.iter().find(|t| t.tool_id == "node").unwrap();
+        assert_eq!(qt.install_options, vec!["qt-webengine".to_string()]);
+        assert!(node.install_options.is_empty());
     }
 }

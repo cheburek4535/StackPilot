@@ -28,17 +28,53 @@ use super::discovery;
 
 /// Чистое объединение: существующие записи в прежнем порядке,
 /// затем недостающие добавления. Пустые отбрасываются, дубли
-/// (точное совпадение строк) не заносятся.
+/// не заносятся. Сравнение НОРМАЛИЗОВАННОЕ (см. normalize_entry):
+/// «C:\foo» и «c:\foo\» считаются одной записью на Windows, но не
+/// на Unix (там регистр значим).
 pub fn merge_dirs(existing: &[String], additions: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for dir in existing.iter().chain(additions) {
         let dir = dir.trim();
-        if dir.is_empty() || out.iter().any(|e| e == dir) {
+        if dir.is_empty() {
+            continue;
+        }
+        if out.iter().any(|e| same_dir(e, dir)) {
             continue;
         }
         out.push(dir.to_string());
     }
     out
+}
+
+/// Нормализация записи PATH для сравнения: единый разделитель,
+/// без хвостового слеша; на Windows — без учёта регистра.
+/// Содержимое записей НЕ меняется (пишем как есть) — нормализуются
+/// только копии для сравнения.
+fn normalize_entry(entry: &str) -> String {
+    let mut s = entry.trim().replace('/', "\\");
+    while s.ends_with('\\') && s.len() > 1 {
+        s.pop();
+    }
+    if cfg!(target_os = "windows") {
+        s.to_ascii_lowercase()
+    } else {
+        s
+    }
+}
+
+/// Та же ли это запись каталога (нормализованное сравнение)?
+pub fn same_dir(a: &str, b: &str) -> bool {
+    normalize_entry(a) == normalize_entry(b)
+}
+
+/// Удаляет из `dirs` ТОЛЬКО записи, совпадающие с `removals`
+/// (нормализованное сравнение). Чужие записи гарантированно
+/// остаются нетронутыми — основа обратимого отката наших изменений.
+pub fn remove_dirs(dirs: &[String], removals: &[String]) -> Vec<String> {
+    dirs.iter()
+        .filter(|d| !d.trim().is_empty() && !removals.iter().any(|r| same_dir(d, r)))
+        .cloned()
+        .collect()
 }
 
 /// Раскрывает %VAR% в строке через переменные текущего процесса.
@@ -80,8 +116,9 @@ fn resolve_path_entry(raw: &str) -> String {
 }
 
 /// Добавляет каталоги в пользовательский PATH (постоянно).
-/// Идемпотентно: уже присутствующие записи не дублируются.
-/// glob-записи (`PostgreSQL/*/bin`) резолвятся в конкретный каталог.
+/// Идемпотентно: уже присутствующие записи не дублируются
+/// (нормализованное сравнение). glob-записи (`PostgreSQL/*/bin`)
+/// резолвятся в конкретный каталог.
 pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
     let platform = platforms::current_platform();
     let existing = platform.read_user_path().await.unwrap_or_default();
@@ -91,6 +128,25 @@ pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
         return Ok(()); // менять нечего — не трогаем реестр/rc-файл
     }
     platform.write_user_path(&merged).await
+}
+
+/// Удаляет из пользовательского PATH ровно перечисленные записи
+/// (нормализованное сравнение) — обратная операция к add_to_user_path.
+/// Чужие записи не трогаются. Вызывается только из явных заданий.
+///
+/// Примитив обратимости PATH (контракт §5.7): пока операции удаления
+/// (uninstall/rollback) не вошли в набор заданий, функция держится
+/// готовой и покрытой контрактом «убирать только своё».
+#[allow(dead_code)]
+pub async fn remove_from_user_path(dirs: &[String]) -> Result<(), String> {
+    let platform = platforms::current_platform();
+    let existing = platform.read_user_path().await.unwrap_or_default();
+    let resolved: Vec<String> = dirs.iter().map(|d| resolve_path_entry(d)).collect();
+    let remaining = remove_dirs(&existing, &resolved);
+    if remaining.len() == existing.len() {
+        return Ok(()); // ничего нашего не нашлось — менять нечего
+    }
+    platform.write_user_path(&remaining).await
 }
 
 /// Записи PATH текущего процесса (уже раскрытые ОС).
@@ -153,6 +209,7 @@ mod tests {
         assert_eq!(merge_dirs(&existing, &[]), vec!["C:\\x".to_string()]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn merge_is_case_sensitive() {
         // на Linux /opt/foo и /opt/Foo — разные каталоги, сливать нельзя
@@ -161,6 +218,32 @@ mod tests {
             merge_dirs(&existing, &["/opt/foo".to_string()]),
             vec!["/opt/Foo".to_string(), "/opt/foo".to_string()]
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn merge_normalizes_windows_paths() {
+        // Windows: регистр и хвостовой слеш не делают записи разными.
+        let existing = vec!["C:\\Program Files\\nodejs\\".to_string()];
+        let merged = merge_dirs(&existing, &["c:/program files/nodejs".to_string()]);
+        assert_eq!(merged.len(), 1, "нормализованный дубликат: {merged:?}");
+    }
+
+    #[test]
+    fn remove_dirs_never_touches_unrelated_entries() {
+        let dirs = vec![
+            "C:\\Windows\\System32".to_string(),
+            "C:\\Program Files\\nodejs".to_string(),
+            "D:\\tools".to_string(),
+        ];
+        let removals = vec!["c:/program files/nodejs/".to_string()];
+        let remaining = remove_dirs(&dirs, &removals);
+        assert_eq!(
+            remaining,
+            vec!["C:\\Windows\\System32".to_string(), "D:\\tools".to_string()]
+        );
+        // Пустые удаления — ничего не меняется.
+        assert_eq!(remove_dirs(&dirs, &[]), dirs);
     }
 
     #[test]

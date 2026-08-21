@@ -63,6 +63,84 @@ pub struct ToolDefinition {
     /// о ручной установке. Значение — текст предупреждения пользователю.
     #[serde(default)]
     pub manual_install: Option<String>,
+    /// Расширенные метаданные каталога (aliases, зависимости, конфликты,
+    /// ссылки, docker-альтернатива, объявленные возможности). Сериализуются
+    /// «вплоскую» (без вложенного объекта в JSON); старые записи tools.json
+    /// без этих полей читаются с честными значениями по умолчанию —
+    /// отсутствие метаданных трактуется как «не заявлено», никогда как
+    /// «угадано».
+    #[serde(default, flatten)]
+    pub extended: ToolExtendedMetadata,
+}
+
+/// Расширенные метаданные каталога (см. ToolDefinition.extended).
+/// Все поля опциональны/пусты по умолчанию: старый каталог остаётся
+/// валидным, а незаявленная возможность не выдаётся за заявленную.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolExtendedMetadata {
+    /// Альтернативные имена/идентификаторы (для поиска и маппинга).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// id инструментов, необходимых этому для работы (замыкание зависимостей).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+    /// id инструментов, одновременная установка которых нежелательна.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    /// Документация инструмента.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    /// Исходники/домашняя страница (для аудита источников установки).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// Явно заявленная доступность по ОС ("windows"/"linux"/"macos").
+    /// Пусто = доступность выводится из наличия источников (и это
+    /// вывод, а не заявление, — потребители обязаны это учитывать).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platform_availability: Vec<String>,
+    /// Явно заявленные возможности обслуживания. None = не заявлено.
+    #[serde(default)]
+    pub declared_capabilities: DeclaredCapabilities,
+    /// Docker-альтернатива хост-установке (если применимо).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<DockerCapability>,
+}
+
+/// Заявленные (а не выведенные) возможности обслуживания инструмента.
+/// Option<bool>: отсутствующее поле — «каталог ничего не говорит»,
+/// что честно отличается от явного «нет».
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredCapabilities {
+    /// Поддерживается ли удаление (uninstall) отдельным заданием.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removable: Option<bool>,
+    /// Поддерживается ли восстановление (repair) отдельным заданием.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repairable: Option<bool>,
+}
+
+impl DeclaredCapabilities {
+    /// Удаление возможно ТОЛЬКО если явно заявлено true.
+    pub fn removable(&self) -> bool {
+        self.removable == Some(true)
+    }
+
+    /// Восстановление возможно ТОЛЬКО если явно заявлено true.
+    pub fn repairable(&self) -> bool {
+        self.repairable == Some(true)
+    }
+}
+
+/// Docker-альтернатива: инструмент может работать в контейнере вместо
+/// хост-установки (двойные инструменты мастера: postgresql, redis, ...).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerCapability {
+    /// Имя образа по умолчанию (например postgres:17), если уместно.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Примечание для пользователя (WSL2, лицензии, порты и т.п.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 impl ToolDefinition {
@@ -77,7 +155,7 @@ impl ToolDefinition {
 }
 
 /// Правила обнаружения инструмента на машине.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DetectionRules {
     /// Пробы версии: список команд, каждая — [бинарник, аргументы...].
     /// Пробуются по очереди, пока одна не вернёт ответ
@@ -155,6 +233,13 @@ pub struct InstallSource {
     /// и для жёсткой гарантии поведения.
     #[serde(default)]
     pub execution: Option<ExecutionKind>,
+    /// SHA-256 скачанного файла (hex, нижний регистр). Задаётся в
+    /// tools.json для Official/Script источников. None = источник
+    /// БЕЗ контроля целостности: скачивание помечается как
+    /// непроверенное (unverified) и честно рапортует об этом в UI,
+    /// но не притворяется проверенным.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// Способ исполнения скачанного источника: чем движок «запускает» файл.
@@ -248,6 +333,24 @@ pub struct EnvironmentInfo {
     pub package_managers: Vec<String>,
     /// Сколько инструментов знает Toolchain Manager
     pub tool_count: usize,
+    /// Возможности платформы: честный ответ «умеет ли бэкенд этой ОС
+    /// исполнять установки». false = кнопки установки показывать нельзя
+    /// (задачи вернут Skipped/unsupported).
+    #[serde(default)]
+    pub capabilities: PlatformCapabilities,
+}
+
+/// Что бэкенд реально умеет на текущей ОС (платформенная правда).
+/// Default — «ничего не умеем» (консервативно): UI без кнопок установки
+/// безопаснее, чем кнопки, которые не сработают.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformCapabilities {
+    /// Автоматическая установка реализована для этой ОС.
+    /// Windows: да. Linux/macOS: пока нет (источники есть в каталоге,
+    /// исполнитель — нет) — UI не должен предлагать кнопку установки.
+    pub install_execution_supported: bool,
+    /// Запуск с повышением прав (UAC) поддерживается.
+    pub elevation_supported: bool,
 }
 
 /// Требования проекта к окружению — входной контракт tc_check_environment.
@@ -256,7 +359,7 @@ pub struct EnvironmentInfo {
 ///
 /// Намеренно НЕ зависит от project_creator::models::WizardContext:
 /// модули остаются независимыми, интеграция идёт только через фронтенд.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProjectRequirements {
     #[serde(default)]
     pub languages: Vec<String>,
@@ -323,6 +426,19 @@ pub struct EnvironmentCheck {
     pub needs_admin_any: bool,
     /// true = всё установлено и можно создавать проект
     pub all_ready: bool,
+    /// true = проверка успела ДОПРОСИТЬ все запрошенные инструменты до
+    /// дедлайна. false = отчёт ЧАСТИЧНЫЙ: отсутствующие в requirements
+    /// инструменты не «готовы», а «не проверены» — их нельзя считать
+    /// установленными или готовыми (см. scan_timed_out).
+    #[serde(default = "default_true")]
+    pub complete: bool,
+    /// Инструменты, не успевшие провериться до дедлайна (частичный отчёт).
+    #[serde(default)]
+    pub scan_timed_out: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Задача установки одного инструмента. Задачи собираются в InstallPlan.
@@ -368,20 +484,70 @@ pub struct InstallPlan {
     pub tasks: Vec<InstallTask>,
     pub total_size_mb: u64,
     pub os: String,
+    /// Идентификатор установки (генерирует бэкенд при запуске).
+    /// Присутствует в событиях и финальном снапшоте, чтобы слушатель
+    /// отличал события ТЕКУЩЕЙ установки от «хвостов» прежней.
+    #[serde(default)]
+    pub session_id: String,
+}
+
+/// Терминальные/живые состояния сессии установки. `running` (bool)
+/// остаётся для совместимости с фронтендом, но авторитетным считается
+/// status: он же пишется в журнал заданий и переживает перезапуск.
+///
+/// Default = Running: старые журналы/файлы без поля status читаются
+/// как «задание шло», после чего recover_on_startup честно переводит
+/// его в Interrupted (никогда не притворяется успехом).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum InstallSessionStatus {
+    /// Установка идёт
+    #[default]
+    Running,
+    /// Все задачи завершились (успех/пропуск), ошибок нет
+    Completed,
+    /// Хотя бы одна задача упала
+    Failed,
+    /// Отменено пользователем
+    Cancelled,
+    /// Приложение перезапустилось во время установки — задача
+    /// НЕ продолжается, состояние восстановлено из журнала как
+    /// «прервано» (не «running» и не «успех»)
+    Interrupted,
 }
 
 /// Живая сессия установки — состояние для tc_get_install_status.
 /// Хранится в ToolchainState, пока идёт/завершилась установка.
+///
+/// Секреты в сессию НЕ сериализуются (serde(skip)): они живут только
+/// в изолированном хранилище (core/secrets.rs) и выдаются один раз
+/// через tc_take_new_secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallSession {
     pub started_at: String,
-    /// false = установка завершена (или ещё не начиналась)
+    /// false = установка завершена (или ещё не начиналась).
+    /// Производное от status; оставлено для совместимости фронтенда.
     pub running: bool,
     pub plan: InstallPlan,
-    /// Сгенерированные при установке секреты (пароль PostgreSQL и т.п.).
-    /// Сохраняются в state.json на этапе 5, в проект не попадают.
+    /// Авторитетное состояние сессии (см. InstallSessionStatus).
     #[serde(default)]
+    pub status: InstallSessionStatus,
+    /// Секреты не покидают бэкенд через этот тип (skip-сериализация);
+    /// поле оставлено внутренним для передачи в одноразовую витрину.
+    #[serde(skip)]
     pub secrets: HashMap<String, String>,
+}
+
+impl InstallSession {
+    /// Новая running-сессия без секретов.
+    pub fn starting(started_at: String, plan: InstallPlan) -> Self {
+        Self {
+            started_at,
+            running: true,
+            plan,
+            status: InstallSessionStatus::Running,
+            secrets: HashMap::new(),
+        }
+    }
 }
 
 /// Событие установки — стримится на фронтенд через tauri events
@@ -394,6 +560,11 @@ pub struct ToolchainEvent {
     pub task_id: String,
     pub tool_id: String,
     pub timestamp: String,
+    /// Идентификатор установки-владельца события. События прежней
+    /// установки (прилетевшие с задержкой) фронтенд обязан отбрасывать,
+    /// если session_id не совпадает с текущим.
+    #[serde(default)]
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -433,6 +604,10 @@ pub struct CheckProgressEvent {
     #[serde(default)]
     pub icon: Option<String>,
     pub status: ToolStatus,
+    /// Идентификатор запуска проверки (генерирует бэкенд): события
+    /// прежнего запуска не должны смешиваться с текущим.
+    #[serde(default)]
+    pub scan_id: String,
 }
 
 // ------------------------------------------------------------
@@ -446,6 +621,25 @@ pub struct HealthCheckResult {
     pub detail: String,
 }
 
+/// Явное состояние здоровья инструмента. Пустой список проверок —
+/// это «не проверяли» (NotChecked), а НЕ «нездоров»: отсутствие
+/// данных не должно выглядеть как отрицательный вердикт.
+///
+/// Default = NotChecked: отсутствие данных о здоровье — «не знаем»,
+/// а не какой-либо вердикт.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HealthState {
+    /// Установлен, но health_checks в каталоге нет — не проверялся
+    #[default]
+    NotChecked,
+    /// Установлен и все проверки прошли
+    Healthy,
+    /// Установлен, но хотя бы одна проверка упала
+    Failed,
+    /// Не установлен / сломан путь — проверки здоровья неприменимы
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolHealth {
     pub tool_id: String,
@@ -454,6 +648,12 @@ pub struct ToolHealth {
     #[serde(default)]
     pub icon: Option<String>,
     pub checks: Vec<HealthCheckResult>,
+    /// Явное состояние (авторитетное; см. HealthState).
+    #[serde(default)]
+    pub state: HealthState,
+    /// Совместимость со старым фронтендом: true только при Healthy.
+    /// Для NotChecked значение false, но состояние различает
+    /// «не проверяли» и «проверяли — плохо».
     pub ok: bool,
 }
 
@@ -471,18 +671,58 @@ pub struct HealthReport {
 // ------------------------------------------------------------
 
 /// Состояние Toolchain Manager, сохраняется в app_data_dir/toolchain/state.json.
+///
+/// СЕКРЕТЫ сюда больше не пишутся: они живут в изолированном
+/// хранилище (core/secrets.rs, отдельный файл, шифрование DPAPI на
+/// Windows). Поле secrets оставлено только для ОБРАТНОЙ совместимости
+/// загрузки старых state.json — при загрузке оно вычищается и
+/// мигрируется в изолированное хранилище (см. MetadataStore::load).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolchainMetadata {
     #[serde(default)]
     pub last_scan: Option<String>,
     #[serde(default)]
     pub tools: HashMap<String, InstalledToolInfo>,
-    /// Секреты (пароль PostgreSQL и т.п.). Хранятся локально,
-    /// в проект никогда не попадают.
-    #[serde(default)]
+    /// УСТАРЕЛО: не заполняется новыми записями; при загрузке старого
+    /// state.json содержимое мигрирует в SecretStore и из файла уходит.
+    /// Пустая секция в файл не пишется.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub secrets: HashMap<String, String>,
     #[serde(default)]
     pub prefs: HashMap<String, String>,
+    /// ЯВНО усыновлённые инструменты (tcx_adopt_tool): найдены на машине
+    /// как ручная установка и взяты под наблюдение по явному действию
+    /// пользователя. НЕ означают «установлено StackPilot» — это только
+    /// track-метка (значение — момент усыновления).
+    #[serde(default)]
+    pub adopted: HashMap<String, String>,
+}
+
+/// Санитизированная выдача tc_get_metadata: те же поля, что у
+/// ToolchainMetadata, но БЕЗ секретов. Это единственная форма,
+/// которую команда отдаёт наружу — секреты не покидают бэкенд
+/// иначе как через одноразовую витрину tc_take_new_secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolchainMetadataView {
+    #[serde(default)]
+    pub last_scan: Option<String>,
+    #[serde(default)]
+    pub tools: HashMap<String, InstalledToolInfo>,
+    #[serde(default)]
+    pub prefs: HashMap<String, String>,
+    #[serde(default)]
+    pub adopted: HashMap<String, String>,
+}
+
+impl From<&ToolchainMetadata> for ToolchainMetadataView {
+    fn from(data: &ToolchainMetadata) -> Self {
+        Self {
+            last_scan: data.last_scan.clone(),
+            tools: data.tools.clone(),
+            prefs: data.prefs.clone(),
+            adopted: data.adopted.clone(),
+        }
+    }
 }
 
 /// Информация об установленном инструменте, известная Toolchain Manager.

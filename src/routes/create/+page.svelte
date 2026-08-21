@@ -32,6 +32,7 @@ import type {
   StepStatus,
   StackIssue,
 } from "$lib/modules/project_creator/types";
+// Toolchain: слой совместимости Project Creator (легаси-поверхность tc_*)
 import {
   checkEnvironment as tcCheckEnvironment,
   buildInstallPlan as tcBuildPlan,
@@ -43,7 +44,7 @@ import {
   getNewSecrets,
   getInstallStatus,
   getToolchainMetadata,
-} from "$lib/modules/toolchain/api";
+} from "$lib/modules/toolchain/compat";
 import type {
   EnvironmentCheck,
   InstallPlan,
@@ -52,8 +53,8 @@ import type {
   CheckProgressEvent,
   ProjectRequirements,
   ToolRequirement,
-} from "$lib/modules/toolchain/types";
-import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/modules/toolchain/types";
+} from "$lib/modules/toolchain/compat";
+import { statusKind, statusLabel, taskStateKind, taskStateLabel, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
 
 let tree = $state<WizardTreeData | null>(null);
@@ -205,6 +206,9 @@ let unlistenTc: (() => void) | null = null;
 let unlistenTcDone: (() => void) | null = null;
 let unlistenTcCheck: (() => void) | null = null;
 let envCheckProgress = $state<CheckProgressEvent[]>([]);
+/** Идентификатор текущего запуска проверки окружения: события с чужим
+ *  scan_id (поздние «хвосты» прежнего запуска) в список не попадают. */
+let envCheckScanId = $state<string | null>(null);
 let envSelectedIds = $state<Set<string>>(new Set());
 /** Docker-инструменты мастера (postgresql, redis, ...), выбранные для
  * локальной установки вместо docker-compose. Наполняется кнопкой
@@ -362,7 +366,9 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   envSelectedIds = new Set(strArr(s.envSelectedIds));
   envLocalInfra = new Set(strArr(s.envLocalInfra));
   envCheckProgress = Array.isArray(s.envCheckProgress) ? (s.envCheckProgress as CheckProgressEvent[]) : [];
-  newSecrets = (s.newSecrets as Record<string, string> | null) ?? null;
+  // Секреты НАМЕРЕННО не восстанавливаются из снапшота: они не входят в
+  // whitelist sessionStorage и выдаются только одноразовым getNewSecrets()
+  // сразу после успешной установки (см. fetchNewSecrets).
   envInstalling = bool(s.envInstalling);
 }
 
@@ -408,9 +414,8 @@ async function reSyncLiveSessions() {
           envInstalling = false;
           envInstallDone = true;
           stopTick();
-          if (!newSecrets && session.secrets && Object.keys(session.secrets).length > 0) {
-            newSecrets = session.secrets;
-          }
+          // Секреты сессией больше не отдаются вовсе (serde skip на
+          // бэкенде): единственный канал — одноразовый getNewSecrets().
         }
       } else if (envInstalling) {
         envInstalling = false;
@@ -1477,6 +1482,7 @@ async function runEnvironmentCheck(silent = false) {
   envChecking = !silent;
   envError = null;
   envCheckProgress = [];
+  envCheckScanId = null;
   try {
     const fresh = await tcCheckEnvironment(buildRequirements());
     envCheck = fresh;
@@ -1507,6 +1513,7 @@ async function goToEnvironment() {
   envPhaseStart = new Map();
   stopTick();
   envCheckProgress = [];
+  envCheckScanId = null;
   if (unlistenTcCheck) unlistenTcCheck();
   unlistenTcCheck = await listenCheckProgress(handleCheckProgress);
   await refreshInstalledTools();
@@ -1514,6 +1521,11 @@ async function goToEnvironment() {
 }
 
 function handleCheckProgress(event: CheckProgressEvent) {
+  // События без scan_id (старый бэкенд) принимаются как раньше; с
+  // scan_id — только от текущего запуска проверки: поздние события
+  // прежнего запуска не должны подменять свежий прогресс.
+  if (!identityMatches(envCheckScanId, event.scan_id ?? null)) return;
+  if (event.scan_id && !envCheckScanId) envCheckScanId = event.scan_id;
   envCheckProgress = [...envCheckProgress, event];
 }
 
@@ -1605,6 +1617,12 @@ async function startInstall() {
     unlistenTc = await listenToolchainEvents(handleToolchainEvent);
     unlistenTcDone = await listenInstallDone(handleInstallDone);
     await tcRunInstall(envPlan);
+    // Бэкенд канонизирует план в задание движка и генерирует НОВЫЙ
+    // session_id (= job_id): события установки несут именно его.
+    // Синхронизируем план из авторитетной сессии, чтобы фильтр
+    // «чужих/поздних» событий сравнивал правильные идентификаторы.
+    const session = await getInstallStatus();
+    if (session && session.plan.session_id) envPlan = session.plan;
   } catch (e) {
     envError = String(e);
     envInstalling = false;
@@ -1612,7 +1630,16 @@ async function startInstall() {
   }
 }
 
+/** Событие принадлежит текущей операции? Чистое правило живёт в
+ *  stateLogic (identityMatches, покрыто тестами): пустые идентификаторы
+ *  пропускаются — поведение мастера не меняется; известные чужие
+ *  session_id/scan_id отбрасываются до попадания в стейт. */
+function eventBelongsToCurrentRun(eventSessionId: string | undefined): boolean {
+  return identityMatches(envPlan?.session_id ?? null, eventSessionId ?? null);
+}
+
 function handleToolchainEvent(event: ToolchainEvent) {
+  if (!eventBelongsToCurrentRun(event.session_id)) return;
   const t = event.event_type;
   if (t === "TaskStarted") {
     envTaskStates.set(event.task_id, { Running: { phase: "Downloading" } });
@@ -1647,10 +1674,14 @@ function handleToolchainEvent(event: ToolchainEvent) {
 }
 
 function handleInstallDone(plan: InstallPlan) {
+  if (!eventBelongsToCurrentRun(plan.session_id)) return;
   for (const task of plan.tasks) {
     envTaskStates.set(task.task_id, task.state);
   }
   envTaskStates = new Map(envTaskStates);
+  // Финальный план несёт фактический session_id запуска — принимаем
+  // его как авторитетный для возможных поздних событий этой установки.
+  if (plan.session_id) envPlan = plan;
   envInstalling = false;
   envInstallDone = true;
   stopTick();

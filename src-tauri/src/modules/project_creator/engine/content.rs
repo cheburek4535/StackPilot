@@ -886,8 +886,9 @@ pub fn generate_docker_compose(
         let mut app_env: Vec<&str> = Vec::new();
         for service in services.iter() {
             match service.name.as_str() {
-                "postgres" => app_env
-                    .push("DATABASE_URL=postgresql://postgres:12345@postgres:5432/postgres"),
+                "postgres" => {
+                    app_env.push("DATABASE_URL=postgresql://postgres:12345@postgres:5432/postgres")
+                }
                 "redis" => app_env.push("REDIS_URL=redis://redis:6379/0"),
                 _ => {}
             }

@@ -125,12 +125,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         .iter()
                         .find(|k| scripts.get(*k).is_some())
                         .map(|k| k.to_string())
-                        .or_else(|| {
-                            scripts
-                                .as_object()
-                                .and_then(|m| m.keys().next())
-                                .cloned()
-                        });
+                        .or_else(|| scripts.as_object().and_then(|m| m.keys().next()).cloned());
                     match chosen {
                         Some(key) => Some(format!("npm run {}", key)),
                         // Скриптов нет вообще: пробуем прямой запуск main

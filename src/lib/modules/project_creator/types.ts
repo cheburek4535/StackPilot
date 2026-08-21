@@ -143,6 +143,8 @@ export type WizardTreeData = {
   project_language_map: Record<string, string[]>;
   language_framework_map: Record<string, string[]>;
   framework_tool_map: Record<string, string[]>;
+  /** Тип проекта → рекомендованные тулы wizard_tree (для пресетов выбора). */
+  project_tool_map?: Record<string, string[]>;
 };
 
 // ============================================================

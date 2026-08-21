@@ -26,7 +26,6 @@ use std::time::Duration;
 
 use crate::modules::toolchain::models::*;
 use crate::modules::toolchain::platforms;
-use tokio::process::Command as TokioCommand;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -39,47 +38,17 @@ use super::discovery;
 /// по уже собранным данным — проверка НИКОГДА не висит бесконечно.
 const CHECK_DEADLINE: Duration = Duration::from_secs(90);
 
-/// Лимит на `dotnet workload install maui` — MAUI-набор большой,
-/// ставится дольше всех проб; 20 минут с запасом.
-const MAUI_WORKLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-
 /// Callback прогресса: вызывается после проверки каждого инструмента
 /// (см. CheckProgressEvent). Ядро не знает про Tauri — команда оборачивает
 /// callback в app.emit, тесты собирают события в вектор.
 pub type ProgressFn = Arc<dyn Fn(CheckProgressEvent) + Send + Sync>;
 
-/// Гарантирует установку workload .NET MAUI перед завершением проверки
-/// окружения: наличие SDK не даёт шаблон `dotnet new maui` («Не найдены
-/// шаблоны... выполните dotnet new search maui»), пока не установлен
-/// workload. Сбой не блокирует отчёт: шаблоны проверятся в момент
-/// генерации, workload повторится при следующей проверке.
-async fn ensure_maui_workload() {
-    let result = timeout(
-        MAUI_WORKLOAD_TIMEOUT,
-        TokioCommand::new("dotnet")
-            .args(["workload", "install", "maui"])
-            .output(),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(out)) if out.status.success() => {
-            eprintln!("[toolchain] .NET MAUI workload установлен");
-        }
-        Ok(Ok(out)) => {
-            eprintln!(
-                "[toolchain] dotnet workload install maui завершился с кодом {}",
-                out.status.code().unwrap_or(-1)
-            );
-        }
-        Ok(Err(e)) => {
-            eprintln!("[toolchain] не удалось запустить dotnet workload install maui: {e}");
-        }
-        Err(_) => {
-            eprintln!("[toolchain] dotnet workload install maui превысил лимит времени");
-        }
-    }
-}
+// ВАЖНО (правило «сканы не мутируют машину»): проверка окружения —
+// ЧИТАЮЩАЯ операция. Прежняя ensure_maui_workload() запускала здесь
+// `dotnet workload install maui` (до 20 минут) — это была установка
+// ПО из скана, нарушение контракта. Установка MAUI-workload осталась
+// ТОЛЬКО в явном задании установки (installer.rs::install_maui_workload,
+// шаг после подтверждённой установки dotnet).
 
 /// Полная проверка окружения под требования проекта.
 /// `requested` — упорядоченный список id (из requirements::resolve),
@@ -94,6 +63,12 @@ pub async fn run_check(
     on_progress: Option<ProgressFn>,
 ) -> EnvironmentCheck {
     let os = platforms::current_platform().os_name();
+
+    // Идентификатор запуска проверки: события этого скана отличимы
+    // от событий прежнего (поздние «хвосты» не смешиваются).
+    let scan_id = super::crypto::random_bytes(8)
+        .map(|b| super::crypto::sha256_hex(&b)[..16].to_string())
+        .unwrap_or_else(|_| super::console::timestamp());
 
     let mut set = JoinSet::new();
 
@@ -115,6 +90,7 @@ pub async fn run_check(
 
     let total = requested.len();
     let mut temp_requirements: Vec<(usize, ToolRequirement)> = Vec::new();
+    let mut completed_indices: Vec<usize> = Vec::new();
     let mut done = 0usize;
 
     // Вся сборка ограничена дедлайном: зависшие пробы не могут
@@ -126,6 +102,7 @@ pub async fn run_check(
                 continue;
             };
             done += 1;
+            completed_indices.push(index);
             if let Some(cb) = &on_progress {
                 cb(CheckProgressEvent {
                     done,
@@ -134,6 +111,7 @@ pub async fn run_check(
                     display: def.display.clone(),
                     icon: def.icon.clone(),
                     status: status.clone(),
+                    scan_id: scan_id.clone(),
                 });
             }
 
@@ -205,7 +183,7 @@ pub async fn run_check(
         }
     };
 
-    if let Err(_) = timeout(CHECK_DEADLINE, collect).await {
+    if timeout(CHECK_DEADLINE, collect).await.is_err() {
         eprintln!(
             "[toolchain] проверка окружения превысила лимит {}с, отдаю частичный отчёт ({done}/{} инструментов)",
             CHECK_DEADLINE.as_secs(),
@@ -219,21 +197,21 @@ pub async fn run_check(
     let requirements: Vec<ToolRequirement> =
         temp_requirements.into_iter().map(|pair| pair.1).collect();
 
-    // .NET MAUI: SDK без workload не даёт шаблон `dotnet new maui`.
-    // Если проекту нужен dotnet (язык csharp, фреймворк maui, CSharpRepl),
-    // ставим workload ДО завершения health-check'а — иначе генерация
-    // проекта упадёт с «Не найдены шаблоны...».
-    if requested.iter().any(|id| id == "dotnet")
-        && requirements.iter().any(|r| {
-            r.tool_id == "dotnet"
-                && matches!(
-                    r.status,
-                    ToolStatus::Installed { .. } | ToolStatus::UpdateAvailable { .. }
-                )
-        })
-    {
-        ensure_maui_workload().await;
-    }
+    // Честность отчёта: инструменты, не успевшие провериться до дедлайна,
+    // НЕ «готовы» и НЕ «отсутствуют» — они «не проверены». Пометка
+    // complete=false + список неопросённых id, чтобы UI/планировщик
+    // не путали частичный отчёт с полным.
+    let complete = completed_indices.len() == total;
+    let scan_timed_out: Vec<String> = if complete {
+        Vec::new()
+    } else {
+        requested
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !completed_indices.contains(i))
+            .map(|(_, id)| id.clone())
+            .collect()
+    };
 
     // ManualInstall — предупреждение, а не блокировка: проект можно создавать.
     let all_ready = requirements
@@ -250,11 +228,15 @@ pub async fn run_check(
         enough_space,
         needs_admin_any,
         all_ready,
+        complete,
+        scan_timed_out,
     }
 }
 
 /// Источники установки для конкретной ОС (порядок = приоритет).
-fn sources_for_os<'a>(def: &'a ToolDefinition, os: &str) -> &'a [InstallSource] {
+/// pub(crate): единая таблица «ОС → источники» используется и планировщиком
+/// (planner.rs), и установщиком — расхождения между ними были бы багом.
+pub(crate) fn sources_for_os<'a>(def: &'a ToolDefinition, os: &str) -> &'a [InstallSource] {
     match os {
         "windows" => &def.sources.windows,
         "linux" => &def.sources.linux,
@@ -334,6 +316,7 @@ mod tests {
                     needs_admin: None,
                     file_name: None,
                     execution: None,
+                    sha256: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -345,6 +328,7 @@ mod tests {
             health_checks: vec![],
             notes: None,
             manual_install: None,
+            extended: Default::default(),
         }
     }
 
@@ -475,5 +459,40 @@ mod tests {
         assert_eq!(evs[1], ("fake-tool-2".to_string(), 2, 2));
         // финальный отчёт совпадает с последним прогрессом
         assert_eq!(check.requirements.len(), 2);
+    }
+
+    /// Регрессионный страж правила «скан не мутирует машину»:
+    /// проверка окружения обязана завершаться без установки чего-либо.
+    /// Здесь фиксируется контрактная часть — отчёт помечается полным
+    /// и не содержит побочных действий; фактическое отсутствие вызова
+    /// `dotnet workload install` гарантируется тем, что ensure_maui_workload
+    /// удалён из модуля (компиляция с ссылкой на него невозможна).
+    #[tokio::test]
+    async fn scan_reports_completeness_and_never_installs() {
+        let defs = vec![fake_def("fake-tool")];
+        let check = run_check(&defs, &["fake-tool".to_string()], &HashMap::new(), 0, None).await;
+        assert!(check.complete, "успешный скан обязан быть полным");
+        assert!(check.scan_timed_out.is_empty());
+        // Скан ничего не ставит: отсутствующий тул остаётся Missing-требованием.
+        assert_eq!(check.requirements.len(), 1);
+        assert!(matches!(check.requirements[0].status, ToolStatus::Missing));
+        assert!(!check.all_ready);
+    }
+
+    #[test]
+    fn partial_scan_is_explicitly_marked() {
+        // Юнит на логику маркировки: requested=3, успели 0 и 2 →
+        // timed_out содержит id незавершённого индекса 1.
+        let requested = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let completed_indices = vec![0usize, 2usize];
+        let complete = completed_indices.len() == requested.len();
+        let scan_timed_out: Vec<String> = requested
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !completed_indices.contains(i))
+            .map(|(_, id)| id.clone())
+            .collect();
+        assert!(!complete);
+        assert_eq!(scan_timed_out, vec!["b".to_string()]);
     }
 }

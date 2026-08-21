@@ -241,8 +241,7 @@ impl LaunchEngine for ProcessLaunchEngine {
                         Ok(ProcessStatus::Crashed) => {
                             return Ok((
                                 ActionStatus::Failed {
-                                    error: "Скрипт аварийно завершил работу (Crashed)"
-                                        .to_string(),
+                                    error: "Скрипт аварийно завершил работу (Crashed)".to_string(),
                                 },
                                 Some(proc_id),
                             ));

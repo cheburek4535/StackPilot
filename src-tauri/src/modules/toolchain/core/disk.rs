@@ -56,7 +56,7 @@ pub fn df_avail_kb(raw: &str) -> Option<u64> {
         let mut fields = l.split_whitespace();
         let first = fields.next();
         // строка данных начинается с пути ФС ("/" или "/dev/...")
-        first.map_or(false, |f| f.starts_with('/')) && fields.count() >= 4
+        first.is_some_and(|f| f.starts_with('/')) && fields.count() >= 4
     })?;
     let fields: Vec<&str> = data_line.split_whitespace().collect();
     fields.get(3)?.parse().ok()

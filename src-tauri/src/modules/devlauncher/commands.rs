@@ -125,15 +125,13 @@ pub async fn execute_action(
     resolve_working_dir(&mut action, &workspace);
     // Процессы, запущенные из профиля, привязываются к текущей сессии —
     // иначе таймер сессии никогда не увидит их завершения.
-    let session_id =
-        session_id.or_else(|| workspace.session.get_session().map(|s| s.started_at));
+    let session_id = session_id.or_else(|| workspace.session.get_session().map(|s| s.started_at));
     let session_id_for_link = session_id.clone();
 
-    let (status, proc_id) = tauri::async_runtime::spawn_blocking(move || {
-        engine.execute_action(&action, session_id)
-    })
-    .await
-    .map_err(|e| format!("Action task failed: {e}"))??;
+    let (status, proc_id) =
+        tauri::async_runtime::spawn_blocking(move || engine.execute_action(&action, session_id))
+            .await
+            .map_err(|e| format!("Action task failed: {e}"))??;
 
     if let Some(proc_id) = proc_id {
         if session_id_for_link.is_some() {

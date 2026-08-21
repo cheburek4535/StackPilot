@@ -1,0 +1,215 @@
+// ============================================================
+// Toolchain — предикаты фильтрации каталога (чистые функции)
+// ============================================================
+// Фильтрация — единственное, что фронтенд «решает» сам (контракт §3):
+// статусы и факты приходят из бэкенда, UI только отбирает и группирует.
+
+import type {
+  CatalogFilters,
+  CatalogSort,
+  EnvironmentSnapshot,
+  ExecutionMode,
+  ProvenanceKind,
+  ToolDefinition,
+  ToolPlatformCapabilities,
+  ToolScanResult,
+  ToolStateKind,
+} from "./types";
+
+export function defaultCatalogFilters(): CatalogFilters {
+  return {
+    search: "",
+    categories: [],
+    states: [],
+    provenance: [],
+    capabilities: [],
+    execution_modes: [],
+    health: [],
+    admin_only: false,
+    update_only: false,
+    manual_only: false,
+  };
+}
+
+/** Контекст предиката: метаданные каталога для фактов, которых нет в срезе скана. */
+export type CatalogFilterContext = {
+  definitions?: Record<string, ToolDefinition>;
+};
+
+/** Нормализованный поиск по имени/id/категории/описанию. */
+export function matchesSearch(tool: ToolScanResult, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    tool.display.toLowerCase().includes(q) ||
+    tool.tool_id.toLowerCase().includes(q) ||
+    tool.category.toLowerCase().includes(q)
+  );
+}
+
+export function matchesCategory(tool: ToolScanResult, categories: string[]): boolean {
+  return categories.length === 0 || categories.includes(tool.category);
+}
+
+/** Совпадение по презентационному состоянию (kind из discriminated union). */
+export function matchesState(tool: ToolScanResult, states: CatalogFilters["states"]): boolean {
+  return states.length === 0 || states.includes(tool.state.kind);
+}
+
+export function matchesProvenance(
+  tool: ToolScanResult,
+  provenance: ProvenanceKind[],
+): boolean {
+  if (provenance.length === 0) return true;
+  return provenance.includes(tool.provenance.kind);
+}
+
+/** Требуемые флаги возможностей: И-логика между разными флагами. */
+export function matchesCapabilities(
+  caps: ToolPlatformCapabilities,
+  required: (keyof ToolPlatformCapabilities)[],
+): boolean {
+  return required.every((flag) => caps[flag]);
+}
+
+export function matchesExecutionMode(
+  tool: ToolScanResult,
+  modes: ExecutionMode[],
+): boolean {
+  if (modes.length === 0) return true;
+  // Режим исполнения выводится из применимости/происхождения:
+  // docker_default/docker-происхождение = docker, иначе host.
+  const mode: ExecutionMode =
+    tool.applicability.kind === "docker_default" || tool.provenance.kind === "docker"
+      ? "docker"
+      : "host";
+  return modes.includes(mode);
+}
+
+/** Здоровье: совпадение по фактическому состоянию (null = ещё не проверялся). */
+export function matchesHealth(
+  tool: ToolScanResult,
+  health: CatalogFilters["health"],
+): boolean {
+  return health.length === 0 || health.includes(tool.health?.state.kind ?? "not_checked");
+}
+
+/** Обновление доступно (по презентационному состоянию от бэкенда). */
+function hasUpdate(tool: ToolScanResult): boolean {
+  return tool.state.kind === "update_available";
+}
+
+/** Ручная установка — применимость manual_only. */
+function isManualOnly(tool: ToolScanResult): boolean {
+  return tool.applicability.kind === "manual_only";
+}
+
+/** Полный предикат каталога Manage Everything. */
+export function makeCatalogPredicate(
+  filters: CatalogFilters,
+  context: CatalogFilterContext = {},
+) {
+  return (tool: ToolScanResult): boolean => {
+    if (!matchesSearch(tool, filters.search)) return false;
+    if (!matchesCategory(tool, filters.categories)) return false;
+    if (!matchesState(tool, filters.states)) return false;
+    if (!matchesProvenance(tool, filters.provenance)) return false;
+    if (!matchesCapabilities(tool.capabilities, filters.capabilities)) return false;
+    if (!matchesExecutionMode(tool, filters.execution_modes)) return false;
+    if (!matchesHealth(tool, filters.health)) return false;
+    if (filters.update_only && !hasUpdate(tool)) return false;
+    if (filters.manual_only && !isManualOnly(tool)) return false;
+    if (filters.admin_only) {
+      const def = context.definitions?.[tool.tool_id];
+      // Факт «нужен админ» берётся только из каталога; нет метаданных —
+      // инструмент под фильтр не попадает (не угадываем).
+      if (def?.needs_admin !== true) return false;
+    }
+    return true;
+  };
+}
+
+/** Отфильтрованный список инструментов снапшота (порядок каталога сохранён). */
+export function applyCatalogFilters(
+  snapshot: EnvironmentSnapshot | null,
+  filters: CatalogFilters,
+  context: CatalogFilterContext = {},
+): ToolScanResult[] {
+  if (!snapshot) return [];
+  const predicate = makeCatalogPredicate(filters, context);
+  return snapshot.tools.filter(predicate);
+}
+
+// ------------------------------------------------------------
+// Сортировка каталога
+// ------------------------------------------------------------
+
+/** Порядок серьёзности состояния (для сортировки «проблемные сверху»). */
+const STATE_SEVERITY: Record<ToolStateKind, number> = {
+  path_broken: 0,
+  installed_unhealthy: 1,
+  scan_failed: 2,
+  update_available: 3,
+  missing: 4,
+  install_unavailable: 5,
+  installed_health_unknown: 6,
+  scan_pending: 7,
+  manual_install: 8,
+  docker_managed: 9,
+  unsupported_platform: 10,
+  built_in_system: 11,
+  installed_healthy: 12,
+};
+
+/** Отсортированная копия списка; исходный порядок не мутируется. */
+export function sortCatalogTools(tools: ToolScanResult[], sort: CatalogSort): ToolScanResult[] {
+  const copy = [...tools];
+  switch (sort) {
+    case "name_asc":
+      copy.sort((a, b) => a.display.localeCompare(b.display));
+      break;
+    case "name_desc":
+      copy.sort((a, b) => b.display.localeCompare(a.display));
+      break;
+    case "category":
+      copy.sort(
+        (a, b) =>
+          a.category.localeCompare(b.category) || a.display.localeCompare(b.display),
+      );
+      break;
+    case "status":
+      copy.sort(
+        (a, b) =>
+          STATE_SEVERITY[a.state.kind] - STATE_SEVERITY[b.state.kind] ||
+          a.display.localeCompare(b.display),
+      );
+      break;
+    default:
+      break; // catalog — порядок снапшота
+  }
+  return copy;
+}
+
+/** Доступные категории по снапшоту (стабильный порядок появления). */
+export function availableCategories(snapshot: EnvironmentSnapshot | null): string[] {
+  const seen: string[] = [];
+  for (const tool of snapshot?.tools ?? []) {
+    if (!seen.includes(tool.category)) seen.push(tool.category);
+  }
+  return seen;
+}
+
+/**
+ * Поиск в СТАТИЧНОМ каталоге (до первого скана): живых состояний нет,
+ * ищем по метаданным определения.
+ */
+export function matchesDefinitionSearch(def: ToolDefinition, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    def.display.toLowerCase().includes(q) ||
+    def.id.toLowerCase().includes(q) ||
+    def.category.toLowerCase().includes(q) ||
+    (def.aliases ?? []).some((a) => a.toLowerCase().includes(q))
+  );
+}

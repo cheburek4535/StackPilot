@@ -24,12 +24,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::modules::toolchain::models::*;
 use crate::modules::toolchain::platforms;
 
+use super::archive;
 use super::console::{self, ps_quote, EventSink};
+use super::crypto;
 use super::discovery;
 use super::path_service;
 
@@ -42,6 +44,68 @@ use super::path_service;
 struct InstallCommand {
     program: String,
     args: Vec<String>,
+}
+
+// ------------------------------------------------------------
+// Редакция секретов в событиях
+// ------------------------------------------------------------
+
+/// Обёртка EventSink: вырезает известные секреты (пароль БД) из строк
+/// прогресса и ошибок. Установщики иногда эхом повторяют аргументы
+/// командной строки (--override "--superpassword ...") — пароль не
+/// должен уехать в UI-лог или события.
+pub struct RedactingSink {
+    inner: Arc<dyn EventSink>,
+    secrets: Mutex<Vec<String>>,
+}
+
+impl RedactingSink {
+    pub fn new(inner: Arc<dyn EventSink>) -> Self {
+        Self {
+            inner,
+            secrets: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Регистрирует секрет для редакции (после генерации пароля).
+    pub fn register_secret(&self, value: &str) {
+        if value.len() >= 8 {
+            if let Ok(mut list) = self.secrets.lock() {
+                list.push(value.to_string());
+            }
+        }
+    }
+
+    pub fn redact(&self, text: &str) -> String {
+        let Ok(list) = self.secrets.lock() else {
+            return text.to_string();
+        };
+        let mut out = text.to_string();
+        for secret in list.iter() {
+            if out.contains(secret.as_str()) {
+                out = out.replace(secret.as_str(), "***");
+            }
+        }
+        out
+    }
+}
+
+impl EventSink for RedactingSink {
+    fn emit(&self, mut event: ToolchainEvent) {
+        if let ToolchainEventType::TaskProgress { line } = &mut event.event_type {
+            *line = self.redact(line);
+        }
+        if let ToolchainEventType::Error { message } = &mut event.event_type {
+            *message = self.redact(message);
+        }
+        if let ToolchainEventType::TaskCompleted {
+            state: TaskState::Failed { error },
+        } = &mut event.event_type
+        {
+            *error = self.redact(error);
+        }
+        self.inner.emit(event);
+    }
 }
 
 // ------------------------------------------------------------
@@ -201,24 +265,9 @@ fn find_bin_dir(root: &Path, names: &[String]) -> Option<PathBuf> {
     None
 }
 
-/// Генерирует пароль для БД (PostgreSQL). 16 hex-символов от
-/// наносекунд системного времени — достаточно для локальной
-/// dev-базы; настоящая генерация/хранение — этап 5 (metadata).
-fn generate_db_password() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let mut pw = format!("{nanos:x}");
-    while pw.len() > 16 {
-        pw.truncate(16);
-    }
-    while pw.len() < 16 {
-        pw.insert(0, '0');
-    }
-    pw
-}
-
+/// Пароль БД генерируется CSPRNG (crypto::generate_db_password):
+/// прежняя версия из наносекунд времени была угадываемой.
+/// Ошибка энтропии — ошибка установки, а не тихий слабый пароль.
 /// Собирает команду установки конкретного источника.
 ///
 /// - PkgManager (winget): `winget install --id <id> <args...>` +
@@ -242,6 +291,18 @@ fn build_install_command(
 ) -> Result<InstallCommand, String> {
     match source.kind {
         InstallSourceKind::PkgManager => {
+            // Платформенная правда: PkgManager-источник исполняется тем
+            // менеджером пакетов, который есть на ЭТОЙ ОС. Прежний код
+            // всегда подставлял winget — латентный баг для Linux/macOS.
+            let program = match platforms::current_platform().os_name().as_str() {
+                "windows" => "winget".to_string(),
+                other => {
+                    return Err(format!(
+                    "Установка через менеджер пакетов на {other} не реализована (источник «{}»)",
+                    source.id
+                ))
+                }
+            };
             let mut args = vec!["install".to_string(), "--id".to_string(), source.id.clone()];
             args.extend(source.args.iter().cloned());
 
@@ -257,10 +318,7 @@ fn build_install_command(
             }
 
             args.extend(source.extra_args.iter().cloned());
-            Ok(InstallCommand {
-                program: "winget".to_string(),
-                args,
-            })
+            Ok(InstallCommand { program, args })
         }
 
         InstallSourceKind::Official | InstallSourceKind::Script => {
@@ -472,8 +530,9 @@ Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
                             args.extend(dynamic);
                             // Подробный MSI-лог: при сбое тихой установки это
                             // единственный способ узнать настоящую причину.
+                            // Уникальное имя + уборка вместе с заданием.
                             let log =
-                                std::env::temp_dir().join(format!("tc-{}-msi.log", source.id));
+                                console::tracked_temp_file(&format!("{}-msi", def.id), ".log");
                             args.push("/l*v".to_string());
                             args.push(log.to_string_lossy().into_owned());
                             Ok(InstallCommand {
@@ -592,22 +651,16 @@ try {{
     }
 }
 
-/// Имя временного файла для скачиваемого установщика.
-fn download_dest(tool_id: &str, url: &str) -> std::path::PathBuf {
-    let name = url
-        .split(['/', '?', '#'])
-        .next_back()
-        .unwrap_or("installer");
-    let cleaned: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
-        .collect();
-    let safe = if cleaned.is_empty() {
-        "installer".to_string()
-    } else {
-        cleaned
-    };
-    std::env::temp_dir().join(format!("tc-{tool_id}-{safe}"))
+// ------------------------------------------------------------
+// Платформенная правда
+// ------------------------------------------------------------
+
+/// Реализован ли исполнитель установок на текущей ОС.
+/// Windows — да; Linux/macOS — источники описаны в каталоге, но
+/// исполнитель (sudo/brew-обёртки) ещё не написан: UI обязан
+/// скрывать кнопку установки, а run_task честно вернёт Skipped.
+pub fn install_execution_supported() -> bool {
+    platforms::current_platform().os_name() == "windows"
 }
 
 // ------------------------------------------------------------
@@ -617,12 +670,19 @@ fn download_dest(tool_id: &str, url: &str) -> std::path::PathBuf {
 /// Выполняет план: обновляет состояния задач на месте и шлёт события
 /// в sink. Возвращает сгенерированные секреты (tool_id → пароль БД).
 /// abort — флаг отмены: установка прерывается на ближайшей задаче.
+/// session_id — идентификатор установки: помечает все события, чтобы
+/// «хвосты» прежней установки не смешивались с текущей.
+///
+/// По завершении (успех/сбой/отмена) убирает временные файлы задания.
 pub async fn execute_plan(
     definitions: &[ToolDefinition],
     plan: &mut InstallPlan,
     sink: Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
+    session_id: &str,
 ) -> HashMap<String, String> {
+    // Редакция секретов на всём пути событий задания.
+    let redactor = Arc::new(RedactingSink::new(sink));
     let total = plan.tasks.len();
     let mut secrets = HashMap::new();
 
@@ -646,15 +706,26 @@ pub async fn execute_plan(
             break;
         }
 
-        let state = run_task(def, task, i, total, &sink, &mut secrets, &abort).await;
+        let state = run_task(
+            def,
+            task,
+            i,
+            total,
+            &redactor,
+            &mut secrets,
+            &abort,
+            session_id,
+        )
+        .await;
         task.state = state.clone();
 
-        sink.emit(console::event(
+        redactor.emit(console::event(
             ToolchainEventType::TaskCompleted { state },
             i,
             total,
             &task_id,
             &tool_id,
+            session_id,
         ));
     }
 
@@ -669,7 +740,7 @@ pub async fn execute_plan(
         .filter(|t| matches!(t.state, TaskState::Failed { .. }))
         .map(|t| t.display.clone())
         .collect();
-    sink.emit(console::event(
+    redactor.emit(console::event(
         ToolchainEventType::AllCompleted {
             success_count,
             failed,
@@ -678,7 +749,11 @@ pub async fn execute_plan(
         total,
         "",
         "",
+        session_id,
     ));
+
+    // Уборка временных артефактов задания — на любом исходе.
+    console::cleanup_tracked_temp_files();
 
     secrets
 }
@@ -700,9 +775,10 @@ async fn run_task(
     task: &InstallTask,
     index: usize,
     total: usize,
-    sink: &Arc<dyn EventSink>,
+    sink: &Arc<RedactingSink>,
     secrets: &mut HashMap<String, String>,
     abort: &Arc<AtomicBool>,
+    session_id: &str,
 ) -> TaskState {
     let tool_id = def.id.clone();
     let task_id = task.task_id.clone();
@@ -712,6 +788,7 @@ async fn run_task(
         total,
         &task_id,
         &tool_id,
+        session_id,
     ));
 
     if abort.load(Ordering::SeqCst) {
@@ -720,10 +797,13 @@ async fn run_task(
         };
     }
 
-    // Linux/macOS — заглушки (суда и цели репозитория).
+    // Платформенная правда: исполнитель установок реализован для Windows.
+    // На других ОС задача честно помечается Skipped с объяснением —
+    // кнопка установки в UI для таких платформ скрывается
+    // (EnvironmentInfo.capabilities.install_execution_supported = false).
     if platforms::current_platform().os_name() != "windows" {
         return TaskState::Skipped {
-            reason: "Установка на этой ОС появится позже".to_string(),
+            reason: "Автоматическая установка на этой ОС пока не поддерживается (источники описаны в каталоге)".to_string(),
         };
     }
 
@@ -742,13 +822,16 @@ async fn run_task(
     let mut failures: Vec<String> = Vec::new();
     for source in os_sources.iter() {
         match try_install_source(
-            def, source, task, index, total, &task_id, &tool_id, sink, abort,
+            def, source, task, index, total, &task_id, &tool_id, session_id, sink, abort,
         )
         .await
         {
             Ok((version, secret)) => {
                 if let Some(pw) = secret {
-                    secrets.insert(tool_id.clone(), pw);
+                    secrets.insert(tool_id.clone(), pw.clone());
+                    // Пароль регистрируется для редакции: он не должен
+                    // появиться в последующих строках вывода/ошибках.
+                    sink.register_secret(&pw);
                 }
                 sink.emit(console::event(
                     ToolchainEventType::TaskProgress {
@@ -761,6 +844,7 @@ async fn run_task(
                     total,
                     &task_id,
                     &tool_id,
+                    session_id,
                 ));
                 return TaskState::Success { version };
             }
@@ -768,11 +852,11 @@ async fn run_task(
                 // Тихий fallback: причина сбоя промежуточного источника —
                 // только в DEBUG-лог, в UI не уходит (там потом будет
                 // tc:ok, если запасной источник сработает).
-                debug_log(&format!(
+                debug_log(&sink.redact(&format!(
                     "[toolchain] источник `{}` для {tool_id} не сработал: {e}",
                     source.id
-                ));
-                failures.push(format!("«{}»: {e}", source.id));
+                )));
+                failures.push(format!("«{}»: {}", source.id, sink.redact(&e)));
             }
         }
         if abort.load(Ordering::SeqCst) {
@@ -797,6 +881,7 @@ async fn run_task(
         total,
         &task_id,
         &tool_id,
+        session_id,
     ));
 
     TaskState::Failed { error: reason }
@@ -814,15 +899,17 @@ fn debug_log(msg: &str) {
 
 /// `dotnet workload install maui` — обязательный шаг для MAUI-проектов:
 /// сам SDK не даёт шаблон `dotnet new maui` («Не найдены шаблоны...»).
-/// Запускается сразу после подтверждённой установки SDK. Сбой не
-/// валит установку dotnet: workload повторится при следующей проверке
-/// окружения (см. check.rs::ensure_maui_workload).
+/// Запускается ТОЛЬКО здесь — внутри явного задания установки, сразу
+/// после подтверждённой установки SDK. Из скана окружения (check.rs)
+/// этот шаг удалён: сканы не мутируют машину. Сбой не валит установку
+/// dotnet: workload повторится при следующей явной установке.
 async fn install_maui_workload(
     index: usize,
     total: usize,
     task_id: &str,
     tool_id: &str,
-    sink: &Arc<dyn EventSink>,
+    session_id: &str,
+    sink: &Arc<RedactingSink>,
     abort: Arc<AtomicBool>,
 ) {
     let maui_args = vec![
@@ -838,9 +925,11 @@ async fn install_maui_workload(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
+    let sink_dyn: Arc<dyn EventSink> = sink.clone();
     match console::piped_run(
-        "dotnet", &maui_args, index, total, task_id, tool_id, sink, abort,
+        "dotnet", &maui_args, index, total, task_id, tool_id, session_id, &sink_dyn, abort,
     )
     .await
     {
@@ -853,6 +942,7 @@ async fn install_maui_workload(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
         }
         Ok(res) => {
@@ -867,6 +957,7 @@ async fn install_maui_workload(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
         }
         Err(e) => {
@@ -878,6 +969,7 @@ async fn install_maui_workload(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
         }
     }
@@ -953,7 +1045,8 @@ async fn configure_php_ini(
     total: usize,
     task_id: &str,
     tool_id: &str,
-    sink: &Arc<dyn EventSink>,
+    session_id: &str,
+    sink: &Arc<RedactingSink>,
 ) {
     let Some(php_dir) = php_install_dir(def) else {
         sink.emit(console::event(
@@ -964,6 +1057,7 @@ async fn configure_php_ini(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         return;
     };
@@ -989,6 +1083,7 @@ async fn configure_php_ini(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
             return;
         }
@@ -1005,6 +1100,7 @@ async fn configure_php_ini(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         return;
     };
@@ -1044,6 +1140,7 @@ async fn configure_php_ini(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         return;
     }
@@ -1059,6 +1156,7 @@ async fn configure_php_ini(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
         return;
     }
@@ -1077,6 +1175,7 @@ async fn configure_php_ini(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
 }
 
@@ -1091,7 +1190,8 @@ async fn ensure_composer_bat_shim(
     total: usize,
     task_id: &str,
     tool_id: &str,
-    sink: &Arc<dyn EventSink>,
+    session_id: &str,
+    sink: &Arc<RedactingSink>,
 ) {
     let Some(dir_arg) = source
         .args
@@ -1115,6 +1215,7 @@ async fn ensure_composer_bat_shim(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
     }
 }
@@ -1130,12 +1231,29 @@ async fn try_install_source(
     total: usize,
     task_id: &str,
     tool_id: &str,
-    sink: &Arc<dyn EventSink>,
+    session_id: &str,
+    sink: &Arc<RedactingSink>,
     abort: &Arc<AtomicBool>,
 ) -> Result<(String, Option<String>), String> {
     // QtOnline (Qt из официального репозитория) — свой конвейер:
     // пакетов несколько, каждый качается и распаковывается отдельно.
     if matches!(source.kind, InstallSourceKind::QtOnline) {
+        // Опции установки приходят из выбора пользователя — валидируем
+        // по белому списку модулей Qt. Неизвестная опция = ошибка задачи,
+        // а не молчаливое игнорирование.
+        const QT_ALLOWED_OPTIONS: [&str; 4] =
+            ["qt-qml", "qt-widgets", "qt-webengine", "qt-kirigami"];
+        for option in &task.install_options {
+            if !QT_ALLOWED_OPTIONS.contains(&option.as_str()) {
+                return Err(format!(
+                    "Неизвестная опция установки Qt «{option}» (допустимо: {})",
+                    QT_ALLOWED_OPTIONS.join(", ")
+                ));
+            }
+        }
+        // RedactingSink передаётся как dyn EventSink — редакция секретов
+        // продолжает действовать и внутри Qt-конвейера.
+        let sink_dyn: Arc<dyn EventSink> = sink.clone();
         return super::qt_installer::install_qt_online(
             def,
             source,
@@ -1144,15 +1262,25 @@ async fn try_install_source(
             total,
             task_id,
             tool_id,
-            sink,
+            session_id,
+            &sink_dyn,
             Arc::clone(abort),
         )
         .await;
     }
 
     // dynamic_args (PostgreSQL): пароль нужен ещё до запуска установщика.
-    let password = source.dynamic_args.then(generate_db_password);
+    // CSPRNG; отказ энтропии = отказ установки (не тихий слабый пароль).
+    let password = if source.dynamic_args {
+        Some(crypto::generate_db_password()?)
+    } else {
+        None
+    };
     let mut offline_path: Option<std::path::PathBuf> = None;
+
+    // RedactingSink реализует EventSink: консольные функции принимают
+    // trait-object — редакция секретов продолжается и внутри них.
+    let sink_dyn: Arc<dyn EventSink> = sink.clone();
 
     // Тип исполнения решается ДО скачивания: git-репозитории (flutter.git)
     // в temp-файл не качаются — нечего «запускать» (os error 193),
@@ -1175,6 +1303,7 @@ async fn try_install_source(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
             skip_run = true;
         } else {
@@ -1190,6 +1319,7 @@ async fn try_install_source(
                     total,
                     task_id,
                     tool_id,
+                    session_id,
                 ));
                 std::fs::remove_dir_all(&target).map_err(|e| {
                     format!("Не удалось очистить каталог {}: {e}", target.display())
@@ -1205,6 +1335,8 @@ async fn try_install_source(
         InstallSourceKind::Official | InstallSourceKind::Script
     ) {
         // Источники с http-URL качаем заранее (фаза Downloading, с прогрессом).
+        // console::download проверяет схему (https) и целостность (sha256
+        // из tools.json; без суммы — честный unverified-warning).
         if let Some(url) = source.url.as_ref() {
             if url.starts_with("http://") || url.starts_with("https://") {
                 sink.emit(console::event(
@@ -1215,27 +1347,52 @@ async fn try_install_source(
                     total,
                     task_id,
                     tool_id,
+                    session_id,
                 ));
-                let dest = match &source.file_name {
-                    Some(name) => std::env::temp_dir().join(name),
-                    None => download_dest(tool_id, url),
-                };
+                // Уникальное имя файла на каждое задание: предсказуемый
+                // общий путь вида tc-{tool}-{name} можно было бы перехватить.
+                let ext = Path::new(source.file_name.as_deref().unwrap_or("installer.bin"))
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| format!(".{e}"))
+                    .unwrap_or_else(|| ".bin".to_string());
+                let dest = console::tracked_temp_file(tool_id, &ext);
                 if let Err(e) = console::download(
                     url,
                     &dest,
+                    source.sha256.as_deref(),
                     index,
                     total,
                     task_id,
                     tool_id,
-                    sink,
+                    session_id,
+                    &sink_dyn,
                     Arc::clone(abort),
                 )
                 .await
                 {
+                    let _ = std::fs::remove_file(&dest);
                     return Err(e);
                 }
                 offline_path = Some(dest);
             }
+        }
+    }
+
+    // Контракт §5, правило 5: архив проверяется на traversal ДО запуска
+    // распаковщика (fail-closed: одна опасная запись бракует весь архив).
+    // Список записей снимается через archive::prevalidate — тот же модуль,
+    // что и в qt_installer; сами скрипты распаковки не меняются.
+    if matches!(exec, ExecutionKind::Archive) {
+        if let Some(offline) = offline_path.as_deref() {
+            let is_zip = offline
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("zip"))
+                .unwrap_or(false);
+            archive::prevalidate_archive(offline, is_zip)
+                .await
+                .map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
         }
     }
 
@@ -1250,6 +1407,7 @@ async fn try_install_source(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
 
         // needs_admin → UAC-элевация; остальные запускаются как есть.
@@ -1266,7 +1424,8 @@ async fn try_install_source(
                 total,
                 task_id,
                 tool_id,
-                sink,
+                session_id,
+                &sink_dyn,
                 Arc::clone(abort),
             )
             .await
@@ -1278,7 +1437,8 @@ async fn try_install_source(
                 total,
                 task_id,
                 tool_id,
-                sink,
+                session_id,
+                &sink_dyn,
                 Arc::clone(abort),
             )
             .await
@@ -1310,7 +1470,7 @@ async fn try_install_source(
                 // tc:error-строка из скрипта (download/run_elevated) — настоящая
                 // причина сбоя; код процесса — лишь дополнение к ней.
                 return match res.error_line {
-                    Some(line) => Err(format!("{line} (код {})", res.code)),
+                    Some(line) => Err(format!("{} (код {})", sink.redact(&line), res.code)),
                     None => Err(format!("Установщик завершился с кодом {}", res.code)),
                 };
             }
@@ -1325,6 +1485,7 @@ async fn try_install_source(
                 total,
                 task_id,
                 tool_id,
+                session_id,
             ));
         }
     }
@@ -1343,6 +1504,7 @@ async fn try_install_source(
             total,
             task_id,
             tool_id,
+            session_id,
         ));
 
         // Архивы (elixir-otp-29.zip и т.п.) распаковываются с вложенной
@@ -1377,7 +1539,7 @@ async fn try_install_source(
     // рядом с ним создаётся composer.bat-шим, иначе verify не найдёт
     // команду `composer` («%1 не является приложением Win32»).
     if matches!(exec, ExecutionKind::Phar) && def.id == "composer" {
-        ensure_composer_bat_shim(source, index, total, task_id, tool_id, sink).await;
+        ensure_composer_bat_shim(source, index, total, task_id, tool_id, session_id, sink).await;
     }
 
     // Проверка: пересканируем инструмент тем же discovery. Проба
@@ -1390,20 +1552,29 @@ async fn try_install_source(
         total,
         task_id,
         tool_id,
+        session_id,
     ));
     match discovery::detect_tool(def).await {
         ToolStatus::Installed { version } => {
             // .NET MAUI: SDK сам по себе не даёт шаблон `dotnet new maui` —
             // нужен workload. Ставим сразу после подтверждённой установки.
             if def.id == "dotnet" {
-                install_maui_workload(index, total, task_id, tool_id, sink, Arc::clone(abort))
-                    .await;
+                install_maui_workload(
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                    sink,
+                    Arc::clone(abort),
+                )
+                .await;
             }
             // PHP на Windows: без настроенного php.ini composer падает
             // («The zip extension and unzip/7z commands are both missing»).
             // Строгая конфигурация после подтверждённой установки.
             if def.id == "php" {
-                configure_php_ini(def, index, total, task_id, tool_id, sink).await;
+                configure_php_ini(def, index, total, task_id, tool_id, session_id, sink).await;
             }
             Ok((version, password))
         }
@@ -1475,6 +1646,7 @@ mod tests {
                     needs_admin: None,
                     file_name: None,
                     execution: None,
+                    sha256: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -1486,6 +1658,7 @@ mod tests {
             health_checks: vec![],
             notes: None,
             manual_install: None,
+            extended: Default::default(),
         }
     }
 
@@ -1512,6 +1685,7 @@ mod tests {
             health_checks: vec![],
             notes: None,
             manual_install: None,
+            extended: Default::default(),
         }
     }
 
@@ -1530,14 +1704,59 @@ mod tests {
             }],
             total_size_mb: 1,
             os: "windows".to_string(),
+            session_id: "s-test".to_string(),
         }
     }
 
     #[test]
-    fn password_is_16_hex_chars() {
-        let pw = generate_db_password();
+    fn password_comes_from_csprng() {
+        // Новый генератор возвращает Result и алфавит без опасных символов.
+        let pw = crypto::generate_db_password().unwrap();
         assert_eq!(pw.len(), 16);
-        assert!(pw.chars().all(|c| c.is_ascii_hexdigit()), "не hex: {pw}");
+        assert!(!pw.chars().any(|c| "\"'`:;$\\ \0".contains(c)));
+        let second = crypto::generate_db_password().unwrap();
+        assert_ne!(pw, second, "два вызова CSPRNG не должны совпадать");
+    }
+
+    #[test]
+    fn redacting_sink_hides_registered_secret() {
+        let inner = Arc::new(TestSink::default());
+        let sink = Arc::new(RedactingSink::new(inner.clone() as Arc<dyn EventSink>));
+        sink.register_secret("TopSecretPass1");
+
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: "winget --override \"--superpassword TopSecretPass1\"".to_string(),
+            },
+            0,
+            1,
+            "t",
+            "tool",
+            "s-1",
+        ));
+        let events = inner.events.lock().unwrap();
+        match &events[0].event_type {
+            ToolchainEventType::TaskProgress { line } => {
+                assert!(
+                    !line.contains("TopSecretPass1"),
+                    "секрет утёк в событие: {line}"
+                );
+                assert!(line.contains("***"), "ожидаем редакцию: {line}");
+            }
+            other => panic!("не тот тип события: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redaction_ignores_short_values() {
+        let inner = Arc::new(TestSink::default());
+        let sink = Arc::new(RedactingSink::new(inner.clone() as Arc<dyn EventSink>));
+        sink.register_secret("abc");
+        assert_eq!(
+            sink.redact("abc def"),
+            "abc def",
+            "короткие значения не редактируются"
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -1590,6 +1809,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
@@ -1613,6 +1833,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.args[0], "/S", "/S должен идти первым: {:?}", cmd.args);
@@ -1636,6 +1857,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.args.iter().filter(|a| *a == "/S").count(), 1);
@@ -1660,6 +1882,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let phar = std::env::temp_dir().join("tc-tool-composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
@@ -1685,6 +1908,7 @@ mod tests {
             needs_admin: None,
             file_name: Some("composer.phar".to_string()),
             execution: Some(ExecutionKind::Phar),
+            sha256: None,
         };
         let phar = std::env::temp_dir().join("composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
@@ -1760,7 +1984,8 @@ mod tests {
 
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
-        configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
+        let redactor = Arc::new(RedactingSink::new(trait_sink));
+        configure_php_ini(&def, 0, 1, "t", "php", "test-session", &redactor).await;
 
         let ini = std::fs::read_to_string(dir.join("php.ini")).unwrap();
         assert!(
@@ -1779,7 +2004,7 @@ mod tests {
         );
 
         // Идемпотентность: повторный запуск не меняет содержимое.
-        configure_php_ini(&def, 0, 1, "t", "php", &trait_sink).await;
+        configure_php_ini(&def, 0, 1, "t", "php", "test-session", &redactor).await;
         let again = std::fs::read_to_string(dir.join("php.ini")).unwrap();
         assert_eq!(again, ini, "повторный прогон обязан быть идемпотентным");
 
@@ -1800,6 +2025,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-dotnet-install.ps1");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -1831,6 +2057,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -1854,6 +2081,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -1907,6 +2135,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/flutter");
@@ -1928,6 +2157,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%USERPROFILE%/flutter");
@@ -1949,6 +2179,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/sdk");
@@ -1997,6 +2228,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let tgz = std::env::temp_dir().join("tc-tool-kafka.tgz");
         let cmd = build_install_command(&bare_def(), &source, Some(&tgz), None).unwrap();
@@ -2033,19 +2265,23 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "msiexec");
         assert_eq!(cmd.args[0], "/i");
         assert_eq!(cmd.args[1], "node.msi");
-        // диагностический MSI-лог должен быть добавлен автоматически
+        // диагностический MSI-лог должен быть добавлен автоматически;
+        // имя уникально (temp-squatting защита): tc-node-msi-*.log
         assert!(
             cmd.args.iter().any(|a| a == "/l*v"),
             "нет /l*v: {:?}",
             cmd.args
         );
         assert!(
-            cmd.args.iter().any(|a| a.ends_with("tc-node-msi-msi.log")),
+            cmd.args
+                .iter()
+                .any(|a| a.contains("-msi-") && a.ends_with(".log")),
             "нет пути к MSI-логу: {:?}",
             cmd.args
         );
@@ -2065,6 +2301,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-foo.zip");
         let cmd = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap();
@@ -2109,6 +2346,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-bad.zip");
         let err = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap_err();
@@ -2129,6 +2367,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
         let cmd = build_install_command(&bare_def(), &source, Some(&bundle), None).unwrap();
@@ -2151,7 +2390,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        let secrets = execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+        let secrets = execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-e2e").await;
 
         assert!(secrets.is_empty());
         match &plan.tasks[0].state {
@@ -2159,31 +2398,30 @@ mod tests {
             other => panic!("ожидали Success, получили {other:?}"),
         }
 
-        let events: Vec<ToolchainEventType> = sink
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| e.event_type.clone())
-            .collect();
+        let events: Vec<ToolchainEvent> = sink.events.lock().unwrap().clone();
         assert!(events
             .iter()
-            .any(|e| matches!(e, ToolchainEventType::TaskStarted)));
+            .any(|e| matches!(e.event_type, ToolchainEventType::TaskStarted)));
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, ToolchainEventType::TaskProgress { .. })),
+                .any(|e| matches!(e.event_type, ToolchainEventType::TaskProgress { .. })),
             "должны были стримиться строки out/err"
         );
         assert!(events.iter().any(|e| matches!(
-            e,
+            e.event_type,
             ToolchainEventType::TaskCompleted {
                 state: TaskState::Success { .. }
             }
         )));
         assert!(events
             .iter()
-            .any(|e| matches!(e, ToolchainEventType::AllCompleted { .. })));
+            .any(|e| matches!(e.event_type, ToolchainEventType::AllCompleted { .. })));
+        // Все события задания помечены его session_id.
+        assert!(
+            events.iter().all(|e| e.session_id == "s-e2e"),
+            "события обязаны нести session_id задания"
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -2196,7 +2434,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fail").await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
     }
@@ -2218,6 +2456,7 @@ mod tests {
                 needs_admin: None,
                 file_name: None,
                 execution: None,
+                sha256: None,
             },
             def.sources.windows[0].clone(),
         ];
@@ -2226,7 +2465,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fb").await;
 
         match &plan.tasks[0].state {
             TaskState::Success { version } => assert_eq!(version, "1.2.3"),
@@ -2235,30 +2474,24 @@ mod tests {
 
         // Fallback тихий: промежуточный сбой НЕ должен попадать в UI
         // (tc:info о смене источника) — там только итоговый tc:ok.
-        let events: Vec<ToolchainEventType> = sink
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| e.event_type.clone())
-            .collect();
+        let events: Vec<ToolchainEvent> = sink.events.lock().unwrap().clone();
         assert!(
             !events.iter().any(|e| matches!(
-                e,
+                &e.event_type,
                 ToolchainEventType::TaskProgress { line } if line.starts_with("tc:info Источник")
             )),
             "промежуточный сбой не должен светиться в UI: {events:?}"
         );
         assert!(
             !events.iter().any(|e| matches!(
-                e,
+                &e.event_type,
                 ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error")
             )),
             "tc:error при успешном fallback быть не должно: {events:?}"
         );
         assert!(
             events.iter().any(|e| matches!(
-                e,
+                &e.event_type,
                 ToolchainEventType::TaskProgress { line } if line.starts_with("tc:ok Установлено через источник «local-cmd»")
             )),
             "нет tc:ok с источником успеха: {events:?}"
@@ -2282,6 +2515,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         let bad2 = InstallSource {
             kind: InstallSourceKind::Official,
@@ -2294,6 +2528,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            sha256: None,
         };
         def.sources.windows = vec![bad, bad2];
 
@@ -2301,20 +2536,14 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort()).await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-allfail").await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
 
-        let events: Vec<ToolchainEventType> = sink
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| e.event_type.clone())
-            .collect();
+        let events: Vec<ToolchainEvent> = sink.events.lock().unwrap().clone();
         let errors: Vec<&String> = events
             .iter()
-            .filter_map(|e| match e {
+            .filter_map(|e| match &e.event_type {
                 ToolchainEventType::TaskProgress { line } if line.starts_with("tc:error") => {
                     Some(line)
                 }
@@ -2336,7 +2565,7 @@ mod tests {
         let trait_sink: Arc<dyn EventSink> = sink.clone();
         let abort = Arc::new(AtomicBool::new(true));
 
-        execute_plan(&[], &mut plan, trait_sink, abort).await;
+        execute_plan(&[], &mut plan, trait_sink, abort, "s-abort").await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Skipped { .. }));
     }
@@ -2346,7 +2575,7 @@ mod tests {
         let mut plan = one_task_plan("no-such-tool");
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
-        execute_plan(&[], &mut plan, trait_sink, no_abort()).await;
+        execute_plan(&[], &mut plan, trait_sink, no_abort(), "s-unknown").await;
         assert!(matches!(plan.tasks[0].state, TaskState::Skipped { .. }));
     }
 }

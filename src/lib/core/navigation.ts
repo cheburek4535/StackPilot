@@ -9,7 +9,7 @@
  *   /analyze, /profiles/**, /processes             -> DevLauncher (legacy)
  *   /workspace/**                                  -> Workspace
  *   /project-creator, /create                      -> Project Creator
- *   /toolchain, /environment                       -> Toolchain
+ *   /toolchain (canonical), /environment (alias)   -> Toolchain
  *   /settings                                      -> Settings
  */
 
@@ -107,7 +107,7 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         id: "toolchain",
         label: "Toolchain",
-        href: "/environment",
+        href: "/toolchain",
         icon: "wrench",
         match: exact(["/toolchain", "/environment"]),
       },

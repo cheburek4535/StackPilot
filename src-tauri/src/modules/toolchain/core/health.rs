@@ -6,11 +6,12 @@
 // ли он на самом деле» — прогоняет health_checks из tools.json
 // (node → npm/npx, docker → живой ли daemon и т.п.).
 //
-// Семантика ToolHealth.ok:
-//   - инструмент не установлен (Missing/PathBroken) — не здоров,
-//     проверки не запускаем (запускать npm без node бессмысленно);
-//   - у инструмента нет health_checks — не здоров (не проверяли);
-//   - есть проверки — здоров только если прошли ВСЕ.
+// Семантика ToolHealth.state (явные состояния, не выводимые из
+// пустоты списка проверок):
+//   - Missing/PathBroken            → Unavailable (ok=false);
+//   - установлен, проверок нет      → NotChecked («не знаем», ok=false);
+//   - установлен, все проверки ок   → Healthy (ok=true);
+//   - установлен, что-то упало      → Failed (ok=false).
 //
 // Запуск команд — через discovery::run_capture (таймаут и обработка
 // ошибок уже внутри): единственное место, где процессы запускаются.
@@ -24,6 +25,7 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
     // Тул не работает — health_checks не помогут.
     if matches!(status, ToolStatus::Missing | ToolStatus::PathBroken { .. }) {
         return ToolHealth {
+            state: HealthState::Unavailable,
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
@@ -36,9 +38,11 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
         };
     }
 
-    // Проверок нет — «здоровым» не считаем: не проверяли.
+    // Проверок нет — состояние «не проверяли». Это НЕ «нездоров»:
+    // отсутствие данных не должно выглядеть как отрицательный вердикт.
     if def.health_checks.is_empty() {
         return ToolHealth {
+            state: HealthState::NotChecked,
             ok: false,
             tool_id: def.id.clone(),
             display: def.display.clone(),
@@ -80,6 +84,11 @@ pub async fn check_tool(def: &ToolDefinition, status: &ToolStatus) -> ToolHealth
     }
 
     ToolHealth {
+        state: if all_ok {
+            HealthState::Healthy
+        } else {
+            HealthState::Failed
+        },
         ok: all_ok,
         tool_id: def.id.clone(),
         display: def.display.clone(),
@@ -156,6 +165,7 @@ mod tests {
             path_entries: vec![],
             bundled_with: None,
             manual_install: None,
+            extended: Default::default(),
             health_checks: checks
                 .into_iter()
                 .map(|command| HealthCheck {
@@ -184,6 +194,7 @@ mod tests {
         .await;
 
         assert!(health.ok);
+        assert_eq!(health.state, HealthState::Healthy);
         assert_eq!(health.checks.len(), 1);
         assert!(health.checks[0].ok);
         assert_eq!(health.checks[0].detail, "hi");
@@ -206,6 +217,7 @@ mod tests {
         .await;
 
         assert!(!health.ok);
+        assert_eq!(health.state, HealthState::Failed);
         assert_eq!(health.checks.len(), 1);
         assert!(!health.checks[0].ok);
         assert!(health.checks[0].detail.contains("не выполнилась"));
@@ -240,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_tool_is_unhealthy_without_checks() {
+    async fn missing_tool_is_unavailable_without_checks() {
         let def = def_with_checks(vec![vec![
             "cmd".to_string(),
             "/c".to_string(),
@@ -249,12 +261,13 @@ mod tests {
         let health = check_tool(&def, &ToolStatus::Missing).await;
 
         assert!(!health.ok);
+        assert_eq!(health.state, HealthState::Unavailable);
         assert_eq!(health.checks.len(), 1, "одна запись «не установлен»");
         assert_eq!(health.checks[0].detail, "не установлен / сломан путь");
     }
 
     #[tokio::test]
-    async fn path_broken_is_unhealthy() {
+    async fn path_broken_is_unavailable() {
         let def = def_with_checks(vec![vec!["cmd".to_string()]]);
         let health = check_tool(
             &def,
@@ -265,11 +278,14 @@ mod tests {
         .await;
 
         assert!(!health.ok);
+        assert_eq!(health.state, HealthState::Unavailable);
     }
 
     #[test]
-    fn no_checks_is_unhealthy() {
-        // не async: run_capture не вызывается вообще
+    fn no_checks_is_not_checked_not_unhealthy() {
+        // Пустой список проверок — «не проверяли» (NotChecked),
+        // а не отрицательный вердикт. ok=false сохранён для старого
+        // фронтенда, но state различает смысл.
         let def = def_with_checks(vec![]);
         let health = futures_block_on(check_tool(
             &def,
@@ -279,6 +295,7 @@ mod tests {
         ));
 
         assert!(!health.ok);
+        assert_eq!(health.state, HealthState::NotChecked);
         assert!(health.checks.is_empty());
     }
 
@@ -317,6 +334,7 @@ mod tests {
         ));
 
         assert!(health.ok);
+        assert_eq!(health.state, HealthState::Healthy);
     }
 
     #[cfg(target_os = "windows")]

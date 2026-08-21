@@ -104,9 +104,12 @@ fn expand_env(raw: &str) -> PathBuf {
 }
 
 /// Простейший glob-поиск пути: поддерживает `*` внутри компонентов,
-/// например `C:/Program Files/PostgreSQL/*/bin` → первый существующий
-/// вариант (17, 18, ...). Вложенность строго по компонентам шаблона.
-/// Возвращает None, если ни один вариант не существует.
+/// например `C:/Program Files/PostgreSQL/*/bin`. Если под шаблон
+/// подходят несколько каталогов (17, 18, ...), выбирается САМЫЙ НОВЫЙ
+/// по естественно-числовому сравнению имени (10 > 9, 2 < 10) —
+/// прежний вариант брал первый по порядку файловой системы и мог
+/// выбрать PostgreSQL/10 вместо 17. Возвращает None, если ни один
+/// вариант не существует.
 pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
     let mut current = PathBuf::new();
     for component in pattern.components() {
@@ -115,21 +118,58 @@ pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
             let prefix: String = comp.split('*').next().unwrap_or_default().to_string();
             let suffix: String = comp.rsplit('*').next().unwrap_or_default().to_string();
             let parent = current.clone();
-            current = std::fs::read_dir(&parent)
+            let candidates: Vec<PathBuf> = std::fs::read_dir(&parent)
                 .ok()?
                 .filter_map(|e| e.ok().map(|e| e.path()))
-                .find(|p| {
+                .filter(|p| {
                     let name = p
                         .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
                     name.starts_with(&prefix) && name.ends_with(&suffix) && p.is_dir()
-                })?;
+                })
+                .collect();
+            // Самый «свежий» кандидат: максимум по естественно-числовому ключу.
+            let best = candidates.into_iter().max_by(|a, b| {
+                let ka = natural_key(&a.to_string_lossy());
+                let kb = natural_key(&b.to_string_lossy());
+                ka.cmp(&kb)
+            })?;
+            current = best;
         } else {
             current.push(comp.as_ref());
         }
     }
     current.exists().then_some(current)
+}
+
+/// Естественно-числовой ключ сортировки: последовательности цифр
+/// сравниваются как числа («17» > «9», «10» > «9»), остальное —
+/// как строки. Основа выбора самого нового версионного каталога.
+fn natural_key(name: &str) -> Vec<(u64, String)> {
+    let mut key = Vec::new();
+    let mut num = String::new();
+    let mut text = String::new();
+    for c in name.chars() {
+        if c.is_ascii_digit() {
+            if !text.is_empty() {
+                key.push((0, std::mem::take(&mut text)));
+            }
+            num.push(c);
+        } else {
+            if !num.is_empty() {
+                key.push((num.parse().unwrap_or(0), std::mem::take(&mut num)));
+            }
+            text.push(c);
+        }
+    }
+    if !text.is_empty() {
+        key.push((0, text));
+    }
+    if !num.is_empty() {
+        key.push((num.parse().unwrap_or(0), String::new()));
+    }
+    key
 }
 
 /// Есть ли на диске хотя бы один из известных путей установки
@@ -412,6 +452,35 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(found, Some(bin), "glob должен найти версионный каталог");
+    }
+
+    #[test]
+    fn glob_first_picks_newest_version_not_first_in_fs_order() {
+        // Регрессия: раньше возвращался первый по порядку read_dir.
+        // Теперь 10 должна победить 9 (числовое сравнение), даже если
+        // файловая система отдаёт «9» раньше.
+        let root = std::env::temp_dir().join(format!("tc-glob-newest-{}", std::process::id()));
+        for v in ["9", "10", "17"] {
+            std::fs::create_dir_all(root.join("PostgreSQL").join(v).join("bin")).unwrap();
+        }
+        let pattern = root.join("PostgreSQL").join("*").join("bin");
+        let found = glob_first(&pattern);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            found
+                .as_ref()
+                .map(|p| p.to_string_lossy().ends_with("\\17\\bin"))
+                .unwrap_or(false),
+            "glob обязан выбрать самую новую версию (17): {found:?}"
+        );
+    }
+
+    #[test]
+    fn natural_key_orders_numerically() {
+        assert!(natural_key("17") > natural_key("9"));
+        assert!(natural_key("10") > natural_key("9"));
+        assert!(natural_key("2") < natural_key("10"));
+        assert_eq!(natural_key("abc"), natural_key("abc"));
     }
 
     #[test]

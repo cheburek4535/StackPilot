@@ -17,15 +17,19 @@
 // Правило: core никогда не использует cfg!(target_os) напрямую.
 // Всё платформенное доступно через crate::modules::toolchain::platforms.
 
+pub mod archive;
 pub mod check;
 pub mod console;
+pub mod crypto;
 pub mod discovery;
 pub mod disk;
 pub mod health;
 pub mod installer;
+pub mod jobs;
 pub mod metadata;
 pub mod path_service;
 pub mod planner;
 pub mod qt_installer;
 pub mod requirements;
+pub mod secrets;
 pub mod version;

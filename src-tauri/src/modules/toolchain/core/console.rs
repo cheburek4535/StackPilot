@@ -19,8 +19,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -52,6 +52,7 @@ pub fn event(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
 ) -> ToolchainEvent {
     ToolchainEvent {
         event_type,
@@ -60,6 +61,54 @@ pub fn event(
         task_id: task_id.to_string(),
         tool_id: tool_id.to_string(),
         timestamp: timestamp(),
+        session_id: session_id.to_string(),
+    }
+}
+
+// ------------------------------------------------------------
+// Временные файлы задания (уникальность + уборка)
+// ------------------------------------------------------------
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMP_REGISTRY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Уникальный путь во временном каталоге: pid + счётчик + время.
+/// Никаких предсказуемых имён вида `tc-{tool}-{pid}` — их можно
+/// было бы перехватить (temp-file squatting) и подсунуть свой файл.
+fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let safe_prefix: String = prefix
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    std::env::temp_dir().join(format!(
+        "tc-{safe_prefix}-{}-{n}-{nanos}{suffix}",
+        std::process::id()
+    ))
+}
+
+/// Создаёт уникальный временный файл и регистрирует его для уборки.
+pub fn tracked_temp_file(prefix: &str, suffix: &str) -> PathBuf {
+    let path = unique_temp_path(prefix, suffix);
+    if let Ok(mut reg) = TEMP_REGISTRY.lock() {
+        reg.push(path.clone());
+    }
+    path
+}
+
+/// Убирает все временные артефакты текущего процесса, созданные через
+/// tracked_temp_file. Вызывается в конце execute_plan (успех/сбой/отмена)
+/// — гонки между параллельными заданиями нет: у каждого свои пути.
+pub fn cleanup_tracked_temp_files() {
+    if let Ok(mut reg) = TEMP_REGISTRY.lock() {
+        for path in reg.drain(..) {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -108,6 +157,7 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
     total: usize,
     task_id: String,
     tool_id: String,
+    session_id: String,
     abort: Arc<AtomicBool>,
 ) -> (bool, Option<String>) {
     let mut aborted = false;
@@ -127,6 +177,7 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
             total,
             &task_id,
             &tool_id,
+            &session_id,
         ));
         if abort.load(Ordering::SeqCst) {
             aborted = true;
@@ -153,6 +204,7 @@ pub async fn piped_run(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
@@ -176,6 +228,7 @@ pub async fn piped_run(
         let sink = Arc::clone(sink);
         let task_id = task_id.to_string();
         let tool_id = tool_id.to_string();
+        let session_id = session_id.to_string();
         let abort = Arc::clone(&abort);
         readers.spawn(async move {
             stream_lines(
@@ -185,6 +238,7 @@ pub async fn piped_run(
                 total,
                 task_id,
                 tool_id,
+                session_id,
                 abort,
             )
             .await
@@ -194,6 +248,7 @@ pub async fn piped_run(
         let sink = Arc::clone(sink);
         let task_id = task_id.to_string();
         let tool_id = tool_id.to_string();
+        let session_id = session_id.to_string();
         let abort = Arc::clone(&abort);
         readers.spawn(async move {
             stream_lines(
@@ -203,6 +258,7 @@ pub async fn piped_run(
                 total,
                 task_id,
                 tool_id,
+                session_id,
                 abort,
             )
             .await
@@ -263,9 +319,11 @@ pub async fn piped_run(
 // ------------------------------------------------------------
 
 /// Пишет PS-скрипт во временный файл (избегаем base64-экранок —
-/// кодирование в UTF-8 и запуск через -File).
+/// кодирование в UTF-8 и запуск через -File). Имя уникально для
+/// каждого вызова (см. tracked_temp_file) и файл убирается уборкой
+/// задания даже при отмене/таймауте.
 fn write_script(tool_id: &str, script: &str) -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join(format!("tc-{tool_id}-{}.ps1", std::process::id()));
+    let path = tracked_temp_file(&format!("{tool_id}-script"), ".ps1");
     std::fs::write(&path, script).map_err(|e| format!("Не удалось записать PS-скрипт: {e}"))?;
     Ok(path)
 }
@@ -277,6 +335,7 @@ pub async fn run_tool_script(
     task_id_temp: Option<&str>,
     index: usize,
     total: usize,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
@@ -289,9 +348,18 @@ pub async fn run_tool_script(
         path.to_string_lossy().into_owned(),
     ];
     let tid = task_id_temp.unwrap_or(tool_id);
-    let res = piped_run("powershell", &args, index, total, tid, tool_id, sink, abort).await;
-    let _ = std::fs::remove_file(&path);
-    res
+    piped_run(
+        "powershell",
+        &args,
+        index,
+        total,
+        tid,
+        tool_id,
+        session_id,
+        sink,
+        abort,
+    )
+    .await
 }
 
 /// Одиночное значение внутри PS-строки: обрамляем кавычками и
@@ -308,25 +376,56 @@ pub fn ps_quote(value: &str) -> String {
 /// зависшего сервера; большие инсталляторы (MSVC) в него укладываются.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Проверяет URL источника перед скачиванием: только https (кроме
+/// localhost для тестов/оффлайн-стендов). http-скачивание установщика —
+/// открытая дверь MITM; file:// и прочие схемы не поддерживаются.
+pub fn validate_download_url(url: &str) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if lower.starts_with("http://") {
+        let host = lower
+            .trim_start_matches("http://")
+            .split(['/', ':', '?', '#'])
+            .next()
+            .unwrap_or("");
+        if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+            return Ok(());
+        }
+        return Err(format!(
+            "Источник «{url}» использует http без шифрования — скачивание отклонено (требуется https)"
+        ));
+    }
+    Err(format!(
+        "Источник «{url}» не является https-ссылкой — скачивание отклонено"
+    ))
+}
+
 /// Скачивает URL во временный файл. Прогресс уходит как строки
 /// `tc:dl <получено> <всего байт>` (всего может быть -1, если не
 /// известно) — фронтенд парсит их из TaskProgress.
 ///
-/// Не используем WebClient.DownloadFile: его событие
-/// DownloadProgressChanged в PowerShell 5.1 доставляется только
-/// ПОСЛЕ завершения синхронного вызова — юзер видел бы «мнимую
-/// скачку» без прогресса. Вместо этого читаем поток чанками
-/// через HttpClient и выводим tc:dl на каждый чанк.
+/// Целостность: `expected_sha256` (hex из tools.json) проверяется
+/// ПОСЛЕ скачивания и ДО возврата Ok — файл с неверной суммой
+/// удаляется, задача падает. None = источник без контрольной суммы:
+/// скачивание завершается предупреждением `tc:warn unverified` —
+/// честная пометка «целостность не проверялась», а не мнимое
+/// «проверено».
 pub async fn download(
     url: &str,
     dest: &Path,
+    expected_sha256: Option<&str>,
     index: usize,
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    validate_download_url(url)?;
+
     let script = format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -380,22 +479,80 @@ try {{
 
     let result = timeout(
         DOWNLOAD_TIMEOUT,
-        run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort),
+        run_tool_script(
+            tool_id,
+            &script,
+            Some(task_id),
+            index,
+            total,
+            session_id,
+            sink,
+            abort,
+        ),
     )
     .await
     .map_err(|_| format!("Скачивание {url} превысило лимит времени"))?;
 
     let res = result?;
-    if res.success {
-        Ok(())
-    } else if let Some(line) = res.error_line {
-        if line.starts_with("HTTP 404") {
-            Err(format!("Ошибка 404 Not Found для {url}"))
+    if !res.success {
+        return if let Some(line) = res.error_line {
+            if line.starts_with("HTTP 404") {
+                Err(format!("Ошибка 404 Not Found для {url}"))
+            } else {
+                Err(format!("Скачивание {url}: {line}"))
+            }
         } else {
-            Err(format!("Скачивание {url}: {line}"))
+            Err(format!("Скачивание {url} завершилось с кодом {}", res.code))
+        };
+    }
+
+    // --- Граница доверия: целостность скачанного файла ---
+    match expected_sha256.and_then(super::crypto::normalize_digest) {
+        Some(expected) => {
+            sink.emit(event(
+                ToolchainEventType::TaskProgress {
+                    line: "tc:info Проверка SHA-256 скачанного файла…".to_string(),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+            ));
+            let actual = super::crypto::sha256_file_hex(dest)?;
+            if actual != expected {
+                let _ = std::fs::remove_file(dest);
+                return Err(format!(
+                    "Контрольная сумма {url} НЕ совпала (ожидался sha256 {expected}, получен {actual}). Файл удалён — установка прервана"
+                ));
+            }
+            sink.emit(event(
+                ToolchainEventType::TaskProgress {
+                    line: "tc:info SHA-256 совпал — источник проверен".to_string(),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+            ));
+            Ok(())
         }
-    } else {
-        Err(format!("Скачивание {url} завершилось с кодом {}", res.code))
+        None => {
+            // Честная пометка: без суммы из каталога мы НЕ можем
+            // утверждать, что файл подлинный.
+            sink.emit(event(
+                ToolchainEventType::TaskProgress {
+                    line: "tc:warn unverified: у источника нет контрольной суммы в каталоге — целостность не проверялась".to_string(),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+            ));
+            Ok(())
+        }
     }
 }
 
@@ -405,12 +562,53 @@ try {{
 
 /// Временные файлы, куда Start-Process перенаправит вывод установщика.
 /// (RedirectStandardOutput не умеет в pipe — только в файл.)
+/// Имена уникальны и зарегистрированы для уборки задания.
 fn elevated_logs(tool_id: &str) -> (PathBuf, PathBuf) {
-    let pid = std::process::id();
     (
-        std::env::temp_dir().join(format!("tc-{tool_id}-{pid}-out.log")),
-        std::env::temp_dir().join(format!("tc-{tool_id}-{pid}-err.log")),
+        tracked_temp_file(&format!("{tool_id}-elevated-out"), ".log"),
+        tracked_temp_file(&format!("{tool_id}-elevated-err"), ".log"),
     )
+}
+
+/// Кавычит один аргумент по правилам командной строки Windows
+/// (CommandLineToArgvW): обрамление в двойные кавычки, экранирование
+/// внутренних кавычек и обратных слешей перед ними. Прежний вариант с
+/// backtick-экранированием был корректен только внутри PowerShell, но
+/// Start-Process передаёт строку аргументов нативному парсеру — для
+/// него каноничен именно этот формат.
+fn quote_windows_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in arg.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+            }
+            '"' => {
+                // Каждую кавычку предваряем удвоенными слешами + \"
+                for _ in 0..=backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push('"');
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(c);
+            }
+        }
+    }
+    // Слеши перед закрывающей кавычкой удваиваются.
+    for _ in 0..backslashes {
+        out.push('\\');
+        out.push('\\');
+    }
+    out.push('"');
+    out
 }
 
 /// Запускает установщик С ПРАВАМИ АДМИНИСТРАТОРА: PowerShell
@@ -426,6 +624,7 @@ pub async fn run_elevated(
     total: usize,
     task_id: &str,
     tool_id: &str,
+    session_id: &str,
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
@@ -438,13 +637,9 @@ pub async fn run_elevated(
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&err);
 
-    // Каждый аргумент — отдельная двойная кавычка (как в командной
-    // строке), потом склеиваем. Это надёжнее, чем ArgumentList-массив
-    // (он не экранирует пробелы внутри аргументов).
-    let arg_shell: Vec<String> = args
-        .iter()
-        .map(|a| format!("\"{}\"", a.replace('"', "`\"")))
-        .collect();
+    // Каждый аргумент — самостоятельная кавычка по правилам
+    // CommandLineToArgvW; склеенная строка отдаётся Start-Process.
+    let arg_shell: Vec<String> = args.iter().map(|a| quote_windows_arg(a)).collect();
     let arg_shell = arg_shell.join(" ");
 
     let script = format!(
@@ -471,7 +666,17 @@ Write-Output "tc:uac exit $($p.ExitCode)"
         ps_quote(&program),
     );
 
-    let res = run_tool_script(tool_id, &script, Some(task_id), index, total, sink, abort).await?;
+    let res = run_tool_script(
+        tool_id,
+        &script,
+        Some(task_id),
+        index,
+        total,
+        session_id,
+        sink,
+        abort,
+    )
+    .await?;
 
     // Стримим перехваченный вывод установщика; заодно ловим tc:error.
     let mut error_line: Option<String> = None;
@@ -491,6 +696,7 @@ Write-Output "tc:uac exit $($p.ExitCode)"
                         total,
                         task_id,
                         tool_id,
+                        session_id,
                     ));
                 }
             }
@@ -539,9 +745,19 @@ mod tests {
             "echo".to_string(),
             "hello-console".to_string(),
         ];
-        let res = piped_run("cmd", &args, 0, 1, "t", "tool", &trait_sink, no_abort())
-            .await
-            .unwrap();
+        let res = piped_run(
+            "cmd",
+            &args,
+            0,
+            1,
+            "t",
+            "tool",
+            "s-1",
+            &trait_sink,
+            no_abort(),
+        )
+        .await
+        .unwrap();
 
         assert!(res.success);
         assert!(!res.aborted);
@@ -552,6 +768,13 @@ mod tests {
             .iter()
             .any(|e| matches!(&e.event_type, ToolchainEventType::TaskProgress { line } if line == "hello-console"));
         assert!(has_line, "строка из процесса должна уйти как TaskProgress");
+        // события помечены session_id владельца
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|e| e.session_id == "s-1"));
     }
 
     #[cfg(target_os = "windows")]
@@ -578,6 +801,7 @@ mod tests {
             1,
             task_id,
             tool_id,
+            "s-abort",
             &trait_sink,
             abort.clone(),
         );
@@ -611,6 +835,7 @@ mod tests {
             1,
             "t",
             "tool",
+            "s-err",
             &trait_sink,
             no_abort(),
         )
@@ -626,5 +851,39 @@ mod tests {
     fn ps_quote_escapes_apostrophes() {
         assert_eq!(ps_quote("O'Brien"), "'O''Brien'");
         assert_eq!(ps_quote("plain"), "'plain'");
+    }
+
+    #[test]
+    fn windows_arg_quoting_matches_commandline_rules() {
+        // Простые аргументы — просто в кавычках.
+        assert_eq!(quote_windows_arg("quiet"), "\"quiet\"");
+        // Внутренние кавычки экранируются \", предшествующие слеши удваиваются.
+        assert_eq!(
+            quote_windows_arg(r#"--override "--superpassword x""#),
+            r#""--override \"--superpassword x\"""#
+        );
+        // Слеши перед закрывающей кавычкой удваиваются.
+        assert_eq!(quote_windows_arg(r"C:\dir\"), r#""C:\dir\\""#);
+        // Слеш перед обычным символом не трогается.
+        assert_eq!(quote_windows_arg(r"C:\dir\x"), r#""C:\dir\x""#);
+    }
+
+    #[test]
+    fn download_url_validation_enforces_https() {
+        assert!(validate_download_url("https://example.com/setup.exe").is_ok());
+        assert!(validate_download_url("http://localhost/x.exe").is_ok());
+        assert!(validate_download_url("http://127.0.0.1:8080/x.exe").is_ok());
+        assert!(validate_download_url("http://example.com/setup.exe").is_err());
+        assert!(validate_download_url("ftp://example.com/setup.exe").is_err());
+        assert!(validate_download_url("file:///C:/evil.exe").is_err());
+    }
+
+    #[test]
+    fn temp_files_are_unique_and_tracked() {
+        let a = tracked_temp_file("uniq-test", ".tmp");
+        let b = tracked_temp_file("uniq-test", ".tmp");
+        assert_ne!(a, b, "временные пути обязаны быть уникальными");
+        assert!(a.starts_with(std::env::temp_dir()));
+        cleanup_tracked_temp_files();
     }
 }
