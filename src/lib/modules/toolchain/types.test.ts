@@ -4,10 +4,13 @@ import {
   jobEventBelongsTo,
   jobStatusIsTerminal,
   operationMutatesMachine,
+  parseTaskAction,
   parseToolState,
   scanStartJobId,
   statusIsOk,
   statusKind,
+  taskActionIsNoop,
+  taskActionKind,
   taskStateKind,
   toolStateKind,
   type JobEvent,
@@ -37,7 +40,7 @@ describe("ToolState — kind-tagged discriminated union", () => {
     }
   });
 
-  it("parseToolState принимает все 13 заявленных kind", () => {
+  it("parseToolState принимает все 12 заявленных kind", () => {
     const kinds = [
       { kind: "scan_pending" },
       { kind: "scan_failed", reason: "timeout" },
@@ -51,7 +54,6 @@ describe("ToolState — kind-tagged discriminated union", () => {
       { kind: "docker_managed" },
       { kind: "built_in_system" },
       { kind: "unsupported_platform" },
-      { kind: "install_unavailable" },
     ];
     for (const raw of kinds) {
       expect(parseToolState(raw)?.kind).toBe((raw as { kind: string }).kind);
@@ -139,7 +141,32 @@ describe("Движковые задания — идентичность и те
       terminal: "Running" as const,
       recovered: false,
     };
-    expect(scanStartJobId({ Started: snapshot }).job_id).toBe("j");
-    expect(scanStartJobId({ AlreadyRunning: snapshot }).scan_id).toBe("s");
+    expect(scanStartJobId({ Started: snapshot })?.job_id).toBe("j");
+    expect(scanStartJobId({ AlreadyRunning: snapshot })?.scan_id).toBe("s");
+    // Малиформация → null вместо краша.
+    expect(scanStartJobId(undefined)).toBeNull();
+    expect(scanStartJobId({ Started: {} })).toBeNull();
+  });
+
+  describe("движковые действия задач — канонический noop и наследие no_op", () => {
+    it("канонический ключ noop разбирается во всех формах", () => {
+      expect(taskActionKind({ noop: { already_installed: { version: "2.48" } } })).toBe("noop");
+      expect(taskActionKind({ noop: "docker_managed" })).toBe("noop");
+      expect(parseTaskAction({ noop: { already_installed: { version: "2.48" } } })).toEqual({
+        noop: { already_installed: { version: "2.48" } },
+      });
+      expect(parseTaskAction({ noop: "docker_managed" })).toEqual({ noop: "docker_managed" });
+      expect(taskActionIsNoop({ noop: { update_unavailable: { version: "1" } } })).toBe(true);
+    });
+
+    it("наследие no_op (старые персистентные записи) читается как noop", () => {
+      expect(taskActionKind({ no_op: { already_installed: { version: "2.48" } } })).toBe("no_op");
+      expect(parseTaskAction({ no_op: { already_installed: { version: "2.48" } } })).toEqual({
+        noop: { already_installed: { version: "2.48" } },
+      });
+      expect(parseTaskAction({ no_op: "docker_managed" })).toEqual({ noop: "docker_managed" });
+      expect(taskActionIsNoop({ no_op: { update_unavailable: { version: "1" } } })).toBe(true);
+      expect(taskActionIsNoop({ no_op: "docker_managed" })).toBe(true);
+    });
   });
 });

@@ -9,12 +9,14 @@ import type {
   CatalogSort,
   EnvironmentSnapshot,
   ExecutionMode,
+  HealthState,
   ProvenanceKind,
   ToolDefinition,
   ToolPlatformCapabilities,
   ToolScanResult,
   ToolStateKind,
 } from "./types";
+import { isRecord } from "./types";
 
 export function defaultCatalogFilters(): CatalogFilters {
   return {
@@ -28,6 +30,106 @@ export function defaultCatalogFilters(): CatalogFilters {
     admin_only: false,
     update_only: false,
     manual_only: false,
+    installable: false,
+    has_docker_alternative: false,
+  };
+}
+
+// ------------------------------------------------------------
+// Валидация персистентных настроек фильтров
+// ------------------------------------------------------------
+
+const KNOWN_STATE_KINDS = new Set<string>([
+  "scan_pending",
+  "scan_failed",
+  "missing",
+  "installed_healthy",
+  "installed_health_unknown",
+  "installed_unhealthy",
+  "update_available",
+  "path_broken",
+  "manual_install",
+  "docker_managed",
+  "built_in_system",
+  "unsupported_platform",
+]);
+
+const KNOWN_PROVENANCE_KINDS = new Set<string>([
+  "stack_pilot_managed",
+  "external",
+  "package_manager",
+  "system",
+  "bundled_with",
+  "docker",
+  "unknown",
+]);
+
+const KNOWN_CAPABILITY_FLAGS = new Set<string>([
+  "detectable",
+  "installable",
+  "updatable",
+  "removable",
+  "repairable",
+  "health_checkable",
+  "manual_instructions_available",
+  "docker_alternative_available",
+]);
+
+const KNOWN_EXECUTION_MODES = new Set<string>(["host", "docker"]);
+
+const KNOWN_HEALTH_KINDS = new Set<string>([
+  "not_checked",
+  "checking",
+  "healthy",
+  "degraded",
+  "unhealthy",
+  "unavailable",
+  "unsupported",
+  "no_checks_defined",
+  "failed_to_run",
+]);
+
+function stringArrayOf(raw: unknown, known: Set<string>): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v === "string" && known.has(v) && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+function stringArrayFree(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v === "string" && v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Валидирует произвольный payload настроек фильтров (локальное хранилище,
+ * IPC-границы): неизвестные kind'ы, неверные типы и дубликаты отбрасываются,
+ * значения возвращаются к известным множествам. НИКОГДА не бросает.
+ */
+export function validateCatalogFilters(raw: unknown): CatalogFilters {
+  const base = defaultCatalogFilters();
+  if (!isRecord(raw)) return base;
+  return {
+    search: typeof raw.search === "string" ? raw.search : "",
+    categories: stringArrayFree(raw.categories),
+    states: stringArrayOf(raw.states, KNOWN_STATE_KINDS) as ToolStateKind[],
+    provenance: stringArrayOf(raw.provenance, KNOWN_PROVENANCE_KINDS) as ProvenanceKind[],
+    capabilities: stringArrayOf(raw.capabilities, KNOWN_CAPABILITY_FLAGS) as (
+      keyof ToolPlatformCapabilities
+    )[],
+    execution_modes: stringArrayOf(raw.execution_modes, KNOWN_EXECUTION_MODES) as ExecutionMode[],
+    health: stringArrayOf(raw.health, KNOWN_HEALTH_KINDS) as HealthState["kind"][],
+    admin_only: raw.admin_only === true,
+    update_only: raw.update_only === true,
+    manual_only: raw.manual_only === true,
+    installable: raw.installable === true,
+    has_docker_alternative: raw.has_docker_alternative === true,
   };
 }
 
@@ -119,6 +221,10 @@ export function makeCatalogPredicate(
     if (!matchesHealth(tool, filters.health)) return false;
     if (filters.update_only && !hasUpdate(tool)) return false;
     if (filters.manual_only && !isManualOnly(tool)) return false;
+    if (filters.installable && !tool.capabilities.installable) return false;
+    if (filters.has_docker_alternative && !tool.capabilities.docker_alternative_available) {
+      return false;
+    }
     if (filters.admin_only) {
       const def = context.definitions?.[tool.tool_id];
       // Факт «нужен админ» берётся только из каталога; нет метаданных —
@@ -151,14 +257,13 @@ const STATE_SEVERITY: Record<ToolStateKind, number> = {
   scan_failed: 2,
   update_available: 3,
   missing: 4,
-  install_unavailable: 5,
-  installed_health_unknown: 6,
-  scan_pending: 7,
-  manual_install: 8,
-  docker_managed: 9,
-  unsupported_platform: 10,
-  built_in_system: 11,
-  installed_healthy: 12,
+  installed_health_unknown: 5,
+  scan_pending: 6,
+  manual_install: 7,
+  docker_managed: 8,
+  unsupported_platform: 9,
+  built_in_system: 10,
+  installed_healthy: 11,
 };
 
 /** Отсортированная копия списка; исходный порядок не мутируется. */
@@ -201,15 +306,23 @@ export function availableCategories(snapshot: EnvironmentSnapshot | null): strin
 
 /**
  * Поиск в СТАТИЧНОМ каталоге (до первого скана): живых состояний нет,
- * ищем по метаданным определения.
+ * ищем по метаданным определения. Поля поиска: display, id, aliases,
+ * категория, описание, notes, docs_url, source_url.
  */
 export function matchesDefinitionSearch(def: ToolDefinition, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return (
-    def.display.toLowerCase().includes(q) ||
-    def.id.toLowerCase().includes(q) ||
-    def.category.toLowerCase().includes(q) ||
-    (def.aliases ?? []).some((a) => a.toLowerCase().includes(q))
-  );
+  const haystack = [
+    def.display,
+    def.id,
+    def.category,
+    def.description,
+    def.notes ?? "",
+    def.docs_url ?? "",
+    def.source_url ?? "",
+    ...(def.aliases ?? []),
+  ];
+  // Защита от малиформированных определений: отсутствующее поле не роняет
+  // поиск (честное «не совпало»), а не падает на undefined.toLowerCase().
+  return haystack.some((field) => (field ?? "").toLowerCase().includes(q));
 }

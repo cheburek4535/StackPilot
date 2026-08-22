@@ -60,12 +60,12 @@ describe("относительное время", () => {
 });
 
 describe("подписи состояний — неизвестное не роняет UI", () => {
-  it("все 13 kind ToolState имеют подписи", () => {
+  it("все 12 kind ToolState имеют подписи", () => {
     const kinds = [
       "scan_pending", "scan_failed", "missing", "installed_healthy",
       "installed_health_unknown", "installed_unhealthy", "update_available",
       "path_broken", "manual_install", "docker_managed", "built_in_system",
-      "unsupported_platform", "install_unavailable",
+      "unsupported_platform",
     ] as const;
     for (const kind of kinds) {
       const state = { kind } as never;

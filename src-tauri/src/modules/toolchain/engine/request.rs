@@ -106,6 +106,19 @@ pub struct EngineRequest {
     /// Required when any planned task needs admin elevation.
     #[serde(default)]
     pub confirm_admin_elevation: bool,
+    /// Preview mode (tcx_build_plan): the plan is built for REVIEW only.
+    /// Confirmation gates (unverified sources / admin) are surfaced as
+    /// warnings + checkboxes instead of hard errors; execution
+    /// (`preview = false`) still refuses unconfirmed plans. Preview
+    /// never registers a job and never executes anything.
+    #[serde(default)]
+    pub preview: bool,
+    /// Fingerprint of the plan the client reviewed (from the preview).
+    /// When set, execution refuses to run if the freshly rebuilt plan
+    /// differs — a changed environment is reported, never silently
+    /// executed. None = legacy callers without preview.
+    #[serde(default)]
+    pub expected_plan_fingerprint: Option<String>,
 }
 
 impl EngineRequest {
@@ -116,6 +129,8 @@ impl EngineRequest {
             version_channel: None,
             confirm_unverified_sources: false,
             confirm_admin_elevation: false,
+            preview: false,
+            expected_plan_fingerprint: None,
         }
     }
 
@@ -181,8 +196,22 @@ mod tests {
         let req: EngineRequest = serde_json::from_str(raw).unwrap();
         assert_eq!(req.operation, OperationKind::HealthCheck);
         assert!(!req.confirm_admin_elevation);
+        assert!(!req.preview, "preview defaults to false (execution mode)");
         assert!(req.tools[0].source_id.is_none());
         assert_eq!(req.tools[0].execution, None);
+    }
+
+    #[test]
+    fn preview_flag_roundtrips() {
+        let raw = r#"{
+            "operation": "install",
+            "tools": [{"tool_id": "git"}],
+            "preview": true
+        }"#;
+        let req: EngineRequest = serde_json::from_str(raw).unwrap();
+        assert!(req.preview);
+        let serialized = serde_json::to_string(&req).unwrap();
+        assert!(serialized.contains("\"preview\":true"));
     }
 
     #[test]

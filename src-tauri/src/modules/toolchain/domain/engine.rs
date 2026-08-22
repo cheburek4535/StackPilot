@@ -380,25 +380,29 @@ impl ScanEngine {
         let os_version = platform.os_version().await;
         let package_managers = platform.package_managers();
 
-        let mut process_entries =
-            crate::modules::toolchain::core::path_service::process_path_entries();
+        let process_entries = crate::modules::toolchain::core::path_service::process_path_entries();
+        // Постоянный PATH (пользователь + система) хранится ОТДЕЛЬНО:
+        // смешивать его с PATH процесса нельзя — «есть в реестре, но не в
+        // процессе» и «работает прямо сейчас» это разные честные классы.
+        let mut persisted_entries = Vec::new();
         if let Ok(user_entries) = platform.read_user_path().await {
-            process_entries.extend(user_entries);
+            persisted_entries.extend(user_entries);
+        }
+        if let Ok(system_entries) = platform.read_system_path().await {
+            persisted_entries.extend(system_entries);
         }
         let path_report: PathReport = path_report::build_report(&process_entries);
 
-        let dual_tools: std::collections::HashSet<String> = definitions
-            .iter()
-            .filter(|d| {
-                crate::modules::toolchain::core::requirements::is_dual_tool(&d.id, &definitions)
-            })
-            .map(|d| d.id.clone())
-            .collect();
-
+        // STANDALONE-скан не знает «двойных» docker-инструментов мастера:
+        // PostgreSQL/Redis/MongoDB/Kafka/Grafana/MySQL сканируются как
+        // обычные локальные инструменты (Docker — рекомендация в
+        // метаданных каталога, не классификация). dual_tools пуст —
+        // DockerDefault/DockerManaged в standalone-снапшотах не возникает.
         let ctx = Arc::new(ScanContext {
             process_entries,
+            persisted_entries,
             managed_tools,
-            dual_tools,
+            dual_tools: Default::default(),
             os_name: os_name.clone(),
         });
 
@@ -475,8 +479,17 @@ impl ScanEngine {
                 .iter_mut()
                 .enumerate()
                 .map(|(index, slot)| {
-                    slot.take()
-                        .unwrap_or_else(|| ToolScanResult::pending(&definitions[index]))
+                    slot.take().unwrap_or_else(|| {
+                        // Частичный отчёт: честные размерности из каталога
+                        // (применимость/возможности), вердикт — ScanPending.
+                        ToolScanResult::pending(
+                            &definitions[index],
+                            &os_name,
+                            false,
+                            crate::modules::toolchain::core::installer::install_execution_supported(
+                            ),
+                        )
+                    })
                 })
                 .collect()
         };
@@ -955,13 +968,59 @@ mod tests {
             "скан не трогает state.json"
         );
 
-        // Результат — живое обнаружение пробой (echo отвечает), здоровье
-        // «не проверялось» (проверок нет). Никаких установок/записей.
+        // Результат — живое обнаружение пробой (echo отвечает); проверок
+        // здоровья нет, но ответившая проба версии — положительный вердикт.
+        // Никаких установок/записей.
         let snapshot = engine.cache().get().unwrap();
         assert!(matches!(
             snapshot.tools[0].state,
-            ToolState::InstalledHealthUnknown { .. }
+            ToolState::InstalledHealthy { .. }
         ));
+    }
+
+    /// Регрессия на уровне СНАПШОТА (не только scan_tool): результат,
+    /// доехавший до кэша через движок скана, несёт честный вердикт
+    /// обнаружения. Критический баг «NotDetected при найденной установке»
+    /// проявлялся именно в снапшоте, который читает UI.
+    #[tokio::test]
+    async fn snapshot_preserves_truthful_detection_outcome() {
+        let dir = temp_dir("truthful");
+        let engine = Arc::new(ScanEngine::new(&dir));
+        let defs = vec![echo_def("truthful-tool")];
+
+        let outcome = engine
+            .start_scan(
+                defs,
+                Default::default(),
+                ScanOptions {
+                    max_parallel_probes: 1,
+                    overall_deadline: Duration::from_secs(30),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let job = match outcome {
+            ScanStartOutcome::Started(job) => job,
+            other => panic!("ожидали Started: {other:?}"),
+        };
+        wait_terminal(&engine, &job.job_id).await;
+
+        let snapshot = engine.cache().get().unwrap();
+        assert_eq!(snapshot.tools.len(), 1);
+        let tool = &snapshot.tools[0];
+        assert_eq!(tool.tool_id, "truthful-tool");
+        // Проба echo ответила → в снапшоте ОБЯЗАН быть Detected.
+        assert!(
+            matches!(
+                tool.detection,
+                crate::modules::toolchain::domain::models::DetectionOutcome::Detected
+            ),
+            "снапшот содержит ложный NotDetected: {:?}",
+            tool.detection
+        );
+        assert!(!tool.installs.is_empty());
+        assert_eq!(tool.installs[0].parsed_version.as_deref(), Some("1.0.0"));
     }
 
     #[tokio::test]

@@ -20,3 +20,12 @@ repomix.config.js
 # Игнорируем папку с бэкапами
 .backup_original/
 *.tmp
+
+
+devlauncher/
+workspace/
+settings/
+profiles/
+processes/
+analyze/
+assistant/

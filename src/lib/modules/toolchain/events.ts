@@ -27,7 +27,7 @@ import type {
   InstallPlan,
   CheckProgressEvent,
 } from "./types";
-import { jobEventBelongsTo } from "./types";
+import { isRecord, jobEventBelongsTo, jobEventKind, scanIsTerminal } from "./types";
 
 /** Подключение к источнику событий. Возвращает отсоединитель. */
 export type AttachFn<T> = (dispatch: (payload: T) => void) => () => void;
@@ -180,10 +180,10 @@ export function scanDoneBelongsTo(event: ScanDoneEvent, jobId: string): boolean 
 
 /**
  * Терминальные состояния скана (всё, кроме Running).
+ * Единственная реализация — scanIsTerminal в types.ts; здесь она
+ * переэкспортируется под историческим именем (вызывающие не меняются).
  */
-export function scanIsTerminalState(terminal: ScanTerminal): boolean {
-  return terminal !== "Running";
-}
+export { scanIsTerminal as scanIsTerminalState } from "./types";
 
 /**
  * Guard «терминальное событие — ровно один раз» на идентификатор.
@@ -237,7 +237,7 @@ export function trackScan(jobId: string, handlers: ScanTrackerHandlers): () => v
       : null;
   const offDone = toolchainChannels.scanDone.subscribe(
     (event) => {
-      if (!scanIsTerminalState(event.terminal)) return;
+      if (!scanIsTerminal(event.terminal)) return;
       if (!guard.firstTerminal(`${event.job_id}:${event.terminal}`)) return;
       handlers.onDone?.(event);
     },
@@ -265,13 +265,21 @@ export function trackJob(jobId: string, handlers: JobTrackerHandlers): () => voi
   const guard = new TerminalGuard();
   return toolchainChannels.jobEvent.subscribe(
     (event) => {
+      // Граница IPC: событие без читаемого payload не существует.
+      const kind = jobEventKind(event);
+      if (!kind) return;
       if (handlers.onEvent) handlers.onEvent(event);
-      const payload = event.payload;
-      if ("job_finished" in payload) {
+      const payload: unknown = event.payload;
+      if (isRecord(payload) && "job_finished" in payload) {
+        const finished = payload.job_finished as
+          | { status?: unknown; errors?: unknown }
+          | undefined;
+        const status = finished?.status;
+        if (typeof status !== "string") return;
         if (!guard.firstTerminal(jobId)) return;
         handlers.onFinished?.({
-          status: payload.job_finished.status,
-          errors: payload.job_finished.errors,
+          status: status as JobStatus,
+          errors: Array.isArray(finished?.errors) ? (finished.errors as string[]) : [],
         });
       }
     },

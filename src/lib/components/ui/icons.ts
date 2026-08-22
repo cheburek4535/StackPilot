@@ -66,6 +66,12 @@ export const ICON_PATHS = {
     "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
   ],
   clock: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 7v5l3 2"],
+  store: [
+    "M4 9.5 5 5h14l1 4.5",
+    "M4 9.5V19a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9.5",
+    "M9 20v-6h6v6",
+    "M4 9.5a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0",
+  ],
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

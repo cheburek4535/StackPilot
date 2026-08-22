@@ -2,6 +2,15 @@
   // Экран проверки плана установки/обновления/ремонта PATH.
   // План строит БЭКЕНД из ограниченного запроса (tcx_build_plan);
   // UI показывает задачи и предупреждения и требует явного одобрения.
+  //
+  // Жизненный цикл запроса плана (конечные состояния, без «вечного
+  // строительства»):
+  //   validating  — проверка запроса/снапшота;
+  //   refreshing  — ТОЧЕЧНАЯ перепроверка выбранных инструментов,
+  //                 только если снапшот устарел (никогда не полный скан);
+  //   preparing   — бэкенд строит канонический план;
+  //   ready       — план получен;
+  //   failed      — структурированная ошибка (с повтором).
   import Badge from "$lib/components/ui/Badge.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import ErrorState from "$lib/components/ui/ErrorState.svelte";
@@ -13,15 +22,21 @@
   import * as api from "../api";
   import {
     formatSizeMb,
+    planTaskIsActionable,
+    planTaskIsNoop,
+    planWarningInfo,
     sanitizeErrorMessage,
     selectedSourceDescription,
     taskActionLabel,
   } from "../format";
   import type {
     CanonicalPlan,
+    DockerCapability,
     OperationKind,
     PlanWarning,
+    ToolDefinition,
   } from "../types";
+  import { isRecord } from "../types";
   import type { MutationGate } from "../stateLogic";
   import type { CardPlanOp } from "./ToolCard.svelte";
 
@@ -35,36 +50,71 @@
     onclose: () => void;
   } = $props();
 
+  /** Различимые состояния построения плана. */
+  type PlanPhase =
+    | { stage: "validating" }
+    | { stage: "refreshing" }
+    | { stage: "preparing" }
+    | { stage: "ready" }
+    | { stage: "failed"; message: string };
+
+  const PHASE_LABELS: Record<Exclude<PlanPhase["stage"], "failed">, string> = {
+    validating: "Проверяем запрос…",
+    refreshing: "Обновляем факты об инструментах (точечно)…",
+    preparing: "Готовим план…",
+    ready: "План готов",
+  };
+
   let plan = $state<CanonicalPlan | null>(null);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
+  let phase = $state<PlanPhase>({ stage: "validating" });
   let confirmUnverified = $state(false);
   let confirmAdmin = $state(false);
   let starting = $state(false);
 
-  const open = $derived(request !== null);
+  /** Номер поколения запроса плана: ответ старого запроса (модал был
+   *  закрыт и открыт заново для другого набора) не перезаписывает
+   *  состояние нового (регрессия «план прошлого выбора в новом окне»). */
+  let loadGeneration = 0;
 
+  const open = $derived(request !== null);
+  const loading = $derived(
+    phase.stage === "validating" ||
+      phase.stage === "refreshing" ||
+      phase.stage === "preparing",
+  );
+
+  /** Подпись текущего этапа загрузки (безопасно для любых состояний). */
+  function loadingLabel(stage: PlanPhase["stage"]): string {
+    return (PHASE_LABELS as Record<string, string | undefined>)[stage] ?? "Проверяем запрос…";
+  }
+
+  /** Отпечаток одобренного превью — уезжает на бэкенд при старте:
+   * расхождение отклоняется структурированной ошибкой PlanChanged. */
+  const approvedFingerprint = $derived(plan ? plan.fingerprint : null);
+
+  // Границы IPC: предупреждения и задачи разбираются рантайм-guard'ами —
+  // малиформированный payload даёт «неизвестное», а не краш `in undefined`.
+  // Подсчёты идут по МАШИНОЧИТАЕМОМУ kind (не по тексту подписи):
+  // изменение текста предупреждения не ломает гейтинг подтверждений.
   const unverifiedCount = $derived(
-    plan ? plan.warnings.filter((w) => "unverified_source" in w).length : 0,
+    plan ? plan.warnings.filter((w) => planWarningInfo(w).kind === "unverified_source").length : 0,
   );
   const adminTools = $derived(
-    plan ? plan.warnings.filter((w) => "admin_required" in w).length : 0,
-  );
-  const brokenReinstalls = $derived(
-    plan ? plan.warnings.filter((w) => "reinstall_on_broken" in w).length : 0,
+    plan ? plan.warnings.filter((w) => planWarningInfo(w).kind === "admin_required").length : 0,
   );
   const actionableTasks = $derived(
-    plan
-      ? plan.tasks.filter((t) => typeof t.action === "object" && !("noop" in t.action))
-      : [],
+    plan ? plan.tasks.filter(planTaskIsActionable) : [],
   );
+  /** Правдивые no-op задачи (причина показывается в строке задачи). */
+  const noopTasks = $derived(plan ? plan.tasks.filter(planTaskIsNoop) : []);
 
   const gate = $derived<MutationGate>(
-    request ? toolchain.mutationGate(request.operation) : { allowed: true },
+    request ? toolchain.mutationGate(request.operation as OperationKind) : { allowed: true },
   );
 
   const canStart = $derived(
     !!plan &&
+      phase.stage === "ready" &&
       actionableTasks.length > 0 &&
       gate.allowed &&
       (unverifiedCount === 0 || confirmUnverified) &&
@@ -74,7 +124,9 @@
   const blockedReason = $derived.by(() => {
     if (!plan) return null;
     if (actionableTasks.length === 0) {
-      return "Все выбранные инструменты уже в порядке или управляются Docker — исполнять нечего.";
+      return noopTasks.length > 0
+        ? "Все выбранные инструменты уже в порядке — исполнять нечего (причины указаны у задач)."
+        : "В плане нет задач, требующих действий.";
     }
     if (!plan.enough_space) {
       return `Недостаточно места на диске установки: нужно ~${formatSizeMb(plan.total_size_mb)}, свободно ${formatSizeMb(plan.free_space_mb)}.`;
@@ -90,7 +142,7 @@
   $effect(() => {
     if (!request) {
       plan = null;
-      error = null;
+      phase = { stage: "validating" };
       confirmUnverified = false;
       confirmAdmin = false;
       return;
@@ -98,40 +150,99 @@
     void loadPlan();
   });
 
+  /**
+   * Планировочный поток БЕЗ полного скана каталога:
+   *   1. валидация выбора (локально);
+   *   2. последний валидный снапшот используется как есть, пока свеж;
+   *   3. устаревший снапшот → ТОЧЕЧНАЯ перепроверка только выбранных
+   *      инструментов (ограниченный параллелизм на бэкенде);
+   *   4. канонический план строит бэкенд из свежих фактов.
+   *
+   * Конечность: полёт ограничен сверху таймаутом — «вечного
+   * строительства плана» нет (бэкенд уже держит свой 45с-предел,
+   * здесь — страховка на сеть/медленный хост).
+   */
+  const PLAN_FLIGHT_TIMEOUT_MS = 90_000;
+
   async function loadPlan(): Promise<void> {
     if (!request) return;
-    loading = true;
-    error = null;
+    const generation = ++loadGeneration;
+    if (request.toolIds.length === 0) {
+      plan = null;
+      phase = { stage: "failed", message: "Не выбран ни один инструмент." };
+      return;
+    }
+
+    phase = { stage: "validating" };
+
     try {
-      plan = await api.buildCanonicalPlan(
-        api.mutationRequest(request.operation as OperationKind, request.toolIds),
+      // Снапшот читается мгновенно; «stale» решает только объём
+      // перепроверки — никогда не запускает скан всего каталога.
+      const snapshot = toolchain.liveSnapshot;
+      const fresh =
+        !!snapshot &&
+        toolchain.freshness !== "none" &&
+        !snapshot.stale;
+
+      if (!fresh) {
+        phase = { stage: "refreshing" };
+        // Точечная перепроверка — НЕ фатальный шаг: она лишь освежает
+        // карточки. План строится бэкендом по СВЕЖЕМУ обнаружению в любом
+        // случае, поэтому сбой перепроверки не должен блокировать план
+        // (страховка на случай будущих изменений runHealthChecks).
+        try {
+          await toolchain.runHealthChecks([...request.toolIds]);
+        } catch {
+          /* не фатально: план строится дальше */
+        }
+      }
+      if (generation !== loadGeneration) return;
+
+      phase = { stage: "preparing" };
+      const planPromise = api.buildCanonicalPlan(
+        // Превью: подтверждения (источники без суммы/UAC) показываются
+        // чекбоксами, а не блокируют построение плана ошибкой.
+        api.mutationRequest(request.operation as OperationKind, request.toolIds, {
+          preview: true,
+        }),
       );
+      const built = await Promise.race([
+        planPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Бэкенд не построил план за ${PLAN_FLIGHT_TIMEOUT_MS / 1000} с — повторите`)),
+            PLAN_FLIGHT_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+      if (generation !== loadGeneration) return;
+      plan = built;
+      phase = { stage: "ready" };
     } catch (err) {
-      error = sanitizeErrorMessage(err);
-    } finally {
-      loading = false;
+      if (generation !== loadGeneration) return;
+      plan = null;
+      phase = {
+        stage: "failed",
+        message: sanitizeErrorMessage(err),
+      };
     }
   }
 
+  function definitionFor(toolId: unknown): ToolDefinition | null {
+    if (typeof toolId !== "string") return null;
+    return toolchain.definitionFor(toolId);
+  }
+
+  /** Docker-альтернатива из метаданных каталога: рекомендация отдельно
+   * от задачи, никогда не режим исполнения. */
+  function dockerInfo(def: ToolDefinition | null): DockerCapability | null {
+    const raw = def?.docker;
+    return isRecord(raw) ? (raw as DockerCapability) : null;
+  }
+
   function warningsList(warnings: PlanWarning[]): { tone: "amber" | "red"; text: string }[] {
-    return warnings.map((w) => {
-      if ("unverified_source" in w) {
-        return {
-          tone: "amber" as const,
-          text: `${w.unverified_source.tool_id}: источник «${w.unverified_source.source_id}» без контрольной суммы — целостность загрузки проверить нельзя.`,
-        };
-      }
-      if ("admin_required" in w) {
-        return {
-          tone: "amber" as const,
-          text: `${w.admin_required.tool_id}: установка потребует повышения прав (UAC).`,
-        };
-      }
-      return {
-        tone: "red" as const,
-        text: `${w.reinstall_on_broken.tool_id}: инструмент сломан — будет выполнена переустановка.`,
-      };
-    });
+    // Тотальная функция format.planWarningInfo переживает любые payload'ы.
+    return warnings.map(planWarningInfo);
   }
 
   async function start(): Promise<void> {
@@ -141,10 +252,20 @@
       api.mutationRequest(request.operation as OperationKind, request.toolIds, {
         confirm_unverified_sources: unverifiedCount > 0 ? confirmUnverified : false,
         confirm_admin_elevation: adminTools > 0 ? confirmAdmin : false,
+        expected_plan_fingerprint: approvedFingerprint,
       }),
     );
     starting = false;
-    if (jobId) onclose();
+    if (jobId) {
+      // Прогресс виден сразу: панель операций открывается поверх страницы.
+      toolchain.toggleLogPanel(true);
+      onclose();
+    } else {
+      phase = {
+        stage: "failed",
+        message: "Не удалось запустить задание — подробности во всплывающем сообщении.",
+      };
+    }
   }
 </script>
 
@@ -162,16 +283,21 @@
   size="lg"
 >
   {#if loading}
-    <LoadingState label="Строим план…" />
-  {:else if error}
-    <ErrorState title="Не удалось построить план" message={error} retry={() => void loadPlan()} />
+    <LoadingState label={loadingLabel(phase.stage)} />
+  {:else if phase.stage === "failed"}
+    <ErrorState title="План не построен" message={phase.message} retry={() => void loadPlan()} />
   {:else if plan}
     <div class="plan">
       <!-- Сводка -->
       <div class="summary">
         <span class="sum-item">
-          задач: <strong>{actionableTasks.length}</strong>
+          задач к исполнению: <strong>{actionableTasks.length}</strong>
         </span>
+        {#if noopTasks.length > 0}
+          <span class="sum-item">
+            без действий: <strong>{noopTasks.length}</strong>
+          </span>
+        {/if}
         <span class="sum-item">
           объём: <strong>{formatSizeMb(plan.total_size_mb)}</strong>
         </span>
@@ -189,22 +315,40 @@
       <!-- Задачи -->
       <ul class="tasks" aria-label="Задачи плана">
         {#each plan.tasks as task (task.task_id)}
-          {@const isNoop = typeof task.action === "string" || "noop" in task.action}
+          {@const isNoop = planTaskIsNoop(task)}
+          {@const taskDef = definitionFor(task?.tool_id)}
+          {@const docker = dockerInfo(taskDef)}
           <li class="task" class:noop={isNoop}>
-            <TechIcon icon={task.icon} alt="" size="sm" />
+            <TechIcon icon={task?.icon} alt="" size="sm" />
             <div class="task-main">
-              <span class="task-name">{task.display}</span>
+              <span class="task-name">{task?.display ?? task?.tool_id ?? "Неизвестная задача"}</span>
+              <!-- Причина no-op честна и всегда видна (тотальный форматтер). -->
               <span class="task-action">{taskActionLabel(task)}</span>
-              {#if task.source}
+              {#if task?.source}
                 <span class="task-source">{selectedSourceDescription(task.source)}</span>
               {/if}
-              {#if task.depends_on.length > 0}
+              <!-- Локальная установка инфраструктурных тулов — явный факт.
+                   Правда по execution_mode задачи (не «у тула есть docker»):
+                   хост-задача, у которой есть docker-альтернатива в каталоге. -->
+              {#if !isNoop && task?.execution_mode === "host" && taskDef?.docker}
+                <span class="task-host">локальная установка на этой машине</span>
+              {/if}
+              {#if Array.isArray(task?.depends_on) && task.depends_on.length > 0}
                 <span class="task-deps">после: {task.depends_on.join(", ")}</span>
+              {/if}
+              <!-- Docker — отдельная рекомендация, не действие задачи. -->
+              {#if docker}
+                <span class="task-docker">
+                  <Icon name="info" size={12} />
+                  Docker-альтернатива{docker.image ? `: ${docker.image}` : ""}{docker.notes
+                    ? ` — ${docker.notes}`
+                    : ""}
+                </span>
               {/if}
             </div>
             <div class="task-side">
-              <span class="task-size">{formatSizeMb(task.size_mb)}</span>
-              {#if task.needs_admin}
+              <span class="task-size">{formatSizeMb(task?.size_mb)}</span>
+              {#if task?.needs_admin}
                 <Badge tone="amber">UAC</Badge>
               {/if}
               {#if isNoop}
@@ -216,7 +360,7 @@
       </ul>
 
       <!-- Предупреждения -->
-      {#if plan.warnings.length > 0}
+      {#if Array.isArray(plan.warnings) && plan.warnings.length > 0}
         <ul class="warnings" aria-label="Предупреждения плана">
           {#each warningsList(plan.warnings) as w}
             <li class={`warning warning-${w.tone}`}>
@@ -337,10 +481,23 @@
     color: var(--sp-text-3);
   }
 
+  .task-host {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-lime, var(--sp-accent));
+  }
+
   .task-deps {
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
     font-style: italic;
+  }
+
+  .task-docker {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
   }
 
   .task-side {

@@ -15,11 +15,15 @@
     capabilityLabels,
     formatRelativeTime,
     formatSizeMb,
+    healthCheckLogText,
     healthStateInfo,
     installSourceDescription,
+    pathScopeInfo,
     platformName,
+    probeLogHasContent,
+    probeLogText,
     provenanceInfo,
-    toolStateVersion,
+    toolVersionDisplay,
     versionAssessmentInfo,
   } from "../format";
 
@@ -30,6 +34,9 @@
     dependents = [],
     jobLogLines = [],
     busyRecheck = false,
+    busyDetails = false,
+    detailsError = null,
+    detailsRetry = null,
     os = "",
     adopted = false,
     onclose,
@@ -45,6 +52,12 @@
     /** Строки журналов заданий, относящиеся к этому инструменту. */
     jobLogLines?: { text: string; timestamp: string }[];
     busyRecheck?: boolean;
+    /** Живое обновление деталей инструмента в полёте. */
+    busyDetails?: boolean;
+    /** Ошибка последнего обновления деталей (повторяемая). */
+    detailsError?: string | null;
+    /** Повтор обновления деталей после ошибки. */
+    detailsRetry?: (() => void) | null;
     os?: string;
     /** Инструмент взят пользователем под наблюдение (adopt-метка). */
     adopted?: boolean;
@@ -65,9 +78,38 @@
     return EVIDENCE_LABELS[kind] ?? kind;
   }
 
-  const version = $derived(tool ? toolStateVersion(tool.state) : null);
+  // ---- Полные логи: разворачиваемые панели + копирование ----
+
+  /** Ключ скопированной панели (для подписи «Скопировано»). */
+  let copiedKey = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function copyText(text: string, key: string): Promise<void> {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback без Clipboard API (старые webview).
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+      copiedKey = key;
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copiedKey = null), 1500);
+    } catch {
+      /* копирование — best-effort; панель с логом остаётся читаемой */
+    }
+  }
+
+  const version = $derived(tool ? toolVersionDisplay(tool) : null);
   const assessment = $derived(tool ? versionAssessmentInfo(tool.version_assessment) : null);
-  const recommended = $derived(def?.versions.recommended ?? null);
+  const recommended = $derived(def?.versions?.recommended ?? null);
   const provenance = $derived(tool ? provenanceInfo(tool.provenance) : null);
   const health = $derived(tool?.health ? healthStateInfo(tool.health.state) : null);
 
@@ -183,6 +225,26 @@
           <IconButton icon="x" label="Закрыть" size="sm" onclick={onclose} />
         </header>
 
+        {#if busyDetails}
+          <p class="details-refresh" role="status">
+            <Icon name="refresh" size={12} />
+            Обновляем данные инструмента…
+          </p>
+        {:else if detailsError}
+          <p class="details-refresh details-error" role="alert">
+            <Icon name="alert" size={12} />
+            <span class="details-error-text">{detailsError}</span>
+            <button
+              type="button"
+              class="details-retry"
+              onclick={() => detailsRetry?.()}
+              aria-label="Повторить загрузку деталей"
+            >
+              Повторить
+            </button>
+          </p>
+        {/if}
+
         <div class="body">
           {#if def?.description}
             <p class="description">{def.description}</p>
@@ -193,7 +255,16 @@
             <h3 class="section-title">Версия</h3>
             <dl class="kv">
               <dt>Установлена</dt>
-              <dd>{version ?? "—"}</dd>
+              <dd>
+                {#if version}
+                  <span class="mono">{version.text}</span>
+                  {#if !version.parsed}
+                    <Badge tone="amber">сырой вывод — не распознано</Badge>
+                  {/if}
+                {:else}
+                  —
+                {/if}
+              </dd>
               {#if recommended}
                 <dt>Рекомендуемая</dt>
                 <dd>{recommended}</dd>
@@ -203,6 +274,11 @@
                 <dd><Badge tone={assessment.tone}>{assessment.label}</Badge></dd>
               {/if}
             </dl>
+            {#if tool.version_selected_because && tool.installs.length > 1}
+              <p class="muted" title={tool.version_selected_because}>
+                {tool.version_selected_because}
+              </p>
+            {/if}
           </section>
 
           <!-- ===== Обнаружение ===== -->
@@ -212,22 +288,55 @@
               <p class="muted">Ещё не проверялось.</p>
             {:else if tool.detection.kind === "not_detected"}
               <p class="muted">Установок не найдено.</p>
+            {:else if tool.detection.kind === "detected"}
+              <p class="muted">
+                Обнаружено установок: {tool.installs.length}. Вердикт объясняется уликами ниже.
+              </p>
             {:else if tool.detection.kind === "failed"}
               <p class="warn-text">Проверка не удалась: {tool.detection.reason || "причина неизвестна"}. Результат — «неизвестно», а не «отсутствует».</p>
+            {:else}
+              <!-- Неизвестный kind не роняет UI (контракт §8.1) -->
+              <p class="muted">Неизвестный результат обнаружения.</p>
             {/if}
 
             {#if tool.installs.length > 0}
               <ul class="installs">
                 {#each tool.installs as inst, i (i)}
+                  {@const scope = pathScopeInfo(inst.path_scope)}
                   <li class="install">
                     <div class="install-head">
-                      <span class="mono">{inst.parsed_version || inst.raw_version || "?"}</span>
-                      <Badge tone={inst.reachable_via_path ? "lime" : "amber"}>
-                        {inst.reachable_via_path ? "доступен из PATH" : "вне PATH"}
-                      </Badge>
+                      <span class="mono">
+                        {inst.parsed_version || inst.raw_version || "?"}
+                        {#if !inst.parsed_version && inst.raw_version}
+                          <span class="unparsed">(сырой вывод)</span>
+                        {/if}
+                      </span>
+                      {#if tool.canonical_install === i}
+                        <Badge tone="cyan">каноническая</Badge>
+                      {/if}
+                      <Badge tone={scope.tone}>{scope.label}</Badge>
                     </div>
                     <code class="path">{inst.location || "путь неизвестен"}</code>
-                    <span class="evidence">{evidenceLabel(inst.evidence.kind)}</span>
+                    <div class="install-meta">
+                      <span class="evidence">{evidenceLabel(inst.evidence?.kind ?? "")}</span>
+                      {#if probeLogHasContent(inst.probe_log)}
+                        <button
+                          type="button"
+                          class="copy-btn"
+                          onclick={() => copyText(probeLogText(inst.probe_log), `probe-${i}`)}
+                        >
+                          {copiedKey === `probe-${i}` ? "Скопировано" : "Копировать лог"}
+                        </button>
+                      {/if}
+                    </div>
+                    {#if inst.probe_log && probeLogHasContent(inst.probe_log)}
+                      <!-- Полный лог пробы: единственная копия не усекается
+                           CSS-эллипсисом — панель прокручивается целиком. -->
+                      <details class="log-details">
+                        <summary>Полный лог пробы</summary>
+                        <pre class="log-lines">{probeLogText(inst.probe_log)}</pre>
+                      </details>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -244,16 +353,41 @@
               <p class="health-line"><Badge tone={health.tone} dot>{health.label}</Badge></p>
               {#if tool.health && tool.health.results.length > 0}
                 <ul class="checks">
-                  {#each tool.health.results as check (check.label)}
+                  {#each tool.health.results as check, ci (ci)}
+                    {@const logText = healthCheckLogText(check)}
                     <li class="check">
-                      <Icon
-                        name={check.passed ? "check" : check.process_failed ? "help" : "alert"}
-                        size={13}
-                        class={check.passed ? "ok" : "fail"}
-                      />
-                      <span class="check-label">{check.label}</span>
-                      <span class="check-detail" title={check.detail}>{check.detail}</span>
-                      <span class="check-ms">{check.duration_ms} мс</span>
+                      <div class="check-head">
+                        <Icon
+                          name={check.passed ? "check" : check.process_failed ? "help" : "alert"}
+                          size={13}
+                          class={check.passed ? "ok" : "fail"}
+                        />
+                        <span class="check-label">{check.label}</span>
+                        <span class="check-detail" title={logText}>{check.detail}</span>
+                        {#if check.exit_code !== null && check.exit_code !== undefined}
+                          <span class="check-code">код {check.exit_code}</span>
+                        {/if}
+                        {#if check.timed_out}
+                          <Badge tone="amber">таймаут</Badge>
+                        {/if}
+                        <span class="check-ms">{check.duration_ms} мс</span>
+                      </div>
+                      <div class="check-log-row">
+                        <code class="path">{(check.command ?? []).join(" ")}</code>
+                        <button
+                          type="button"
+                          class="copy-btn"
+                          onclick={() => copyText(logText, `health-${ci}`)}
+                        >
+                          {copiedKey === `health-${ci}` ? "Скопировано" : "Копировать лог"}
+                        </button>
+                      </div>
+                      <!-- Полный лог проверки: stdout/stderr/код выхода/таймаут
+                           целиком, без усечения в единственной копии. -->
+                      <details class="log-details">
+                        <summary>Полный лог проверки</summary>
+                        <pre class="log-lines">{logText}</pre>
+                      </details>
                     </li>
                   {/each}
                 </ul>
@@ -319,6 +453,24 @@
                   </li>
                 {/each}
               </ul>
+            </section>
+          {/if}
+
+          {#if (def?.aliases && def.aliases.length > 0) || (def?.platform_availability && def.platform_availability.length > 0)}
+            <section>
+              <h3 class="section-title">Каталог</h3>
+              <div class="chip-row">
+                {#if def?.aliases && def.aliases.length > 0}
+                  {#each def.aliases as alias (alias)}
+                    <Badge tone="neutral">псевдоним: {alias}</Badge>
+                  {/each}
+                {/if}
+                {#if def?.platform_availability && def.platform_availability.length > 0}
+                  {#each def.platform_availability as p (p)}
+                    <Badge tone={p === os ? "cyan" : "neutral"}>{platformName(p)}</Badge>
+                  {/each}
+                {/if}
+              </div>
             </section>
           {/if}
 
@@ -627,20 +779,31 @@
     color: var(--sp-text-3);
   }
 
+  .install-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
+
+  .unparsed {
+    color: var(--sp-warning);
+    font-size: var(--sp-fs-xs);
+  }
+
   .checks {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--sp-1);
+    gap: var(--sp-2);
   }
 
   .check {
-    display: grid;
-    grid-template-columns: auto auto 1fr auto;
-    align-items: baseline;
-    gap: var(--sp-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
     font-size: var(--sp-fs-xs);
     padding: var(--sp-1) 0;
     border-bottom: 1px dashed var(--sp-border-faint);
@@ -648,6 +811,13 @@
 
   .check:last-child {
     border-bottom: none;
+  }
+
+  .check-head {
+    display: grid;
+    grid-template-columns: auto auto 1fr auto auto auto;
+    align-items: baseline;
+    gap: var(--sp-2);
   }
 
   .check-label {
@@ -663,9 +833,41 @@
     min-width: 0;
   }
 
+  /* Компактная сводка может усекаться — ПОЛНЫЙ лог всегда доступен
+     ниже в разворачиваемой панели (ellipsis не единственная копия). */
+  .check-code {
+    color: var(--sp-text-3);
+    font-family: var(--sp-font-mono);
+    white-space: nowrap;
+  }
+
   .check-ms {
     color: var(--sp-text-3);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .check-log-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
+
+  .copy-btn {
+    border: 1px solid var(--sp-border);
+    background: transparent;
+    color: var(--sp-text-3);
+    border-radius: var(--sp-radius-sm);
+    font-size: var(--sp-fs-xs);
+    padding: 0 var(--sp-2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .copy-btn:hover {
+    color: var(--sp-text-1);
+    border-color: var(--sp-border-strong);
   }
 
   /* Классы приходят как prop внутрь компонента Icon — поэтому :global,
@@ -811,6 +1013,47 @@
     padding: var(--sp-6) var(--sp-5);
     color: var(--sp-text-3);
     font-size: var(--sp-fs-sm);
+  }
+
+  .details-refresh {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: var(--sp-2) var(--sp-5);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    background: rgba(34, 211, 238, 0.06);
+    border-bottom: 1px solid var(--sp-border-faint);
+  }
+
+  .details-error {
+    color: var(--sp-danger);
+    background: rgba(248, 113, 113, 0.07);
+  }
+
+  .details-error-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .details-retry {
+    flex: 0 0 auto;
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--sp-fs-xs);
+    cursor: pointer;
+  }
+
+  .details-retry:hover {
+    background: rgba(248, 113, 113, 0.12);
   }
 
   .foot {

@@ -29,7 +29,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "winget", "command": ["winget", "--version"] }
+    ],
     "notes": "Winget распространяется как Microsoft App Installer (MSIX). Устанавливается через Add-AppxPackage с официального GitHub-релиза, без прав администратора."
   },
   {
@@ -79,7 +81,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": "node",
-    "health_checks": [],
+    "health_checks": [
+      { "label": "npm", "command": ["npm", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -107,7 +111,6 @@
     "path_entries": ["%LOCALAPPDATA%\\Programs\\Python\\Python313", "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts"],
     "bundled_with": null,
     "health_checks": [
-      { "label": "pip", "command": ["python", "-m", "pip", "--version"] },
       { "label": "venv", "command": ["python", "-m", "venv", "--help"] }
     ],
     "notes": null
@@ -119,8 +122,8 @@
     "description": "Менеджер пакетов Python (поставляется вместе с Python)",
     "icon": "pip.svg",
     "detection": {
-      "version_probes": [["pip", "--version"], ["python", "-m", "pip", "--version"]],
-      "known_paths": [],
+      "version_probes": [["python", "-m", "pip", "--version"], ["pip", "--version"]],
+      "known_paths": ["C:/Program Files/Python3*", "%LOCALAPPDATA%/Programs/Python/Python3*"],
       "registry_keys": []
     },
     "versions": { "min": "23", "recommended": "25" },
@@ -129,7 +132,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": "python",
-    "health_checks": [],
+    "health_checks": [
+      { "label": "pip", "command": ["python", "-m", "pip", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -179,7 +184,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": "rust",
-    "health_checks": [],
+    "health_checks": [
+      { "label": "rustc", "command": ["rustc", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -199,7 +206,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": "rust",
-    "health_checks": [],
+    "health_checks": [
+      { "label": "cargo", "command": ["cargo", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -210,7 +219,7 @@
     "icon": "tauri.svg",
     "detection": {
       "version_probes": [["tauri", "--version"]],
-      "known_paths": ["%APPDATA%/npm", "%USERPROFILE%/.cargo/bin"],
+      "known_paths": [],
       "registry_keys": []
     },
     "versions": { "min": "2.0", "recommended": "2.9" },
@@ -230,7 +239,9 @@
     "needs_admin": false,
     "path_entries": ["%APPDATA%\\npm", "%USERPROFILE%\\.cargo\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "tauri", "command": ["tauri", "--version"] }
+    ],
     "notes": "url: \"npm\"/\"cargo\" — это команда запуска (паттерн «локальный путь без http»). Источники пробуются по порядку: npm быстрее (prebuilt), cargo — запасной."
   },
   {
@@ -257,7 +268,9 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\Go\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "go", "command": ["go", "version"] }
+    ],
     "notes": null
   },
   {
@@ -284,7 +297,9 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.1.12-hotspot\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "java", "command": ["java", "-version"] }
+    ],
     "notes": "Версия печатается в stderr — парсер учтёт это на этапе 2."  },
   {
     "id": "kotlin",
@@ -309,7 +324,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\kotlin\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "kotlinc", "command": ["kotlinc", "-version"] }
+    ],
     "notes": "Kotlin требует JDK: в стеке с kotlin всегда идёт java (см. requirements)."
   },
   {
@@ -319,7 +336,7 @@
     "description": "Распределённая брокерская очередь сообщений (Kafka, Zookeeper-совместимый KRaft)",
     "icon": "kafka.svg",
     "detection": {
-      "version_probes": [["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Get-ChildItem \"$env:LOCALAPPDATA\\Programs\\kafka\\*\\libs\\kafka_*.jar\" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $_.Name -replace '^kafka_[^-]+-', '' -replace '\\.jar$', '' }"]],
+      "version_probes": [["powershell", "-NoProfile", "-Command", "Get-ChildItem \"$env:LOCALAPPDATA\\Programs\\kafka\\*\\libs\\kafka_*.jar\" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $_.Name -replace '^kafka_[^-]+-', '' -replace '\\.jar$', '' }"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/kafka/*/bin/windows"],
       "registry_keys": []
     },
@@ -336,7 +353,8 @@
     "path_entries": ["%LOCALAPPDATA%\\Programs\\kafka\\*\\bin\\windows"],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Требует Java (идёт в стеке вместе с kafka). Распаковка через tar (tgz). Версия читается из имени jar — kafka-topics.bat --version невозможен на Windows (classpath > 8191)."
+    "notes": "Требует Java (идёт в стеке вместе с kafka). Распаковка через tar (tgz). Версия читается из имени jar — kafka-topics.bat --version невозможен на Windows (classpath > 8191).",
+    "docker": { "image": "apache/kafka", "notes": "Альтернатива локальной установке: официальный образ apache/kafka в контейнере." }
   },
   {
     "id": "grafana",
@@ -362,8 +380,11 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\grafana\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "Zip без прав; winget — запасной вариант."
+    "health_checks": [
+      { "label": "grafana-server", "command": ["grafana-server", "--version"] }
+    ],
+    "notes": "Zip без прав; winget — запасной вариант.",
+    "docker": { "image": "grafana/grafana-oss", "notes": "Альтернатива локальной установке: официальный образ grafana/grafana-oss в контейнере." }
   },
   {
     "id": "terraform",
@@ -376,7 +397,7 @@
       "known_paths": ["%LOCALAPPDATA%/Programs/terraform"],
       "registry_keys": []
     },
-    "versions": { "min": "1.5", "recommended": "1.9" },
+    "versions": { "min": "1.5", "recommended": "1.15" },
     "sources": {
       "windows": [
         { "kind": "Official", "id": "terraform-zip", "url": "https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_windows_amd64.zip", "args": [], "extra_args": [], "dynamic_args": false, "install_dir": "%LOCALAPPDATA%/Programs/terraform", "needs_admin": false },
@@ -389,7 +410,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\terraform"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "terraform", "command": ["terraform", "version"] }
+    ],
     "notes": "Zip: terraform.exe прямо в install_dir."
   },
   {
@@ -422,7 +445,9 @@
     "needs_admin": false,
     "path_entries": ["%APPDATA%\\npm"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "firebase", "command": ["firebase", "--version"] }
+    ],
     "notes": "npm global install -g firebase-tools — основной источник (winget-порт Google.FirebaseCLI устарел и иногда отдаёт 404)."
   },
   {
@@ -449,7 +474,9 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\dotnet", "%LOCALAPPDATA%\\Microsoft\\dotnet"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "dotnet", "command": ["dotnet", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -479,7 +506,9 @@
     "needs_admin": false,
     "path_entries": ["%USERPROFILE%\\.dotnet\\tools"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "csharprepl", "command": ["csharprepl", "--version"] }
+    ],
     "notes": "Ставится глобально через dotnet tool (NuGet CSharpRepl), требует .NET SDK."
   },
   {
@@ -549,7 +578,9 @@
     "needs_admin": false,
     "path_entries": ["%USERPROFILE%\\zig\\*"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "zig", "command": ["zig", "version"] }
+    ],
     "notes": null
   },
   {
@@ -576,7 +607,9 @@
     "needs_admin": false,
     "path_entries": ["C:\\Program Files\\Dart\\bin", "%LOCALAPPDATA%\\dart-sdk\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "dart", "command": ["dart", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -602,7 +635,9 @@
     "needs_admin": false,
     "path_entries": ["C:\\Program Files\\php", "%LOCALAPPDATA%\\Programs\\php"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "php", "command": ["php", "--version"] }
+    ],
     "notes": "winget-источник PHP.PHP.8.3 нестабилен (падает с кодом -2145844844) — удалён, основная установка: zip с windows.php.net."
   },
   {
@@ -629,33 +664,50 @@
     "needs_admin": false,
     "path_entries": ["%APPDATA%\\Composer", "%APPDATA%\\Composer\\vendor\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "composer", "command": ["composer", "--version"] }
+    ],
     "notes": "Требует PHP. Windows: основной — Composer-Setup.exe (тихая установка /S); запасной — getcomposer.org/installer через php (execution: phar — иначе os error 193, «%1 не является приложением Win32»)."
   },
   {
     "id": "swift",
     "category": "language",
     "display": "Swift",
-    "description": "Тулчейн Swift (SwiftUI, Vapor)",
+    "description": "Тулчейн Swift (SwiftUI, Vapor). На Windows — официальный инсталлятор swift.org; на macOS ставится вручную",
     "icon": "swift.svg",
     "detection": {
       "version_probes": [["swift", "--version"]],
-      "known_paths": ["C:/Library/Swift"],
+      "known_paths": ["C:/Library/Swift", "%LOCALAPPDATA%/Swift"],
       "registry_keys": []
     },
-    "versions": { "min": "5.9", "recommended": "6.1" },
+    "versions": { "min": "5.9", "recommended": "6.3" },
     "sources": {
-      "windows": [],
+      "windows": [
+        { "kind": "PkgManager", "id": "Swift.Toolchain", "args": ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"], "extra_args": [], "dynamic_args": false },
+        {
+          "kind": "Official",
+          "id": "swift-windows10-x64-exe",
+          "url": "https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe",
+          "file_name": "swift-6.3.3-RELEASE-windows10.exe",
+          "args": ["-quiet"],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false,
+          "sha256": "235626548f249cd516d3d4d90eee980dccad46f3822dac1f8e3119b0fede94b7"
+        }
+      ],
       "linux": [{ "kind": "PkgManager", "id": "swiftlang", "args": [], "extra_args": [], "dynamic_args": false }],
       "macos": [{ "kind": "PkgManager", "id": "swift", "args": [], "extra_args": [], "dynamic_args": false }]
     },
     "size_mb": 500,
-    "needs_admin": true,
+    "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "На Windows официальный установщик Swift ставится плохо — инструмент помечен как ручная установка (ставится вручную, в отчёте — честное предупреждение).",
-    "manual_install": "Swift на Windows ставится вручную: официальный установщик с download.swift.org (сборка для Windows 10+)."
+    "health_checks": [
+      { "label": "swift", "command": ["swift", "--version"] }
+    ],
+    "notes": "Windows: официальный Burn-инсталлятор swift.org (тихий режим -quiet, установка в профиль пользователя без UAC) с контрольной суммой SHA-256 из официального манифеста winget Swift.Toolchain; требует Git и VC++ Redistributable. На macOS Swift приходит вместе с Xcode.",
+    "platform_availability": ["windows", "linux", "macos"]
   },
   {
     "id": "erlang",
@@ -691,7 +743,7 @@
     "description": "Язык Elixir (mix new, Phoenix)",
     "icon": "elixir.svg",
     "detection": {
-      "version_probes": [["elixir", "--version"], ["elixir.bat", "--version"]],
+      "version_probes": [["elixir", "--short-version"], ["elixir.bat", "--short-version"]],
       "known_paths": ["%LOCALAPPDATA%/Programs/elixir/bin", "%LOCALAPPDATA%/Programs/elixir/*/bin", "C:/Program Files/Elixir"],
       "registry_keys": []
     },
@@ -707,8 +759,10 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\elixir\\bin", "%LOCALAPPDATA%\\Programs\\elixir\\*\\bin", "C:\\Program Files\\Elixir\\bin"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "Требует Erlang/OTP. Precompiled zip ставит bin/ сразу в install_dir (без промежуточной папки) — проверка и PATH учитывают оба варианта."
+    "health_checks": [
+      { "label": "elixir", "command": ["elixir", "--short-version"] }
+    ],
+    "notes": "Требует Erlang/OTP. Precompiled zip ставит bin/ сразу в install_dir (без промежуточной папки) — проверка и PATH учитывают оба варианта. Версия запрашивается через --short-version: полный --version требует erl в PATH (Erlang/OTP учитывается отдельным инструментом каталога)."
   },
   {
     "id": "gleam",
@@ -734,7 +788,9 @@
     "needs_admin": false,
     "path_entries": ["%USERPROFILE%\\.local\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "gleam", "command": ["gleam", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -786,7 +842,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\maven\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "mvn", "command": ["mvn", "--version"] }
+    ],
     "notes": "Требует Java JDK. В winget пакета нет (Apache.Maven не существует) — только официальный zip с archive.apache.org; dlcdn хранит лишь актуальные версии."
   },
   {
@@ -812,7 +870,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\gradle\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "gradle", "command": ["gradle", "--version"] }
+    ],
     "notes": "Требует Java JDK."
   },
   {
@@ -852,8 +912,11 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\PostgreSQL\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "Пароль суперпользователя генерируется автоматически и показывается на экране результата (dynamic_args)."
+    "health_checks": [
+      { "label": "psql", "command": ["psql", "--version"] }
+    ],
+    "notes": "Пароль суперпользователя генерируется автоматически и показывается на экране результата (dynamic_args).",
+    "docker": { "image": "postgres:17", "notes": "Альтернатива локальной установке: контейнер docker-compose проекта." }
   },
   {
     "id": "redis",
@@ -879,8 +942,11 @@
     "needs_admin": false,
     "path_entries": ["C:\\Program Files\\Memurai\\bin", "%LOCALAPPDATA%\\Programs\\redis\\*"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "Официальный Redis не поддерживает Windows: основной источник — portable-порт Redis 8.10 (redis-windows), распаковка без прав в %LOCALAPPDATA%\\Programs\\redis. Запасной — Memurai (winget, MSI, нужен администратор)."
+    "health_checks": [
+      { "label": "redis-server", "command": ["redis-server", "--version"] }
+    ],
+    "notes": "Официальный Redis не поддерживает Windows: основной источник — portable-порт Redis 8.10 (redis-windows), распаковка без прав в %LOCALAPPDATA%\\Programs\\redis. Запасной — Memurai (winget, MSI, нужен администратор).",
+    "docker": { "image": "redis:8", "notes": "Альтернатива локальной установке на Windows: официальный образ redis в контейнере." }
   },
   {
     "id": "mongodb",
@@ -906,8 +972,11 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\MongoDB\\Server\\*\\bin", "%LOCALAPPDATA%\\Programs\\mongodb\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "MongoDB: winget/MSI требуют прав администратора; portable zip извлекается без них. Запуск mongod вручную (без Windows-сервиса)."
+    "health_checks": [
+      { "label": "mongod", "command": ["mongod", "--version"] }
+    ],
+    "notes": "MongoDB: winget/MSI требуют прав администратора; portable zip извлекается без них. Запуск mongod вручную (без Windows-сервиса).",
+    "docker": { "image": "mongo:8", "notes": "Альтернатива локальной установке: контейнер docker-compose проекта." }
   },
   {
     "id": "mysql",
@@ -933,8 +1002,11 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\MySQL\\*\\bin"],
     "bundled_with": null,
-    "health_checks": [],
-    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; MSI ставится с /qn /norestart ALLUSERS=1 (без тихих флагов exit code 1), winget — со всеми --accept флагами; при сбое — используйте Docker-вариант из каркаса проекта."
+    "health_checks": [
+      { "label": "mysql", "command": ["mysql", "--version"] }
+    ],
+    "notes": "MySQL-установщик в unattended-режиме требует предварительной конфигурации; MSI ставится с /qn /norestart ALLUSERS=1 (без тихих флагов exit code 1), winget — со всеми --accept флагами; при сбое — Docker-альтернатива ниже.",
+    "docker": { "image": "mysql:8.4", "notes": "Альтернатива локальной установке: официальный образ mysql в контейнере." }
   },
   {
     "id": "sqlite",
@@ -953,7 +1025,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "sqlite3", "command": ["sqlite3", "--version"] }
+    ],
     "notes": "Информационный тул: никогда не блокирует создание проекта."
   },
   {
@@ -981,6 +1055,7 @@
     "path_entries": ["C:\\Program Files\\Docker\\Docker\\resources\\bin"],
     "bundled_with": null,
     "health_checks": [
+      { "label": "docker cli", "command": ["docker", "--version"] },
       { "label": "docker daemon", "command": ["docker", "version", "--format", "{{.Server.Version}}"] }
     ],
     "notes": "Требует WSL2. Если WSL2 не установлен — предложим установить Microsoft.WSL через winget. После установки нужно один раз запустить Docker Desktop."
@@ -1009,7 +1084,9 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\Git\\cmd"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "git", "command": ["git", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -1036,7 +1113,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "code", "command": ["code", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -1063,7 +1142,9 @@
     "needs_admin": true,
     "path_entries": ["C:\\Program Files\\CMake\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "cmake", "command": ["cmake", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -1089,7 +1170,9 @@
     "needs_admin": false,
     "path_entries": ["C:\\Program Files\\GnuWin32\\bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "make", "command": ["make", "--version"] }
+    ],
     "notes": null
   },
   {
@@ -1109,7 +1192,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "curl", "command": ["curl", "--version"] }
+    ],
     "notes": "Встроен в Windows 10+ и большинство дистрибутивов Linux. Информационный тул."
   },
   {
@@ -1129,74 +1214,10 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "tar", "command": ["tar", "--version"] }
+    ],
     "notes": "Встроен в Windows 10+ (bsdtar). Информационный тул."
-  },
-  {
-    "id": "unity",
-    "category": "engine",
-    "display": "Unity Editor",
-    "description": "Игровой движок с C#-скриптами — проект генерируется, движок ставится вручную",
-    "icon": "unity.svg",
-    "detection": {
-      "version_probes": [],
-      "known_paths": [
-        "C:/Program Files/Unity/Hub/Editor/*/Editor",
-        "/Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS"
-      ],
-      "registry_keys": []
-    },
-    "versions": { "min": null, "recommended": null },
-    "sources": { "windows": [], "linux": [], "macos": [] },
-    "size_mb": 0,
-    "needs_admin": false,
-    "path_entries": [],
-    "bundled_with": null,
-    "health_checks": [],
-    "notes": "Unity нельзя поставить автоматически: только Unity Hub (unityhub://) или unity.com/download.",
-    "manual_install": "Установите Unity Editor вручную через Unity Hub (unity.com/download) — желательно LTS-версию."
-  },
-  {
-    "id": "unreal",
-    "category": "engine",
-    "display": "Unreal Engine",
-    "description": "Игровой движок на C++ — проект генерируется, движок ставится вручную",
-    "icon": "unreal-engine.svg",
-    "detection": {
-      "version_probes": [],
-      "known_paths": ["C:/Program Files/Epic Games/UE_*"],
-      "registry_keys": []
-    },
-    "versions": { "min": null, "recommended": null },
-    "sources": { "windows": [], "linux": [], "macos": [] },
-    "size_mb": 0,
-    "needs_admin": false,
-    "path_entries": [],
-    "bundled_with": null,
-    "health_checks": [],
-    "notes": "Unreal Engine ставится только через Epic Games Launcher.",
-    "manual_install": "Установите Unreal Engine вручную через Epic Games Launcher (store.epicgames.com) — любой актуальный релиз."
-  },
-  {
-    "id": "godot",
-    "category": "engine",
-    "display": "Godot",
-    "description": "Open-source игровой движок (C++, C#) — проект генерируется, движок ставится вручную",
-    "icon": "godot.svg",
-    "detection": {
-      "version_probes": [["godot", "--version"]],
-      "known_paths": ["C:/Program Files/Godot*"],
-      "registry_keys": []
-    },
-    "versions": { "min": "4.2", "recommended": "4.4" },
-    "sources": { "windows": [], "linux": [], "macos": [] },
-    "size_mb": 0,
-    "needs_admin": false,
-    "path_entries": [],
-    "bundled_with": null,
-    "health_checks": [],
-    "notes": "Godot распространяется как портативный бинарник с godotengine.org.",
-    "manual_install": "Скачайте Godot с godotengine.org (Standard-версию) и распакуйте в удобное место."
   },
   {
     "id": "android",
@@ -1218,7 +1239,9 @@
     "needs_admin": false,
     "path_entries": [],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "adb", "command": ["adb", "--version"] }
+    ],
     "notes": "Android SDK поставляется с Android Studio (developer.android.com/studio).",
     "manual_install": "Установите Android Studio с developer.android.com/studio — вместе с ней придёт Android SDK."
   },
@@ -1254,7 +1277,9 @@
     "needs_admin": false,
     "path_entries": ["%LOCALAPPDATA%/Programs/Qt/*/msvc2022_64/bin"],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      { "label": "qmake", "command": ["qmake", "-query", "QT_VERSION"] }
+    ],
     "notes": "Ставится из официального репозитория Qt (download.qt.io) в %LOCALAPPDATA%/Programs/Qt. Сборка для MSVC 2022 64-bit."
   },
   {
@@ -1275,8 +1300,9 @@
     "path_entries": [],
     "bundled_with": null,
     "health_checks": [],
-    "notes": "Xcode устанавливается только из Mac App Store (macOS).",
-    "manual_install": "Установите Xcode вручную из Mac App Store (только macOS) — xcodebuild приходит вместе с ним."
+    "notes": "Xcode устанавливается только из Mac App Store (macOS). На Windows/Linux инструмент неприменим и никогда не ставится автоматически.",
+    "manual_install": "Установите Xcode вручную из Mac App Store (только macOS) — xcodebuild приходит вместе с ним.",
+    "platform_availability": ["macos"]
   }
 ]
 

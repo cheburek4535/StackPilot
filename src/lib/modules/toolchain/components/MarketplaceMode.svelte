@@ -1,146 +1,75 @@
 <script lang="ts">
-  // Режим «Управлять всем»: поиск, рейло фильтров и сортировка над полным
-  // каталогом. Фильтрация/сортировка — единственное, что решает фронтенд;
-  // статусы и факты приходят только из снапшота бэкенда.
+  // Режим «Витрина инструментов»: определение-driven маркетплейс.
+  // Работает БЕЗ снапшота (только каталог tcx_get_catalog); живые факты
+  // (состояние/версия/здоровье/происхождение) накладываются из скана,
+  // когда он есть. Установка локально — только через канонический
+  // экран проверки плана (никакой Docker-опциональности Project Creator).
+  import { onMount } from "svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import ErrorState from "$lib/components/ui/ErrorState.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import IconButton from "$lib/components/ui/IconButton.svelte";
   import LoadingState from "$lib/components/ui/LoadingState.svelte";
-  import ToolCard from "./ToolCard.svelte";
+  import MarketplaceCard, {
+    type MarketplacePlanOp,
+  } from "./MarketplaceCard.svelte";
   import { toolchain } from "../state.svelte";
-  import type { CardPlanOp } from "./ToolCard.svelte";
   import {
-    applyCatalogFilters,
-    availableCategories,
-    defaultCatalogFilters,
-    sortCatalogTools,
-  } from "../filters";
+    applyMarketplaceFilters,
+    buildMarketplaceItems,
+    marketplaceBooleanCount,
+    marketplaceCapabilityCounts,
+    marketplaceCategoryCounts,
+    marketplaceExecutionCounts,
+    marketplaceHealthCounts,
+    marketplaceProvenanceCounts,
+    marketplaceStateCounts,
+  } from "../marketplace";
   import {
     allProvenanceKinds,
     allToolStateKinds,
     capabilityLabel,
   } from "../format";
-  import type { CatalogSort, ExecutionMode, HealthState } from "../types";
+  import type { ExecutionMode, HealthState } from "../types";
+  import { jobStatusIsTerminal } from "../types";
 
   let {
     onplan,
-    onrecheck,
+    ondetails,
   }: {
-    onplan: (operation: CardPlanOp, toolId: string) => void;
-    onrecheck: (toolId: string) => void;
+    onplan: (operation: MarketplacePlanOp, toolId: string) => void;
+    ondetails: (toolId: string) => void;
   } = $props();
 
-  let sort = $state<CatalogSort>("status");
   let railOpen = $state(false);
-  let recheckingIds = $state<Set<string>>(new Set());
 
+  onMount(() => {
+    void toolchain.ensureMarketplacePlatform();
+  });
+
+  const os = $derived(toolchain.marketplaceOs);
   const snapshot = $derived(toolchain.liveSnapshot);
-  const categories = $derived(availableCategories(snapshot));
 
-  const categoryCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const t of snapshot?.tools ?? []) {
-      counts.set(t.category, (counts.get(t.category) ?? 0) + 1);
-    }
-    return counts;
-  });
-
-  const stateCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const t of snapshot?.tools ?? []) {
-      const kind = t.state.kind;
-      counts.set(kind, (counts.get(kind) ?? 0) + 1);
-    }
-    return counts;
-  });
-
-  /** Счётчики для каждой группы фильтров — только по текущему набору. */
-  const healthCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const t of snapshot?.tools ?? []) {
-      const kind = t.health?.state.kind ?? "not_checked";
-      counts.set(kind, (counts.get(kind) ?? 0) + 1);
-    }
-    return counts;
-  });
-
-  const provenanceCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const t of snapshot?.tools ?? []) {
-      const kind = t.provenance.kind;
-      counts.set(kind, (counts.get(kind) ?? 0) + 1);
-    }
-    return counts;
-  });
-
-  const capabilityCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const t of snapshot?.tools ?? []) {
-      for (const flag of Object.keys(t.capabilities) as (keyof typeof t.capabilities)[]) {
-        if (t.capabilities[flag]) counts.set(flag, (counts.get(flag) ?? 0) + 1);
-      }
-    }
-    return counts;
-  });
-
-  const executionCounts = $derived.by(() => {
-    let host = 0;
-    let docker = 0;
-    for (const t of snapshot?.tools ?? []) {
-      if (t.applicability.kind === "docker_default" || t.provenance.kind === "docker") {
-        docker += 1;
-      } else {
-        host += 1;
-      }
-    }
-    return { host, docker };
-  });
-
-  const quickCounts = $derived.by(() => {
-    let updateOnly = 0;
-    let adminOnly = 0;
-    let manualOnly = 0;
-    let installable = 0;
-    let dockerAlt = 0;
-    for (const t of snapshot?.tools ?? []) {
-      if (t.state.kind === "update_available") updateOnly += 1;
-      if (t.applicability.kind === "manual_only") manualOnly += 1;
-      if (t.capabilities.installable) installable += 1;
-      if (t.capabilities.docker_alternative_available) dockerAlt += 1;
-      const def = toolchain.definitionFor(t.tool_id);
-      if (def?.needs_admin === true) adminOnly += 1;
-    }
-    return { updateOnly, adminOnly, manualOnly, installable, dockerAlt };
-  });
-
-  const visibleTools = $derived(
-    sortCatalogTools(
-      applyCatalogFilters(snapshot, toolchain.filters, {
-        definitions: toolchain.definitions,
-      }),
-      sort,
-    ),
+  const items = $derived(
+    os ? buildMarketplaceItems(toolchain.definitions, snapshot, os) : [],
   );
+  const visibleItems = $derived(applyMarketplaceFilters(items, toolchain.filters));
 
-  const totalTools = $derived(snapshot?.tools.length ?? 0);
+  /** Идёт активная мутация по инструменту (карточка показывает занятость). */
+  const busyIds = $derived.by(() => {
+    const job = toolchain.currentJob;
+    if (!job || jobStatusIsTerminal(job.status)) return new Set<string>();
+    return new Set<string>(job.requested_tool_ids);
+  });
 
-  function toggleInArray<T>(arr: T[], value: T): T[] {
-    return arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
-  }
+  const categoryCounts = $derived(marketplaceCategoryCounts(items));
+  const stateCounts = $derived(marketplaceStateCounts(items));
+  const healthCounts = $derived(marketplaceHealthCounts(items));
+  const provenanceCounts = $derived(marketplaceProvenanceCounts(items));
 
-  async function handleRecheck(toolId: string): Promise<void> {
-    if (recheckingIds.has(toolId)) return;
-    recheckingIds = new Set([...recheckingIds, toolId]);
-    try {
-      await toolchain.runHealthChecks([toolId]);
-    } finally {
-      const next = new Set(recheckingIds);
-      next.delete(toolId);
-      recheckingIds = next;
-    }
-  }
+  /** Скана нет — рантайм-факты отсутствуют, их группы не показываются. */
+  const hasScanData = $derived(!!snapshot && snapshot.tools.length > 0);
 
   const HEALTH_OPTIONS: { kind: HealthState["kind"]; label: string }[] = [
     { kind: "healthy", label: "Здоров" },
@@ -148,6 +77,16 @@
     { kind: "unhealthy", label: "Нездоров" },
     { kind: "not_checked", label: "Не проверялся" },
   ];
+
+  const capabilityOptions = [
+    "installable",
+    "updatable",
+    "health_checkable",
+    "removable",
+    "repairable",
+    "manual_instructions_available",
+    "docker_alternative_available",
+  ] as const;
 
   const QUICK_FILTERS: {
     key:
@@ -165,58 +104,27 @@
     { key: "has_docker_alternative", label: "Есть Docker-альтернатива" },
   ];
 
-  function quickFilterCount(
-    key: (typeof QUICK_FILTERS)[number]["key"],
-  ): number {
-    switch (key) {
-      case "update_only":
-        return quickCounts.updateOnly;
-      case "admin_only":
-        return quickCounts.adminOnly;
-      case "manual_only":
-        return quickCounts.manualOnly;
-      case "installable":
-        return quickCounts.installable;
-      case "has_docker_alternative":
-        return quickCounts.dockerAlt;
-    }
-  }
-
   const EXECUTION_OPTIONS: { mode: ExecutionMode; label: string }[] = [
     { mode: "host", label: "На хосте" },
     { mode: "docker", label: "В Docker" },
   ];
 
-  const capabilityOptions = [
-    "installable",
-    "updatable",
-    "health_checkable",
-    "removable",
-    "repairable",
-    "manual_instructions_available",
-    "docker_alternative_available",
-  ] as const;
-
-  const SORT_OPTIONS: { value: CatalogSort; label: string }[] = [
-    { value: "status", label: "Проблемные сверху" },
-    { value: "name_asc", label: "Имя А→Я" },
-    { value: "name_desc", label: "Имя Я→А" },
-    { value: "category", label: "По категории" },
-    { value: "catalog", label: "Порядок каталога" },
-  ];
+  function toggleInArray<T>(arr: T[], value: T): T[] {
+    return arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
+  }
 </script>
 
-<div class="manage">
-  <!-- ===== Панель поиска и сортировки ===== -->
+<div class="market">
+  <!-- ===== Панель поиска ===== -->
   <div class="toolbar">
     <div class="search">
       <Icon name="search" size={16} />
       <input
         type="search"
-        placeholder="Поиск по имени, id или категории…"
+        placeholder="Поиск по имени, id, псевдонимам, описанию, ссылкам…"
         value={toolchain.filters.search}
         oninput={(e) => toolchain.setFilters({ search: e.currentTarget.value })}
-        aria-label="Поиск инструментов"
+        aria-label="Поиск инструментов витрины"
       />
       {#if toolchain.filters.search}
         <IconButton
@@ -228,19 +136,6 @@
       {/if}
     </div>
 
-    <label class="sort">
-      <span class="sort-label">Сортировка</span>
-      <select
-        value={sort}
-        onchange={(e) => (sort = e.currentTarget.value as CatalogSort)}
-        aria-label="Порядок сортировки"
-      >
-        {#each SORT_OPTIONS as opt (opt.value)}
-          <option value={opt.value}>{opt.label}</option>
-        {/each}
-      </select>
-    </label>
-
     <div class="rail-toggle-wrap">
       <Button variant="ghost" size="sm" icon={railOpen ? "x" : "layers"} onclick={() => (railOpen = !railOpen)}>
         Фильтры
@@ -249,8 +144,8 @@
   </div>
 
   <div class="content">
-    <!-- ===== Рейло фильтров ===== -->
-    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры каталога">
+    <!-- ===== Рейло фильтров (все значения — с живыми счётчиками) ===== -->
+    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры витрины">
       <div class="rail-head">
         <span>Фильтры</span>
         <Button variant="ghost" size="sm" onclick={() => toolchain.resetFilters()}>
@@ -259,15 +154,22 @@
       </div>
 
       <div class="rail-body">
-        <!-- Состояния -->
-        <fieldset>
-          <legend>Состояние</legend>
-          {#each allToolStateKinds() as { kind, info } (kind)}
-            {@const count = stateCounts.get(kind) ?? 0}
-            {#if count > 0}
-              <label class="filter-row">
+        {#if !hasScanData}
+          <p class="rail-note" role="status">
+            <Icon name="info" size={13} />
+            Нет данных скана — фильтры состояния, здоровья и происхождения недоступны.
+          </p>
+        {/if}
+
+        {#if hasScanData}
+          <fieldset>
+            <legend>Состояние</legend>
+            {#each allToolStateKinds() as { kind, info } (kind)}
+              {@const count = stateCounts.get(kind) ?? 0}
+              <label class="filter-row" class:filter-disabled={count === 0}>
                 <input
                   type="checkbox"
+                  disabled={count === 0}
                   checked={toolchain.filters.states.includes(kind)}
                   onchange={() =>
                     toolchain.setFilters({
@@ -277,38 +179,57 @@
                 <span class="filter-label">{info.label}</span>
                 <span class="filter-count">{count}</span>
               </label>
-            {/if}
-          {/each}
-        </fieldset>
+            {/each}
+          </fieldset>
 
-        <!-- Здоровье -->
+          <fieldset>
+            <legend>Здоровье</legend>
+            {#each HEALTH_OPTIONS as opt (opt.kind)}
+              {@const count = healthCounts.get(opt.kind) ?? 0}
+              <label class="filter-row" class:filter-disabled={count === 0}>
+                <input
+                  type="checkbox"
+                  disabled={count === 0}
+                  checked={toolchain.filters.health.includes(opt.kind)}
+                  onchange={() =>
+                    toolchain.setFilters({
+                      health: toggleInArray(toolchain.filters.health, opt.kind),
+                    })}
+                />
+                <span class="filter-label">{opt.label}</span>
+                <span class="filter-count">{count}</span>
+              </label>
+            {/each}
+          </fieldset>
+
+          <fieldset>
+            <legend>Происхождение</legend>
+            {#each allProvenanceKinds() as { kind, info } (kind)}
+              {@const count = provenanceCounts.get(kind) ?? 0}
+              <label class="filter-row" class:filter-disabled={count === 0}>
+                <input
+                  type="checkbox"
+                  disabled={count === 0}
+                  checked={toolchain.filters.provenance.includes(kind)}
+                  onchange={() =>
+                    toolchain.setFilters({
+                      provenance: toggleInArray(toolchain.filters.provenance, kind),
+                    })}
+                />
+                <span class="filter-label">{info.label}</span>
+                <span class="filter-count">{count}</span>
+              </label>
+            {/each}
+          </fieldset>
+        {/if}
+
         <fieldset>
-          <legend>Здоровье</legend>
-          {#each HEALTH_OPTIONS as opt (opt.kind)}
-            {@const count = healthCounts.get(opt.kind) ?? 0}
+          <legend>Категории</legend>
+          {#each [...categoryCounts.entries()] as [cat, count] (cat)}
             <label class="filter-row" class:filter-disabled={count === 0}>
               <input
                 type="checkbox"
                 disabled={count === 0}
-                checked={toolchain.filters.health.includes(opt.kind)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    health: toggleInArray(toolchain.filters.health, opt.kind),
-                  })}
-              />
-              <span class="filter-label">{opt.label}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Категории -->
-        <fieldset>
-          <legend>Категории</legend>
-          {#each categories as cat (cat)}
-            <label class="filter-row">
-              <input
-                type="checkbox"
                 checked={toolchain.filters.categories.includes(cat)}
                 onchange={() =>
                   toolchain.setFilters({
@@ -316,37 +237,15 @@
                   })}
               />
               <span class="filter-label">{cat}</span>
-              <span class="filter-count">{categoryCounts.get(cat) ?? 0}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Происхождение -->
-        <fieldset>
-          <legend>Происхождение</legend>
-          {#each allProvenanceKinds() as { kind, info } (kind)}
-            {@const count = provenanceCounts.get(kind) ?? 0}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters.provenance.includes(kind)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    provenance: toggleInArray(toolchain.filters.provenance, kind),
-                  })}
-              />
-              <span class="filter-label">{info.label}</span>
               <span class="filter-count">{count}</span>
             </label>
           {/each}
         </fieldset>
 
-        <!-- Возможности платформы -->
         <fieldset>
           <legend>Возможности</legend>
           {#each capabilityOptions as flag (flag)}
-            {@const count = capabilityCounts.get(flag) ?? 0}
+            {@const count = marketplaceCapabilityCounts(items, flag)}
             <label class="filter-row" class:filter-disabled={count === 0}>
               <input
                 type="checkbox"
@@ -363,11 +262,10 @@
           {/each}
         </fieldset>
 
-        <!-- Режим исполнения -->
         <fieldset>
           <legend>Исполнение</legend>
           {#each EXECUTION_OPTIONS as opt (opt.mode)}
-            {@const count = executionCounts[opt.mode]}
+            {@const count = marketplaceExecutionCounts(items, opt.mode)}
             <label class="filter-row" class:filter-disabled={count === 0}>
               <input
                 type="checkbox"
@@ -384,11 +282,10 @@
           {/each}
         </fieldset>
 
-        <!-- Быстрые фильтры -->
         <fieldset>
           <legend>Быстрые фильтры</legend>
           {#each QUICK_FILTERS as opt (opt.key)}
-            {@const count = quickFilterCount(opt.key)}
+            {@const count = marketplaceBooleanCount(items, opt.key)}
             <label class="filter-row" class:filter-disabled={count === 0}>
               <input
                 type="checkbox"
@@ -408,35 +305,41 @@
     <!-- ===== Сетка карточек ===== -->
     <div class="results">
       <p class="results-count" role="status">
-        {visibleTools.length} из {totalTools} инструментов
-        {#if visibleTools.length !== totalTools}
+        {visibleItems.length} из {items.length} инструментов витрины
+        {#if visibleItems.length !== items.length}
           <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
             сбросить фильтры
           </button>
         {/if}
       </p>
 
-      {#if toolchain.snapshotLoading && !snapshot}
-        <LoadingState label="Загружаем состояние окружения…" />
-      {:else if toolchain.snapshotError && !snapshot}
+      {#if toolchain.definitionsLoading}
+        <LoadingState label="Загружаем каталог инструментов…" />
+      {:else if toolchain.definitionsError && Object.keys(toolchain.definitions).length === 0}
         <ErrorState
-          title="Не удалось загрузить состояние окружения"
-          message={toolchain.snapshotError}
-          retry={() => void toolchain.refreshSnapshot()}
+          title="Каталог недоступен"
+          message={toolchain.definitionsError}
+          retry={() => void toolchain.ensureDefinitions()}
         />
-      {:else if !snapshot || snapshot.tools.length === 0}
+      {:else if !os && toolchain.marketplaceOsError}
+        <ErrorState
+          title="Платформу определить не удалось"
+          message={toolchain.marketplaceOsError}
+          retry={() => void toolchain.ensureMarketplacePlatform()}
+        />
+      {:else if !os}
         <EmptyState
-          icon="wrench"
-          title="Данных о машине пока нет"
-          description="Запустите первый диагностический скан — он ничего не устанавливает и занимает меньше двух минут."
-        >
-          {#snippet action()}
-            <Button variant="primary" icon="refresh" loading={toolchain.snapshotLoading} onclick={() => void toolchain.ensureScanRunning()}>
-              Запустить скан
-            </Button>
-          {/snippet}
-        </EmptyState>
-      {:else if visibleTools.length === 0}
+          icon="info"
+          title="Определяем платформу…"
+          description="Витрина строится из каталога для текущей ОС. Платформа ещё не определена."
+        />
+      {:else if items.length === 0}
+        <EmptyState
+          icon="store"
+          title="Каталог пуст"
+          description="В каталоге standalone Toolchain нет инструментов для этой платформы."
+        />
+      {:else if visibleItems.length === 0}
         <EmptyState
           compact
           icon="search"
@@ -451,23 +354,21 @@
         </EmptyState>
       {:else}
         <div class="grid">
-          {#each visibleTools as tool (tool.tool_id)}
-            <ToolCard
-              {tool}
-              def={toolchain.definitionFor(tool.tool_id)}
-              busy={recheckingIds.has(tool.tool_id)}
-              ondetails={(id) => toolchain.selectTool(id)}
+          {#each visibleItems as item (item.def.id)}
+            <MarketplaceCard
+              {item}
+              busy={busyIds.has(item.def.id)}
               onplan={onplan}
-              onrecheck={handleRecheck}
+              ondetails={ondetails}
             />
           {/each}
         </div>
       {/if}
 
-      {#if snapshot && snapshot.tools.some((t) => t.state.kind === "scan_pending")}
+      {#if items.length > 0 && !snapshot}
         <p class="scan-note" role="status">
-          <Icon name="clock" size={13} />
-          Часть инструментов ещё проверяется — карточки дополнятся по мере сканирования.
+          <Icon name="info" size={13} />
+          Данные о состоянии машины появятся после первого скана — витрина работает по каталогу уже сейчас.
         </p>
       {/if}
     </div>
@@ -475,7 +376,7 @@
 </div>
 
 <style>
-  .manage {
+  .market {
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
@@ -520,27 +421,6 @@
 
   .search input::placeholder {
     color: var(--sp-text-3);
-  }
-
-  .sort {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--sp-2);
-  }
-
-  .sort-label {
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-    white-space: nowrap;
-  }
-
-  .sort select {
-    padding: var(--sp-1) var(--sp-2);
-    border-radius: var(--sp-radius-sm);
-    border: 1px solid var(--sp-border);
-    background: var(--sp-bg-2);
-    color: var(--sp-text-1);
-    font-size: var(--sp-fs-sm);
   }
 
   .content {
@@ -598,6 +478,19 @@
     gap: var(--sp-3);
   }
 
+  .rail-note {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border-faint);
+    border-radius: var(--sp-radius-md);
+  }
+
   fieldset {
     border: none;
     margin: 0;
@@ -632,15 +525,15 @@
     color: var(--sp-text-1);
   }
 
+  .filter-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
   .filter-row input {
     accent-color: var(--sp-accent-strong);
     width: 0.85rem;
     height: 0.85rem;
-  }
-
-  .filter-disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
 
   .filter-label {

@@ -125,10 +125,10 @@ export function listenCheckProgress(
 // Канон: каталог, снапшот, сканы, здоровье (tcx_*)
 // ============================================================
 
-/** Полный каталог инструментов (с расширенными метаданными).
- *  Отдельной tcx-команды пока нет — легаси-команда уже отдаёт всё. */
+/** Каталог STANDALONE Toolchain (tcx_get_catalog): только tools.json,
+ *  без легаси-совместимости Project Creator. */
 export function getCatalog(): Promise<ToolDefinition[]> {
-  return getToolDefinitions();
+  return invoke("tcx_get_catalog");
 }
 
 /** Последний валидный снапшот (мгновенно из кэша; stale-пометка честная). */
@@ -260,6 +260,10 @@ export function mutationRequest(
     confirm_unverified_sources?: boolean;
     confirm_admin_elevation?: boolean;
     version_channel?: "recommended" | "latest" | null;
+    /** Превью плана (tcx_build_plan): подтверждения — чекбоксы, не ошибки. */
+    preview?: boolean;
+    /** Отпечаток одобренного превью (защита от устаревшего плана). */
+    expected_plan_fingerprint?: string | null;
   } = {},
 ): EngineRequest {
   return {
@@ -268,5 +272,7 @@ export function mutationRequest(
     confirm_unverified_sources: options.confirm_unverified_sources ?? false,
     confirm_admin_elevation: options.confirm_admin_elevation ?? false,
     version_channel: options.version_channel ?? null,
+    preview: options.preview ?? false,
+    expected_plan_fingerprint: options.expected_plan_fingerprint ?? null,
   };
 }

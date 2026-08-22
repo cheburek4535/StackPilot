@@ -11,21 +11,26 @@
 //  - отсутствие данных («не проверяли») не приукрашивается.
 
 import type {
+  DetectedInstall,
+  HealthCheckResultV2,
   HealthState,
   InstallSource,
   JobStatus,
   OperationKind,
+  PathScope,
   Phase,
   PlanTask,
+  ProbeLog,
   Provenance,
   ProvenanceKind,
   SelectedSource,
-  TaskAction,
   ToolPlatformCapabilities,
+  ToolScanResult,
   ToolState,
   ToolStateKind,
   VersionAssessment,
 } from "./types";
+import { isRecord } from "./types";
 
 export type InfoTone = "neutral" | "violet" | "cyan" | "blue" | "lime" | "amber" | "red";
 
@@ -109,7 +114,6 @@ const TOOL_STATE_INFO: { [K in ToolState["kind"]]: StateInfo } = {
   docker_managed: { label: "В Docker", tone: "blue", short: "🐳" },
   built_in_system: { label: "Встроен в ОС", tone: "neutral", short: "•" },
   unsupported_platform: { label: "Не поддерживается", tone: "neutral", short: "×" },
-  install_unavailable: { label: "Нет источника установки", tone: "amber", short: "×" },
 };
 
 /** Подпись+тон состояния; неизвестный kind → честное «неизвестно». */
@@ -145,12 +149,123 @@ export function toolStateVersion(state: ToolState): string | null {
     case "installed_healthy":
     case "installed_health_unknown":
     case "installed_unhealthy":
-      return state.version;
+      return state.version || null;
     case "update_available":
-      return state.installed;
+      return state.installed || null;
     default:
       return null;
   }
+}
+
+// ------------------------------------------------------------
+// Версия инструмента по всем уликам (карта/дровер/снапшот)
+// ------------------------------------------------------------
+
+export type VersionDisplay = {
+  /** Текст для показа; никогда не пустая строка при installed=true. */
+  text: string;
+  /** true — версия разобрана; false — сырой вывод, НЕ разобранный парсером. */
+  parsed: boolean;
+};
+
+/**
+ * Показываемая версия установленного инструмента. Приоритет: версия из
+ * состояния → каноническая установка → первая улика с выводом.
+ * Непарсируемая версия показывается КАК СЫРОЙ ВЫВОД (parsed=false) —
+ * молча подставлять пустую строку запрещено контрактом.
+ */
+export function toolVersionDisplay(tool: ToolScanResult | null | undefined): VersionDisplay | null {
+  if (!tool) return null;
+
+  // 1. Версия из презентационного состояния.
+  const fromState = toolStateVersion(tool.state);
+  if (fromState) return { text: fromState, parsed: true };
+
+  const installs: unknown = tool.installs;
+  if (!Array.isArray(installs)) return null;
+
+  // 2. Каноническая установка (бэкенд уже выбрал и объяснил выбор).
+  const canonicalIndex =
+    typeof tool.canonical_install === "number" ? tool.canonical_install : null;
+  const candidates: DetectedInstall[] = installs.filter(isRecord) as unknown as DetectedInstall[];
+  const canonical =
+    canonicalIndex !== null ? candidates[canonicalIndex] ?? null : null;
+  const withOutput =
+    canonical && (canonical.parsed_version || canonical.raw_version)
+      ? canonical
+      : candidates.find((i) => i.parsed_version || i.raw_version) ?? null;
+
+  if (!withOutput) return null;
+  if (withOutput.parsed_version) return { text: withOutput.parsed_version, parsed: true };
+  if (withOutput.raw_version) return { text: withOutput.raw_version, parsed: false };
+  return null;
+}
+
+/**
+ * Полный текст лога одной пробы обнаружения (для <pre> в дровере).
+ */
+export function probeLogText(log: ProbeLog | null | undefined): string {
+  if (!log) return "";
+  const lines: string[] = [];
+  lines.push(`$ ${log.command.join(" ")}`);
+  if (log.timed_out) lines.push("[таймаут: процесс убит]");
+  if (log.not_found) lines.push("[бинарь не найден]");
+  if (log.launch_error) lines.push(`[ошибка запуска] ${log.launch_error}`);
+  if (log.exit_code !== null && log.exit_code !== undefined) {
+    lines.push(`[код выхода] ${log.exit_code}`);
+  }
+  if (log.stdout) lines.push(`--- stdout ---\n${log.stdout}`);
+  if (log.stderr) lines.push(`--- stderr ---\n${log.stderr}`);
+  if (log.duration_ms > 0) lines.push(`[длительность] ${log.duration_ms} мс`);
+  return lines.join("\n");
+}
+
+/** Есть ли развёртываемый лог у пробы. */
+export function probeLogHasContent(log: ProbeLog | null | undefined): boolean {
+  return probeLogText(log).length > 0;
+}
+
+/**
+ * Полный текст лога проверки здоровья: команда, код выхода, таймаут,
+ * stdout/stderr целиком (в пределах санитизации бэкенда).
+ */
+export function healthCheckLogText(check: HealthCheckResultV2): string {
+  const lines: string[] = [];
+  lines.push(
+    `$ ${(check.command ?? []).join(" ") || "(команда неизвестна)"}`,
+  );
+  if (check.timed_out) lines.push("[таймаут: проверка не уложилась, процесс убит]");
+  if (check.process_failed && !check.timed_out) {
+    lines.push("[процесс не выполнился — это «не смогли проверить», а не провал условия]");
+  }
+  if (check.exit_code !== null && check.exit_code !== undefined) {
+    lines.push(`[код выхода] ${check.exit_code}`);
+  }
+  lines.push(`[итог] ${check.passed ? "пройдено" : "не пройдено"}`);
+  if (check.stdout) lines.push(`--- stdout ---\n${check.stdout}`);
+  if (check.stderr) lines.push(`--- stderr ---\n${check.stderr}`);
+  if (!check.stdout && !check.stderr) lines.push("--- вывода нет ---");
+  lines.push(`[длительность] ${check.duration_ms} мс`);
+  return lines.join("\n");
+}
+
+// ------------------------------------------------------------
+// Классификация PATH (слои правды)
+// ------------------------------------------------------------
+
+const PATH_SCOPE_INFO: { [K in PathScope["kind"]]: StateInfo } = {
+  process_path: { label: "в PATH процесса", tone: "lime" },
+  persisted_path_only: { label: "только в постоянном PATH", tone: "amber" },
+  outside_path: { label: "вне PATH", tone: "neutral" },
+};
+
+/** Подпись слоя доступности установки; null/мусор → «нет данных». */
+export function pathScopeInfo(scope: PathScope | null | undefined): StateInfo {
+  if (!scope || typeof scope !== "object") {
+    return { label: "PATH: нет данных", tone: "neutral" };
+  }
+  const known = PATH_SCOPE_INFO[scope.kind as PathScope["kind"]];
+  return known ?? { label: "PATH: нет данных", tone: "neutral" };
 }
 
 // ------------------------------------------------------------
@@ -409,24 +524,154 @@ export function phaseLabel(phase: Phase): string {
   }
 }
 
-/** Подпись действия канонической задачи (экран плана). */
-export function taskActionLabel(task: PlanTask): string {
-  const action: TaskAction = task.action;
-  if (typeof action === "string") {
-    return action === "repair_path" ? "Ремонт PATH" : "Проверка здоровья";
+/** Подпись причины noop; неизвестная/отсутствующая причина — честный текст. */
+export function noopReasonLabel(reason: unknown): string {
+  if (typeof reason === "string") {
+    return reason === "docker_managed"
+      ? "Управляется Docker (без действий)"
+      : "Без действий (причина неизвестна)";
   }
-  if ("install_new" in action) return "Установка";
-  if ("update" in action) {
-    const target = action.update.target_version;
-    return target ? `Обновление до ${target}` : "Обновление";
+  if (!isRecord(reason)) {
+    return "Без действий (причина не указана)";
   }
-  // NoOp — всегда правдивая причина.
-  const reason = action.noop;
-  if (reason === "docker_managed") return "Управляется Docker (без действий)";
-  if ("already_installed" in reason) return `Уже установлен (${reason.already_installed.version})`;
-  if ("update_unavailable" in reason) return `Обновление недоступно (${reason.update_unavailable.version})`;
-  return "Без действий";
+  const keys = Object.keys(reason);
+  if (keys.length !== 1) return "Без действий (причина не указана)";
+  switch (keys[0]) {
+    case "already_installed": {
+      const version = isRecord(reason.already_installed)
+        ? reason.already_installed.version
+        : null;
+      return typeof version === "string" && version
+        ? `Уже установлен (${version})`
+        : "Уже установлен";
+    }
+    case "update_unavailable": {
+      const version = isRecord(reason.update_unavailable)
+        ? reason.update_unavailable.version
+        : null;
+      return typeof version === "string" && version
+        ? `Обновление недоступно (${version})`
+        : "Обновление недоступно";
+    }
+    default:
+      // Неизвестная причина НЕ угадывается — честное «неизвестно».
+      return "Без действий (неизвестная причина)";
+  }
 }
+
+/**
+ * Подпись действия канонической задачи (экран плана).
+ * Граница IPC: task.action может отсутствовать/быть мусором — тогда
+ * «Неизвестное действие», а НЕ краш «in operator … in undefined».
+ */
+export function taskActionLabel(task: PlanTask | null | undefined): string {
+  if (!isRecord(task)) return "Неизвестное действие";
+  const action: unknown = task.action;
+
+  if (typeof action === "string") {
+    if (action === "repair_path") return "Ремонт PATH";
+    if (action === "health_check") return "Проверка здоровья";
+    return "Неизвестное действие";
+  }
+  if (!isRecord(action)) return "Неизвестное действие";
+
+  const keys = Object.keys(action);
+  // Малиформация (0 или >1 ключей) — безопасное «неизвестно».
+  if (keys.length !== 1) return "Неизвестное действие";
+
+  switch (keys[0]) {
+    case "install_new": {
+      const payload = action.install_new;
+      const target = isRecord(payload) ? payload.target_version : null;
+      return typeof target === "string" && target ? `Установка (${target})` : "Установка";
+    }
+    case "update": {
+      const payload = action.update;
+      const target = isRecord(payload) ? payload.target_version : null;
+      return typeof target === "string" && target ? `Обновление до ${target}` : "Обновление";
+    }
+    case "noop":
+    case "no_op":
+      return noopReasonLabel(action[keys[0]]);
+    default:
+      return "Неизвестное действие";
+  }
+}
+
+/** true — задача требует действий (не noop и не малиформированная). */
+export function planTaskIsActionable(task: unknown): boolean {
+  if (!isRecord(task)) return false;
+  const action = task.action;
+  if (typeof action === "string") return action === "repair_path" || action === "health_check";
+  if (!isRecord(action)) return false;
+  const keys = Object.keys(action);
+  return keys.length === 1 && (keys[0] === "install_new" || keys[0] === "update");
+}
+
+/** true — задача «без действий» (noop любого вида, даже без причины).
+ *  Ключ no_op — наследие старой сериализации (персистентные записи). */
+export function planTaskIsNoop(task: unknown): boolean {
+  if (!isRecord(task)) return false;
+  const action = task.action;
+  return (
+    isRecord(action) &&
+    Object.keys(action).length === 1 &&
+    ("noop" in action || "no_op" in action)
+  );
+}
+
+/**
+ * Полное описание предупреждения плана. Тотальная функция: неизвестный
+ * вариант даёт безопасный текст, а не краш на `.tool_id` от undefined.
+ * `kind` — машиночитаемый вариант (для подсчётов/подтверждений UI:
+ * строковое сравнение текста запрещено — смена подписи не должна
+ * ломать гейтинг «источники без суммы»).
+ */
+export function planWarningInfo(
+  warning: unknown,
+): { kind: PlanWarningKind; tone: "amber" | "red"; text: string } {
+  if (!isRecord(warning)) {
+    return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+  }
+  const keys = Object.keys(warning);
+  if (keys.length !== 1) {
+    return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+  }
+  const payload = warning[keys[0]];
+  const toolId = isRecord(payload) && typeof payload.tool_id === "string" ? payload.tool_id : "?";
+  switch (keys[0]) {
+    case "unverified_source": {
+      const sourceId =
+        isRecord(payload) && typeof payload.source_id === "string" ? payload.source_id : "?";
+      return {
+        kind: "unverified_source",
+        tone: "amber",
+        text: `${toolId}: источник «${sourceId}» без контрольной суммы — целостность загрузки проверить нельзя.`,
+      };
+    }
+    case "admin_required":
+      return {
+        kind: "admin_required",
+        tone: "amber",
+        text: `${toolId}: установка потребует повышения прав (UAC).`,
+      };
+    case "reinstall_on_broken":
+      return {
+        kind: "reinstall_on_broken",
+        tone: "red",
+        text: `${toolId}: инструмент сломан — будет выполнена переустановка.`,
+      };
+    default:
+      return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+  }
+}
+
+/** Машиночитаемые варианты предупреждений плана. */
+export type PlanWarningKind =
+  | "unverified_source"
+  | "admin_required"
+  | "reinstall_on_broken"
+  | "unknown";
 
 // ------------------------------------------------------------
 // Скан: фазы и терминальные состояния (PascalCase строки бэкенда)

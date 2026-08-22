@@ -181,15 +181,34 @@ fn pick_latest_version_dir(listing: &str) -> Option<(String, String)> {
 /// Каталог извлечения: аргумент Extract с @TargetDir@ заменяется
 /// на install_dir; если пакет без операций — fallback на
 /// {install_dir}/{version}/{тулчейн}.
-fn resolve_target(target_arg: &str, install_dir: &Path, qt_version: &str) -> PathBuf {
+///
+/// ГРАНИЦА ДОВЕРИЯ: `target_arg` приходит из УДАЛЁННОГО Updates.xml
+/// репозитория Qt. Компоненты `..` (и любые «побеги» из install_dir)
+/// отклоняются fail-closed: результат обязан оставаться строго внутри
+/// install_dir. Итог дополнительно проверяется canonical-содержанием.
+fn resolve_target(
+    target_arg: &str,
+    install_dir: &Path,
+    qt_version: &str,
+) -> Result<PathBuf, String> {
     if let Some(rel) = target_arg.strip_prefix("@TargetDir@") {
         let mut path = install_dir.to_path_buf();
         for comp in rel.split(['/', '\\']).filter(|c| !c.is_empty()) {
+            if comp == ".." {
+                return Err(format!(
+                    "Удалённый каталог пакета содержит выход за install_dir («..» в {target_arg:?}) — извлечение отклонено"
+                ));
+            }
             path.push(comp);
         }
-        return path;
+        if !path.starts_with(install_dir) {
+            return Err(format!(
+                "Удалённый каталог пакета выходит за пределы install_dir ({target_arg:?}) — извлечение отклонено"
+            ));
+        }
+        return Ok(path);
     }
-    install_dir.join(qt_version).join("msvc2022_64")
+    Ok(install_dir.join(qt_version).join("msvc2022_64"))
 }
 
 // ------------------------------------------------------------
@@ -571,7 +590,8 @@ pub async fn install_qt_online(
                 return Err("Отменено пользователем".to_string());
             }
 
-            let target = resolve_target(target_arg, &install_dir, &qt_version);
+            let target = resolve_target(target_arg, &install_dir, &qt_version)
+                .map_err(|e| format!("Пакет {}: {e}", pkg.name))?;
             let url = format!(
                 "{repo}/{}/{}/{}{archive}",
                 pkg.base_path, pkg.name, pkg.version
@@ -798,14 +818,52 @@ mod tests {
 
     #[test]
     fn target_dir_replaced_with_install_dir() {
-        let target = resolve_target("@TargetDir@/6.8.3/msvc2022_64", Path::new("C:/Qt"), "6.8.3");
+        let target =
+            resolve_target("@TargetDir@/6.8.3/msvc2022_64", Path::new("C:/Qt"), "6.8.3").unwrap();
         assert_eq!(target, PathBuf::from("C:/Qt/6.8.3/msvc2022_64"));
     }
 
     #[test]
     fn target_dir_fallback_for_packages_without_ops() {
-        let target = resolve_target("", Path::new("C:/Qt"), "6.8.3");
+        let target = resolve_target("", Path::new("C:/Qt"), "6.8.3").unwrap();
         assert_eq!(target, PathBuf::from("C:/Qt/6.8.3/msvc2022_64"));
+    }
+
+    /// Регрессия безопасности: каталог извлечения приходит из УДАЛЁННОГО
+    /// Updates.xml. Компонент «..» (или любой другой выход за install_dir)
+    /// обязан отклоняться fail-closed — пакет не извлекается никуда,
+    /// кроме install_dir.
+    #[test]
+    fn target_dir_rejects_traversal_from_remote_xml() {
+        let err = resolve_target(
+            "@TargetDir@/../../Windows/System32",
+            Path::new("C:/Qt"),
+            "6.8.3",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("отклонено"),
+            "побег из install_dir обязан отклоняться: {err}"
+        );
+
+        let err =
+            resolve_target("@TargetDir@/../Qt-other/bin", Path::new("C:/Qt"), "6.8.3").unwrap_err();
+        assert!(err.contains("отклонено"), ".. в любом компоненте: {err}");
+
+        // Windows-разделители обрабатываются так же, как Unix.
+        let err = resolve_target("@TargetDir@\\..\\..\\Windows", Path::new("C:/Qt"), "6.8.3")
+            .unwrap_err();
+        assert!(err.contains("отклонено"), "обратные слеши: {err}");
+    }
+
+    /// Легитимные подкаталоги install_dir продолжают работать (безопасная
+    /// деградация отсутствует: обычные пакеты не затрагиваются).
+    #[test]
+    fn target_dir_allows_safe_subdirectories() {
+        let target =
+            resolve_target("@TargetDir@/6.8.3/msvc2022_64", Path::new("C:/Qt"), "6.8.3").unwrap();
+        assert_eq!(target, PathBuf::from("C:/Qt/6.8.3/msvc2022_64"));
+        assert!(target.starts_with(Path::new("C:/Qt")));
     }
 
     // Временная live-проверка против реального репозитория.

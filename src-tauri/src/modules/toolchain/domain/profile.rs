@@ -257,13 +257,15 @@ pub fn build_profile(
     elevation_supported: bool,
     now: String,
 ) -> EnvironmentProfile {
-    // 1. Разрешение требований — существующий движок (Project Creator
-    //    совместимость по построению): winget первым, языки → фреймворки →
-    //    тулы → флаги, dual-docker только по явному opt-in.
+    // 1. Разрешение требований — существующий движок в STANDALONE-режиме
+    //    (winget первым, языки → фреймворки → тулы → флаги). Docker-
+    //    инструменты мастера НЕ прячутся за opt-in: в standalone Toolchain
+    //    postgresql/redis/mongodb/kafka/grafana/mysql — обычные локальные
+    //    требования, Docker остаётся рекомендацией в метаданных каталога.
     //    Логика разрешения НЕ дублируется: канонический запрос кормит
     //    её через явное обратное преобразование.
     let legacy = request.to_project_requirements();
-    let resolved_ids = reqs::resolve(&legacy);
+    let resolved_ids = reqs::resolve_standalone(&legacy);
 
     // 2. Замыкание зависимостей: bundled-хосты + заявленные зависимости.
     let closure_ids = dependency_closure(&resolved_ids, definitions);
@@ -322,33 +324,14 @@ pub fn build_profile(
             .unwrap_or_default();
     }
 
-    // 4. Docker-группы: wizard-docker инструменты выбора.
-    let optional_docker_ids = reqs::docker_optional_tool_ids(&legacy);
-    let mut optional = Vec::new();
-    let mut docker_managed = Vec::new();
-    for id in &optional_docker_ids {
-        let Some(def) = definitions.iter().find(|d| &d.id == id) else {
-            continue;
-        };
-        // Локальную установку предлагать можно только там, где есть источники.
-        if !def.installable() {
-            continue;
-        }
-        optional.push(profile_tool(def, os));
-    }
-    // Взгляд «режим исполнения»: opted-in тоже docker-managed по природе,
-    // хотя локально они уже попали в required.
-    let mut docker_view: Vec<String> = optional_docker_ids.clone();
-    for id in &request.local_infra_tools {
-        if reqs::is_dual_tool(id, definitions) && !docker_view.contains(id) {
-            docker_view.push(id.clone());
-        }
-    }
-    for id in &docker_view {
-        if let Some(def) = definitions.iter().find(|d| &d.id == id) {
-            docker_managed.push(profile_tool(def, os));
-        }
-    }
+    // 4. Docker в standalone — ТОЛЬКО рекомендация/альтернатива из
+    //    метаданных каталога (ToolExtendedMetadata.docker → capability
+    //    docker_alternative_available). Семантика docker_optional_
+    //    requirements / is_dual_tool Project Creator сюда НЕ переносится:
+    //    групп optional/docker_managed профиль больше не наполняет,
+    //    поля остаются в сериализации для совместимости старых кэшей.
+    let optional: Vec<ProfileTool> = Vec::new();
+    let docker_managed: Vec<ProfileTool> = Vec::new();
 
     // 5. Конфликты — только явные заявления каталога внутри замыкания.
     let closure_set: std::collections::HashSet<&str> =
@@ -724,33 +707,25 @@ mod tests {
     }
 
     #[test]
-    fn postgresql_redis_default_to_optional_docker_not_required() {
+    fn postgresql_redis_are_required_locally_without_opt_in() {
         let defs = crate::modules::toolchain::defs::load_definitions();
         let mut req = empty_reqs();
         req.tools = vec!["postgresql".into(), "redis".into()];
 
         let profile = build_profile(&canon(&req), &defs, "windows", true, String::new());
 
-        let optional_ids: Vec<&str> = profile
-            .optional
-            .iter()
-            .map(|t| t.tool_id.as_str())
-            .collect();
-        assert!(optional_ids.contains(&"postgresql") && optional_ids.contains(&"redis"));
-        assert!(
-            !profile.required.iter().any(|t| t.tool_id == "postgresql"),
-            "без opt-in postgresql НЕ обязателен локально"
-        );
-        assert!(
-            !profile.required.iter().any(|t| t.tool_id == "redis"),
-            "без opt-in redis НЕ обязателен локально"
-        );
+        // STANDALONE: docker-инструменты — обычные локальные требования.
+        // Гейта «только через local_infra_tools» больше нет, а группы
+        // optional/docker_managed (семантика Project Creator) пусты:
+        // Docker остаётся рекомендацией в метаданных каталога.
         for id in ["postgresql", "redis"] {
             assert!(
-                profile.docker_managed.iter().any(|t| t.tool_id == id),
-                "{id} остаётся docker-managed в режиме исполнения"
+                profile.required.iter().any(|t| t.tool_id == id),
+                "{id} обязан быть required локально без opt-in"
             );
         }
+        assert!(profile.optional.is_empty());
+        assert!(profile.docker_managed.is_empty());
     }
 
     #[test]
@@ -764,23 +739,24 @@ mod tests {
 
         assert!(profile.required.iter().any(|t| t.tool_id == "postgresql"));
         assert!(profile.required.iter().any(|t| t.tool_id == "redis"));
+        // Эхо явного выбора пользователя сохраняется в профиле.
         assert_eq!(profile.local_alternatives.len(), 2);
-        // Опциональная секция пустеет: оба инструмента уже обязательны.
-        assert!(profile.optional.is_empty());
     }
 
     #[test]
     fn manual_only_tool_never_enters_required_group() {
+        // android — manual-only движок/SDK в STANDALONE-каталоге
+        // (unity/unreal/godot переехали в легаси-совместимость).
         let defs = crate::modules::toolchain::defs::load_definitions();
         let mut req = empty_reqs();
-        req.frameworks = vec!["unity".into()];
+        req.frameworks = vec!["android".into()];
 
         let profile = build_profile(&canon(&req), &defs, "windows", true, String::new());
 
-        assert!(profile.manual.iter().any(|t| t.tool_id == "unity"));
-        assert!(!profile.required.iter().any(|t| t.tool_id == "unity"));
+        assert!(profile.manual.iter().any(|t| t.tool_id == "android"));
+        assert!(!profile.required.iter().any(|t| t.tool_id == "android"));
         // Из замыкания выбор не теряется — он просто классифицирован manual.
-        assert!(profile.dependency_closure.contains(&"unity".to_string()));
+        assert!(profile.dependency_closure.contains(&"android".to_string()));
     }
 
     // ------------------------------------------------------------
@@ -904,9 +880,11 @@ mod tests {
         );
     }
 
+    /// ЛЕГАСИ: фреймворк unity мастера резолвится через объединённый
+    /// каталог и попадает в manual (Project Creator совместимость).
     #[test]
-    fn real_catalog_manual_engine_is_classified_as_manual() {
-        let defs = crate::modules::toolchain::defs::load_definitions();
+    fn legacy_catalog_manual_engine_is_classified_as_manual() {
+        let defs = crate::modules::toolchain::defs::load_merged_definitions();
         let mut reqs = empty_reqs();
         reqs.frameworks = vec!["unity".to_string()];
 
@@ -918,6 +896,28 @@ mod tests {
             profile.manual
         );
         assert!(!profile.required.iter().any(|t| t.tool_id == "unity"));
+    }
+
+    /// STANDALONE: unity/unreal/godot удалены из каталога — профиль
+    /// честно сообщает unknown_tool, а не подставляет определение.
+    #[test]
+    fn standalone_catalog_does_not_know_legacy_engines() {
+        let defs = crate::modules::toolchain::defs::load_definitions();
+        assert!(
+            !defs.iter().any(|d| d.id == "unity"),
+            "unity не входит в standalone-каталог"
+        );
+        assert!(!defs.iter().any(|d| d.id == "unreal"));
+        assert!(!defs.iter().any(|d| d.id == "godot"));
+
+        let mut reqs = empty_reqs();
+        reqs.frameworks = vec!["godot".to_string()];
+        let profile = build_profile(&canon(&reqs), &defs, "windows", true, String::new());
+        assert!(profile.warnings.iter().any(|w| w.code == "unknown_tool"));
+        assert!(
+            !profile.required.iter().any(|t| t.tool_id == "godot"),
+            "godot не разрешается в standalone-требование"
+        );
     }
 
     #[test]
@@ -939,44 +939,40 @@ mod tests {
     }
 
     // ------------------------------------------------------------
-    // Docker/local infra поведение (Project Creator совместимость)
+    // Docker/local infra поведение: STANDALONE-семантика
     // ------------------------------------------------------------
 
+    /// STANDALONE: postgresql ставится локально без opt-in; docker-группы
+    /// (семантика Project Creator) не наполняются никогда.
     #[test]
-    fn dual_docker_tool_defaults_to_optional_docker_managed() {
+    fn standalone_docker_tool_is_required_and_docker_groups_stay_empty() {
         let defs = crate::modules::toolchain::defs::load_definitions();
         let mut reqs = empty_reqs();
         reqs.tools = vec!["postgresql".to_string()];
-
-        let profile = build_profile(&canon(&reqs), &defs, "windows", true, String::new());
-
-        assert!(profile.optional.iter().any(|t| t.tool_id == "postgresql"));
-        assert!(profile
-            .docker_managed
-            .iter()
-            .any(|t| t.tool_id == "postgresql"));
-        assert!(
-            !profile.required.iter().any(|t| t.tool_id == "postgresql"),
-            "без opt-in postgresql НЕ обязателен локально"
-        );
-    }
-
-    #[test]
-    fn local_infra_opt_in_moves_tool_to_required() {
-        let defs = crate::modules::toolchain::defs::load_definitions();
-        let mut reqs = empty_reqs();
-        reqs.tools = vec!["postgresql".to_string()];
-        reqs.local_infra_tools = vec!["postgresql".to_string()];
 
         let profile = build_profile(&canon(&reqs), &defs, "windows", true, String::new());
 
         assert!(profile.required.iter().any(|t| t.tool_id == "postgresql"));
-        assert_eq!(profile.local_alternatives, vec!["postgresql".to_string()]);
-        // Взгляд «режим исполнения» сохраняется.
-        assert!(profile
-            .docker_managed
-            .iter()
-            .any(|t| t.tool_id == "postgresql"));
+        assert!(profile.optional.is_empty());
+        assert!(profile.docker_managed.is_empty());
+        // Docker остаётся заявленной альтернативой в метаданных каталога
+        // (попадает в capabilities, а не в режим исполнения задачи).
+        let def = defs.iter().find(|d| d.id == "postgresql").unwrap();
+        assert!(def.extended.docker.is_some());
+    }
+
+    /// Эхо явного выбора local_infra_tools сохраняется в профиле.
+    #[test]
+    fn local_alternatives_echo_preserved_in_profile() {
+        let defs = crate::modules::toolchain::defs::load_definitions();
+        let mut reqs = empty_reqs();
+        reqs.tools = vec!["mysql".to_string()];
+        reqs.local_infra_tools = vec!["mysql".to_string()];
+
+        let profile = build_profile(&canon(&reqs), &defs, "windows", true, String::new());
+
+        assert!(profile.required.iter().any(|t| t.tool_id == "mysql"));
+        assert_eq!(profile.local_alternatives, vec!["mysql".to_string()]);
     }
 
     // ------------------------------------------------------------
@@ -1072,6 +1068,8 @@ mod tests {
             version_assessment: VersionAssessment::Unknown,
             state,
             error: None,
+            canonical_install: None,
+            version_selected_because: String::new(),
             duration_ms: 0,
         };
 

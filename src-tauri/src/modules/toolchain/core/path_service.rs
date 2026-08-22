@@ -119,15 +119,43 @@ fn resolve_path_entry(raw: &str) -> String {
 /// Идемпотентно: уже присутствующие записи не дублируются
 /// (нормализованное сравнение). glob-записи (`PostgreSQL/*/bin`)
 /// резолвятся в конкретный каталог.
+///
+/// Валидация: в PATH уходят ТОЛЬКО абсолютные каталоги (после раскрытия
+/// %VAR% и glob). Относительная запись — мусор в реестре/rc-файле:
+/// она отклоняется с ошибкой, а не молча пишется.
 pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
     let platform = platforms::current_platform();
     let existing = platform.read_user_path().await.unwrap_or_default();
-    let resolved: Vec<String> = dirs.iter().map(|d| resolve_path_entry(d)).collect();
+    let mut resolved: Vec<String> = Vec::new();
+    for raw in dirs {
+        let entry = resolve_path_entry(raw);
+        if !entry.trim().is_empty() && !is_absolute_entry(&entry) {
+            return Err(format!(
+                "Запись PATH «{raw}» не является абсолютным каталогом — PATH не изменён"
+            ));
+        }
+        resolved.push(entry);
+    }
     let merged = merge_dirs(&existing, &resolved);
     if merged == existing {
         return Ok(()); // менять нечего — не трогаем реестр/rc-файл
     }
     platform.write_user_path(&merged).await
+}
+
+/// Абсолютный ли это путь? На Windows — с дисководом или UNC; на Unix —
+/// с ведущим '/'. Относительные записи в постоянный PATH не пишутся.
+fn is_absolute_entry(entry: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let bytes = entry.as_bytes();
+        (bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic())
+            || entry.starts_with("\\\\")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        entry.starts_with('/')
+    }
 }
 
 /// Удаляет из пользовательского PATH ровно перечисленные записи
@@ -271,6 +299,38 @@ mod tests {
         assert_eq!(
             expand_env_vars("C:\\Program Files\\nodejs"),
             "C:\\Program Files\\nodejs"
+        );
+    }
+
+    #[test]
+    fn absolute_entry_detection_matches_platform() {
+        #[cfg(target_os = "windows")]
+        {
+            assert!(is_absolute_entry("C:\\Program Files\\nodejs"));
+            assert!(is_absolute_entry("D:/tools"));
+            assert!(is_absolute_entry("\\\\server\\share\\bin"));
+            assert!(!is_absolute_entry("bin"));
+            assert!(!is_absolute_entry(".\\bin"));
+            assert!(!is_absolute_entry("Program Files/nodejs"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(is_absolute_entry("/opt/node/bin"));
+            assert!(!is_absolute_entry("opt/node/bin"));
+            assert!(!is_absolute_entry("./bin"));
+        }
+    }
+
+    /// Регрессия безопасности PATH: относительная запись — мусор
+    /// в реестре/rc-файле. add_to_user_path обязана отклонять её
+    /// ДО записи (а не молча писать).
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn add_to_user_path_rejects_relative_entries() {
+        let err = add_to_user_path(&["bin".to_string()]).await.unwrap_err();
+        assert!(
+            err.contains("абсолютным каталогом"),
+            "относительная запись отклоняется: {err}"
         );
     }
 }

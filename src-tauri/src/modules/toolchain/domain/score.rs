@@ -3,9 +3,9 @@
 // ============================================================
 // ДОКУМЕНТИРОВАННАЯ ФОРМУЛА (контракт §7):
 //
-//   Знаменатель — только ТРЕБУЕМЫЕ и ПРИМЕНИМЫЕ инструменты:
-//     required = инструмент нужен для работы (не optional/docker/manual/
-//                built-in/bundled-missing) И применим к платформе.
+//   Знаменатель — только ПРИМЕНИМЫЕ инструменты каталога:
+//     applicable = инструмент применим к платформе и не excluded
+//                  (не optional/docker/manual/built-in/bundled-missing).
 //
 //   Вклад каждого инструмента в числитель (в сотых долях):
 //     healthy  (InstalledHealthy)            → 100
@@ -49,7 +49,6 @@ fn classify(result: &ToolScanResult) -> (u64, bool) {
         ToolState::DockerManaged => (0, false),
         ToolState::ManualInstall { .. } => (0, false),
         ToolState::BuiltInSystem => (0, false),
-        ToolState::InstallUnavailable => (0, false),
         ToolState::UnsupportedPlatform => (0, false),
 
         // Bundled-инструмент без носителя (npm без node) — не требование.
@@ -74,7 +73,7 @@ pub fn compute_score(tools: &[ToolScanResult]) -> ScoreSummary {
         earned += credit;
 
         match &result.state {
-            ToolState::ScanPending => summary.scan_failed += 1,
+            ToolState::ScanPending => summary.scan_pending += 1,
             ToolState::ScanFailed { .. } => summary.scan_failed += 1,
             ToolState::Missing => {
                 if result.bundled_with.is_some() {
@@ -85,18 +84,17 @@ pub fn compute_score(tools: &[ToolScanResult]) -> ScoreSummary {
                 ) {
                     summary.not_applicable += 1;
                 } else {
-                    summary.missing_required += 1;
+                    summary.missing += 1;
                 }
             }
-            ToolState::PathBroken { .. } => summary.broken_required += 1,
-            ToolState::InstalledUnhealthy { .. } => summary.unhealthy_required += 1,
+            ToolState::PathBroken { .. } => summary.broken += 1,
+            ToolState::InstalledUnhealthy { .. } => summary.unhealthy += 1,
             ToolState::InstalledHealthUnknown { .. } => summary.unchecked += 1,
-            ToolState::InstalledHealthy { .. } => summary.healthy_required += 1,
+            ToolState::InstalledHealthy { .. } => summary.healthy += 1,
             ToolState::UpdateAvailable { .. } => summary.degraded += 1,
             ToolState::DockerManaged
             | ToolState::ManualInstall { .. }
-            | ToolState::BuiltInSystem
-            | ToolState::InstallUnavailable => summary.optional += 1,
+            | ToolState::BuiltInSystem => summary.optional += 1,
             ToolState::UnsupportedPlatform => summary.not_applicable += 1,
         }
 
@@ -147,6 +145,8 @@ mod tests {
             version_assessment: VersionAssessment::Unknown,
             state,
             error: None,
+            canonical_install: None,
+            version_selected_because: String::new(),
             duration_ms: 0,
         }
     }
@@ -177,7 +177,7 @@ mod tests {
         let summary = compute_score(&tools);
         assert_eq!(summary.score, 100);
         assert_eq!(summary.counted_tools, 2);
-        assert_eq!(summary.healthy_required, 2);
+        assert_eq!(summary.healthy, 2);
     }
 
     #[test]
@@ -229,8 +229,8 @@ mod tests {
         ];
         let summary = compute_score(&tools);
         assert_eq!(summary.score, 0);
-        assert_eq!(summary.broken_required, 1);
-        assert_eq!(summary.unhealthy_required, 1);
+        assert_eq!(summary.broken, 1);
+        assert_eq!(summary.unhealthy, 1);
     }
 
     #[test]
@@ -290,16 +290,15 @@ mod tests {
             result("d", ToolState::DockerManaged),
             result("m", ToolState::ManualInstall { reason: "x".into() }),
             result("s", ToolState::BuiltInSystem),
-            result("i", ToolState::InstallUnavailable),
         ];
         let summary = compute_score(&tools);
         assert_eq!(summary.score, 0);
         assert_eq!(summary.counted_tools, 0);
-        assert_eq!(summary.optional, 4);
+        assert_eq!(summary.optional, 3);
     }
 
     #[test]
-    fn scan_failed_never_counts_as_failure() {
+    fn scan_failed_and_pending_never_count_as_failure() {
         let tools = vec![
             result(
                 "f",
@@ -311,7 +310,10 @@ mod tests {
         ];
         let summary = compute_score(&tools);
         assert_eq!(summary.counted_tools, 0, "неизвестное исключено из формулы");
-        assert_eq!(summary.scan_failed, 2);
+        // Регрессия «частичный отчёт завышает scan_failed»: инструмент,
+        // до которого скан не дошёл (дедлайн/отмена), — НЕ «сбой опроса».
+        assert_eq!(summary.scan_failed, 1);
+        assert_eq!(summary.scan_pending, 1);
     }
 
     #[test]

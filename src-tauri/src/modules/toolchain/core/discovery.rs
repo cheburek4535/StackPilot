@@ -33,6 +33,21 @@ const PROBE_TIMEOUT_SECS: u64 = 10;
 // Запуск процессов
 // ------------------------------------------------------------
 
+/// Максимум байт захватываемого вывода одной команды (легаси-слой
+/// discovery/health): шумный или сломанный бинарь не должен выедать
+/// память процесса. Значение достаточно для версий/health-строк.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+
+/// Обрезает захваченные байты до лимита (по границе байт; lossy-чтение
+/// вызывающего остаётся валидным UTF-8-текстом).
+fn cap_bytes(mut data: Vec<u8>) -> Vec<u8> {
+    if data.len() > MAX_CAPTURE_BYTES {
+        data.truncate(MAX_CAPTURE_BYTES);
+        data.extend_from_slice("...[вывод обрезан]".as_bytes());
+    }
+    data
+}
+
 /// Запускает команду и ждёт stdout.
 /// Возвращает None, если: таймаут, не удалось запустить,
 /// или процесс завершился с ненулевым кодом (такое бывает,
@@ -55,7 +70,8 @@ pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String
     .ok()?;
 
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let capped = cap_bytes(output.stdout);
+        let stdout = String::from_utf8_lossy(&capped);
         Some(stdout.trim().to_string())
     } else {
         None
@@ -367,6 +383,25 @@ mod tests {
             .into_iter()
             .find(|d| d.id == id)
             .unwrap_or_else(|| panic!("инструмента {id} нет в tools.json"))
+    }
+
+    /// Шумный/сломанный бинарь не должен выедать память процесса:
+    /// захваченный вывод ограничен сверху (защита от бесконечного потока).
+    #[test]
+    fn capture_output_is_capped() {
+        let small = cap_bytes(vec![b'x'; 1000]);
+        assert_eq!(small.len(), 1000, "малый вывод не трогается");
+
+        let big = cap_bytes(vec![b'x'; MAX_CAPTURE_BYTES * 3]);
+        assert!(
+            big.len() <= MAX_CAPTURE_BYTES + 64,
+            "вывод обязан быть ограничен: {}",
+            big.len()
+        );
+        assert!(
+            String::from_utf8_lossy(&big).contains("обрезан"),
+            "пометка об обрезании видна"
+        );
     }
 
     #[test]

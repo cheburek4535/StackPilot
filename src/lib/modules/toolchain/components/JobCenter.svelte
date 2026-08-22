@@ -118,7 +118,7 @@
           {#each activeJob.plan.tasks.filter((t) => engineTaskStatusKind(t.status) === "running") as t (t.task_id)}
             <p class="row-phase">
               {t.display}:{" "}
-              {typeof t.status === "object" && "running" in t.status
+              {t.status !== null && typeof t.status === "object" && "running" in t.status
                 ? phaseLabel(t.status.running.phase)
                 : "выполняется…"}
             </p>

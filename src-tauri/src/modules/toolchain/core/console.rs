@@ -112,6 +112,40 @@ pub fn cleanup_tracked_temp_files() {
     }
 }
 
+/// Возраст, после которого осиротевшие временные файлы считаются мусором.
+/// Крэш/убийство процесса посреди установки не может вызвать
+/// cleanup_tracked_temp_files — зачистка переживает перезапуск здесь.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Убирает осиротевшие временные файлы задания (tc-* в системном temp):
+/// результат крэша/убийства процесса. Вызывается ОДИН раз при старте
+/// приложения. Свежие файлы (в т.ч. другого живого процесса) не трогаются.
+pub fn sweep_stale_temp_files() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("tc-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let too_old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > STALE_TEMP_AGE);
+        if too_old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 // ------------------------------------------------------------
 // Результат процесса
 // ------------------------------------------------------------
@@ -376,6 +410,17 @@ pub fn ps_quote(value: &str) -> String {
 /// зависшего сервера; большие инсталляторы (MSVC) в него укладываются.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Жёсткий лимит размера одного скачиваемого установщика (4 ГБ):
+/// самый крупный официальный инсталлятор каталога (MSVC Build Tools,
+/// Android SDK) укладывается; «бесконечный» поток от сломанного или
+/// враждебного сервера обрывается вместо бесконечного роста на диске.
+const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Предел автоматических редиректов HttpClient (по умолчанию в .NET — 50):
+/// явный и меньший предел. Даунгрейд https→http редиректом блокируется
+/// самим HttpClientHandler (политика .NET), http→https разрешён.
+const MAX_REDIRECTS: u32 = 5;
+
 /// Проверяет URL источника перед скачиванием: только https (кроме
 /// localhost для тестов/оффлайн-стендов). http-скачивание установщика —
 /// открытая дверь MITM; file:// и прочие схемы не поддерживаются.
@@ -412,26 +457,20 @@ pub fn validate_download_url(url: &str) -> Result<(), String> {
 /// скачивание завершается предупреждением `tc:warn unverified` —
 /// честная пометка «целостность не проверялась», а не мнимое
 /// «проверено».
-pub async fn download(
-    url: &str,
-    dest: &Path,
-    expected_sha256: Option<&str>,
-    index: usize,
-    total: usize,
-    task_id: &str,
-    tool_id: &str,
-    session_id: &str,
-    sink: &Arc<dyn EventSink>,
-    abort: Arc<AtomicBool>,
-) -> Result<(), String> {
-    validate_download_url(url)?;
-
-    let script = format!(
+/// PowerShell-скрипт скачивания: https-валидация уже прошла; здесь —
+/// редиректы (ограничены), таймаут, прогресс tc:dl и ЖЁСТКИЙ лимит
+/// размера. Вынесен отдельно, чтобы тесты могли проверить инварианты
+/// без сети.
+fn download_script(url: &str, dest: &Path) -> String {
+    format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
-$client = New-Object System.Net.Http.HttpClient
+$handler = New-Object System.Net.Http.HttpClientHandler
+$handler.MaxAutomaticRedirections = {2}
+$client = New-Object System.Net.Http.HttpClient($handler)
 $client.Timeout = [TimeSpan]::FromMinutes(30)
 $client.DefaultRequestHeaders.Add('User-Agent', 'StackPilot/0.1 (toolchain installer)')
+$maxBytes = [long]{3}
 try {{
     $resp = $client.GetAsync({0}, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
     if (-not $resp.IsSuccessStatusCode) {{
@@ -445,12 +484,23 @@ try {{
     $totalBytes = [long]0
     if ($resp.Content.Headers.ContentLength) {{
         $totalBytes = [long]$resp.Content.Headers.ContentLength
+        if ($totalBytes -gt $maxBytes) {{
+            Write-Output "tc:error размер источника {0} превышает лимит $maxBytes байт"
+            $file.Close()
+            $stream.Dispose()
+            $resp.Dispose()
+            exit 1
+        }}
     }}
     $lastPct = -1
     try {{
         while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
-            $file.Write($buffer, 0, $read)
             $received += $read
+            if ($received -gt $maxBytes) {{
+                Write-Output "tc:error скачивание {0} превысило лимит $maxBytes байт — прервано"
+                exit 1
+            }}
+            $file.Write($buffer, 0, $read)
             if ($totalBytes -gt 0) {{
                 $pct = [int]($received * 100 / $totalBytes)
                 if ($pct -ne $lastPct) {{
@@ -466,6 +516,8 @@ try {{
         $file.Close()
         $stream.Dispose()
         $resp.Dispose()
+        $handler.Dispose()
+        $client.Dispose()
     }}
     Write-Output "tc:dl done"
 }} catch {{
@@ -474,8 +526,27 @@ try {{
 }}
 "#,
         ps_quote(url),
-        ps_quote(&dest.to_string_lossy())
-    );
+        ps_quote(&dest.to_string_lossy()),
+        MAX_REDIRECTS,
+        MAX_DOWNLOAD_BYTES
+    )
+}
+
+pub async fn download(
+    url: &str,
+    dest: &Path,
+    expected_sha256: Option<&str>,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: Arc<AtomicBool>,
+) -> Result<(), String> {
+    validate_download_url(url)?;
+
+    let script = download_script(url, dest);
 
     let result = timeout(
         DOWNLOAD_TIMEOUT,
@@ -885,5 +956,58 @@ mod tests {
         assert_ne!(a, b, "временные пути обязаны быть уникальными");
         assert!(a.starts_with(std::env::temp_dir()));
         cleanup_tracked_temp_files();
+    }
+
+    /// Крэш посреди установки не может вызвать cleanup_tracked_temp_files:
+    /// зачистка осиротевших файлов обязана переживать перезапуск приложения.
+    #[test]
+    fn sweep_removes_only_old_orphaned_temp_files() {
+        let dir = std::env::temp_dir();
+        let old = dir.join(format!("tc-sweep-old-{}", std::process::id()));
+        let fresh = dir.join(format!("tc-sweep-fresh-{}", std::process::id()));
+        std::fs::write(&old, "x").unwrap();
+        std::fs::write(&fresh, "x").unwrap();
+        // «Осиротевший» файл: метка на два дня назад.
+        let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 86400);
+        let handle = std::fs::File::options().write(true).open(&old).unwrap();
+        handle.set_modified(two_days_ago).unwrap();
+        drop(handle);
+
+        sweep_stale_temp_files();
+
+        assert!(!old.exists(), "старый осиротевший файл обязан быть убран");
+        assert!(
+            fresh.exists(),
+            "свежий файл (другой живой процесс/задание) не трогается"
+        );
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::remove_file(&fresh);
+    }
+
+    /// Регрессия безопасности: скрипт скачивания обязан нести ЖЁСТКИЙ
+    /// лимит размера (бесконечный поток не растёт на диске) и ЯВНЫЙ
+    /// предел редиректов (HttpClient по умолчанию разрешает 50).
+    #[test]
+    fn download_script_carries_size_and_redirect_bounds() {
+        let script = download_script(
+            "https://example.com/x.exe",
+            Path::new(r"C:\temp\tc-x-1.exe"),
+        );
+        assert!(
+            script.contains(&format!("$maxBytes = [long]{MAX_DOWNLOAD_BYTES}")),
+            "лимит размера в скрипте"
+        );
+        assert!(
+            script.contains("превысило лимит"),
+            "проверка в цикле чтения"
+        );
+        assert!(
+            script.contains("размер источника"),
+            "проверка ContentLength"
+        );
+        assert!(
+            script.contains(&format!("MaxAutomaticRedirections = {MAX_REDIRECTS}")),
+            "явный предел редиректов"
+        );
     }
 }

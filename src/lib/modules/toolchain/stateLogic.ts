@@ -18,15 +18,19 @@ import type {
   JobStatus,
   OperationKind,
   PersistedJob,
+  ScanDoneEvent,
+  ScanJobSnapshot,
   ScanProgressEvent,
   ToolScanResult,
   ToolState,
 } from "./types";
 import {
   TOOL_STATE_KINDS,
+  isRecord,
   jobEventBelongsTo,
   jobStatusIsTerminal,
   operationMutatesMachine,
+  scanIsTerminal,
 } from "./types";
 
 // ------------------------------------------------------------
@@ -103,7 +107,10 @@ function emptyToolResult(event: ScanProgressEvent): ToolScanResult {
     installs: [],
     path_findings: [],
     health: null,
-    applicability: { kind: "installable" },
+    // «unknown» — честная заготовка: применимость не выдумывается,
+    // пока скан не принёс факты (раньше здесь было installable — ложь
+    // для manual-only/встроенных инструментов).
+    applicability: { kind: "unknown" },
     capabilities: {
       detectable: false,
       installable: false,
@@ -166,9 +173,13 @@ export function recomputeSummary(tools: ToolScanResult[]): EnvironmentSnapshot["
     docker_managed: 0,
     built_in_system: 0,
     unsupported_platform: 0,
-    install_unavailable: 0,
   };
-  for (const tool of tools) counts[tool.state.kind] += 1;
+  for (const tool of tools) {
+    // Граница IPC: инструмент без читаемого state не роняет сводку
+    // (счётчик остаётся числом, а не NaN).
+    const kind = isRecord(tool) && isRecord(tool.state) ? tool.state.kind : null;
+    if (kind && kind in counts) counts[kind] += 1;
+  }
   return counts;
 }
 
@@ -236,6 +247,60 @@ export function jobIsActive(job: PersistedJob): boolean {
 // ------------------------------------------------------------
 
 /**
+ * Человекочитаемая строка журнала из типизированного события.
+ * Тотальная функция на границе IPC: payload из бэкенда может быть
+ * любой формы — НЕ только валидным JobEventPayload. Каждый вложенный
+ * объект проверяется isRecord ДО обращения к полю; малиформация даёт
+ * null (строка не пишется), а не TypeError на `in undefined` /
+ * `Object.keys(null)`.
+ */
+export function jobEventLogText(event: JobEvent): string | null {
+  const p = event.payload;
+  if (!isRecord(p)) return null;
+  if ("progress" in p) {
+    const inner = p.progress;
+    return isRecord(inner) && typeof inner.line === "string" ? inner.line || null : null;
+  }
+  if ("task_started" in p) return `задача ${event.task_id}: старт`;
+  if ("task_phase" in p) {
+    const inner = p.task_phase;
+    return isRecord(inner) && typeof inner.phase === "string"
+      ? `задача ${event.task_id}: ${inner.phase}`
+      : null;
+  }
+  if ("task_completed" in p) {
+    const inner = p.task_completed;
+    if (!isRecord(inner)) return null;
+    const status: unknown = inner.status;
+    // EngineTaskStatus: unit-варианты — строки, варианты с данными —
+    // объекты {"succeeded": {...}}. Ничего из этого нет (null/мусор) —
+    // строки журнала нет (не выдумываем «?» для сломанного payload).
+    const kind =
+      typeof status === "string"
+        ? status
+        : isRecord(status)
+          ? (Object.keys(status)[0] ?? null)
+          : null;
+    return kind === null ? null : `задача ${event.task_id}: ${kind}`;
+  }
+  if ("path_updated" in p) {
+    const inner = p.path_updated;
+    const record = isRecord(inner) ? inner.record : null;
+    const added = isRecord(record) ? record.added : null;
+    if (!Array.isArray(added)) return null;
+    return `PATH обновлён (${added.length} записей добавлено)`;
+  }
+  if ("job_started" in p) {
+    const inner = p.job_started;
+    return isRecord(inner) && typeof inner.total_tasks === "number"
+      ? `задание запущено: задач — ${inner.total_tasks}`
+      : null;
+  }
+  // job_finished фиксируется в статусе записи; строка не нужна.
+  return null;
+}
+
+/**
  * Применяет событие задания к его записи. Правила:
  *  - события чужих заданий отбрасываются (identity);
  *  - события с seq <= последнего применённого отбрасываются
@@ -254,20 +319,32 @@ export function applyJobEvent(
 
   let next: PersistedJob = { ...job };
   const payload = event.payload;
-
-  if ("task_started" in payload) {
+  // Граница IPC: payload из бэкенда может быть любой формы. Внутренние
+  // значения проверяются isRecord ДО обращения — малиформация молча
+  // пропускается (событие не применяется), а не роняет обработчик.
+  if (isRecord(payload) && "task_started" in payload) {
     next = setTaskStatus(next, event.task_id, "pending");
-  } else if ("task_phase" in payload) {
-    next = setTaskStatus(next, event.task_id, { running: { phase: payload.task_phase.phase } });
-  } else if ("task_completed" in payload) {
-    next = setTaskStatus(next, event.task_id, payload.task_completed.status);
-  } else if ("job_finished" in payload) {
-    next = {
-      ...next,
-      status: payload.job_finished.status,
-      errors: payload.job_finished.errors,
-      finished_at: next.finished_at ?? new Date().toISOString(),
-    };
+  } else if (isRecord(payload) && "task_phase" in payload) {
+    const inner = payload.task_phase;
+    if (isRecord(inner) && typeof inner.phase === "string") {
+      next = setTaskStatus(next, event.task_id, { running: { phase: inner.phase } });
+    }
+  } else if (isRecord(payload) && "task_completed" in payload) {
+    const inner = payload.task_completed;
+    const status: unknown = isRecord(inner) ? inner.status : null;
+    if (status !== null && typeof status !== "undefined") {
+      next = setTaskStatus(next, event.task_id, status as never);
+    }
+  } else if (isRecord(payload) && "job_finished" in payload) {
+    const inner = payload.job_finished;
+    if (isRecord(inner) && typeof inner.status === "string") {
+      next = {
+        ...next,
+        status: inner.status as JobStatus,
+        errors: Array.isArray(inner.errors) ? (inner.errors as string[]) : [],
+        finished_at: next.finished_at ?? new Date().toISOString(),
+      };
+    }
   }
 
   return { job: next, lastSeq: event.seq, applied: true };
@@ -317,6 +394,45 @@ export function resolveToolState(
   if (live) return live;
   const inCache = cached?.tools.find((t) => t.tool_id === toolId);
   return inCache ?? null;
+}
+
+// ------------------------------------------------------------
+// Идентичность и устаревшие события (guard'ы на границе слушателей)
+// ------------------------------------------------------------
+
+/**
+ * Принадлежит ли событие прогресса ТЕКУЩЕМУ скану и уместно ли его
+ * применять? Правила:
+ *  - событие без текущего скана — нет;
+ *  - чужой job_id (старый скан) — нет;
+ *  - текущий скан уже терминален — нет (поздние события не «оживляют»
+ *    завершённый скан и не трогают его данные).
+ */
+export function scanProgressAppliesTo(
+  current: ScanJobSnapshot | null,
+  event: ScanProgressEvent,
+): boolean {
+  if (!current) return false;
+  if (event.job_id !== current.job_id) return false;
+  return !scanIsTerminal(current.terminal);
+}
+
+/** Принадлежит ли терминальное событие ТЕКУЩЕМУ скану (по job_id)? */
+export function scanDoneAppliesTo(
+  current: ScanJobSnapshot | null,
+  event: ScanDoneEvent,
+): boolean {
+  if (!current) return false;
+  return event.job_id === current.job_id;
+}
+
+/** Принадлежит ли событие задания ТЕКУЩЕМУ заданию (по job_id)? */
+export function jobEventAppliesTo(
+  current: PersistedJob | null,
+  event: JobEvent,
+): boolean {
+  if (!current) return false;
+  return event.job_id === current.job_id;
 }
 
 // ------------------------------------------------------------

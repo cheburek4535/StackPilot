@@ -40,15 +40,46 @@ use super::request::{EngineRequest, ExecutionChoice, OperationKind, ToolRequest}
 #[serde(rename_all = "snake_case")]
 pub enum PlanError {
     EmptySelection,
-    UnknownTools { ids: Vec<String> },
-    InvalidSources { details: Vec<String> },
-    NotInstallable { details: Vec<String> },
-    Conflicts { pairs: Vec<String> },
-    UnverifiedSourceRequiresConfirmation { tools: Vec<String> },
-    AdminConfirmationRequired { tools: Vec<String> },
-    ElevationUnsupported { tools: Vec<String> },
-    InsufficientDisk { required_mb: u64, free_mb: u64 },
-    PlatformUnsupported { os: String },
+    UnknownTools {
+        ids: Vec<String>,
+    },
+    InvalidSources {
+        details: Vec<String>,
+    },
+    NotInstallable {
+        details: Vec<String>,
+    },
+    Conflicts {
+        pairs: Vec<String>,
+    },
+    UnverifiedSourceRequiresConfirmation {
+        tools: Vec<String>,
+    },
+    AdminConfirmationRequired {
+        tools: Vec<String>,
+    },
+    ElevationUnsupported {
+        tools: Vec<String>,
+    },
+    InsufficientDisk {
+        required_mb: u64,
+        free_mb: u64,
+    },
+    PlatformUnsupported {
+        os: String,
+    },
+    /// Building the plan exceeded the finite deadline — the caller gets
+    /// an actionable message instead of an indefinite wait.
+    PlannerTimeout {
+        seconds: u64,
+    },
+    /// The environment changed between preview and execution: the freshly
+    /// rebuilt plan no longer matches what the user approved. Never
+    /// silently executed.
+    PlanChanged {
+        expected: String,
+        actual: String,
+    },
     Internal(String),
 }
 
@@ -100,6 +131,14 @@ impl std::fmt::Display for PlanError {
                     "Автоматическая установка не поддерживается на этой ОС ({os})"
                 )
             }
+            PlanError::PlannerTimeout { seconds } => write!(
+                f,
+                "Построение плана не уложилось в {seconds} с. Проверьте машину (антивирус, зависшие процессы) и повторите."
+            ),
+            PlanError::PlanChanged { .. } => write!(
+                f,
+                "Окружение изменилось после проверки плана — план устарел. Пересмотрите план и подтвердите заново."
+            ),
             PlanError::Internal(msg) => write!(f, "Внутренняя ошибка планировщика: {msg}"),
         }
     }
@@ -342,12 +381,15 @@ pub async fn build_plan(
     resolve_dependency_closure(request, &tools, inputs, &mut drafts).await?;
 
     // --- integrity metadata validation -----------------------------------------
+    // Preview mode builds the SAME plan for review: unverified sources and
+    // admin tasks surface as warnings + confirmation checkboxes instead of
+    // hard errors (execution still refuses without confirmation below).
     let unverified: Vec<String> = drafts
         .iter()
         .filter(|d| d.source.as_ref().map(|s| s.unverified()).unwrap_or(false))
         .map(|d| d.tool_id.clone())
         .collect();
-    if !unverified.is_empty() && !request.confirm_unverified_sources {
+    if !request.preview && !unverified.is_empty() && !request.confirm_unverified_sources {
         return Err(PlanError::UnverifiedSourceRequiresConfirmation { tools: unverified });
     }
 
@@ -361,7 +403,7 @@ pub async fn build_plan(
         if !capabilities.elevation_supported {
             return Err(PlanError::ElevationUnsupported { tools: admin_tools });
         }
-        if !request.confirm_admin_elevation {
+        if !request.preview && !request.confirm_admin_elevation {
             return Err(PlanError::AdminConfirmationRequired { tools: admin_tools });
         }
     }
@@ -386,6 +428,21 @@ pub async fn build_plan(
     let random = tc_core::crypto::random_bytes(16).map_err(PlanError::Internal)?;
     let plan_id = format!("tcxp-{}", &tc_core::crypto::sha256_hex(&random)[..16]);
     let fingerprint = fingerprint(request, &drafts);
+
+    // --- stale-preview guard ----------------------------------------------------------------
+    // Если запрос несёт отпечаток одобренного превью и свежепостроенный
+    // план от него отличается — окружение изменилось между превью и
+    // исполнением. Такой план НЕ исполняется молча: структурированная
+    // ошибка возвращает пользователя к пересмотру.
+    if let Some(expected) = &request.expected_plan_fingerprint {
+        if *expected != fingerprint {
+            return Err(PlanError::PlanChanged {
+                expected: expected.clone(),
+                actual: fingerprint,
+            });
+        }
+    }
+
     let tasks: Vec<PlanTask> = drafts.into_iter().map(|d| d.into_task(&plan_id)).collect();
 
     Ok(CanonicalPlan {
@@ -445,26 +502,15 @@ fn draft_for(
                 return Err(format!("ручная установка ({reason})"));
             }
 
-            let dual = crate::modules::toolchain::core::requirements::is_dual_tool(
-                &def.id,
-                inputs.definitions,
-            );
-            if dual && req.execution != Some(ExecutionChoice::Host) {
-                return Ok(Some(Draft {
-                    tool_id: def.id.clone(),
-                    display: def.display.clone(),
-                    icon: def.icon.clone(),
-                    action: TaskAction::NoOp(NoopReason::DockerManaged),
-                    source: None,
-                    size_mb: 0,
-                    needs_admin: false,
-                    depends_on_tools: vec![],
-                    path_entries: vec![],
-                    install_options: vec![],
-                    execution_mode: ExecutionMode::Docker,
-                }));
-            }
-            if req.execution == Some(ExecutionChoice::Docker) && !dual {
+            // STANDALONE-семантика исполнения: только хост. «Двойные»
+            // docker-инструменты Project Creator здесь не существуют —
+            // PostgreSQL/Redis/MongoDB/Kafka/Grafana/MySQL ставятся
+            // локально, когда у каталога есть источник для этой ОС.
+            // Docker остаётся рекомендацией/альтернативой в метаданных
+            // (ToolExtendedMetadata.docker), но никогда — режимом задачи.
+            // Явный выбор docker отклоняется: docker-режима у задач нет,
+            // и молча подменять его хостом нельзя.
+            if req.execution == Some(ExecutionChoice::Docker) {
                 return Err("у инструмента нет docker-режима".to_string());
             }
 
@@ -474,6 +520,18 @@ fn draft_for(
             }
 
             let selected = select_source(req, sources)?;
+            // Опции установки (UI-модули Qt) понимает только Qt-конвейер.
+            // Опции для прочих инструментов — невыразимый запрос: молча
+            // их игнорировать нельзя (это «опция применилась», которой
+            // не было), отклоняем явно.
+            if !req.install_options.is_empty()
+                && !matches!(selected.kind, InstallSourceKind::QtOnline)
+            {
+                return Err(format!(
+                    "опции установки поддерживаются только для Qt-источников (источник «{}»)",
+                    selected.id
+                ));
+            }
             let selected_info = SelectedSource {
                 kind: source_kind_name(&selected.kind),
                 id: selected.id.clone(),
@@ -762,8 +820,10 @@ fn fingerprint(request: &EngineRequest, drafts: &[Draft]) -> String {
     let mut material = String::new();
     material.push_str(&format!("op={}", request.operation.as_str()));
     material.push_str(&format!("|channel={:?}", request.version_channel));
-    material.push_str(&format!("|unv={}", request.confirm_unverified_sources));
-    material.push_str(&format!("|adm={}", request.confirm_admin_elevation));
+    // Confirmation flags deliberately NOT part of the fingerprint: they do
+    // not change plan content, and the user ticks them BETWEEN preview and
+    // execution — including them would make every confirmed start fail the
+    // stale-plan guard (PlanChanged) against its own approved preview.
     for d in drafts {
         material.push_str(&format!(
             "|{}:{}:{:?}:{:?}",
@@ -963,6 +1023,30 @@ mod tests {
         match err {
             PlanError::InvalidSources { details } => assert!(details[0].contains("made-up-source")),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// Регрессия «неизвестные опции установки»: install_options умеет
+    /// понимать только Qt-конвейер. Опции, присланные для НЕ-Qt
+    /// инструмента, отклоняются явно, а не молча игнорируются.
+    #[tokio::test]
+    async fn install_options_for_non_qt_tools_are_rejected() {
+        let defs = vec![win_def("git")];
+        let det = FakeDetector::default();
+        let mut req = install_request(&["git"]);
+        req.tools[0].install_options = vec!["qt-webengine".to_string()];
+        let err = build_plan(&req, &inputs_for(&defs, &det))
+            .await
+            .unwrap_err();
+        match err {
+            PlanError::NotInstallable { details } => {
+                assert!(
+                    details[0].contains("только для Qt"),
+                    "причина: {:?}",
+                    details
+                );
+            }
+            other => panic!("ожидали NotInstallable: {other:?}"),
         }
     }
 
@@ -1216,6 +1300,66 @@ mod tests {
         )));
     }
 
+    /// Preview (tcx_build_plan) builds the SAME plan for review without
+    /// confirmations: unverified/admin surface as warnings + checkboxes,
+    /// not hard errors. Execution (preview=false) still refuses.
+    #[tokio::test]
+    async fn preview_builds_unconfirmed_plan_with_warnings() {
+        let mut d = win_def("app");
+        d.sources.windows = vec![official_src("src-1", "https://example.com/x.exe", None)];
+        d.needs_admin = true;
+        let defs = vec![d];
+        let det = FakeDetector::default();
+
+        let mut req = install_request(&["app"]);
+        req.preview = true;
+        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+        assert_eq!(plan.unverified_tools(), vec!["app"]);
+        assert!(plan.warnings.iter().any(|w| matches!(
+            w,
+            PlanWarning::UnverifiedSource { tool_id, .. } if tool_id == "app"
+        )));
+        assert!(plan.warnings.iter().any(|w| matches!(
+            w,
+            PlanWarning::AdminRequired { tool_id } if tool_id == "app"
+        )));
+
+        // Тот же запрос БЕЗ preview обязан отказать до построения.
+        let err = build_plan(&install_request(&["app"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            PlanError::UnverifiedSourceRequiresConfirmation { .. }
+        ));
+    }
+
+    /// Подтверждения пользователь ставит МЕЖДУ превью и стартом: они не
+    /// меняют содержимое плана, значит и отпечаток меняться не должен —
+    /// иначе каждый подтверждённый старт падал бы с PlanChanged.
+    #[tokio::test]
+    async fn fingerprint_ignores_confirmation_flags() {
+        let defs = vec![win_def("git")];
+        let det = FakeDetector::default();
+
+        let preview = install_request(&["git"]);
+        let mut confirmed = install_request(&["git"]);
+        confirmed.confirm_unverified_sources = true;
+        confirmed.confirm_admin_elevation = true;
+        confirmed.preview = true;
+
+        let plan_a = build_plan(&preview, &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+        let plan_b = build_plan(&confirmed, &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+        assert_eq!(
+            plan_a.fingerprint, plan_b.fingerprint,
+            "confirm flags must not alter the plan fingerprint"
+        );
+    }
+
     #[tokio::test]
     async fn manual_only_tools_never_enter_plans() {
         let mut d = win_def("unity");
@@ -1294,5 +1438,317 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PlanError::EmptySelection));
+    }
+
+    // ------------------------------------------------------------
+    // STANDALONE: docker-related инструменты ставятся на хост
+    // ------------------------------------------------------------
+
+    /// MySQL (wizard-«двойной» docker-инструмент!) в standalone-плане —
+    /// ОБЫЧНАЯ хост-задача установки. Никаких DockerManaged-no-op.
+    #[tokio::test]
+    async fn mysql_missing_produces_host_install_task_never_docker_noop() {
+        let mut mysql = win_def("mysql");
+        mysql.needs_admin = true;
+        let defs = vec![mysql];
+        let det = FakeDetector::default();
+
+        // Даже с ЯВНЫМ выбором execution: host задача остаётся обычной
+        // хост-установкой...
+        let mut req = install_request(&["mysql"]);
+        req.tools[0].execution = Some(ExecutionChoice::Host);
+        req.confirm_admin_elevation = true;
+        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].execution_mode, ExecutionMode::Host);
+        assert!(matches!(
+            plan.tasks[0].action,
+            TaskAction::InstallNew { .. }
+        ));
+        assert!(plan.tasks[0].source.is_some());
+
+        // ...а без выбора — тоже: dual-семантики мастера здесь нет.
+        let plain = install_request(&["mysql"]);
+        let mut plain = plain;
+        plain.confirm_admin_elevation = true;
+        let plan2 = build_plan(&plain, &inputs_for(&defs, &det)).await.unwrap();
+        assert_eq!(plan2.tasks[0].execution_mode, ExecutionMode::Host);
+        assert!(!plan2.tasks[0].action.is_noop());
+    }
+
+    /// PostgreSQL: установлен → правдивый AlreadyInstalled-no-op;
+    /// отсутствует → хост-задача установки (не docker no-op).
+    #[tokio::test]
+    async fn postgresql_installed_is_truthful_noop_missing_installs_locally() {
+        let defs = vec![win_def("postgresql"), win_def("redis")];
+        let det = FakeDetector::with_many(HashMap::from([(
+            "postgresql".to_string(),
+            installed("17.5"),
+        )]));
+
+        let plan = build_plan(
+            &install_request(&["postgresql", "redis"]),
+            &inputs_for(&defs, &det),
+        )
+        .await
+        .unwrap();
+
+        let pg = plan
+            .tasks
+            .iter()
+            .find(|t| t.tool_id == "postgresql")
+            .unwrap();
+        match &pg.action {
+            TaskAction::NoOp(NoopReason::AlreadyInstalled { version }) => {
+                assert_eq!(version, "17.5")
+            }
+            other => panic!("ожидали truthful no-op, получили {other:?}"),
+        }
+        assert_eq!(pg.size_mb, 0, "no-op не требует места");
+
+        let redis = plan.tasks.iter().find(|t| t.tool_id == "redis").unwrap();
+        assert!(
+            matches!(redis.action, TaskAction::InstallNew { .. }),
+            "отсутствующий redis → задача локальной установки"
+        );
+        assert_eq!(redis.execution_mode, ExecutionMode::Host);
+    }
+
+    /// Docker-выбор исполнения отклоняется для ЛЮБОГО инструмента:
+    /// у задач нет docker-режима, молча подменять его хостом нельзя.
+    #[tokio::test]
+    async fn explicit_docker_execution_choice_is_rejected() {
+        let defs = vec![win_def("postgresql")];
+        let det = FakeDetector::default();
+        let mut req = install_request(&["postgresql"]);
+        req.tools[0].execution = Some(ExecutionChoice::Docker);
+        let err = build_plan(&req, &inputs_for(&defs, &det))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PlanError::NotInstallable { .. }));
+    }
+
+    // ------------------------------------------------------------
+    // Обновления и PATH
+    // ------------------------------------------------------------
+
+    /// Update-задача генерируется ТОЛЬКО при реально доступном обновлении:
+    /// UpdateAvailable → Update; Installed без цели → правдивый no-op.
+    #[tokio::test]
+    async fn update_task_only_when_update_actually_available() {
+        let defs = vec![win_def("node")];
+
+        let det = FakeDetector::with("node", installed("24.0"));
+        let req = EngineRequest::new(OperationKind::Update, vec![ToolRequest::id("node")]);
+        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+        assert!(plan.tasks[0].action.is_noop(), "обновления нет → no-op");
+
+        let det2 = FakeDetector::with("node", update_avail("20.1", "22"));
+        let plan2 = build_plan(&req, &inputs_for(&defs, &det2)).await.unwrap();
+        assert!(
+            matches!(plan2.tasks[0].action, TaskAction::Update { .. }),
+            "обновление доступно → Update-задача"
+        );
+    }
+
+    /// Сломанная установка → переустановка (не «ремонт PATH»): действие
+    /// InstallNew с явным предупреждением ReinstallOnBroken; ремонт PATH —
+    /// отдельная операция RepairPath, которая ничего не скачивает.
+    #[tokio::test]
+    async fn broken_path_is_reinstall_with_warning_not_silent_repair() {
+        let mut d = win_def("git");
+        d.path_entries = vec!["C:\\Program Files\\Git\\cmd".into()];
+        let defs = vec![d];
+        let det = FakeDetector::with(
+            "git",
+            ToolStatus::PathBroken {
+                reason: "бинарь не отвечает".into(),
+            },
+        );
+
+        // Install поверх сломанного: переустановка + предупреждение.
+        let plan = build_plan(&install_request(&["git"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+        assert!(matches!(
+            plan.tasks[0].action,
+            TaskAction::InstallNew { .. }
+        ));
+        assert!(plan.warnings.iter().any(|w| matches!(
+            w,
+            PlanWarning::ReinstallOnBroken { tool_id } if tool_id == "git"
+        )));
+
+        // RepairPath — отдельная операция без скачивания/переустановки.
+        let repair = EngineRequest::new(OperationKind::RepairPath, vec![ToolRequest::id("git")]);
+        let rp = build_plan(&repair, &inputs_for(&defs, &det)).await.unwrap();
+        assert!(matches!(rp.tasks[0].action, TaskAction::RepairPath));
+        assert!(rp.tasks[0].source.is_none());
+        assert_eq!(rp.total_size_mb, 0);
+    }
+
+    // ------------------------------------------------------------
+    // Детерминированность, таймаут, отпечаток плана
+    // ------------------------------------------------------------
+
+    /// Зависимости разрешаются детерминированно: erlang перед elixir,
+    /// порядок стабилен между прогонами на одинаковых входах.
+    #[tokio::test]
+    async fn dependency_resolution_order_is_deterministic() {
+        let mut elixir = win_def("elixir");
+        elixir.bundled_with = Some("erlang".to_string());
+        let defs = vec![elixir, win_def("erlang")];
+        let det = FakeDetector::default();
+
+        let first = build_plan(
+            &install_request(&["elixir", "erlang"]),
+            &inputs_for(&defs, &det),
+        )
+        .await
+        .unwrap();
+        for _ in 0..3 {
+            let again = build_plan(
+                &install_request(&["elixir", "erlang"]),
+                &inputs_for(&defs, &det),
+            )
+            .await
+            .unwrap();
+            let ids_a: Vec<&str> = first.tasks.iter().map(|t| t.tool_id.as_str()).collect();
+            let ids_b: Vec<&str> = again.tasks.iter().map(|t| t.tool_id.as_str()).collect();
+            assert_eq!(ids_a, ids_b, "порядок задач стабилен");
+            let erl = again
+                .tasks
+                .iter()
+                .position(|t| t.tool_id == "erlang")
+                .unwrap();
+            let eli = again
+                .tasks
+                .iter()
+                .position(|t| t.tool_id == "elixir")
+                .unwrap();
+            assert!(erl < eli, "зависимость precedes зависимого");
+        }
+        // Отпечаток одного и того же запроса одинаков (детерминизм).
+        let fp = first.fingerprint.clone();
+        let other = build_plan(
+            &install_request(&["elixir", "erlang"]),
+            &inputs_for(&defs, &det),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fp, other.fingerprint);
+    }
+
+    /// Построение плана конечно: медленный детектор упирается в таймаут,
+    /// наружу выходит структурированная PlannerTimeout-ошибка.
+    #[tokio::test]
+    async fn planner_timeout_is_finite_and_structured() {
+        struct SlowDetector;
+        #[async_trait]
+        impl Detector for SlowDetector {
+            async fn detect(&self, _def: &ToolDefinition) -> ToolStatus {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                ToolStatus::Missing
+            }
+        }
+        let defs = vec![win_def("slow-tool")];
+        let inputs = PlanInputs::new(&defs, &SlowDetector).with_free_space(100_000);
+        let err = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            build_plan(&install_request(&["slow-tool"]), &inputs),
+        )
+        .await;
+        // Внешний guard (тот же механизм, что PLAN_BUILD_TIMEOUT в командном
+        // слое) срабатывает раньше «вечного» детектора.
+        assert!(err.is_err(), "медленное построение обязано прерваться");
+        let timeout_error = PlanError::PlannerTimeout { seconds: 45 };
+        assert!(timeout_error.to_string().contains("45"));
+    }
+
+    /// Превью vs исполнение: если окружение изменилось после одобрения
+    /// превью, исполнение отклоняется структурированной PlanChanged-
+    /// ошибкой вместо молчаливого запуска устаревшего плана.
+    #[tokio::test]
+    async fn stale_preview_fingerprint_aborts_execution() {
+        let defs = vec![win_def("git")];
+
+        let det_before = FakeDetector::default();
+        let preview = build_plan(&install_request(&["git"]), &inputs_for(&defs, &det_before))
+            .await
+            .unwrap();
+
+        // Окружение изменилось: git установился между превью и стартом.
+        let det_after = FakeDetector::with("git", installed("2.48"));
+        let mut exec_req = install_request(&["git"]);
+        exec_req.expected_plan_fingerprint = Some(preview.fingerprint.clone());
+        let err = build_plan(&exec_req, &inputs_for(&defs, &det_after))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PlanError::PlanChanged { .. }),
+            "устаревший план не исполняется молча: {err:?}"
+        );
+        assert!(err.to_string().contains("устарел"));
+
+        // Совпадающий отпечаток проходит.
+        let fresh = build_plan(&install_request(&["git"]), &inputs_for(&defs, &det_after))
+            .await
+            .unwrap();
+        exec_req.expected_plan_fingerprint = Some(fresh.fingerprint.clone());
+        let ok = build_plan(&exec_req, &inputs_for(&defs, &det_after))
+            .await
+            .unwrap();
+        assert_eq!(
+            ok.fingerprint,
+            exec_req.expected_plan_fingerprint.as_deref().unwrap()
+        );
+    }
+
+    /// Одно-туловый план НЕ запускает полный скан каталога: детектор
+    /// вызывается ровно для запрошенных инструментов (+ winget-хост
+    /// pkg-источников на Windows), но никогда для всего каталога.
+    #[tokio::test]
+    async fn single_tool_plan_does_not_scan_full_catalog() {
+        #[derive(Default)]
+        struct CountingDetector {
+            calls: std::sync::Mutex<HashMap<String, usize>>,
+        }
+        #[async_trait]
+        impl Detector for CountingDetector {
+            async fn detect(&self, def: &ToolDefinition) -> ToolStatus {
+                *self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .entry(def.id.clone())
+                    .or_insert(0) += 1;
+                ToolStatus::Missing
+            }
+        }
+
+        // Реальный каталог, урезанный до конкретных id: terraform + соседи.
+        let wanted = ["terraform", "node", "git", "winget", "npm"];
+        let catalog: Vec<ToolDefinition> = crate::modules::toolchain::defs::load_definitions()
+            .into_iter()
+            .filter(|d| wanted.contains(&d.id.as_str()))
+            .collect();
+        let total_defs = catalog.len();
+        assert!(catalog.iter().any(|d| d.id == "terraform"));
+        assert!(total_defs < 10, "урезанный каталог, не весь: {total_defs}");
+        let det = CountingDetector::default();
+        let inputs = PlanInputs::new(&catalog, &det).with_free_space(1_000_000);
+
+        let mut req = install_request(&["terraform"]);
+        req.confirm_unverified_sources = true; // реальный zip-источник без sha256
+        let plan = build_plan(&req, &inputs).await.unwrap();
+        assert_eq!(plan.tasks.len(), 1, "план содержит только запрошенный тул");
+
+        let probed: HashMap<String, usize> = det.calls.lock().unwrap().clone();
+        assert!(probed.contains_key("terraform"), "запрошенный тул опрошен");
+        assert!(
+            probed.len() <= 3,
+            "опрос ограничен запрошенным + хостами зависимостей, а не каталогом из {total_defs}: {:?}",
+            probed.keys().collect::<Vec<_>>()
+        );
     }
 }

@@ -1,0 +1,68 @@
+[
+  {
+    "id": "unity",
+    "category": "engine",
+    "display": "Unity Editor",
+    "description": "Игровой движок с C#-скриптами — проект генерируется, движок ставится вручную",
+    "icon": "unity.svg",
+    "detection": {
+      "version_probes": [],
+      "known_paths": [
+        "C:/Program Files/Unity/Hub/Editor/*/Editor",
+        "/Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS"
+      ],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Unity нельзя поставить автоматически: только Unity Hub (unityhub://) или unity.com/download.",
+    "manual_install": "Установите Unity Editor вручную через Unity Hub (unity.com/download) — желательно LTS-версию."
+  },
+  {
+    "id": "unreal",
+    "category": "engine",
+    "display": "Unreal Engine",
+    "description": "Игровой движок на C++ — проект генерируется, движок ставится вручную",
+    "icon": "unreal-engine.svg",
+    "detection": {
+      "version_probes": [],
+      "known_paths": ["C:/Program Files/Epic Games/UE_*"],
+      "registry_keys": []
+    },
+    "versions": { "min": null, "recommended": null },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Unreal Engine ставится только через Epic Games Launcher.",
+    "manual_install": "Установите Unreal Engine вручную через Epic Games Launcher (store.epicgames.com) — любой актуальный релиз."
+  },
+  {
+    "id": "godot",
+    "category": "engine",
+    "display": "Godot",
+    "description": "Open-source игровой движок (C++, C#) — проект генерируется, движок ставится вручную",
+    "icon": "godot.svg",
+    "detection": {
+      "version_probes": [["godot", "--version"]],
+      "known_paths": ["C:/Program Files/Godot*"],
+      "registry_keys": []
+    },
+    "versions": { "min": "4.2", "recommended": "4.4" },
+    "sources": { "windows": [], "linux": [], "macos": [] },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [],
+    "notes": "Godot распространяется как портативный бинарник с godotengine.org.",
+    "manual_install": "Скачайте Godot с godotengine.org (Standard-версию) и распакуйте в удобное место."
+  }
+]

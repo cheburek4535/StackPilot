@@ -40,7 +40,9 @@
       (t) => engineTaskStatusKind(t.status) === "running",
     );
     if (!running) return null;
-    return typeof running.status === "object" && "running" in running.status
+    // Граница IPC: `typeof null === "object"`, поэтому статус обязан быть
+    // не-null объектом, иначе «running in null» уронил бы рендер.
+    return running.status !== null && typeof running.status === "object" && "running" in running.status
       ? phaseLabel(running.status.running.phase)
       : null;
   });

@@ -32,14 +32,17 @@ fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
 }
 
 /// Возраст метки в секундах относительно текущего момента.
+/// Неразбираемая метка → u64::MAX («данных о возрасте нет» = устарел).
+/// Метка из БУДУЩЕГО (сдвинутые часы/плохие данные) тоже даёт u64::MAX:
+/// снапшот не может быть «свежее, чем сейчас» — честно помечается stale.
 pub fn age_seconds_of(timestamp: &str) -> u64 {
     let Some(then) = parse_rfc3339(timestamp) else {
         return u64::MAX;
     };
-    SystemTime::now()
-        .duration_since(then)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    match SystemTime::now().duration_since(then) {
+        Ok(age) => age.as_secs(),
+        Err(_) => u64::MAX,
+    }
 }
 
 /// Кэш последнего снапшота. Потокобезопасен (внутренний Mutex).
@@ -166,6 +169,8 @@ mod tests {
                 version_assessment: VersionAssessment::Unknown,
                 state: ToolState::Missing,
                 error: None,
+                canonical_install: None,
+                version_selected_because: String::new(),
                 duration_ms: 1,
             }],
             path_report: PathReport::default(),
@@ -244,5 +249,27 @@ mod tests {
     #[test]
     fn age_parse_garbage_is_max() {
         assert_eq!(age_seconds_of("not-a-date"), u64::MAX);
+    }
+
+    /// Регрессия «будущая метка = свежий снапшот»: сдвинутые часы не
+    /// должны делать кэш «живее», чем он есть. Будущая метка — stale.
+    #[test]
+    fn future_dated_snapshot_is_stale_not_fresh() {
+        let future = chrono::Local::now() + chrono::Duration::hours(1);
+        assert_eq!(
+            age_seconds_of(&future.to_rfc3339()),
+            u64::MAX,
+            "метка из будущего не может быть «возраст 0»"
+        );
+
+        let dir = temp_dir("future");
+        let cache = SnapshotCache::new(&dir);
+        let snap = sample_snapshot(future.to_rfc3339());
+        cache.store(&snap).unwrap();
+        let got = cache.get().expect("снапшот отдаётся");
+        assert!(
+            got.stale,
+            "будущая метка обязана давать stale (не «свежие данные»)"
+        );
     }
 }

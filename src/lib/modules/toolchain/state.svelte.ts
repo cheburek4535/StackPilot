@@ -29,29 +29,44 @@ import type {
   ToolDefinition,
   ToolScanResult,
 } from "./types";
-import { jobStatusIsTerminal, operationMutatesMachine, parseToolState } from "./types";
+import {
+  isRecord,
+  jobEventKind,
+  jobStatusIsTerminal,
+  operationMutatesMachine,
+  scanStartJobId,
+} from "./types";
 import * as api from "./api";
 import {
   scanIsTerminalState,
   toolchainChannels,
   TerminalGuard,
   trackJob,
-  trackScan,
 } from "./events";
 import {
   applyJobEvent,
   applyScanProgress,
   gateMutation,
   isJobSucceeded,
+  jobEventAppliesTo,
+  jobEventLogText,
   mergeLiveSnapshot,
   resolveToolState,
+  scanDoneAppliesTo,
+  scanProgressAppliesTo,
   snapshotFreshness,
   upsertJobHistory,
   type LiveToolMap,
   type MutationGate,
   type SnapshotFreshness,
 } from "./stateLogic";
-import { defaultCatalogFilters } from "./filters";
+import {
+  CoalescingCall,
+  LatestRequestGuard,
+  OnceInitializer,
+  ScanStartCoordinator,
+} from "./startup";
+import { defaultCatalogFilters, validateCatalogFilters } from "./filters";
 import { sanitizeErrorMessage } from "./format";
 import { notifyError, notifyInfo, notifySuccess } from "$lib/core/toasts";
 import { readLocal, writeLocal } from "$lib/core/storage";
@@ -73,52 +88,37 @@ export type JobLogEntry = {
   timestamp: string;
 };
 
-/** Человекочитаемая строка журнала из типизированного события. */
-function jobEventLogText(event: JobEvent): string | null {
-  const p = event.payload;
-  if ("progress" in p) return p.progress.line || null;
-  if ("task_started" in p) return `задача ${event.task_id}: старт`;
-  if ("task_phase" in p) return `задача ${event.task_id}: ${p.task_phase.phase}`;
-  if ("task_completed" in p) {
-    const s = p.task_completed.status;
-    const kind =
-      typeof s === "string" ? s : Object.keys(s)[0];
-    return `задача ${event.task_id}: ${kind}`;
-  }
-  if ("path_updated" in p) {
-    const added = p.path_updated.record.added ?? [];
-    return `PATH обновлён (${added.length} записей добавлено)`;
-  }
-  if ("job_started" in p) return `задание запущено: задач — ${p.job_started.total_tasks}`;
-  // job_finished фиксируется в статусе записи; строка не нужна.
-  return null;
-}
-
 export type ToolchainUiPrefs = {
   mode: ToolchainMode;
   logPanelOpen: boolean;
-  filters: Pick<CatalogFilters, "search" | "categories" | "states">;
+  /** Полный набор фильтров (все группы — не только поиск/категории/состояния). */
+  filters: CatalogFilters;
 };
 
-export type ToolchainMode = "build_environment" | "manage_everything";
+export type ToolchainMode = "build_environment" | "manage_everything" | "tool_marketplace";
 
 const DEFAULT_PREFS: ToolchainUiPrefs = {
   mode: "manage_everything",
   logPanelOpen: false,
-  filters: { search: "", categories: [], states: [] },
+  filters: defaultCatalogFilters(),
 };
 
 function loadPrefs(): ToolchainUiPrefs {
   const raw = readLocal<Partial<ToolchainUiPrefs>>(PREFS_KEY, PREFS_VERSION);
-  if (!raw) return { ...DEFAULT_PREFS };
+  if (!raw) return { ...DEFAULT_PREFS, filters: defaultCatalogFilters() };
+  // Валидация на границе хранилища: неизвестные kind'ы/типы отбрасываются,
+  // а не падают и не протаскиваются в фильтры.
+  const filters =
+    raw.filters === undefined
+      ? defaultCatalogFilters()
+      : validateCatalogFilters(raw.filters);
   return {
-    mode: raw.mode === "build_environment" ? "build_environment" : "manage_everything",
+    mode:
+      raw.mode === "build_environment" || raw.mode === "tool_marketplace"
+        ? raw.mode
+        : "manage_everything",
     logPanelOpen: raw.logPanelOpen === true,
-    filters: {
-      search: typeof raw.filters?.search === "string" ? raw.filters.search : "",
-      categories: Array.isArray(raw.filters?.categories) ? raw.filters.categories : [],
-      states: Array.isArray(raw.filters?.states) ? raw.filters.states : [],
-    },
+    filters,
   };
 }
 
@@ -145,12 +145,16 @@ class ToolchainController {
   // ---- текущий скан ----
   currentScan = $state<ScanJobSnapshot | null>(null);
   scanCancelling = $state(false);
+  /** Reconnect/старт скана в полёте (фаза «подключаемся/запускаем»). */
+  scanReconnecting = $state(false);
 
   // ---- текущее задание мутации + история сессии ----
   currentJob = $state<PersistedJob | null>(null);
   private currentJobLastSeq = 0;
   jobHistory = $state<PersistedJob[]>([]);
   jobStarting = $state(false);
+  /** Reconnect истории/активного задания в полёте (фаза «восстановление»). */
+  jobsReconnecting = $state(false);
 
   // ---- каталог ----
   catalog = $state<ToolScanResult[]>([]);
@@ -178,14 +182,70 @@ class ToolchainController {
   logPanelOpen = $state(DEFAULT_PREFS.logPanelOpen);
   filters = $state<CatalogFilters>(defaultCatalogFilters());
 
+  // ---- детали инструмента (drawer) ----
+  detailsLoading = $state(false);
+  detailsError = $state<string | null>(null);
+
   #prefsLoaded = false;
   #scanGuard = new TerminalGuard();
   #jobGuards = new Map<string, TerminalGuard>();
   #cleanups: Array<() => void> = [];
   #jobTrackerOff: (() => void) | null = null;
-  #initialized = false;
+  #initializer = new OnceInitializer();
   /** Отложенная запись prefs при наборе поиска (не писать на каждый символ). */
   #prefsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ---- in-flight guard'ы (коалесцирование запросов) ----
+  /** Единый полёт чтения снапшота: параллельных IPC не бывает. */
+  #snapshotInFlight: Promise<void> | null = null;
+  /** Сколько foreground-ожидающих ждут текущий полёт (для ошибки/спиннера). */
+  #snapshotForeground = 0;
+  /** Единый полёт reconnect сканов (getLatestScanJob — один раз). */
+  #scanReconnectPromise: Promise<void> | null = null;
+  /** Единый полёт reconnect заданий/истории. */
+  #jobsReconnectInFlight: Promise<void> | null = null;
+  /** Единый полёт метаданных усыновления. */
+  #adoptedCall = new CoalescingCall<void>(async () => {
+    try {
+      const meta = await api.getToolchainMetadata();
+      this.adopted = meta.adopted ?? {};
+    } catch {
+      /* отсутствие метаданных не блокирует UI: считаем набор пустым */
+    }
+  });
+  /** Единый полёт загрузки каталога. */
+  #definitionsCall = new CoalescingCall<void>(
+    async () => {
+      const defs = await api.getCatalog();
+      const map: Record<string, ToolDefinition> = {};
+      for (const d of defs) map[d.id] = d;
+      this.definitions = map;
+    },
+    {
+      onStart: () => {
+        this.definitionsLoading = true;
+        this.definitionsError = null;
+      },
+      onSettle: () => {
+        this.definitionsLoading = false;
+      },
+      onError: (err) => {
+        this.definitionsError = sanitizeErrorMessage(err);
+      },
+    },
+  );
+  /** Координатор скана: reconnect раньше старта, старт максимум один. */
+  #scanCoordinator = new ScanStartCoordinator(
+    () => this.currentScan,
+    () => this.#reconnectScanOnce(),
+    () => this.#startNewScan(),
+  );
+  /** Stale-guard деталей drawer'а: применяется только последний ответ. */
+  #detailsGuard = new LatestRequestGuard();
+  /** Полёты деталей по tool_id (коалесцирование в пределах инструмента). */
+  #detailsInFlight = new Map<string, Promise<ToolScanResult | null>>();
+  /** Инструменты, для которых уже идёт health-check. */
+  #healthInFlight = new Set<string>();
 
   // ==========================================================
   // Инициализация / подписки
@@ -194,9 +254,13 @@ class ToolchainController {
   /**
    * Вызывать из onMount страницы (идемпотентно): подключает слушатели
    * ОДИН раз на приложение, восстанавливает состояние после навигации
-   * (reconnect к идущему скану/заданию), грузит кэш мгновенно.
+   * (reconnect к идущему скан/заданию), грузит кэш мгновенно.
    * Возвращает функцию очистки подписок уровня страницы (пустую —
    * каналы живут на время приложения).
+   *
+   * Фазы разделены и не блокируют друг друга: снапшот (кэш), каталог,
+   * метаданные и reconnect идут параллельными полётами; страница
+   * интерактивна сразу.
    */
   ensureInitialized(): () => void {
     if (!this.#prefsLoaded) {
@@ -207,42 +271,47 @@ class ToolchainController {
       this.#prefsLoaded = true;
     }
 
-    if (!this.#initialized) {
-      this.#initialized = true;
+    // Повторный вызов (ре-монтирование страницы, второй контроллер) —
+    // no-op: слушатели и стартовые запросы ровно один раз.
+    this.#initializer.run(() => {
       this.#attachListeners();
       void this.refreshSnapshot();
       void this.reconnectJobs();
       void this.ensureDefinitions();
       void this.refreshAdopted();
-    }
+    });
     return () => {
       /* каналы — синглтоны; страница ничего не отсоединяет */
     };
   }
 
   #attachListeners(): void {
-    // Прогресс скана: инкрементально, только события ТЕКУЩЕГО задания.
+    // Прогресс скана: инкрементально, только события ТЕКУЩЕГО задания;
+    // завершённый скан поздние события не оживляют.
     this.#cleanups.push(
       toolchainChannels.scanProgress.subscribe((event) => {
-        if (!this.currentScan || event.job_id !== this.currentScan.job_id) return;
+        if (!scanProgressAppliesTo(this.currentScan, event)) return;
+        const scan = this.currentScan!;
         this.liveTools = applyScanProgress(this.liveTools, event);
         this.currentScan = {
-          ...this.currentScan,
-          completed_tools: Math.max(this.currentScan.completed_tools, event.completed_count),
-          total_tools: event.total_count || this.currentScan.total_tools,
+          ...scan,
+          completed_tools: Math.max(scan.completed_tools, event.completed_count),
+          total_tools: event.total_count || scan.total_tools,
           current_tool: event.tool_id,
           updated_at: event.timestamp,
         };
       }),
     );
 
-    // Терминал скана: ровно один раз; снапшот перечитываем с бэкенда.
+    // Терминал скана: ровно один раз; живой срез замещается финальным
+    // снапшотом (частичные данные больше не «как финальные»).
     this.#cleanups.push(
       toolchainChannels.scanDone.subscribe((event) => {
-        if (!this.currentScan || event.job_id !== this.currentScan.job_id) return;
+        if (!scanDoneAppliesTo(this.currentScan, event)) return;
+        const scan = this.currentScan!;
         if (!this.#scanGuard.firstTerminal(`${event.job_id}:${event.terminal}`)) return;
         this.currentScan = {
-          ...this.currentScan,
+          ...scan,
           running: false,
           cancel_requested: false,
           terminal: event.terminal,
@@ -250,6 +319,9 @@ class ToolchainController {
           total_tools: event.total,
           finished_at: new Date().toISOString(),
         };
+        // Финальный снапшот авторитетен: инкрементальные фрагменты
+        // этого скана стираются до его получения.
+        this.liveTools = {};
         void this.refreshSnapshot({ background: true });
         if (event.terminal === "Cancelled") {
           notifyInfo("Скан отменён", "Частичные результаты сохранены");
@@ -266,8 +338,14 @@ class ToolchainController {
   }
 
   #handleJobEvent(event: JobEvent): void {
+    // Граница IPC: событие обязано быть читаемым (payload — объект ровно
+    // с одним известным ключом), иначе отбрасываем до любых `in`-проверок.
+    const payloadKind = jobEventKind(event);
+    if (!payloadKind) return;
     const job = this.currentJob;
-    if (!job || event.job_id !== job.job_id) return; // чужое задание — игнорируем
+    // Чужое/устаревшее задание (в т.ч. «хвост» прежней операции после
+    // reconnect к новому заданию) — игнорируем до изменения состояния.
+    if (!job || !jobEventAppliesTo(job, event)) return;
 
     const guard = this.#jobGuards.get(job.job_id) ?? new TerminalGuard();
     this.#jobGuards.set(job.job_id, guard);
@@ -279,11 +357,21 @@ class ToolchainController {
     this.currentJobLastSeq = applied.lastSeq;
     this.currentJob = applied.job;
 
-    if ("job_finished" in event.payload && jobStatusIsTerminal(event.payload.job_finished.status)) {
+    if (payloadKind === "job_finished") {
+      // Сужение через isRecord+in: payload из IPC может быть любой формы.
+      const payload: unknown = event.payload;
+      if (!isRecord(payload) || !("job_finished" in payload)) return;
+      const finished = payload.job_finished as
+        | { status?: unknown; errors?: unknown }
+        | undefined;
+      const status = finished?.status;
+      if (typeof status !== "string") return;
       // Терминал ровно один раз; успех — только от бэкенда.
       if (!guard.firstTerminal(`${job.job_id}:finished`)) return;
-      const status = event.payload.job_finished.status;
-      this.#finalizeCurrentJob(status, event.payload.job_finished.errors);
+      this.#finalizeCurrentJob(
+        status as PersistedJob["status"],
+        Array.isArray(finished?.errors) ? (finished.errors as string[]) : [],
+      );
     }
   }
 
@@ -342,28 +430,40 @@ class ToolchainController {
     }
     // Данные машины изменились — обновляем снапшот в фоне.
     void this.refreshSnapshot({ background: true });
+    // После успешной мутации — точечная read-only перепроверка затронутых
+    // инструментов, чтобы карточки/витрина показали свежий факт сразу.
+    if (
+      job &&
+      isJobSucceeded(status) &&
+      operationMutatesMachine(job.operation) &&
+      job.requested_tool_ids.length > 0
+    ) {
+      void this.runHealthChecks(job.requested_tool_ids);
+    }
   }
 
-  /** Reconnect после навигации/перезапуска: идущий скан и задание. */
+  /** Reconnect после навигации/перезапуска: идущий скан и задание.
+   *  Идемпотентен: повторные вызовы во время полёта получают тот же
+   *  результат — параллельных getLatestScanJob/listJobs не бывает. */
   async reconnectJobs(): Promise<void> {
-    try {
-      const latestScan = await api.getLatestScanJob();
-      if (latestScan && !scanIsTerminalState(latestScan.terminal)) {
-        this.#adoptScan(latestScan);
-      } else if (latestScan) {
-        this.currentScan = latestScan;
+    if (this.#jobsReconnectInFlight) return this.#jobsReconnectInFlight;
+    this.jobsReconnecting = true;
+    this.#jobsReconnectInFlight = (async () => {
+      // Скан — общая цепочка с ensureScanRunning (один getLatestScanJob).
+      await this.#reconnectScanOnce();
+      try {
+        const jobs = await api.listJobs();
+        const active = jobs.find((j) => !jobStatusIsTerminal(j.status));
+        if (active) this.#adoptJob(active);
+        this.jobHistory = jobs.slice(0, 20);
+      } catch {
+        /* история недоступна — не критично */
       }
-    } catch {
-      /* нет данных о сканах — не ошибка UI */
-    }
-    try {
-      const jobs = await api.listJobs();
-      const active = jobs.find((j) => !jobStatusIsTerminal(j.status));
-      if (active) this.#adoptJob(active);
-      this.jobHistory = jobs.slice(0, 20);
-    } catch {
-      /* история недоступна — не критично */
-    }
+    })().finally(() => {
+      this.jobsReconnecting = false;
+      this.#jobsReconnectInFlight = null;
+    });
+    return this.#jobsReconnectInFlight;
   }
 
   // ==========================================================
@@ -373,26 +473,54 @@ class ToolchainController {
   /**
    * Перечитывает снапшот. Провал НЕ затирает предыдущие данные:
    * ошибка пишется в snapshotError, кэш остаётся как был.
+   * Повторные вызовы во время полёта коалесцируются в один IPC.
    */
   async refreshSnapshot(options: { background?: boolean } = {}): Promise<void> {
-    if (options.background) {
-      try {
-        const snap = await api.getEnvironmentSnapshot();
-        if (snap) this.#adoptSnapshot(snap);
-      } catch {
-        /* фоновое обновление молча сохраняет прежнее состояние */
+    const foreground = !options.background;
+    if (this.#snapshotInFlight) {
+      if (foreground) {
+        // Явный повторный запрос «в лицо»: индикатор и ошибка важны.
+        this.snapshotLoading = true;
+        this.snapshotError = null;
+        this.#snapshotForeground += 1;
+        try {
+          await this.#snapshotInFlight;
+        } finally {
+          this.#releaseSnapshotWait();
+        }
+      } else {
+        await this.#snapshotInFlight;
       }
       return;
     }
-    this.snapshotLoading = true;
-    this.snapshotError = null;
-    try {
-      const snap = await api.getEnvironmentSnapshot();
-      if (snap) this.#adoptSnapshot(snap);
-    } catch (err) {
-      // Предыдущее валидное состояние сохранено намеренно.
-      this.snapshotError = sanitizeErrorMessage(err);
-    } finally {
+    if (foreground) {
+      this.snapshotLoading = true;
+      this.snapshotError = null;
+      this.#snapshotForeground += 1;
+    }
+    const flight = (async () => {
+      try {
+        const snap = await api.getEnvironmentSnapshot();
+        if (snap) this.#adoptSnapshot(snap);
+      } catch (err) {
+        // Предыдущее валидное состояние сохранено намеренно; ошибка видна
+        // только если её ждали «в лицо» (не фоновое обновление).
+        if (this.#snapshotForeground > 0) {
+          this.snapshotError = sanitizeErrorMessage(err);
+        }
+      } finally {
+        this.#snapshotInFlight = null;
+        if (foreground) this.#releaseSnapshotWait();
+      }
+    })();
+    this.#snapshotInFlight = flight;
+    return flight;
+  }
+
+  #releaseSnapshotWait(): void {
+    this.#snapshotForeground -= 1;
+    if (this.#snapshotForeground <= 0) {
+      this.#snapshotForeground = 0;
       this.snapshotLoading = false;
     }
   }
@@ -407,15 +535,52 @@ class ToolchainController {
     }
   }
 
-  /** Автоскан при входе (контракт §4.2): reconnect или новый запуск. */
+  /** Автоскан при входе (контракт §4.2): reconnect или новый запуск.
+   *  Гонок нет: reconnect всегда раньше старта, повторные вызовы во
+   *  время полёта коалесцируются, один и тот же скан не стартует дважды. */
   async ensureScanRunning(): Promise<ScanJobSnapshot | null> {
-    if (this.currentScan && !scanIsTerminalState(this.currentScan.terminal)) {
-      return this.currentScan; // уже идёт — reconnect не нужен
+    const active = this.currentScan;
+    if (active && !scanIsTerminalState(active.terminal)) {
+      return active; // уже идёт — reconnect не нужен
     }
+    this.scanReconnecting = true;
+    try {
+      return await this.#scanCoordinator.ensureRunning();
+    } finally {
+      this.scanReconnecting = false;
+    }
+  }
+
+  /** Reconnect скана (общая цепочка старта): применяет актуальное задание.
+   *  Коалесцируется: пока полёт жив, повторные вызовы получают тот же
+   *  результат — один getLatestScanJob на всю цепочку запуска. */
+  #reconnectScanOnce(): Promise<void> {
+    if (!this.#scanReconnectPromise) {
+      this.#scanReconnectPromise = (async () => {
+        try {
+          const latestScan = await api.getLatestScanJob();
+          if (latestScan) this.#adoptScan(latestScan);
+        } catch {
+          /* нет данных о сканах — не ошибка UI */
+        }
+      })().finally(() => {
+        this.#scanReconnectPromise = null;
+      });
+    }
+    return this.#scanReconnectPromise;
+  }
+
+  /** Старт нового скана — только когда после reconnect ничего не бежит. */
+  async #startNewScan(): Promise<ScanJobSnapshot | null> {
     try {
       const outcome = await api.startScan();
-      const job =
-        "Started" in outcome ? outcome.Started : outcome.AlreadyRunning;
+      // Guard вместо `"Started" in outcome`: outcome из IPC может быть
+      // малиформированным — тогда честный null, а не краш.
+      const job = scanStartJobId(outcome);
+      if (!job) {
+        this.snapshotError = "Бэкенд вернул нечитаемый результат запуска скана";
+        return null;
+      }
       this.#adoptScan(job);
       return job;
     } catch (err) {
@@ -516,6 +681,12 @@ class ToolchainController {
   }
 
   #adoptJob(job: PersistedJob): void {
+    if (this.currentJob?.job_id === job.job_id) {
+      // Та же запись (reconnect/повторное усыновление): трекер и guard
+      // уже подписаны — дублирующих слушателей не создаём.
+      this.currentJob = job;
+      return;
+    }
     this.currentJob = job;
     this.currentJobLastSeq = 0;
     this.#jobGuards.set(job.job_id, new TerminalGuard());
@@ -574,14 +745,10 @@ class ToolchainController {
   /**
    * Метаданные state.json (санитизированный view, без секретов):
    * нужны для факта «усыновлён/наблюдается» в drawer'е.
+   * Коалесцируется: повторные вызовы во время полёта — один IPC.
    */
-  async refreshAdopted(): Promise<void> {
-    try {
-      const meta = await api.getToolchainMetadata();
-      this.adopted = meta.adopted ?? {};
-    } catch {
-      /* отсутствие метаданных не блокирует UI: считаем набор пустым */
-    }
+  refreshAdopted(): Promise<void> {
+    return this.#adoptedCall.call();
   }
 
   /**
@@ -605,21 +772,19 @@ class ToolchainController {
     return Object.prototype.hasOwnProperty.call(this.adopted, toolId);
   }
 
-  /** Каталог из снапшота; если его нет — честная загрузка деталей. */
+  /** Каталог из снапшота; если его нет — честная загрузка деталей.
+   *  Читает через ЕДИНЫЙ полёт снапшота — дублирующего IPC не бывает. */
   async loadCatalog(): Promise<void> {
     if (this.catalog.length > 0 || this.catalogLoading) return;
     this.catalogLoading = true;
-    this.catalogError = null;
     try {
-      const snap = await api.getEnvironmentSnapshot();
+      await this.refreshSnapshot();
+      const snap = this.cachedSnapshot;
       if (snap) {
-        this.cachedSnapshot = snap;
         this.catalog = snap.tools;
       } else {
-        this.catalogError = "Снапшот отсутствует — выполните первый скан";
+        this.catalogError = this.snapshotError ?? "Снапшот отсутствует — выполните первый скан";
       }
-    } catch (err) {
-      this.catalogError = sanitizeErrorMessage(err);
     } finally {
       this.catalogLoading = false;
     }
@@ -628,43 +793,71 @@ class ToolchainController {
   /**
    * Метаданные каталога (описания, источники, зависимости). Грузятся один
    * раз; провал сохраняет прежнее состояние и виден рядом с данными.
+   * Коалесцируется: параллельных tcx_get_catalog не бывает.
    */
-  async ensureDefinitions(): Promise<void> {
-    if (Object.keys(this.definitions).length > 0 || this.definitionsLoading) return;
-    this.definitionsLoading = true;
-    this.definitionsError = null;
-    try {
-      const defs = await api.getCatalog();
-      const map: Record<string, ToolDefinition> = {};
-      for (const d of defs) map[d.id] = d;
-      this.definitions = map;
-    } catch (err) {
-      this.definitionsError = sanitizeErrorMessage(err);
-    } finally {
-      this.definitionsLoading = false;
-    }
+  ensureDefinitions(): Promise<void> {
+    if (Object.keys(this.definitions).length > 0) return Promise.resolve();
+    // Ошибка пишется в definitionsError (виден retry-экран); отклонение
+    // наружу не уходит — fire-and-forget-вызовы не роняют консоль.
+    return this.#definitionsCall.call().catch(() => {});
   }
 
   definitionFor(toolId: string): ToolDefinition | null {
     return this.definitions[toolId] ?? null;
   }
 
-  /** Живые детали одного инструмента (drawer). Провал сохраняет старое. */
-  async refreshToolDetails(toolId: string): Promise<ToolScanResult | null> {
-    try {
-      const result = await api.getToolDetails(toolId);
-      this.liveTools = { ...this.liveTools, [toolId]: result };
-      return result;
-    } catch (err) {
-      notifyError("Не удалось обновить инструмент", sanitizeErrorMessage(err));
-      return null;
+  /** Живые детали одного инструмента (drawer). Провал сохраняет старое.
+   *  Race-safe: применяется только ответ ПОСЛЕДНЕГО выбранного инструмента
+   *  (медленный ответ прежнего выбора не перезаписывает drawer), а в
+   *  пределах одного инструмента запросы коалесцируются. */
+  refreshToolDetails(toolId: string): Promise<ToolScanResult | null> {
+    this.#detailsGuard.begin(toolId);
+    const existing = this.#detailsInFlight.get(toolId);
+    if (existing) {
+      // Запрос для этого инструмента уже в полёте — ждём его же.
+      return existing.then((result) => {
+        if (result && this.#detailsGuard.isLatest(toolId)) {
+          this.liveTools = { ...this.liveTools, [toolId]: result };
+        }
+        return result;
+      });
     }
+    this.detailsLoading = true;
+    this.detailsError = null;
+    const flight = api
+      .getToolDetails(toolId)
+      .then((result) => {
+        // Stale-guard: если выбор сменился, ответ прежнего инструмента
+        // не пишется в состояние (drawer читает только текущий).
+        if (this.#detailsGuard.isLatest(toolId)) {
+          this.liveTools = { ...this.liveTools, [toolId]: result };
+        }
+        return result;
+      })
+      .catch((err) => {
+        if (this.#detailsGuard.isLatest(toolId)) {
+          this.detailsError = sanitizeErrorMessage(err);
+          notifyError("Не удалось обновить инструмент", this.detailsError);
+        }
+        return null;
+      })
+      .finally(() => {
+        this.#detailsInFlight.delete(toolId);
+        if (this.#detailsGuard.isLatest(toolId)) this.detailsLoading = false;
+      });
+    this.#detailsInFlight.set(toolId, flight);
+    return flight;
   }
 
-  /** Health-check выбранных инструментов (read-only). */
+  /** Health-check выбранных инструментов (read-only).
+   *  Коалесцирование в пределах инструмента: параллельных проверок
+   *  одного id не бывает. */
   async runHealthChecks(toolIds: string[]): Promise<ToolScanResult[]> {
+    const pending = toolIds.filter((id) => !this.#healthInFlight.has(id));
+    if (pending.length === 0) return [];
+    for (const id of pending) this.#healthInFlight.add(id);
     try {
-      const results = await api.runHealthChecks(toolIds);
+      const results = await api.runHealthChecks(pending);
       const next = { ...this.liveTools };
       for (const r of results) next[r.tool_id] = r;
       this.liveTools = next;
@@ -672,6 +865,8 @@ class ToolchainController {
     } catch (err) {
       notifyError("Проверка здоровья не удалась", sanitizeErrorMessage(err));
       return [];
+    } finally {
+      for (const id of pending) this.#healthInFlight.delete(id);
     }
   }
 
@@ -693,6 +888,40 @@ class ToolchainController {
     } finally {
       this.profileLoading = false;
     }
+  }
+
+  // ==========================================================
+  // Marketplace (витрина инструментов)
+  // ==========================================================
+
+  /** ОС витрины: снапшот, иначе лёгкий read-only опрос окружения. */
+  marketplaceOs = $state<string | null>(null);
+  marketplaceOsLoading = $state(false);
+  marketplaceOsError = $state<string | null>(null);
+
+  /** Определяет текущую платформу для витрины. Работает БЕЗ снапшота.
+   *  Провал опроса окружения — видимая ошибка с повтором, а не вечный
+   *  экран «Определяем платформу…». */
+  async ensureMarketplacePlatform(): Promise<string | null> {
+    const fromSnapshot = this.liveSnapshot?.os;
+    if (fromSnapshot) {
+      this.marketplaceOs = fromSnapshot;
+      this.marketplaceOsError = null;
+      return fromSnapshot;
+    }
+    if (this.marketplaceOsLoading) return this.marketplaceOs;
+    this.marketplaceOsLoading = true;
+    try {
+      const info = await api.getEnvironmentInfo();
+      this.marketplaceOs = info?.os ?? null;
+      this.marketplaceOsError = info?.os ? null : "Бэкенд не сообщил платформу";
+    } catch (err) {
+      this.marketplaceOs = null;
+      this.marketplaceOsError = sanitizeErrorMessage(err);
+    } finally {
+      this.marketplaceOsLoading = false;
+    }
+    return this.marketplaceOs;
   }
 
   // ==========================================================
@@ -751,11 +980,7 @@ class ToolchainController {
     savePrefs({
       mode: this.mode,
       logPanelOpen: this.logPanelOpen,
-      filters: {
-        search: this.filters.search,
-        categories: this.filters.categories,
-        states: this.filters.states,
-      },
+      filters: { ...this.filters },
     });
   }
 
@@ -765,11 +990,6 @@ class ToolchainController {
 
   toolById(toolId: string): ToolScanResult | null {
     return resolveToolState(this.cachedSnapshot, this.liveTools, toolId);
-  }
-
-  /** Состояние инструмента, разобранное безопасно (для событий со строкой). */
-  static parseState(raw: string): ReturnType<typeof parseToolState> {
-    return parseToolState(raw);
   }
 }
 

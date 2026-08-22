@@ -25,6 +25,7 @@
   import ToolDetailDrawer from "$lib/modules/toolchain/components/ToolDetailDrawer.svelte";
   import BuildEnvironmentMode from "$lib/modules/toolchain/components/BuildEnvironmentMode.svelte";
   import ManageEverythingMode from "$lib/modules/toolchain/components/ManageEverythingMode.svelte";
+  import MarketplaceMode from "$lib/modules/toolchain/components/MarketplaceMode.svelte";
   import PlanReviewModal, {
     type PlanRequest,
   } from "$lib/modules/toolchain/components/PlanReviewModal.svelte";
@@ -32,6 +33,7 @@
     formatAgeSeconds,
     platformName,
   } from "$lib/modules/toolchain/format";
+  import { defaultCatalogFilters } from "$lib/modules/toolchain/filters";
 
   let planRequest = $state<PlanRequest | null>(null);
   let busyRecheck = $state(false);
@@ -82,6 +84,7 @@
   const modeTabs = [
     { id: "manage_everything", label: "Управлять всем", icon: "layers" as const },
     { id: "build_environment", label: "Собрать окружение", icon: "sparkles" as const },
+    { id: "tool_marketplace", label: "Витрина инструментов", icon: "store" as const },
   ];
 
   onMount(() => {
@@ -97,18 +100,16 @@
   });
 
   function switchMode(id: string): void {
-    toolchain.setMode(id === "build_environment" ? "build_environment" : "manage_everything");
+    if (id === "build_environment") toolchain.setMode("build_environment");
+    else if (id === "tool_marketplace") toolchain.setMode("tool_marketplace");
+    else toolchain.setMode("manage_everything");
   }
 
   function reviewUpdates(): void {
     toolchain.setMode("manage_everything");
-    toolchain.setFilters({
-      ...toolchain.filters,
-      update_only: true,
-      search: "",
-      categories: [],
-      states: [],
-    });
+    // Обзор обновлений = только фильтр update_only; все прочие группы
+    // сбрасываются (иначе «обзор» молча скрывал бы инструменты).
+    toolchain.setFilters({ ...defaultCatalogFilters(), update_only: true });
   }
 
   async function recheck(toolId: string): Promise<void> {
@@ -175,10 +176,10 @@
           variant="primary"
           size="sm"
           icon="refresh"
-          loading={scanning}
+          loading={scanning || toolchain.scanReconnecting}
           onclick={() => void toolchain.ensureScanRunning()}
         >
-          {scanning ? "Сканирование…" : "Сканировать"}
+          {scanning ? "Сканирование…" : toolchain.scanReconnecting ? "Подключение…" : "Сканировать"}
         </Button>
         <IconButton
           icon="terminal"
@@ -222,11 +223,13 @@
     <span class="modes-hint" id="mode-hint">
       {toolchain.mode === "build_environment"
         ? "Выберите стек — бэкенд соберёт план окружения"
-        : "Полный каталог инструментов этой машины"}
+        : toolchain.mode === "tool_marketplace"
+          ? "Каталог standalone Toolchain для этой платформы — работает и без скана"
+          : "Полный каталог инструментов этой машины"}
     </span>
   </div>
 
-  <!-- ===== Содержимое режима (обе ветки живут: выбор стека не теряется) ===== -->
+  <!-- ===== Содержимое режима (все ветки живут: выбор не теряется) ===== -->
   <div class="mode-pane" hidden={toolchain.mode !== "build_environment"}>
     <Card padding="md">
       <BuildEnvironmentMode liveStateById={liveStateById} onplan={openPlan} onopenmanage={() => switchMode("manage_everything")} />
@@ -236,6 +239,12 @@
     <ManageEverythingMode
       onplan={(op, id) => openPlan(op, [id])}
       onrecheck={(id) => recheck(id)}
+    />
+  </div>
+  <div class="mode-pane" hidden={toolchain.mode !== "tool_marketplace"}>
+    <MarketplaceMode
+      onplan={(op, id) => openPlan(op as CardPlanOp, [id])}
+      ondetails={(id) => toolchain.selectTool(id)}
     />
   </div>
 
@@ -254,6 +263,11 @@
     dependents={dependents}
     jobLogLines={toolLogLines}
     busyRecheck={busyRecheck}
+    busyDetails={toolchain.detailsLoading}
+    detailsError={toolchain.detailsError}
+    detailsRetry={
+      selectedToolId ? () => void toolchain.refreshToolDetails(selectedToolId) : null
+    }
     os={snapshot?.os ?? ""}
     adopted={selectedToolId ? toolchain.isAdopted(selectedToolId) : false}
     onclose={() => toolchain.toggleDrawer(false)}

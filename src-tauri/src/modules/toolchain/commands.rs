@@ -89,8 +89,12 @@ pub async fn tc_check_environment(
     let free_space_mb = core::disk::free_space_mb(&core::disk::install_root())
         .await
         .unwrap_or(0);
+    // ЛЕГАСИ-поверхность мастера: объединённый каталог (standalone +
+    // unity/unreal/godot-совместимость), иначе фреймворки легаси-мастера
+    // молча теряли бы требования.
+    let merged = state.merged_definitions();
     let mut check = core::check::run_check(
-        state.definitions(),
+        &merged,
         &requested,
         &install_options,
         free_space_mb,
@@ -102,7 +106,7 @@ pub async fn tc_check_environment(
     // проекта. Пользователь может переключить их на локальную установку —
     // тогда они переезжают в requirements (local_infra_tools).
     check.optional_requirements =
-        core::requirements::docker_optional_requirements(&requirements, state.definitions());
+        core::requirements::docker_optional_requirements(&requirements, &merged);
     eprintln!(
         "[toolchain] check_environment: готово — {} требований, {} опциональных (docker), {} МБ, complete={}, all_ready={}",
         check.requirements.len(),
@@ -157,7 +161,10 @@ pub fn tc_build_install_plan(
         .filter(|r| !r.install_options.is_empty())
         .map(|r| (r.tool_id.clone(), r.install_options.clone()))
         .collect();
-    core::planner::canonicalize_plan(state.definitions(), &ids, &options)
+    // ЛЕГАСИ-поверхность: объединённый каталог (manual-only движки из
+    // легаси-совместимости отбрасываются canonicalize_plan'ом как и раньше).
+    let merged = state.merged_definitions();
+    core::planner::canonicalize_plan(&merged, &ids, &options)
 }
 
 /// Запускает установку по утверждённому плану.
@@ -220,8 +227,25 @@ pub fn register_tcx_event_sink(state: &ToolchainState, app: tauri::AppHandle) {
 // Построение планов
 // ------------------------------------------------------------
 
+/// Мягкий предел построения канонического плана. Обнаружение каждого
+/// инструмента ограничено пробным таймаутом, но страховка сверху
+/// гарантирует терминальность: успех, структурированная ошибка или
+/// конечный таймаут с понятным сообщением (план никогда не «строится
+/// вечно»).
+const PLAN_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Строит канонический план из ограниченного запроса: свежее
 // обнаружение + свободное место на диске установки.
+//
+// Гарантии:
+//   - детерминированность: обнаруживаются ТОЛЬКО запрошенные
+//     инструменты (+ замыкание зависимостей), полный скан каталога
+//     не запускается;
+//   - конечность: общий таймаут PLAN_BUILD_TIMEOUT → структурированная
+//     ошибка PlannerTimeout вместо бесконечного ожидания;
+//   - защита от устаревшего плана живёт В САМОМ планировщике:
+//     request.expected_plan_fingerprint != свежий отпечаток →
+//     PlanChanged (см. engine/planner.rs).
 async fn build_canonical(
     state: &ToolchainState,
     request: &engine::EngineRequest,
@@ -234,8 +258,13 @@ async fn build_canonical(
         .await
         .unwrap_or(u64::MAX);
     let inputs = engine::PlanInputs::new(state.definitions(), &detector).with_free_space(free);
-    engine::build_plan(request, &inputs)
+    tokio::time::timeout(PLAN_BUILD_TIMEOUT, engine::build_plan(request, &inputs))
         .await
+        .unwrap_or_else(|_| {
+            Err(engine::PlanError::PlannerTimeout {
+                seconds: PLAN_BUILD_TIMEOUT.as_secs(),
+            })
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -279,6 +308,17 @@ async fn start_engine_job(
     legacy: Option<LegacyCompat>,
 ) -> Result<String, String> {
     let canonical = build_canonical(state, &request).await?;
+    start_engine_job_from_plan(state, canonical, legacy).await
+}
+
+/// Запуск уже построенного канонического плана (общая регистрация +
+/// финализация). Используется и start_engine_job, и повторами заданий —
+/// план строится ровно один раз.
+async fn start_engine_job_from_plan(
+    state: &ToolchainState,
+    canonical: engine::CanonicalPlan,
+    legacy: Option<LegacyCompat>,
+) -> Result<String, String> {
     let job_engine = state.job_engine();
     let handle = job_engine.register(canonical)?;
     let job_id = handle.snapshot().job_id;
@@ -389,7 +429,18 @@ pub async fn tcx_retry_job(
     request.confirm_unverified_sources = !record.plan.unverified_tools().is_empty();
     request.confirm_admin_elevation = record.plan.needs_admin_any;
 
-    start_engine_job(&state, request, None).await
+    // Свежий план строится ОДИН раз: если окружение изменилось и все
+    // инструменты уже в порядке, повторять нечего — запуск noop-задания
+    // «успешно завершился бы», ничего не сделав (ложь пользователю).
+    let canonical = build_canonical(&state, &request).await?;
+    if canonical.actionable_tool_ids().is_empty() {
+        return Err(
+            "Инструменты задания уже в порядке — повторять нечего. Обновите состояние окружения и пересмотрите план."
+                .to_string(),
+        );
+    }
+
+    start_engine_job_from_plan(&state, canonical, None).await
 }
 
 /// ЯВНОЕ действие «усыновить/наблюдать» найденную ручную установку.
@@ -862,7 +913,8 @@ pub fn tc_get_metadata(state: State<'_, ToolchainState>) -> ToolchainMetadataVie
 pub async fn tc_get_health_report(
     state: State<'_, ToolchainState>,
 ) -> Result<HealthReport, String> {
-    let definitions = state.definitions();
+    // ЛЕГАСИ-поверхность: объединённый каталог (см. merged_definitions).
+    let definitions = state.merged_definitions();
     let installed = state
         .metadata()
         .lock()
@@ -875,7 +927,7 @@ pub async fn tc_get_health_report(
     let visible: Vec<ToolDefinition> = definitions
         .iter()
         .filter(|d| {
-            !core::requirements::is_dual_tool(&d.id, definitions) || installed.contains(&d.id)
+            !core::requirements::is_dual_tool(&d.id, &definitions) || installed.contains(&d.id)
         })
         .cloned()
         .collect();
@@ -902,13 +954,28 @@ pub async fn tc_get_health_report(
 use super::domain::engine::{ScanEngine, ScanEvent, ScanEventFn, ScanOptions, ScanStartOutcome};
 use super::domain::models::{EnvironmentSnapshot, ScanJobSnapshot, ToolScanResult};
 
+/// Каталог STANDALONE Toolchain (только tools.json): без легаси-совместимости
+/// Project Creator. Единственный каталог UI standalone-страницы, сканов и
+/// планировщика: unity/unreal/godot сюда не входят и по id из этого каталога
+/// не разрешаются.
+#[tauri::command]
+pub fn tcx_get_catalog(state: State<'_, ToolchainState>) -> Vec<ToolDefinition> {
+    state.definitions().to_vec()
+}
+
 /// Контекст скана из живого состояния приложения (PATH процесса +
-/// пользовательский PATH + происхождение из state.json).
+/// постоянный PATH отдельно + происхождение из state.json).
 async fn domain_scan_context(state: &ToolchainState) -> super::domain::detect::ScanContext {
     let platform = crate::modules::toolchain::platforms::current_platform();
-    let mut process_entries = core::path_service::process_path_entries();
+    let process_entries = core::path_service::process_path_entries();
+    // Постоянный PATH — отдельный слой правды: запись может быть в
+    // реестре, но отсутствовать в PATH текущего процесса.
+    let mut persisted_entries = Vec::new();
     if let Ok(user_entries) = platform.read_user_path().await {
-        process_entries.extend(user_entries);
+        persisted_entries.extend(user_entries);
+    }
+    if let Ok(system_entries) = platform.read_system_path().await {
+        persisted_entries.extend(system_entries);
     }
     let managed_tools = state
         .metadata()
@@ -919,14 +986,16 @@ async fn domain_scan_context(state: &ToolchainState) -> super::domain::detect::S
         .keys()
         .cloned()
         .collect();
-    let dual_tools = state
-        .definitions()
-        .iter()
-        .filter(|d| core::requirements::is_dual_tool(&d.id, state.definitions()))
-        .map(|d| d.id.clone())
-        .collect();
+    // STANDALONE: «двойные» docker-инструменты Project Creator здесь
+    // НЕ классифицируются. PostgreSQL/Redis/MongoDB/Kafka/Grafana/MySQL —
+    // обычные локально-устанавливаемые инструменты (Docker — только
+    // рекомендация/альтернатива в метаданных каталога), поэтому
+    // dual_tools пуст: ни DockerManaged-состояний, ни docker-provenance
+    // в standalone-скане не возникает.
+    let dual_tools: std::collections::HashSet<String> = Default::default();
     super::domain::detect::ScanContext {
         process_entries,
+        persisted_entries,
         managed_tools,
         dual_tools,
         os_name: platform.os_name(),
@@ -1040,12 +1109,24 @@ pub async fn tcx_get_tool_details(
 
 /// Здоровье выбранных инструментов (с живым обнаружением): ограниченный
 /// параллелизм, детерминированный порядок ответа = порядок запроса.
-/// Идентификаторы валидируются по каталогу; неизвестные игнорируются.
+/// Идентификаторы валидируются по каталогу; неизвестный id — ошибка
+/// запроса (fail-closed: тихого «забыли проверить» не бывает).
 #[tauri::command]
 pub async fn tcx_run_health_checks(
     state: State<'_, ToolchainState>,
     tool_ids: Vec<String>,
 ) -> Result<Vec<ToolScanResult>, String> {
+    let unknown: Vec<String> = tool_ids
+        .iter()
+        .filter(|id| state.get_definition(id).is_none())
+        .cloned()
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "Неизвестные инструменты в запросе проверки: {}",
+            unknown.join(", ")
+        ));
+    }
     let ctx = domain_scan_context(&state).await;
     let defs: Vec<crate::modules::toolchain::models::ToolDefinition> = tool_ids
         .into_iter()

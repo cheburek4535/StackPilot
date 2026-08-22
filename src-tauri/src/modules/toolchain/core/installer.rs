@@ -429,94 +429,13 @@ fn build_install_command(
                     })
                 }
 
-                // Архивы: распаковка в install_dir, а не запуск.
-                ExecutionKind::Archive => {
-                    let Some(dir) = source.install_dir.as_ref() else {
-                        return Err(format!(
-                            "{}: zip/tar-источник требует install_dir в tools.json",
-                            source.id
-                        ));
-                    };
-                    let dir = path_service::expand_env_vars(dir);
-                    match path.extension().and_then(|e| e.to_str()) {
-                        // zip (gradle, maven, elixir): распаковка без прав —
-                        // в каталог из install_dir. %VAR% раскрываем здесь:
-                        // PowerShell (в отличие от cmd) синтаксис %LOCALAPPDATA%
-                        // не понимает.
-                        //
-                        // Fallback на tar: Expand-Archive падает на zip MongoDB
-                        // (741МБ, битые записи PDB) — встроенный tar (Windows 10+)
-                        // такие архивы распаковывает.
-                        Some(ext) if ext.eq_ignore_ascii_case("zip") => {
-                            let script = format!(
-                                r#"$ErrorActionPreference = 'Stop'
-$dir = {1}
-try {{
-    Expand-Archive -Path {0} -DestinationPath $dir -Force
-}} catch {{
-    Write-Output "tc:warn Expand-Archive не сработал ($($_.Exception.Message)) — пробуем tar"
-    tar -xf {2} -C $dir
-    if ($LASTEXITCODE -ne 0) {{
-        Write-Output "tc:error tar -xf не смог распаковать архив"
-        exit 1
-    }}
-}}
-Get-ChildItem -Path $dir -Recurse -Include *.bat -File | ForEach-Object {{
-    $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $t = ($t -replace "`r`n", "`n") -replace "`n", "`r`n"
-    [System.IO.File]::WriteAllText($_.FullName, $t, (New-Object System.Text.UTF8Encoding $false))
-}}
-"#,
-                                ps_quote(&path.to_string_lossy()),
-                                ps_quote(&dir),
-                                ps_quote(&path.to_string_lossy())
-                            );
-                            Ok(InstallCommand {
-                                program: "powershell".to_string(),
-                                args: vec![
-                                    "-NoProfile".to_string(),
-                                    "-ExecutionPolicy".to_string(),
-                                    "Bypass".to_string(),
-                                    "-Command".to_string(),
-                                    script,
-                                ],
-                            })
-                        }
-                        // tgz/tar.gz (kafka): распаковка через встроенный tar —
-                        // Expand-Archive такие архивы не понимает.
-                        _ => {
-                            let script = format!(
-                                r#"$ErrorActionPreference = 'Stop'
-New-Item -ItemType Directory -Force -Path {1} | Out-Null
-tar -xf {0} -C {1}
-if ($LASTEXITCODE -ne 0) {{
-    Write-Output "tc:error tar -xf не смог распаковать архив (код $LASTEXITCODE)"
-    exit 1
-}}
-# архивы из Unix-мира содержат bat с LF-only переносами, cmd их не понимает —
-# нормализуем в CRLF
-Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
-    $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $t = ($t -replace "`r`n", "`n") -replace "`n", "`r`n"
-    [System.IO.File]::WriteAllText($_.FullName, $t, (New-Object System.Text.UTF8Encoding $false))
-}}
-"#,
-                                ps_quote(&path.to_string_lossy()),
-                                ps_quote(&dir)
-                            );
-                            Ok(InstallCommand {
-                                program: "powershell".to_string(),
-                                args: vec![
-                                    "-NoProfile".to_string(),
-                                    "-ExecutionPolicy".to_string(),
-                                    "Bypass".to_string(),
-                                    "-Command".to_string(),
-                                    script,
-                                ],
-                            })
-                        }
-                    }
-                }
+                // Архивы: распаковка идёт ТОЛЬКО через безопасный слой
+                // archive.rs (prevalidation + traversal-safe извлечение),
+                // а не через «запуск команды»: см. try_install_source.
+                ExecutionKind::Archive => Err(format!(
+                    "{}: архивный источник распаковывается безопасным слоем archive.rs, команда не строится",
+                    source.id
+                )),
 
                 // Бинарь/инсталлятор: msi → msiexec, msix → App Installer,
                 // exe → запуск напрямую.
@@ -546,6 +465,12 @@ Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
                         // набор лежит в DesktopAppInstaller_Dependencies.zip того же
                         // релиза winget-cli; ставим их первыми (мимо Windows Store,
                         // skip уже установленных — иначе 0x80073D06).
+                        //
+                        // Целостность зависимостей: zip качается напрямую с
+                        // официального релиза winget-cli (microsoft/winget-cli),
+                        // внутри — appx-пакеты, ПОДПИСАННЫЕ Microsoft: Add-AppxPackage
+                        // проверяет сигнатуру при установке, поэтому подмена
+                        // пакета невозможна без разрыва подписи.
                         Some(ext)
                             if ext.eq_ignore_ascii_case("msix")
                                 || ext.eq_ignore_ascii_case("msixbundle") =>
@@ -603,10 +528,12 @@ try {{
                             );
                             Ok(InstallCommand {
                                 program: "powershell".to_string(),
+                                // Inline -Command: политика выполнения к
+                                // командам-строкам не применяется (она
+                                // касается .ps1-файлов), поэтому Bypass
+                                // здесь не нужен.
                                 args: vec![
                                     "-NoProfile".to_string(),
-                                    "-ExecutionPolicy".to_string(),
-                                    "Bypass".to_string(),
                                     "-Command".to_string(),
                                     script,
                                 ],
@@ -1379,21 +1306,57 @@ async fn try_install_source(
         }
     }
 
-    // Контракт §5, правило 5: архив проверяется на traversal ДО запуска
-    // распаковщика (fail-closed: одна опасная запись бракует весь архив).
-    // Список записей снимается через archive::prevalidate — тот же модуль,
-    // что и в qt_installer; сами скрипты распаковки не меняются.
+    // Контракт §5, правило 5: архив проверяется на traversal ДО извлечения
+    // (fail-closed: одна опасная запись бракует весь архив). ЕДИНСТВЕННЫЙ
+    // распаковщик — безопасный слой archive.rs (prevalidation + скрипт
+    // извлечения): собственных inline-скриптов распаковки здесь нет,
+    // чтобы политика безопасности не разъезжалась по файлам.
     if matches!(exec, ExecutionKind::Archive) {
-        if let Some(offline) = offline_path.as_deref() {
-            let is_zip = offline
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("zip"))
-                .unwrap_or(false);
-            archive::prevalidate_archive(offline, is_zip)
-                .await
-                .map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
-        }
+        let Some(offline) = offline_path.as_deref() else {
+            return Err("Архивный источник не скачан".to_string());
+        };
+        let Some(dir) = source.install_dir.as_ref() else {
+            return Err(format!(
+                "{}: zip/tar-источник требует install_dir в tools.json",
+                source.id
+            ));
+        };
+        let dir = path_service::expand_env_vars(dir);
+        let is_zip = offline
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("zip"))
+            .unwrap_or(false);
+        let sink_dyn: Arc<dyn EventSink> = sink.clone();
+        let result = if is_zip {
+            archive::extract_zip_safe(
+                offline,
+                Path::new(&dir),
+                tool_id,
+                task_id,
+                index,
+                total,
+                session_id,
+                &sink_dyn,
+                Arc::clone(abort),
+            )
+            .await
+        } else {
+            archive::extract_tar_safe(
+                offline,
+                Path::new(&dir),
+                tool_id,
+                task_id,
+                index,
+                total,
+                session_id,
+                &sink_dyn,
+                Arc::clone(abort),
+            )
+            .await
+        };
+        result.map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
+        skip_run = true;
     }
 
     let cmd = build_install_command(def, source, offline_path.as_deref(), password.as_deref())?;
@@ -2215,39 +2178,29 @@ mod tests {
     }
 
     #[test]
-    fn official_tgz_expands_via_tar() {
-        // kafka: tgz распаковывается через tar (Expand-Archive не умеет)
+    fn archive_source_rejects_command_building() {
+        // Архивные источники распаковываются ТОЛЬКО безопасным слоем
+        // archive.rs (prevalidation + extract_*_safe). Строитель команд
+        // обязан честно отказаться — скрипты распаковки здесь не живут
+        // (политика безопасности в одном месте).
         let source = InstallSource {
             kind: InstallSourceKind::Official,
-            id: "kafka-tgz".to_string(),
-            url: Some("https://example.com/kafka.tgz".to_string()),
+            id: "gradle-zip".to_string(),
+            url: Some("https://example.com/gradle.zip".to_string()),
             args: vec![],
             extra_args: vec![],
             dynamic_args: false,
-            install_dir: Some("%LOCALAPPDATA%/Programs/kafka".to_string()),
+            install_dir: Some("%LOCALAPPDATA%/Programs/gradle".to_string()),
             needs_admin: None,
             file_name: None,
             execution: None,
             sha256: None,
         };
-        let tgz = std::env::temp_dir().join("tc-tool-kafka.tgz");
-        let cmd = build_install_command(&bare_def(), &source, Some(&tgz), None).unwrap();
-        assert_eq!(cmd.program, "powershell");
-        let script = cmd.args.last().unwrap();
-        assert!(script.contains("tar -xf"), "нет tar -xf: {script}");
+        let zip = std::env::temp_dir().join("tc-tool-gradle.zip");
+        let err = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap_err();
         assert!(
-            script.contains("`r`n"),
-            "нет CRLF-нормализации bat: {script}"
-        );
-        // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
-        let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/kafka");
-        assert!(
-            script.contains(&expected),
-            "раскрытый install_dir в скрипте: {script}"
-        );
-        assert!(
-            !script.contains("%LOCALAPPDATA%"),
-            "сырой %VAR% в скрипте: {script}"
+            err.contains("archive.rs"),
+            "архив обязан указывать на безопасный распаковщик: {err}"
         );
     }
 
@@ -2285,72 +2238,6 @@ mod tests {
             "нет пути к MSI-логу: {:?}",
             cmd.args
         );
-    }
-
-    #[test]
-    fn official_zip_expands_via_powershell() {
-        // gradle/maven: zip распаковывается в install_dir, а не запускается
-        let source = InstallSource {
-            kind: InstallSourceKind::Official,
-            id: "gradle-zip".to_string(),
-            url: Some("https://example.com/gradle-9.1.0-bin.zip".to_string()),
-            args: vec![],
-            extra_args: vec![],
-            dynamic_args: false,
-            install_dir: Some("%LOCALAPPDATA%/Programs/gradle".to_string()),
-            needs_admin: None,
-            file_name: None,
-            execution: None,
-            sha256: None,
-        };
-        let zip = std::env::temp_dir().join("tc-tool-foo.zip");
-        let cmd = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap();
-        assert_eq!(cmd.program, "powershell");
-        let script = cmd.args.last().unwrap();
-        assert!(script.contains("Expand-Archive"), "скрипт: {script}");
-        // Fallback на tar для «тяжёлых» архивов (mongodb zip)
-        assert!(script.contains("tar -xf"), "нет tar-fallback: {script}");
-        // %LOCALAPPDATA% должен быть раскрыт заранее (PS его не понимает)
-        // и не должен попасть в скрипт как есть
-        let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/gradle");
-        assert!(
-            script.contains(&expected),
-            "раскрытый install_dir в скрипте: {script}"
-        );
-        assert!(
-            !script.contains("%LOCALAPPDATA%"),
-            "сырой %VAR% в скрипте: {script}"
-        );
-        assert!(
-            script.contains("foo.zip"),
-            "путь к архиву в скрипте: {script}"
-        );
-        // .bat-обёртки (elixir и др. GitHub-архивы) нормализуются в CRLF —
-        // иначе cmd их не читает
-        assert!(
-            script.contains("`r`n") && script.contains("*.bat"),
-            "нет CRLF-нормализации bat: {script}"
-        );
-    }
-
-    #[test]
-    fn official_zip_without_install_dir_is_rejected() {
-        let source = InstallSource {
-            kind: InstallSourceKind::Official,
-            id: "bad-zip".to_string(),
-            url: Some("https://example.com/x.zip".to_string()),
-            args: vec![],
-            extra_args: vec![],
-            dynamic_args: false,
-            install_dir: None,
-            needs_admin: None,
-            file_name: None,
-            execution: None,
-            sha256: None,
-        };
-        let zip = std::env::temp_dir().join("tc-tool-bad.zip");
-        let err = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap_err();
-        assert!(err.contains("install_dir"), "ошибка: {err}");
     }
 
     #[test]

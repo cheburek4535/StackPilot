@@ -60,8 +60,6 @@ pub enum ToolState {
     /// Каталог не поддерживает эту платформу для инструмента
     /// (например msvc-build-tools на Linux).
     UnsupportedPlatform,
-    /// Инструмент был бы нужен, но источника установки на этой ОС нет.
-    InstallUnavailable,
 }
 
 // ------------------------------------------------------------
@@ -80,6 +78,50 @@ pub enum EvidenceKind {
     Footprint,
 }
 
+/// Где бинарь установки доступен относительно PATH — ПРАВДА по слоям,
+/// а не единый «сломан/не сломан» (контракт: классификация PATH).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathScope {
+    /// Каталог есть в PATH текущего процесса: команда работает прямо сейчас.
+    ProcessPath,
+    /// Каталог есть в постоянном (пользовательском/системном) PATH, но
+    /// НЕ в PATH текущего процесса: заработает в новых оболочках/после
+    /// перезапуска приложения, но не в этом процессе.
+    PersistedPathOnly,
+    /// Каталога нет ни в PATH процесса, ни в постоянном PATH:
+    /// известная установка вне PATH.
+    OutsidePath,
+}
+
+/// Журнал одной пробы обнаружения: полный лог для UI (stdout/stderr целиком
+/// в пределах санитизации, код выхода, таймаут, ошибка запуска).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeLog {
+    /// Команда пробы (идентичность того, что запускалось).
+    pub command: Vec<String>,
+    /// Санитизированный stdout (может быть пуст).
+    #[serde(default)]
+    pub stdout: String,
+    /// Санитизированный stderr (может быть пуст; java -version пишет сюда).
+    #[serde(default)]
+    pub stderr: String,
+    /// Код выхода, когда процесс выполнился.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    /// true — проба не уложилась в таймаут (процесс убит).
+    #[serde(default)]
+    pub timed_out: bool,
+    /// true — бинаря нет вообще (чистый промах поиска).
+    #[serde(default)]
+    pub not_found: bool,
+    /// Some(описание) — запустить не удалось (права/ошибка ОС).
+    #[serde(default)]
+    pub launch_error: Option<String>,
+    /// Длительность пробы.
+    pub duration_ms: u64,
+}
+
 /// Одна конкретная установка инструмента (их может быть несколько).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectedInstall {
@@ -96,10 +138,19 @@ pub struct DetectedInstall {
     pub evidence: EvidenceKind,
     /// Виден ли каталог установки в PATH процесса.
     pub reachable_via_path: bool,
+    /// Классификация по слоям PATH (None — старые снапшоты без поля;
+    /// отсутствие поля честно трактуется как «данных нет», не догадка).
+    #[serde(default)]
+    pub path_scope: Option<PathScope>,
+    /// Полный журнал пробы, породившей эту улику (для ленты логов UI).
+    #[serde(default)]
+    pub probe_log: Option<ProbeLog>,
 }
 
 /// Итог живого обнаружения. `Failed` — ошибка/таймаут опроса,
-/// НЕ отсутствие инструмента.
+/// НЕ отсутствие инструмента; `Detected` — положительный результат:
+/// улики есть (перечислены в ToolScanResult::installs), вердикт обязан
+/// им соответствовать.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DetectionOutcome {
@@ -107,6 +158,10 @@ pub enum DetectionOutcome {
     Pending,
     /// Чистый отрицательный результат: проб и следов нет.
     NotDetected,
+    /// Положительный результат: есть хотя бы одна улика установки
+    /// (installs непуст или есть silent-on-path улика). Сам вариант
+    /// payload не дублирует — улики живут в installs/PATH-находках.
+    Detected,
     /// Опрос не удался (таймаут/ошибка ввода-вывода) — неизвестно.
     Failed { reason: String },
 }
@@ -154,20 +209,6 @@ pub enum Provenance {
     Docker,
     /// Неизвестно (не найден / нет данных).
     Unknown,
-}
-
-impl Provenance {
-    /// Происхождение из персистентных метаданных установок:
-    /// запись в state.json = ставили мы (StackPilot), иначе — внешний.
-    /// Потребитель — командный слой на следующем этапе (tcx_*).
-    #[allow(dead_code)]
-    pub fn from_metadata(managed_by_stackpilot: bool) -> Self {
-        if managed_by_stackpilot {
-            Provenance::StackPilotManaged
-        } else {
-            Provenance::External
-        }
-    }
 }
 
 /// Применимость инструмента к текущей платформе.
@@ -249,9 +290,8 @@ pub enum HealthState {
 
 impl HealthState {
     /// true — состояние является финальным вердиктом о работоспособности
-    /// (а не «данных нет/не применимо»). Потребитель — командный слой
-    /// и UI-маппинг на следующем этапе.
-    #[allow(dead_code)]
+    /// (а не «данных нет/не применимо»). Потребитель — тесты.
+    #[cfg(test)]
     pub fn is_verdict(&self) -> bool {
         matches!(
             self,
@@ -263,13 +303,29 @@ impl HealthState {
 /// Результат одной проверки здоровья.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckResult {
+    /// Метка проверки из каталога.
     pub label: String,
+    /// Команда проверки (идентичность того, что реально запускалось).
+    #[serde(default)]
+    pub command: Vec<String>,
     /// true — проверка пройдена (процесс завершился успешно).
     pub passed: bool,
     /// Различение причин отказа: true — процесс не запустился/упал/таймаут;
     /// false — процесс выполнился, но условие не выполнено (ненулевой код).
     pub process_failed: bool,
-    /// Санитизированный вывод (без секретов окружения, ограничен по длине).
+    /// Полный санитизированный stdout проверки (для ленты логов UI).
+    #[serde(default)]
+    pub stdout: String,
+    /// Полный санитизированный stderr проверки (daemon-диагностика и т.п.).
+    #[serde(default)]
+    pub stderr: String,
+    /// Код выхода процесса (когда процесс выполнился).
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    /// true — проверка не уложилась в таймаут (процесс убит).
+    #[serde(default)]
+    pub timed_out: bool,
+    /// Короткая безопасная сводка для компактного показа (одна строка).
     pub detail: String,
     pub duration_ms: u64,
 }
@@ -284,8 +340,8 @@ pub struct HealthOutcome {
 impl HealthOutcome {
     /// None — вердикта нет (данных нет/не применимо);
     /// Some(true/false) — все ли проверки прошли.
-    /// Потребители — тесты и будущий health-маппинг командного слоя.
-    #[allow(dead_code)]
+    /// Потребители — тесты (см. detect.rs).
+    #[cfg(test)]
     pub fn all_passed(&self) -> Option<bool> {
         match self.state {
             HealthState::Healthy | HealthState::Degraded => Some(true),
@@ -483,7 +539,6 @@ pub fn state_name(state: &ToolState) -> &'static str {
         ToolState::DockerManaged => "docker_managed",
         ToolState::BuiltInSystem => "built_in_system",
         ToolState::UnsupportedPlatform => "unsupported_platform",
-        ToolState::InstallUnavailable => "install_unavailable",
     }
 }
 
@@ -494,21 +549,38 @@ pub fn state_name(state: &ToolState) -> &'static str {
 /// Итог скоринга окружения. Формула задокументирована в score.rs;
 /// ключевые гарантии, отражённые в полях:
 ///   - инструменты без проверок и неприменимые НЕ штрафуют оценку;
-///   - scan-failed исключён из числителя и знаменателя (неизвестно ≠ плохо);
+///   - scan-failed и scan-pending исключены из числителя и знаменателя
+///     (неизвестно ≠ плохо);
 ///   - деградированные (update available) считаются половиной здоровья.
+///
+/// «Обязательных» счётчиков здесь НЕТ: знаменатель — применимые
+/// инструменты каталога, а не пользовательский профиль (контракт §4).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScoreSummary {
     /// Итоговая оценка 0..100.
     pub score: u8,
-    /// Сколько требуемых применимых инструментов вошло в знаменатель.
+    /// Сколько применимых инструментов вошло в знаменатель.
     pub counted_tools: usize,
-    pub healthy_required: usize,
+    /// Здоровые (вклад 100).
+    #[serde(default)]
+    pub healthy: usize,
+    /// Деградированные/устаревшие (вклад 50).
     pub degraded: usize,
-    pub missing_required: usize,
-    pub broken_required: usize,
-    pub unhealthy_required: usize,
+    /// Сломанные PATH (вклад 0).
+    #[serde(default)]
+    pub broken: usize,
+    /// Отсутствующие (вклад 0).
+    #[serde(default)]
+    pub missing: usize,
+    /// Нездоровые (вклад 0).
+    #[serde(default)]
+    pub unhealthy: usize,
     /// Ошибка опроса (исключены из формулы, но видны отдельно).
     pub scan_failed: usize,
+    /// Не опрошены (частичный отчёт: дедлайн/отмена) — исключены из
+    /// формулы; это «не проверено», а не «сломано».
+    #[serde(default)]
+    pub scan_pending: usize,
     /// Без проверок здоровья (исключены из формулы).
     pub unchecked: usize,
     /// Опциональные/docker/ручные/встроенные (вне знаменателя).
@@ -612,7 +684,6 @@ pub struct StatusCounts {
     pub docker_managed: usize,
     pub built_in_system: usize,
     pub unsupported_platform: usize,
-    pub install_unavailable: usize,
 }
 
 impl StatusCounts {
@@ -633,28 +704,9 @@ impl StatusCounts {
                 ToolState::DockerManaged => counts.docker_managed += 1,
                 ToolState::BuiltInSystem => counts.built_in_system += 1,
                 ToolState::UnsupportedPlatform => counts.unsupported_platform += 1,
-                ToolState::InstallUnavailable => counts.install_unavailable += 1,
             }
         }
         counts
-    }
-
-    /// Сумма по всем состояниям (санити-чек дашборда).
-    #[allow(dead_code)]
-    pub fn total(&self) -> usize {
-        self.scan_pending
-            + self.scan_failed
-            + self.missing
-            + self.installed_healthy
-            + self.installed_health_unknown
-            + self.installed_unhealthy
-            + self.update_available
-            + self.path_broken
-            + self.manual_install
-            + self.docker_managed
-            + self.built_in_system
-            + self.unsupported_platform
-            + self.install_unavailable
     }
 }
 
@@ -700,12 +752,29 @@ pub struct ToolScanResult {
     pub state: ToolState,
     #[serde(default)]
     pub error: Option<String>,
+    /// Индекс канонической установки в `installs`, по которой собрано
+    /// главное состояние (None — установок нет / старый снапшот).
+    #[serde(default)]
+    pub canonical_install: Option<usize>,
+    /// Почему выбрана каноническая установка (объяснение для UI).
+    #[serde(default)]
+    pub version_selected_because: String,
     pub duration_ms: u64,
 }
 
 impl ToolScanResult {
     /// Заготовка «ещё не сканировали» — используется в частичных отчётах.
-    pub fn pending(def: &crate::modules::toolchain::models::ToolDefinition) -> Self {
+    ///
+    /// Честность: размерности, которые можно вычислить БЕЗ обнаружения
+    /// (применимость платформы, возможности), считаются из каталога, а
+    /// не выдумываются («Installable по умолчанию» было бы ложью для
+    /// manual-only/встроенных инструментов, до которых скан не дошёл).
+    pub fn pending(
+        def: &crate::modules::toolchain::models::ToolDefinition,
+        os_name: &str,
+        is_dual_tool: bool,
+        install_execution_supported: bool,
+    ) -> Self {
         Self {
             tool_id: def.id.clone(),
             display: def.display.clone(),
@@ -715,13 +784,19 @@ impl ToolScanResult {
             installs: Vec::new(),
             path_findings: Vec::new(),
             health: None,
-            applicability: PlatformApplicability::Installable,
-            capabilities: ToolPlatformCapabilities::default(),
+            applicability: super::detect::classify_applicability(def, os_name, is_dual_tool),
+            capabilities: ToolPlatformCapabilities::for_definition(
+                def,
+                os_name,
+                install_execution_supported,
+            ),
             provenance: Provenance::Unknown,
             bundled_with: def.bundled_with.clone(),
             version_assessment: VersionAssessment::Unknown,
             state: ToolState::ScanPending,
             error: None,
+            canonical_install: None,
+            version_selected_because: String::new(),
             duration_ms: 0,
         }
     }
@@ -868,6 +943,29 @@ mod tests {
             serde_json::to_string(&DetectionOutcome::NotDetected).unwrap(),
             r#"{"kind":"not_detected"}"#
         );
+        // Положительный результат — тоже kind-объект, не голая строка.
+        assert_eq!(
+            serde_json::to_string(&DetectionOutcome::Detected).unwrap(),
+            r#"{"kind":"detected"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<DetectionOutcome>(r#"{"kind":"detected"}"#).unwrap(),
+            DetectionOutcome::Detected
+        );
+    }
+
+    /// Старые снапшоты (без варианта detected) продолжают читаться:
+    /// расширение перечисления аддитивно, кэш совместим.
+    #[test]
+    fn detection_outcome_legacy_payloads_still_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<DetectionOutcome>(r#"{"kind":"pending"}"#).unwrap(),
+            DetectionOutcome::Pending
+        );
+        assert_eq!(
+            serde_json::from_str::<DetectionOutcome>(r#"{"kind":"not_detected"}"#).unwrap(),
+            DetectionOutcome::NotDetected
+        );
     }
 
     #[test]
@@ -918,13 +1016,13 @@ mod tests {
 
     #[test]
     fn status_counts_sum_matches_total() {
-        let mut a = ToolScanResult::pending(&fake_def("a"));
+        let mut a = ToolScanResult::pending(&fake_def("a"), "windows", false, true);
         a.state = ToolState::Missing;
-        let mut b = ToolScanResult::pending(&fake_def("b"));
+        let mut b = ToolScanResult::pending(&fake_def("b"), "windows", false, true);
         b.state = ToolState::InstalledHealthy {
             version: "1".into(),
         };
-        let mut c = ToolScanResult::pending(&fake_def("c"));
+        let mut c = ToolScanResult::pending(&fake_def("c"), "windows", false, true);
         c.state = ToolState::ScanFailed {
             reason: "boom".into(),
         };
@@ -933,7 +1031,53 @@ mod tests {
         assert_eq!(counts.missing, 1);
         assert_eq!(counts.installed_healthy, 1);
         assert_eq!(counts.scan_failed, 1);
-        assert_eq!(counts.total(), 3);
+        assert_eq!(counts.scan_pending, 0);
+        assert_eq!(
+            counts.missing + counts.installed_healthy + counts.scan_failed,
+            3
+        );
+    }
+
+    /// Регрессия «заготовка pending врала о применимости»: ручной/
+    /// встроенный инструмент, до которого частичный скан не дошёл,
+    /// обязан честно остаться ManualOnly/BuiltIn, а не «Installable
+    /// по умолчанию».
+    #[test]
+    fn pending_result_carries_real_applicability_from_catalog() {
+        let mut manual = fake_def("manual-tool");
+        manual.manual_install = Some("ставится вручную".into());
+        let pending_manual = ToolScanResult::pending(&manual, "windows", false, true);
+        assert_eq!(
+            pending_manual.applicability,
+            PlatformApplicability::ManualOnly,
+            "manual-only не должен становиться Installable в частичном отчёте"
+        );
+
+        let builtin = fake_def("builtin-tool");
+        let pending_builtin = ToolScanResult::pending(&builtin, "windows", false, true);
+        assert_eq!(
+            pending_builtin.applicability,
+            PlatformApplicability::BuiltIn,
+            "инструмент без источников — BuiltIn, а не Installable"
+        );
+
+        // Возможности тоже из каталога, а не «всё false».
+        let mut installable = fake_def("installable-tool");
+        installable.sources.windows = vec![crate::modules::toolchain::models::InstallSource {
+            kind: crate::modules::toolchain::models::InstallSourceKind::Official,
+            id: "src".into(),
+            url: Some("https://example.com/x.exe".into()),
+            file_name: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            execution: None,
+            sha256: None,
+        }];
+        let pending_installable = ToolScanResult::pending(&installable, "windows", false, true);
+        assert!(pending_installable.capabilities.installable);
     }
 
     // ------------------------------------------------------------
@@ -1013,7 +1157,7 @@ mod tests {
             "started_at": "t0", "finished_at": "t1",
             "complete": true, "cancelled": false,
             "tools": [], "path_report": {"entries": [], "findings": []},
-            "score": {"score": 50, "counted_tools": 1, "healthy_required": 0,
+"score": {"score": 50, "counted_tools": 1, "healthy_required": 0,
                        "degraded": 0, "missing_required": 0, "broken_required": 0,
                        "unhealthy_required": 0, "scan_failed": 0, "unchecked": 0,
                        "optional": 0, "not_applicable": 0}
@@ -1022,7 +1166,10 @@ mod tests {
         assert_eq!(snap.arch, "");
         assert!(snap.disk.is_empty());
         assert_eq!(snap.admin, AdminCapability::default());
-        assert_eq!(snap.summary.total(), 0);
+        // Старые снапшоты с «required»-счётчиками продолжают читаться:
+        // поля игнорируются, честные новые поля дефолтны (0).
+        assert_eq!(snap.score.scan_pending, 0);
+        assert_eq!(snap.summary.scan_pending, 0);
         assert!(snap.warnings.is_empty());
         assert!(snap.active_jobs.is_empty());
 

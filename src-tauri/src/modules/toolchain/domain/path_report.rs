@@ -344,6 +344,8 @@ mod tests {
             },
             evidence: super::super::models::EvidenceKind::KnownPath,
             reachable_via_path: false,
+            path_scope: None,
+            probe_log: None,
         }];
 
         let findings = tool_path_findings(&def, &installs, &[]);
@@ -374,6 +376,8 @@ mod tests {
             location: bin.to_string_lossy().into_owned(),
             evidence: super::super::models::EvidenceKind::KnownPath,
             reachable_via_path: false,
+            path_scope: None,
+            probe_log: None,
         }];
         // Каталог родитель передан как запись PATH процесса — находки нет.
         let process_entries = vec![dir.to_string_lossy().into_owned()];

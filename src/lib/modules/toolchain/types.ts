@@ -311,51 +311,111 @@ export type HealthReport = { tools: ToolHealth[]; score: number; scanned_at: str
 
 // ------------------------------------------------------------
 // Легаси-хелперы дискриминаторов (используются Project Creator)
+// Все guard'ы рантаймные: `in` только после isRecord — малиформированный
+// payload из IPC обязан давать «неизвестное состояние», а не краш.
 // ------------------------------------------------------------
 
-export function statusIsOk(status: ToolStatus | undefined): boolean {
-  if (!status || status === "Missing" || status === "RunInDocker") return false;
+/** Безопасное извлечение строкового поля объекта-payload. */
+function fieldString(obj: unknown, key: string): string | null {
+  if (!isRecord(obj)) return null;
+  const value = obj[key];
+  return typeof value === "string" ? value : null;
+}
+
+export function statusIsOk(status: unknown): boolean {
+  // `in` допустим только на проверенном объекте — не на unknown снаружи.
+  if (!isRecord(status)) return false;
   return "Installed" in status;
 }
 
-export function statusLabel(status: ToolStatus): string {
+export function statusLabel(status: unknown): string {
   if (status === "Missing") return "Не установлен";
   if (status === "RunInDocker") return "В Docker (docker-compose)";
-  if ("Installed" in status) return `✓ ${status.Installed.version}`;
-  if ("UpdateAvailable" in status) return `Обновить до ${status.UpdateAvailable.recommended}`;
-  if ("ManualInstall" in status) return `⚠ Вручную: ${status.ManualInstall.reason}`;
-  return `⚠ ${status.PathBroken.reason}`;
-}
-
-export function statusKind(status: ToolStatus): "ok" | "update" | "broken" | "missing" | "manual" | "docker" {
-  if (status === "Missing") return "missing";
-  if (status === "RunInDocker") return "docker";
-  if ("Installed" in status) return "ok";
-  if ("UpdateAvailable" in status) return "update";
-  if ("ManualInstall" in status) return "manual";
-  return "broken";
-}
-
-export function taskStateKind(state: TaskState): "pending" | "running" | "success" | "failed" | "skipped" {
-  if (state === "Pending") return "pending";
-  if ("Running" in state) return "running";
-  if ("Success" in state) return "success";
-  if ("Failed" in state) return "failed";
-  return "skipped";
-}
-
-export function taskStateLabel(state: TaskState): string {
-  if (state === "Pending") return "В очереди";
-  if ("Running" in state) {
-    const phase = state.Running.phase;
-    if (phase === "Downloading") return "Скачивание…";
-    if (phase === "Installing") return "Установка…";
-    if (phase === "Verifying") return "Проверка…";
-    if (phase === "UpdatingPath") return "Обновление PATH…";
+  if (isRecord(status)) {
+    const keys = Object.keys(status);
+    if (keys.length === 1) {
+      switch (keys[0]) {
+        case "Installed": {
+          const version = fieldString(status.Installed, "version");
+          return version !== null ? `✓ ${version}` : "✓ Установлен";
+        }
+        case "UpdateAvailable": {
+          const payload = status.UpdateAvailable;
+          const recommended = fieldString(payload, "recommended") ?? "?";
+          return `Обновить до ${recommended}`;
+        }
+        case "ManualInstall": {
+          const reason = fieldString(status.ManualInstall, "reason") ?? "";
+          return reason ? `⚠ Вручную: ${reason}` : "⚠ Требуется ручная установка";
+        }
+        case "PathBroken": {
+          const reason = fieldString(status.PathBroken, "reason") ?? "";
+          return reason ? `⚠ ${reason}` : "⚠ PATH сломан";
+        }
+      }
+    }
   }
-  if ("Success" in state) return `Готово (${state.Success.version})`;
-  if ("Failed" in state) return `Ошибка: ${state.Failed.error}`;
-  if ("Skipped" in state) return `Пропущено: ${state.Skipped.reason}`;
+  return "Неизвестное состояние";
+}
+
+export function statusKind(status: unknown): "ok" | "update" | "broken" | "missing" | "manual" | "docker" {
+  if (typeof status === "string") {
+    if (status === "Missing") return "missing";
+    if (status === "RunInDocker") return "docker";
+  }
+  if (isRecord(status)) {
+    const key = Object.keys(status)[0];
+    if (key === "Installed") return "ok";
+    if (key === "UpdateAvailable") return "update";
+    if (key === "ManualInstall") return "manual";
+    if (key === "PathBroken") return "broken";
+  }
+  return "missing";
+}
+
+const LEGACY_PHASE_LABELS: Record<string, string> = {
+  Downloading: "Скачивание…",
+  Installing: "Установка…",
+  Verifying: "Проверка…",
+  UpdatingPath: "Обновление PATH…",
+};
+
+export function taskStateKind(state: unknown): "pending" | "running" | "success" | "failed" | "skipped" {
+  if (state === "Pending") return "pending";
+  if (isRecord(state)) {
+    const key = Object.keys(state)[0];
+    if (key === "Running") return "running";
+    if (key === "Success") return "success";
+    if (key === "Failed") return "failed";
+    if (key === "Skipped") return "skipped";
+  }
+  // Малиформированное состояние — безопасный нейтральный «в очереди».
+  return "pending";
+}
+
+export function taskStateLabel(state: unknown): string {
+  if (state === "Pending") return "В очереди";
+  if (isRecord(state)) {
+    const key = Object.keys(state)[0];
+    switch (key) {
+      case "Running": {
+        const phase = fieldString(state.Running, "phase") ?? "";
+        return LEGACY_PHASE_LABELS[phase] ?? "Выполняется…";
+      }
+      case "Success": {
+        const version = fieldString(state.Success, "version");
+        return version ? `Готово (${version})` : "Готово";
+      }
+      case "Failed": {
+        const error = fieldString(state.Failed, "error");
+        return error ? `Ошибка: ${error}` : "Ошибка (причина неизвестна)";
+      }
+      case "Skipped": {
+        const reason = fieldString(state.Skipped, "reason");
+        return reason ? `Пропущено: ${reason}` : "Пропущено (причина не указана)";
+      }
+    }
+  }
   return "В очереди";
 }
 
@@ -378,8 +438,7 @@ export type ToolState =
   | { kind: "manual_install"; reason: string }
   | { kind: "docker_managed" }
   | { kind: "built_in_system" }
-  | { kind: "unsupported_platform" }
-  | { kind: "install_unavailable" };
+  | { kind: "unsupported_platform" };
 
 export const TOOL_STATE_KINDS = [
   "scan_pending",
@@ -394,7 +453,6 @@ export const TOOL_STATE_KINDS = [
   "docker_managed",
   "built_in_system",
   "unsupported_platform",
-  "install_unavailable",
 ] as const;
 
 export type ToolStateKind = (typeof TOOL_STATE_KINDS)[number];
@@ -409,8 +467,8 @@ export function toolStateKind(state: ToolState): ToolStateKind {
  * а не падает (контракт §8.1).
  */
 export function parseToolState(raw: unknown): ToolState | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const kind = (raw as { kind?: unknown }).kind;
+  if (!isRecord(raw)) return null;
+  const kind = raw.kind;
   if (typeof kind !== "string") return null;
   if (!(TOOL_STATE_KINDS as readonly string[]).includes(kind)) return null;
   return raw as ToolState;
@@ -422,19 +480,49 @@ export type EvidenceKind =
   | { kind: "known_path" }
   | { kind: "footprint" };
 
-/** Одна конкретная установка инструмента (их может быть несколько). */
+/**
+ * Где бинарь установки доступен относительно PATH — правда по слоям,
+ * а не единый «сломан/не сломан» (null — старый снапшот без поля).
+ */
+export type PathScope =
+  | { kind: "process_path" }
+  | { kind: "persisted_path_only" }
+  | { kind: "outside_path" };
+
+/** Журнал одной пробы обнаружения (полный лог для UI). */
+export type ProbeLog = {
+  command: string[];
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  not_found: boolean;
+  launch_error: string | null;
+  duration_ms: number;
+};
+
+/** Одна конкретная установка инструмента (их может быть несколько).
+ *  Поля-дополнения опциональны: старые кэши снапшотов их не содержат,
+ *  и отсутствие поля честно трактуется как «нет данных», а не догадка. */
 export type DetectedInstall = {
   raw_version: string;
   parsed_version: string | null;
   location: string;
   evidence: EvidenceKind;
   reachable_via_path: boolean;
+  /** Слои PATH; undefined/null — поле из старого снапшота отсутствует. */
+  path_scope?: PathScope | null;
+  /** Журнал пробы, породившей улику; undefined — старый снапшот/след. */
+  probe_log?: ProbeLog | null;
 };
 
-/** Итог живого обнаружения: failed ≠ not_detected. */
+/** Итог живого обнаружения: failed ≠ not_detected ≠ detected.
+ *  detected — положительный результат: улики есть в installs
+ *  (аддитивное расширение контракта §8; старые payload'ы читаются). */
 export type DetectionOutcome =
   | { kind: "pending" }
   | { kind: "not_detected" }
+  | { kind: "detected" }
   | { kind: "failed"; reason: string };
 
 /** Оценка версии относительно политики каталога (advisory). */
@@ -464,7 +552,10 @@ export type PlatformApplicability =
   | { kind: "manual_only" }
   | { kind: "docker_default" }
   | { kind: "built_in" }
-  | { kind: "unsupported_on_platform" };
+  | { kind: "unsupported_on_platform" }
+  /** Только для живых заготовок идущего скана (бэкенд это не шлёт):
+   *  честное «данных нет» вместо выдуманного installable. */
+  | { kind: "unknown" };
 
 /**
  * Явное состояние здоровья — 9 состояний (контракт §8.3).
@@ -494,8 +585,20 @@ export type HealthCheckResultV2 = {
   passed: boolean;
   /** true — процесс не выполнился (запуск/таймаут); false — провал условия. */
   process_failed: boolean;
+  /** Компактная безопасная сводка (одна строка). */
   detail: string;
   duration_ms: number;
+  // --- Поля-дополнения (старые кэши их не содержат → undefined честно) ---
+  /** Команда проверки (идентичность того, что запускалось). */
+  command?: string[];
+  /** Полный санитизированный stdout проверки (лента логов UI). */
+  stdout?: string;
+  /** Полный санитизированный stderr (daemon-диагностика docker и т.п.). */
+  stderr?: string;
+  /** Код выхода процесса, когда он выполнился. */
+  exit_code?: number | null;
+  /** true — проверка не уложилась в таймаут (процесс убит). */
+  timed_out?: boolean;
 };
 
 export type HealthOutcome = {
@@ -589,24 +692,31 @@ export type ScanJobSnapshot = {
 };
 
 /** Результат tcx_start_scan: новый запуск или reconnect к идущему
- * (внешний тег — serde по умолчанию). */
+ *  (внешний тег — serde по умолчанию). */
 export type ScanStartOutcome =
   | { Started: ScanJobSnapshot }
   | { AlreadyRunning: ScanJobSnapshot };
 
-export function scanStartJobId(outcome: ScanStartOutcome): ScanJobSnapshot {
-  return "Started" in outcome ? outcome.Started : outcome.AlreadyRunning;
+/** Безопасное извлечение задания из reconnect-исхода; малиформация → null. */
+export function scanStartJobId(outcome: unknown): ScanJobSnapshot | null {
+  if (!isRecord(outcome)) return null;
+  const started = outcome.Started ?? outcome.AlreadyRunning;
+  return isRecord(started) && typeof started.job_id === "string"
+    ? (started as ScanJobSnapshot)
+    : null;
 }
 
 export type ScoreSummary = {
   score: number;
   counted_tools: number;
-  healthy_required: number;
+  healthy: number;
   degraded: number;
-  missing_required: number;
-  broken_required: number;
-  unhealthy_required: number;
+  broken: number;
+  missing: number;
+  unhealthy: number;
   scan_failed: number;
+  /** Не опрошены (частичный отчёт) — «не проверено», не «сломано». */
+  scan_pending?: number;
   unchecked: number;
   optional: number;
   not_applicable: number;
@@ -626,7 +736,6 @@ export type StatusCounts = {
   docker_managed: number;
   built_in_system: number;
   unsupported_platform: number;
-  install_unavailable: number;
 };
 
 export type DiskSpaceInfo = { root: string; free_mb: number };
@@ -656,6 +765,10 @@ export type ToolScanResult = {
   version_assessment: VersionAssessment;
   state: ToolState;
   error: string | null;
+  /** Индекс канонической установки в installs (undefined — старый кэш). */
+  canonical_install?: number | null;
+  /** Почему выбрана каноническая установка (объяснение для UI). */
+  version_selected_because?: string;
   duration_ms: number;
 };
 
@@ -722,14 +835,15 @@ export function operationMutatesMachine(op: OperationKind): boolean {
   return op === "install" || op === "update" || op === "repair_path";
 }
 
-export type ExecutionChoice = "host" | "docker";
 export type VersionChannel = "recommended" | "latest";
 
-/** Ограниченный запрос на один инструмент: только id и явные выборы. */
+/** Ограниченный запрос на один инструмент: только id и явные выборы.
+ *  `execution` зеркалит бэкенд-выбор Host/Docker; standalone-планировщик
+ *  отклоняет docker (молчаливой подмены хостом нет), UI его не шлёт. */
 export type ToolRequest = {
   tool_id: string;
   source_id?: string | null;
-  execution?: ExecutionChoice | null;
+  execution?: ExecutionMode | null;
   install_options?: string[];
   force_reinstall?: boolean;
 };
@@ -742,6 +856,12 @@ export type EngineRequest = {
   version_channel?: VersionChannel | null;
   confirm_unverified_sources?: boolean;
   confirm_admin_elevation?: boolean;
+  /** Превью (tcx_build_plan): план строится для просмотра, подтверждения
+   *  показываются чекбоксами, а не ошибками; исполнение требует их явно. */
+  preview?: boolean;
+  /** Отпечаток одобренного превью: расхождение с freshly-built планом
+   * отклоняется бэкендом (PlanChanged) вместо молчаливого исполнения. */
+  expected_plan_fingerprint?: string | null;
 };
 
 /** Typed job/task phases (12 значений, плоские строки). */
@@ -779,7 +899,9 @@ export function jobStatusIsTerminal(status: JobStatus): boolean {
   );
 }
 
-/** Почему задача не требует работы — всегда правдиво. */
+/** Почему задача не требует работы — всегда правдиво.
+ *  Малиформированные причины (undefined/null/чужой ключ) НЕ крашат
+ *  потребителя: guard возвращает null и UI показывает «неизвестно». */
 export type NoopReason =
   | { already_installed: { version: string } }
   | { update_unavailable: { version: string } }
@@ -793,8 +915,94 @@ export type TaskAction =
   | "health_check"
   | { noop: NoopReason };
 
-export function taskActionIsNoop(action: TaskAction): boolean {
-  return typeof action === "object" && "noop" in action;
+// ------------------------------------------------------------
+// Runtime-границы IPC: НИКОГДА не использовать `in` на неизвестном/
+// возможно-undefined значении — только через эти guard'ы.
+// ------------------------------------------------------------
+
+/** true только для настоящих объектов (null/массивы — не объекты здесь). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Вид действия задачи по внешнему тегу; малиформация → null (не краш).
+ *  Канонический ключ noop; «no_op» — наследие старой сериализации
+ *  (персистентные записи заданий): оба читаются одинаково. */
+export function taskActionKind(action: unknown): string | null {
+  if (typeof action === "string") {
+    return action === "repair_path" || action === "health_check" ? action : null;
+  }
+  if (!isRecord(action)) return null;
+  const keys = Object.keys(action);
+  if (keys.length !== 1) return null;
+  const key = keys[0];
+  return ["install_new", "update", "noop", "no_op"].includes(key) ? key : null;
+}
+
+/**
+ * Безопасный разбор действия задачи из недоверенного payload.
+ * Возвращает null для undefined/null/неизвестных вариантов/битого noop —
+ * вызывающий рендерит «Неизвестное действие», а не падает.
+ */
+export function parseTaskAction(raw: unknown): TaskAction | null {
+  if (typeof raw === "string") {
+    return raw === "repair_path" || raw === "health_check" ? raw : null;
+  }
+  if (!isRecord(raw)) return null;
+  const keys = Object.keys(raw);
+  if (keys.length !== 1) return null;
+  switch (keys[0]) {
+    case "install_new": {
+      const payload = raw.install_new;
+      if (!isRecord(payload)) return null;
+      const target = payload.target_version;
+      return {
+        install_new: { target_version: typeof target === "string" ? target : null },
+      };
+    }
+    case "update": {
+      const payload = raw.update;
+      if (!isRecord(payload)) return null;
+      const current = payload.current_version;
+      if (typeof current !== "string") return null;
+      const target = payload.target_version;
+      return {
+        update: {
+          current_version: current,
+          target_version: typeof target === "string" ? target : null,
+        },
+      };
+    }
+    case "noop":
+    case "no_op": {
+      // noop без причины / с неизвестной причиной — НЕ выдумываем её:
+      // guard возвращает null и UI честно скажет «причина неизвестна».
+      const reason = raw[keys[0]];
+      if (typeof reason === "string") {
+        return reason === "docker_managed" ? { noop: reason } : null;
+      }
+      if (!isRecord(reason)) return null; // noop без reason — не выдумываем её
+      const rKeys = Object.keys(reason);
+      if (rKeys.length !== 1) return null;
+      switch (rKeys[0]) {
+        case "already_installed":
+        case "update_unavailable": {
+          const inner = reason[rKeys[0]];
+          const version = isRecord(inner) && typeof inner.version === "string" ? inner.version : "";
+          return { noop: { [rKeys[0]]: { version } } } as TaskAction;
+        }
+        default:
+          return null; // неизвестная причина — пусть UI скажет «неизвестно»
+      }
+    }
+    default:
+      return null;
+  }
+}
+
+export function taskActionIsNoop(action: unknown): boolean {
+  const kind = taskActionKind(action);
+  return kind === "noop" || kind === "no_op";
 }
 
 export type ExecutionMode = "host" | "docker";
@@ -822,14 +1030,19 @@ export type EngineTaskStatus =
   | "cancelled"
   | "interrupted";
 
-export function engineTaskStatusKind(status: EngineTaskStatus): string {
+/** Безопасный вид статуса задачи; малиформация → "unknown" (не краш). */
+export function engineTaskStatusKind(status: unknown): string {
   if (typeof status === "string") return status;
-  return Object.keys(status)[0];
+  if (isRecord(status)) {
+    const keys = Object.keys(status);
+    if (keys.length === 1) return keys[0];
+  }
+  return "unknown";
 }
 
-export function engineTaskStatusIsTerminal(status: EngineTaskStatus): boolean {
+export function engineTaskStatusIsTerminal(status: unknown): boolean {
   const kind = engineTaskStatusKind(status);
-  return kind !== "pending" && kind !== "running";
+  return kind !== "pending" && kind !== "running" && kind !== "unknown";
 }
 
 /** Одна каноническая задача: только факты, разрешённые бэкендом. */
@@ -908,7 +1121,15 @@ export type JobEventPayload =
   | { task_completed: { status: EngineTaskStatus } }
   | { job_finished: { status: JobStatus; errors: string[] } };
 
-export type JobEventPayloadKind = keyof JobEventPayload;
+/** Виды payload событий задания (безопасное ключевое множество для guard'ов). */
+export type JobEventPayloadKind =
+  | "job_started"
+  | "task_started"
+  | "task_phase"
+  | "progress"
+  | "path_updated"
+  | "task_completed"
+  | "job_finished";
 
 /** Событие задания: без идентичности (job_id/seq) не существует. */
 export type JobEvent = {
@@ -920,8 +1141,23 @@ export type JobEvent = {
   payload: JobEventPayload;
 };
 
-export function jobEventKind(event: JobEvent): JobEventPayloadKind {
-  return Object.keys(event.payload)[0] as JobEventPayloadKind;
+/** Безопасный вид payload события; малиформация → null (не краш). */
+export function jobEventKind(event: unknown): JobEventPayloadKind | null {
+  if (!isRecord(event)) return null;
+  const payload = event.payload;
+  if (!isRecord(payload)) return null;
+  const keys = Object.keys(payload);
+  if (keys.length !== 1) return null;
+  const known: JobEventPayloadKind[] = [
+    "job_started",
+    "task_started",
+    "task_phase",
+    "progress",
+    "path_updated",
+    "task_completed",
+    "job_finished",
+  ];
+  return known.includes(keys[0] as JobEventPayloadKind) ? (keys[0] as JobEventPayloadKind) : null;
 }
 
 /** Consumer-side guard: игнорировать всё от чужих заданий. */
@@ -995,6 +1231,10 @@ export type CatalogFilters = {
   update_only: boolean;
   /** Только ручная установка (применимость manual_only). */
   manual_only: boolean;
+  /** Только инструменты с источником локальной установки на этой ОС. */
+  installable: boolean;
+  /** Только инструменты с заявленной Docker-альтернативой. */
+  has_docker_alternative: boolean;
 };
 
 /** Порядок сортировки каталога Manage Everything. */

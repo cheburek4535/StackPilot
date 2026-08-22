@@ -7,9 +7,13 @@ import {
   gateMutation,
   identityMatches,
   isJobSucceeded,
+  jobEventAppliesTo,
+  jobEventLogText,
   jobIsActive,
   mergeLiveSnapshot,
   recomputeSummary,
+  scanDoneAppliesTo,
+  scanProgressAppliesTo,
   snapshotFreshness,
   upsertJobHistory,
   type LiveToolMap,
@@ -18,6 +22,8 @@ import type {
   EnvironmentSnapshot,
   JobEvent,
   PersistedJob,
+  ScanDoneEvent,
+  ScanJobSnapshot,
   ScanProgressEvent,
   ToolScanResult,
 } from "./types";
@@ -90,11 +96,11 @@ function snapshot(tools: ToolScanResult[]): EnvironmentSnapshot {
     score: {
       score: 50,
       counted_tools: tools.length,
-      healthy_required: 0,
+      healthy: 0,
       degraded: 0,
-      missing_required: 0,
-      broken_required: 0,
-      unhealthy_required: 0,
+      broken: 0,
+      missing: 0,
+      unhealthy: 0,
       scan_failed: 0,
       unchecked: 0,
       optional: 0,
@@ -324,6 +330,73 @@ describe("applyJobEvent — identity, seq, терминальность", () => 
     expect(isJobSucceeded("running")).toBe(false);
     expect(isJobSucceeded("queued")).toBe(false);
   });
+
+  // Регрессия «already_installed in undefined» (семейство `in`-на-undefined):
+  // малиформированные ВЛОЖЕННЫЕ payload события не должны ронять
+  // обработчик. Раньше task_phase.phase / task_completed.status /
+  // job_finished.status читались без guard'ов.
+  it("малиформированные вложенные payload не роняют applyJobEvent", () => {
+    const base = job();
+
+    const nullPhase = applyJobEvent(base, jobEvent(1, { task_phase: null } as never), 0);
+    expect(nullPhase.applied).toBe(true);
+    expect(nullPhase.job.plan.tasks[0].status).toEqual("pending");
+
+    const emptyCompleted = applyJobEvent(
+      base,
+      jobEvent(2, { task_completed: { status: null } } as never),
+      0,
+    );
+    expect(emptyCompleted.applied).toBe(true);
+
+    const badFinished = applyJobEvent(
+      base,
+      jobEvent(3, { job_finished: null } as never),
+      0,
+    );
+    expect(badFinished.applied).toBe(true);
+    expect(badFinished.job.status).toBe("running");
+
+    const badFinishedStatus = applyJobEvent(
+      base,
+      jobEvent(4, { job_finished: { status: 42, errors: "boom" } } as never),
+      0,
+    );
+    expect(badFinishedStatus.job.status).toBe("running");
+  });
+});
+
+describe("jobEventLogText — журнальная строка переживает мусор из IPC", () => {
+  const ev = (payload: unknown, overrides: Partial<JobEvent> = {}): JobEvent =>
+    ({ job_id: "j1", task_id: "t1", tool_id: "git", seq: 1, timestamp: "t", payload, ...overrides }) as JobEvent;
+
+  it("валидные payload дают читаемые строки", () => {
+    expect(jobEventLogText(ev({ progress: { line: "winget: ok" } }))).toBe("winget: ok");
+    expect(jobEventLogText(ev({ task_started: { index: 0, total: 1 } }))).toContain("старт");
+    expect(jobEventLogText(ev({ task_phase: { phase: "installing" } }))).toContain("installing");
+    expect(jobEventLogText(ev({ task_completed: { status: "succeeded" } }))).toContain("succeeded");
+    expect(
+      jobEventLogText(ev({ task_completed: { status: { succeeded: { version: "2.4" } } } })),
+    ).toContain("succeeded");
+    expect(jobEventLogText(ev({ path_updated: { record: { tool_id: "git", added: ["C:\\bin"] } } }))).toContain("1 записей");
+    expect(jobEventLogText(ev({ job_started: { operation: "install", total_tasks: 3 } }))).toContain("3");
+  });
+
+  it("малиформированные вложенные payload → null (не TypeError)", () => {
+    expect(jobEventLogText(ev({ progress: null }))).toBeNull();
+    expect(jobEventLogText(ev({ progress: {} }))).toBeNull();
+    expect(jobEventLogText(ev({ task_phase: null }))).toBeNull();
+    expect(jobEventLogText(ev({ task_phase: { phase: 42 } }))).toBeNull();
+    expect(jobEventLogText(ev({ task_completed: null }))).toBeNull();
+    expect(jobEventLogText(ev({ task_completed: { status: null } }))).toBeNull();
+    expect(jobEventLogText(ev({ task_completed: { status: {} } }))).toBeNull();
+    expect(jobEventLogText(ev({ path_updated: null }))).toBeNull();
+    expect(jobEventLogText(ev({ path_updated: { record: null } }))).toBeNull();
+    expect(jobEventLogText(ev({ path_updated: { record: { added: null } } }))).toBeNull();
+    expect(jobEventLogText(ev({ job_started: null }))).toBeNull();
+    expect(jobEventLogText(ev({ job_started: { total_tasks: "3" } }))).toBeNull();
+    expect(jobEventLogText(ev(null))).toBeNull();
+  });
 });
 
 // ------------------------------------------------------------
@@ -346,6 +419,74 @@ describe("upsertJobHistory — новые сверху, без дублей, о�
     }
     expect(history.length).toBe(20);
     expect(history[0].job_id).toBe("j24");
+  });
+});
+
+// ------------------------------------------------------------
+// Guard'ы событий на границе слушателей (stale-скан/stale-задание)
+// ------------------------------------------------------------
+
+function scanJob(overrides: Partial<ScanJobSnapshot> = {}): ScanJobSnapshot {
+  return {
+    job_id: "scan-1",
+    scan_id: "s-1",
+    started_at: "a",
+    updated_at: "b",
+    finished_at: null,
+    phase: "Tools",
+    total_tools: 3,
+    completed_tools: 1,
+    current_tool: "git",
+    running: true,
+    cancel_requested: false,
+    terminal: "Running",
+    recovered: false,
+    ...overrides,
+  };
+}
+
+describe("scanProgressAppliesTo — stale-прогресс не трогает состояние", () => {
+  it("событие без текущего скана не применяется", () => {
+    expect(scanProgressAppliesTo(null, progressEvent())).toBe(false);
+  });
+
+  it("прогресс ЧУЖОГО скана (старый job_id) отбрасывается", () => {
+    const current = scanJob();
+    expect(scanProgressAppliesTo(current, progressEvent({ job_id: "scan-old" }))).toBe(false);
+  });
+
+  it("прогресс текущего скана применяется", () => {
+    expect(scanProgressAppliesTo(scanJob(), progressEvent({ job_id: "scan-1" }))).toBe(true);
+  });
+
+  it("завершённый скан поздние события не оживляет (старый прогресс после done)", () => {
+    const done = scanJob({ terminal: "Completed", running: false });
+    expect(scanProgressAppliesTo(done, progressEvent({ job_id: "scan-1" }))).toBe(false);
+  });
+});
+
+describe("scanDoneAppliesTo — терминал только своего скана", () => {
+  it("терминал чужого скана отбрасывается (новый скан не перезаписывается)", () => {
+    expect(scanDoneAppliesTo(scanJob(), { job_id: "scan-0", scan_id: "s-0", terminal: "Completed", completed: 3, total: 3 })).toBe(false);
+  });
+
+  it("терминал текущего скана применяется", () => {
+    const done: ScanDoneEvent = { job_id: "scan-1", scan_id: "s-1", terminal: "Completed", completed: 3, total: 3 };
+    expect(scanDoneAppliesTo(scanJob(), done)).toBe(true);
+  });
+});
+
+describe("jobEventAppliesTo — события чужих/старых заданий", () => {
+  it("событие без текущего задания отбрасывается", () => {
+    expect(jobEventAppliesTo(null, jobEvent(1, { progress: { line: "x" } }))).toBe(false);
+  });
+
+  it("событие прежнего задания (другой job_id) отбрасывается", () => {
+    expect(jobEventAppliesTo(job(), jobEvent(1, { progress: { line: "x" } }, "job-old"))).toBe(false);
+  });
+
+  it("событие текущего задания применяется", () => {
+    expect(jobEventAppliesTo(job(), jobEvent(1, { progress: { line: "x" } }))).toBe(true);
   });
 });
 
@@ -381,5 +522,40 @@ describe("identityMatches — stale-события не портят состо�
     expect(identityMatches("run-1", "run-0")).toBe(false);
     // ...а события текущего запуска проходят.
     expect(identityMatches("run-1", "run-1")).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------
+// Сводка и живой срез — регрессии «мусор из IPC не даёт NaN/краш»
+// ------------------------------------------------------------
+
+describe("recomputeSummary — зеркало бэкенда без NaN", () => {
+  it("неизвестный kind состояния не даёт NaN (и не считается)", () => {
+    const tools: ToolScanResult[] = [
+      toolResult("a", { kind: "installed_healthy", version: "1" }),
+      { ...toolResult("b", { kind: "missing" }), state: { kind: "future_kind" } as never },
+      { ...toolResult("c", { kind: "missing" }), state: null as never },
+    ];
+    const summary = recomputeSummary(tools);
+    expect(summary.installed_healthy).toBe(1);
+    for (const value of Object.values(summary)) {
+      expect(Number.isNaN(value)).toBe(false);
+    }
+  });
+
+  it("пустой срез — все счётчики ноль", () => {
+    const summary = recomputeSummary([]);
+    expect(Object.values(summary).every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe("applyScanProgress — живая заготовка честна (не выдумывает применимость)", () => {
+  it("placeholder несёт applicability unknown, а не installable", () => {
+    const next = applyScanProgress({}, progressEvent({ tool_state: "installed_healthy" }));
+    const live = next.git;
+    expect(live).toBeDefined();
+    expect(live.applicability.kind).toBe("unknown");
+    // Заготовка не считается «здоровой» в формуле — версия пустая.
+    expect(live.state).toEqual({ kind: "installed_healthy", version: "" });
   });
 });

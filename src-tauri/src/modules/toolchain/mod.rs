@@ -34,7 +34,13 @@ use models::*;
 /// Глобальное состояние модуля Toolchain Manager.
 /// Регистрируется в Tauri State (как ProjectCreatorState).
 pub struct ToolchainState {
+    /// Standalone-каталог (tools.json): единственный источник для
+    /// tcx_*-команд, сканов, планировщика и UI standalone Toolchain.
     definitions: Vec<ToolDefinition>,
+    /// Легаси-каталог совместимости Project Creator (unity/unreal/godot):
+    /// НЕ виден standalone-поверхности; добавляется только в легаси
+    /// tc_*-команды (мастер создания проектов).
+    legacy_definitions: Vec<ToolDefinition>,
     /// Живая сессия установки — обновляется фоновой задачей
     /// (Arc+Mutex, т.к. команда-run и команда-status живут отдельно).
     install_session: Arc<Mutex<Option<InstallSession>>>,
@@ -68,7 +74,12 @@ pub struct ToolchainState {
 impl ToolchainState {
     /// `dir` — каталог хранения состояния (app_data/toolchain).
     pub fn new(dir: PathBuf) -> Self {
+        // Осиротевшие временные файлы заданий (крэш посреди установки)
+        // убираются при старте — «вечного» мусора в temp не копится.
+        core::console::sweep_stale_temp_files();
+
         let definitions = defs::load_definitions();
+        let legacy_definitions = defs::load_legacy_definitions();
 
         // Дубликаты id ломают lookup по id — это ошибка разработчика,
         // падаем громко и сразу, а не тихо при первом обращении.
@@ -132,6 +143,7 @@ impl ToolchainState {
 
         Self {
             definitions,
+            legacy_definitions,
             install_session: Arc::new(Mutex::new(None)),
             abort_install: Arc::new(AtomicBool::new(false)),
             metadata: Arc::new(Mutex::new(metadata_store)),
@@ -148,7 +160,18 @@ impl ToolchainState {
         &self.definitions
     }
 
-    /// Найти определение по id.
+    /// Объединённый каталог для легаси-команд: standalone + легаси-совместимость.
+    pub fn merged_definitions(&self) -> Vec<ToolDefinition> {
+        let mut all = self.definitions.clone();
+        for d in &self.legacy_definitions {
+            if !all.iter().any(|x| x.id == d.id) {
+                all.push(d.clone());
+            }
+        }
+        all
+    }
+
+    /// Найти определение по id (только standalone-каталог).
     pub fn get_definition(&self, id: &str) -> Option<&ToolDefinition> {
         self.definitions.iter().find(|d| d.id == id)
     }
@@ -199,6 +222,10 @@ impl ToolchainState {
     /// Версия ОС спрашивается у системы (быстрая команда с таймаутом).
     /// «Двойные» docker-инструменты считаются только после локальной
     /// установки (см. tc_get_health_report).
+    ///
+    /// ЛЕГАСИ-поверхность: счётчик считается по ОБЪЕДИНЁННОМУ каталогу
+    /// (standalone + легаси-совместимость), как до выделения unity/
+    /// unreal/godot в отдельный файл.
     pub async fn environment_info(&self) -> EnvironmentInfo {
         let installed = self
             .metadata()
@@ -209,12 +236,11 @@ impl ToolchainState {
             .keys()
             .cloned()
             .collect::<std::collections::HashSet<String>>();
-        let visible_count = self
-            .definitions
+        let catalog = self.merged_definitions();
+        let visible_count = catalog
             .iter()
             .filter(|d| {
-                !core::requirements::is_dual_tool(&d.id, &self.definitions)
-                    || installed.contains(&d.id)
+                !core::requirements::is_dual_tool(&d.id, &catalog) || installed.contains(&d.id)
             })
             .count();
         EnvironmentInfo {

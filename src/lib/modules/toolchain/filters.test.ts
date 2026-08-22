@@ -9,6 +9,7 @@ import {
   matchesDefinitionSearch,
   matchesSearch,
   sortCatalogTools,
+  validateCatalogFilters,
 } from "./filters";
 import type { CatalogFilters, EnvironmentSnapshot, ToolScanResult } from "./types";
 
@@ -63,11 +64,11 @@ function snap(tools: ToolScanResult[]): EnvironmentSnapshot {
     score: {
       score: 0,
       counted_tools: 0,
-      healthy_required: 0,
+      healthy: 0,
       degraded: 0,
-      missing_required: 0,
-      broken_required: 0,
-      unhealthy_required: 0,
+      broken: 0,
+      missing: 0,
+      unhealthy: 0,
       scan_failed: 0,
       unchecked: 0,
       optional: 0,
@@ -86,7 +87,6 @@ function snap(tools: ToolScanResult[]): EnvironmentSnapshot {
       docker_managed: 0,
       built_in_system: 0,
       unsupported_platform: 0,
-      install_unavailable: 0,
     },
     warnings: [],
     errors: [],
@@ -226,5 +226,131 @@ describe("предикаты каталога", () => {
     // catalog — исходный порядок; вход не изменён
     expect(sortCatalogTools(input, "catalog").map((t) => t.tool_id)).toEqual(["a", "b", "c"]);
     expect(input.map((t) => t.tool_id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+// ------------------------------------------------------------
+// Расширенный поиск по определению (витрина, до скана)
+// ------------------------------------------------------------
+
+describe("matchesDefinitionSearch — поля витрины", () => {
+  const def = {
+    id: "postgresql",
+    display: "PostgreSQL",
+    category: "database",
+    description: "Реляционная СУБД с расширяемостью",
+    notes: "Рекомендуется docker: postgres:17",
+    docs_url: "https://www.postgresql.org/docs/",
+    source_url: "https://github.com/postgres/postgres",
+    aliases: ["psql"],
+  } as never;
+
+  it("ищет по display/id/категории/aliases", () => {
+    expect(matchesDefinitionSearch(def, "postgres")).toBe(true);
+    expect(matchesDefinitionSearch(def, "psql")).toBe(true);
+    expect(matchesDefinitionSearch(def, "database")).toBe(true);
+  });
+
+  it("ищет по описанию, notes, docs_url и source_url", () => {
+    expect(matchesDefinitionSearch(def, "расширяемость")).toBe(true);
+    expect(matchesDefinitionSearch(def, "postgres:17")).toBe(true);
+    expect(matchesDefinitionSearch(def, "postgresql.org")).toBe(true);
+    expect(matchesDefinitionSearch(def, "github.com/postgres")).toBe(true);
+    expect(matchesDefinitionSearch(def, "небывалое")).toBe(false);
+  });
+
+  it("пустой запрос — всё проходит; регистр не важен", () => {
+    expect(matchesDefinitionSearch(def, "  ")).toBe(true);
+    expect(matchesDefinitionSearch(def, "POSTGRESQL.ORG")).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------
+// Валидация персистентных фильтров (граница локального хранилища)
+// ------------------------------------------------------------
+
+describe("validateCatalogFilters — мусор отбрасывается, известное сохраняется", () => {
+  it("необъектный payload → дефолтные фильтры", () => {
+    expect(validateCatalogFilters(null)).toEqual(defaultCatalogFilters());
+    expect(validateCatalogFilters("garbage")).toEqual(defaultCatalogFilters());
+    expect(validateCatalogFilters([1, 2])).toEqual(defaultCatalogFilters());
+  });
+
+  it("неизвестные kind'ы и дубликаты отбрасываются", () => {
+    const f = validateCatalogFilters({
+      states: ["missing", "PascalGarbage", "missing"],
+      provenance: ["external", "nope"],
+      capabilities: ["installable", "hack"],
+      execution_modes: ["host", "podman"],
+      health: ["healthy", "mystery"],
+    });
+    expect(f.states).toEqual(["missing"]);
+    expect(f.provenance).toEqual(["external"]);
+    expect(f.capabilities).toEqual(["installable"]);
+    expect(f.execution_modes).toEqual(["host"]);
+    expect(f.health).toEqual(["healthy"]);
+  });
+
+  it("неверные типы полей → значения по умолчанию", () => {
+    const f = validateCatalogFilters({
+      search: 42,
+      categories: [7, "vcs"],
+      admin_only: "yes",
+      update_only: 1,
+      manual_only: null,
+      installable: true,
+      has_docker_alternative: "no",
+    });
+    expect(f.search).toBe("");
+    expect(f.categories).toEqual(["vcs"]);
+    expect(f.admin_only).toBe(false);
+    expect(f.update_only).toBe(false);
+    expect(f.manual_only).toBe(false);
+    expect(f.installable).toBe(true);
+    expect(f.has_docker_alternative).toBe(false);
+  });
+
+  it("корректный payload проходит без изменений", () => {
+    const input = {
+      search: "git",
+      categories: ["vcs", "database"],
+      states: ["missing", "update_available"],
+      provenance: ["external", "bundled_with"],
+      capabilities: ["installable", "docker_alternative_available"],
+      execution_modes: ["host"],
+      health: ["healthy", "degraded"],
+      admin_only: true,
+      update_only: true,
+      manual_only: false,
+      installable: true,
+      has_docker_alternative: true,
+    };
+    expect(validateCatalogFilters(input)).toEqual(input);
+  });
+});
+
+// ------------------------------------------------------------
+// Новые фильтры каталога: installable и has_docker_alternative
+// ------------------------------------------------------------
+
+describe("installable и has_docker_alternative в Manage Everything", () => {
+  it("installable опирается на факт возможностей скана", () => {
+    const pred = makeCatalogPredicate({ ...defaultCatalogFilters(), installable: true });
+    expect(pred(tool())).toBe(true); // capabilities.installable=true в фабрике
+    expect(
+      pred(tool({ capabilities: { ...tool().capabilities, installable: false } })),
+    ).toBe(false);
+  });
+
+  it("has_docker_alternative опирается на заявленную docker-возможность", () => {
+    const pred = makeCatalogPredicate({ ...defaultCatalogFilters(), has_docker_alternative: true });
+    expect(
+      pred(
+        tool({
+          capabilities: { ...tool().capabilities, docker_alternative_available: true },
+        }),
+      ),
+    ).toBe(true);
+    expect(pred(tool())).toBe(false);
   });
 });

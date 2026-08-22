@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // Canonical plan types (engine/plan.rs)
 // ============================================================
 //
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::request::OperationKind;
 use crate::modules::toolchain::models::PlatformCapabilities;
 
-/// Typed job/task phases (contract §4 of the pipeline prompt).
+/// Typed job/task phases (contract В§4 of the pipeline prompt).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -69,7 +69,7 @@ impl JobStatus {
     }
 }
 
-/// Why a task needs no work — always truthful, never fabricated.
+/// Why a task needs no work вЂ” always truthful, never fabricated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoopReason {
@@ -94,6 +94,10 @@ pub enum TaskAction {
     },
     RepairPath,
     HealthCheck,
+    /// Wire key is `noop` (canonical contract). `no_op` (the naive
+    /// snake_case of "NoOp") was emitted by an earlier build; `alias`
+    /// keeps old persisted job records deserializable.
+    #[serde(rename = "noop", alias = "no_op")]
     NoOp(NoopReason),
 }
 
@@ -179,7 +183,7 @@ pub struct PlanTask {
     /// Tool ids this task depends on (dependency closure edges).
     #[serde(default)]
     pub depends_on: Vec<String>,
-    /// PATH entries the tool requires — explicit representation; applied
+    /// PATH entries the tool requires вЂ” explicit representation; applied
     /// only by approved jobs, audited in the final result.
     #[serde(default)]
     pub path_entries: Vec<String>,
@@ -304,6 +308,36 @@ mod tests {
         };
         assert!(noop.is_noop());
         assert!(!real.is_noop());
+    }
+
+    /// Регрессия «неизвестное действие в плане»: канонический ключ noop
+    /// (внешний тег) обязан быть «noop», а старые записи с «no_op»
+    /// (наивный snake_case) обязаны продолжать десериализоваться.
+    #[test]
+    fn noop_wire_key_is_canonical_and_legacy_alias_reads() {
+        let noop = TaskAction::NoOp(NoopReason::AlreadyInstalled {
+            version: "2.48".into(),
+        });
+        let raw = serde_json::to_string(&noop).unwrap();
+        assert!(
+            raw.contains("\"noop\""),
+            "wire key must be noop, got: {raw}"
+        );
+        assert!(!raw.contains("no_op"), "naive snake_case key: {raw}");
+
+        // Новый формат читается...
+        let back: TaskAction = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back, noop);
+        // ...и старый формат (no_op) тоже (персистентные записи заданий).
+        let legacy = r#"{"no_op":{"already_installed":{"version":"2.48"}}}"#;
+        let old: TaskAction = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old, noop);
+        // Unit-причина остаётся плоской строкой.
+        let docker = TaskAction::NoOp(NoopReason::DockerManaged);
+        assert_eq!(
+            serde_json::to_string(&docker).unwrap(),
+            r#"{"noop":"docker_managed"}"#
+        );
     }
 
     #[test]

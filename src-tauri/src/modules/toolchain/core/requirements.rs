@@ -366,6 +366,22 @@ pub fn resolve_install_options(
 /// winget идёт ВСЕГДА первым: это основной источник установки на
 /// Windows (planner выносит его в начало плана, если он отсутствует).
 pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
+    resolve_inner(requirements, false)
+}
+
+/// STANDALONE-вариант разрешения требований (Toolchain tab, не мастер).
+///
+/// Отличие от `resolve()`: «двойные» docker-инструменты Project Creator
+/// (postgresql, redis, mongodb, kafka, grafana, mysql) НЕ прячутся за
+/// opt-in local_infra_tools — в standalone Toolchain они обычные
+/// локально-устанавливаемые инструменты, а Docker остаётся только
+/// рекомендацией/альтернативой в метаданных каталога. Семантика
+/// docker_optional_requirements мастера сюда НЕ переносится.
+pub fn resolve_standalone(requirements: &ProjectRequirements) -> Vec<String> {
+    resolve_inner(requirements, true)
+}
+
+fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -414,12 +430,17 @@ pub fn resolve(requirements: &ProjectRequirements) -> Vec<String> {
     }
 
     for tool in &requirements.tools {
-        // «Двойные» docker-инструменты (postgresql, redis, mongodb, kafka,
-        // grafana, mysql) локально требуются только по явному выбору:
-        // по умолчанию их разворачивает project creator в docker-compose.
-        // Чисто docker-инструменты (clickhouse, airflow, mailpit) здесь же
-        // отсекаются — маппинга в tools.json у них нет.
-        if docker_managed_tools().contains(tool) && !requirements.local_infra_tools.contains(tool) {
+        // Легаси-мастер: «двойные» docker-инструменты локально требуются
+        // только по явному выбору (по умолчанию их разворачивает
+        // project creator в docker-compose). Чисто docker-инструменты
+        // (clickhouse, airflow, mailpit) отсекаются маппингом.
+        //
+        // STANDALONE: гейтинга нет — выбор пользователя означает
+        // локальную установку.
+        if !standalone
+            && docker_managed_tools().contains(tool)
+            && !requirements.local_infra_tools.contains(tool)
+        {
             continue;
         }
         if let Some(id) = wizard_tool_to_toolchain(tool) {
@@ -727,6 +748,67 @@ mod tests {
         }
     }
 
+    /// STANDALONE: docker-инструменты мастера — обычные локальные
+    /// требования БЕЗ opt-in (Docker остаётся рекомендацией, не гейтом).
+    #[test]
+    fn standalone_resolution_installs_docker_tools_locally_without_opt_in() {
+        let mut r = req();
+        r.tools = vec![
+            "postgresql".into(),
+            "redis".into(),
+            "mongodb".into(),
+            "kafka".into(),
+            "grafana".into(),
+            "mysql".into(),
+        ];
+        // resolve() (легаси-мастер) прячет их за local_infra_tools...
+        assert_eq!(resolve(&r), vec!["winget"]);
+        // ...а resolve_standalone() ставит локально все шесть.
+        let ids = resolve_standalone(&r);
+        for expected in [
+            "postgresql",
+            "redis",
+            "mongodb",
+            "kafka",
+            "grafana",
+            "mysql",
+        ] {
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "нет {expected} в standalone-разрешении: {ids:?}"
+            );
+        }
+        // Порядок детерминирован = порядок выбора.
+        assert_eq!(ids[0], "winget");
+    }
+
+    /// STANDALONE: чисто docker-инструменты (нет маппинга/источников)
+    /// по-прежнему не попадают в локальные требования.
+    #[test]
+    fn standalone_resolution_still_skips_pure_docker_tools() {
+        let mut r = req();
+        r.tools = vec![
+            "clickhouse".into(),
+            "airflow".into(),
+            "mailpit".into(),
+            "mysql".into(),
+        ];
+        let ids = resolve_standalone(&r);
+        assert_eq!(ids, vec!["winget", "mysql"]);
+    }
+
+    /// Легаси-поведение `resolve()` не изменилось (совместимость мастера):
+    /// без opt-in docker-инструменты остаются скрытыми.
+    #[test]
+    fn legacy_resolve_keeps_opt_in_gating_for_wizard() {
+        let mut r = req();
+        r.tools = vec!["mysql".into(), "postgresql".into()];
+        assert_eq!(resolve(&r), vec!["winget"]);
+
+        r.local_infra_tools = vec!["mysql".into()];
+        assert_eq!(resolve(&r), vec!["winget", "mysql"]);
+    }
+
     #[test]
     fn gleam_brings_erlang_runtime() {
         let mut r = req();
@@ -896,18 +978,27 @@ mod tests {
 
     /// Гарантия отсутствия молчаливых дыр: каждый id, который resolve()
     /// может вернуть для ЛЮБОГО языка/фреймворка/тула/флага из мастера,
-    /// обязан существовать в tools.json. Иначе check.rs просто молча
-    /// пропустит неизвестный id, и требование потеряется из отчёта.
+    /// обязан существовать в ОБЪЕДИНЁННОМ каталоге (standalone tools.json
+    /// + легаси-совместимость unity/unreal/godot). Иначе check.rs просто
+    /// молча пропустит неизвестный id, и требование потеряется из отчёта.
     #[test]
     fn every_resolved_id_exists_in_tools_json() {
         let raw = include_str!("../tools.json");
         let defs: serde_json::Value = serde_json::from_str(raw).expect("tools.json");
-        let tool_ids: HashSet<String> = defs
-            .as_array()
-            .expect("tools.json — массив")
-            .iter()
-            .filter_map(|d| d.get("id").and_then(|i| i.as_str()).map(String::from))
-            .collect();
+        let legacy_raw = include_str!("../legacy_compat_tools.json");
+        let legacy_defs: serde_json::Value =
+            serde_json::from_str(legacy_raw).expect("legacy_compat_tools.json");
+        let mut tool_ids: HashSet<String> = HashSet::new();
+        for arr in [
+            defs.as_array().expect("tools.json — массив"),
+            legacy_defs.as_array().expect("legacy — массив"),
+        ] {
+            for d in arr {
+                if let Some(id) = d.get("id").and_then(|i| i.as_str()) {
+                    tool_ids.insert(id.to_string());
+                }
+            }
+        }
 
         let tree_raw = include_str!("../../project_creator/knowledge/wizard_tree.json");
         let tree: serde_json::Value =
