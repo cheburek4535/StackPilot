@@ -24,6 +24,8 @@
   } from "$lib/modules/workspace/paths";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let currentDir = $state<string | null>(null);
   let entries = $state<FileEntry[]>([]);
@@ -86,7 +88,7 @@
     try {
       entries = await listDirectory(path);
     } catch (e) {
-      dirError = `Failed to list directory: ${e}`;
+      dirError = `${i18n.t("ws.load_failed")}: ${String(e)}`;
     }
     dirLoading = false;
   }
@@ -100,7 +102,7 @@
       fileContent = await readFile(path);
       editedContent = fileContent.content;
     } catch (e) {
-      fileError = `Failed to read file: ${e}`;
+      fileError = `${i18n.t("ws.load_failed")}: ${String(e)}`;
     }
     fileLoading = false;
   }
@@ -114,9 +116,9 @@
         content: editedContent,
         language: fileContent?.language ?? "plaintext",
       };
-      flashSaveMsg("Saved");
+      flashSaveMsg(i18n.t("ws.saved"));
     } catch (e) {
-      flashSaveMsg(`Error: ${e}`);
+      flashSaveMsg(i18n.t("ws.save_error", { err: String(e) }));
     }
     saving = false;
   }
@@ -131,15 +133,18 @@
 
   function handleEditorChange(val: string) {
     editedContent = val;
-    if (saveMsg === "Saved") saveMsg = "Unsaved changes";
+    if (saveMsg === i18n.t("ws.saved")) saveMsg = i18n.t("ws.unsaved");
   }
 
   async function openSelectedInVSCode(path: string) {
     try {
       await openInVSCode(path);
-      notifySuccess("VS Code", "Opening file in VS Code");
+      notifySuccess(i18n.t("ws.toast_vscode"), i18n.t("ws.toast_file_vscode"));
     } catch (e) {
-      notifyError("VS Code", `Failed to open: ${e}`);
+      notifyError(
+        i18n.t("ws.toast_vscode"),
+        i18n.t("ws.toast_failed", { err: String(e) }),
+      );
     }
   }
 
@@ -178,26 +183,26 @@
 
 <PageContainer width="wide">
   <PageHeader
-    title="File Explorer"
-    description="Browse and edit the project files. Uses listDirectory(), readFile(), writeFile() and openInVSCode() only."
+    title={i18n.t("ws.files_title") as TranslationKey}
+    description={i18n.t("ws.files_desc") as TranslationKey}
     icon="folder"
   />
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
-    <ErrorState title="Failed to load workspace" message={wsError} />
+    <ErrorState title={i18n.t("ws.load_failed") as TranslationKey} message={wsError} />
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to browse its files."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.no_project_open") as TranslationKey}
     />
   {:else if !projectPath}
     <EmptyState
       icon="external"
-      title="No project path"
-      description="This project has no path set. Configure a project path in the profile to browse files."
+      title={i18n.t("ws.no_path") as TranslationKey}
+      description={i18n.t("ws.no_path_desc") as TranslationKey}
     />
   {:else}
     <div class="sp-files-layout">
@@ -223,7 +228,7 @@
                 size="sm"
                 variant="ghost"
                 icon="chevronLeft"
-                label="Up one level"
+                label={i18n.t("ws.up_one_level") as TranslationKey}
                 onclick={() => navigateToDir(parent!)}
               />
             {/if}
@@ -232,7 +237,7 @@
 
         {#if dirLoading}
           <div class="sp-tree-state">
-            <LoadingState size="sm" label="Loading…" />
+            <LoadingState size="sm" label={i18n.t("ws.loading_workspace") as TranslationKey} />
           </div>
         {:else if dirError}
           <div class="sp-tree-state sp-tree-error">{dirError}</div>
@@ -269,7 +274,7 @@
               {/each}
             </div>
             {#if entries.length === 0}
-              <div class="sp-tree-state">Empty directory</div>
+              <div class="sp-tree-state">{i18n.t("ws.empty_dir") as TranslationKey}</div>
             {/if}
           </div>
         {/if}
@@ -281,11 +286,11 @@
             <span class="sp-editor-placeholder-icon" aria-hidden="true">
               <Icon name="file" size={22} />
             </span>
-            <p>Select a file to view and edit it.</p>
+            <p>{i18n.t("ws.select_file") as TranslationKey}</p>
           </div>
         {:else if fileLoading}
           <div class="sp-editor-placeholder">
-            <LoadingState size="sm" label="Loading file…" />
+            <LoadingState size="sm" label={i18n.t("ws.loading_workspace") as TranslationKey} />
           </div>
         {:else if fileError}
           <div class="sp-editor-placeholder sp-editor-placeholder-err">
@@ -310,7 +315,7 @@
                 icon="external"
                 onclick={() => openSelectedInVSCode(selectedFile!)}
               >
-                Open in VS Code
+                {i18n.t("ws.open_vscode") as TranslationKey}
               </Button>
               <Button
                 size="sm"
@@ -319,7 +324,7 @@
                 loading={saving}
                 onclick={saveFile}
               >
-                Save
+                {i18n.t("ws.save") as TranslationKey}
               </Button>
             </div>
           </div>

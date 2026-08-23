@@ -19,6 +19,8 @@
 //   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA, два
 //      full-stack фреймворка, backend + Electron).
 
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 import type {
   WizardTreeData,
   FrameworkDef,
@@ -44,13 +46,16 @@ function isMainLimitExempt(tree: WizardTreeData, id: string): boolean {
   return tree.main_limit_exempt.includes(id);
 }
 
-/** Объяснение конфликта (conflict_notes) в обе стороны */
+/** Объяснение конфликта (conflict_notes) в обе стороны.
+ *  Значения conflict_notes теперь i18n-ключи — переводим через i18n.t(). */
 function conflictNote(
   tree: WizardTreeData,
   fw: FrameworkDef,
   other: FrameworkDef,
 ): string | undefined {
-  return fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+  const key = fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+  if (!key) return undefined;
+  return i18n.t(key as TranslationKey);
 }
 
 function platformOk(fw: FrameworkDef, os: string): boolean {
@@ -59,7 +64,9 @@ function platformOk(fw: FrameworkDef, os: string): boolean {
 
 /** Подстановка плейсхолдеров в текстах warning_pairs:
  *  {a} — label фреймворка a, {b} — label фреймворка b,
- *  {a_lang} — label рекомендованного языка фреймворка a. */
+ *  {a_lang} — label рекомендованного языка фреймворка a.
+ *  Текст в warning_pairs теперь i18n-ключ — сначала переводим, потом
+ *  подставляем плейсхолдеры (они остаются в переведённой строке). */
 export function renderWarningPairText(
   tree: WizardTreeData,
   text: string,
@@ -69,7 +76,7 @@ export function renderWarningPairText(
   const aLangLabel =
     tree.languages.find((l) => l.id === a.recommended_language)?.label ??
     a.recommended_language;
-  return text
+  return i18n.t(text as TranslationKey)
     .replaceAll("{a_lang}", aLangLabel)
     .replaceAll("{a}", a.label)
     .replaceAll("{b}", b.label);
@@ -94,7 +101,10 @@ export function validateStack(
     if (!platformOk(fw, os)) {
       issues.push({
         severity: "Error",
-        message: `«${fw.label}» недоступен на этой ОС (требуется: ${fw.platforms!.join(", ")}).`,
+        message: i18n.t("stack.platform", {
+          a: fw.label,
+          list: fw.platforms!.join(", "),
+        }),
       });
     }
   }
@@ -104,7 +114,7 @@ export function validateStack(
     for (const b of selected) {
       if (a.id === b.id) continue;
       if (a.conflicts?.includes(b.id)) {
-        let message = `«${a.label}» несовместим с «${b.label}».`;
+        let message = i18n.t("stack.conflict", { a: a.label, b: b.label });
         const note = conflictNote(tree, a, b);
         if (note) message += ` ${note}`;
         issues.push({
@@ -121,7 +131,7 @@ export function validateStack(
       if (fw.project_types?.length && !fw.project_types.includes(projectType)) {
         issues.push({
           severity: "Error",
-          message: `«${fw.label}» не подходит для проекта «${projectType}». Выберите другой тип или снимите фреймворк.`,
+          message: i18n.t("stack.project_type", { a: fw.label, pt: projectType }),
         });
       }
     }
@@ -146,7 +156,11 @@ export function validateStack(
         if (isAllowedPair(tree, a.fw.id, b.fw.id)) continue;
         issues.push({
           severity: "Error",
-          message: `«${a.fw.label}» и «${b.fw.label}» — оба главные фреймворки ${a.side}. На сторону можно выбрать только один главный фреймворк.`,
+          message: i18n.t("stack.two_main", {
+            a: a.fw.label,
+            b: b.fw.label,
+            side: a.side,
+          }),
         });
       }
     }
@@ -161,9 +175,15 @@ export function validateStack(
     if (a && b) {
       const reason = renderWarningPairText(tree, wp.reason, a, b);
       const alternative = renderWarningPairText(tree, wp.alternative, a, b);
-      let message = `«${a.label}» и «${b.label}» — спорная связка. ${reason}`;
-      if (alternative) message += ` Альтернатива: ${alternative}.`;
-      issues.push({ severity: "Warning", message });
+      issues.push({
+        severity: "Warning",
+        message: i18n.t("stack.warn_pair", {
+          a: a.label,
+          b: b.label,
+          reason,
+          alt: alternative,
+        }),
+      });
     }
   }
 
@@ -173,14 +193,22 @@ export function validateStack(
       if (!fw.languages.some((l) => backendLangs.includes(l))) {
         issues.push({
           severity: "Error",
-          message: `«${fw.label}» работает на бэкенде и требует один из языков: ${fw.languages.join(", ")}. Замените бэкенд-язык на «${fw.recommended_language}».`,
+          message: i18n.t("stack.backend_lang", {
+            a: fw.label,
+            list: fw.languages.join(", "),
+            rec: fw.recommended_language,
+          }),
         });
       }
     } else if (fw.side === "frontend") {
       if (!fw.languages.some((l) => frontendLangs.includes(l))) {
         issues.push({
           severity: "Error",
-          message: `«${fw.label}» работает на фронтенде и требует один из языков: ${fw.languages.join(", ")}. Замените фронтенд-язык на «${fw.recommended_language}».`,
+          message: i18n.t("stack.frontend_lang", {
+            a: fw.label,
+            list: fw.languages.join(", "),
+            rec: fw.recommended_language,
+          }),
         });
       }
     } else {
@@ -188,7 +216,10 @@ export function validateStack(
       if (!anyOk) {
         issues.push({
           severity: "Error",
-          message: `«${fw.label}» требует один из языков: ${fw.languages.join(", ")} (на любой стороне).`,
+          message: i18n.t("stack.either_lang", {
+            a: fw.label,
+            list: fw.languages.join(", "),
+          }),
         });
       }
     }
@@ -203,7 +234,10 @@ export function validateStack(
     if (owner && !selected.some((x) => x.id === owner.id)) {
       issues.push({
         severity: "Error",
-        message: `«${fw.label}» — UI-вариант «${owner.label}» и не может быть выбран без него. Снимите «${fw.label}» или добавьте «${owner.label}».`,
+        message: i18n.t("stack.ui_owner", {
+          a: fw.label,
+          b: owner.label,
+        }),
       });
     }
   }

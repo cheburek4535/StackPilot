@@ -7,6 +7,8 @@
  */
 
 import type { ActionType, ActionStatus } from "./types";
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 
 export function actionVariant(act: ActionType): string {
   return Object.keys(act)[0];
@@ -24,24 +26,24 @@ export function actionIcon(act: ActionType): string {
 }
 
 export function actionTypeLabel(act: ActionType): string {
-  if ("RunCommand" in act) return "Command";
-  if ("OpenUrl" in act) return "URL";
-  if ("OpenApplication" in act) return "App";
-  if ("WaitForUrl" in act) return "Wait URL";
-  if ("WaitForPort" in act) return "Wait Port";
-  if ("Delay" in act) return "Delay";
-  if ("ExecuteScript" in act) return "Script";
-  return "?";
+  if ("RunCommand" in act) return i18n.t("act.command") as TranslationKey;
+  if ("OpenUrl" in act) return i18n.t("act.url") as TranslationKey;
+  if ("OpenApplication" in act) return i18n.t("act.app") as TranslationKey;
+  if ("WaitForUrl" in act) return i18n.t("act.wait_url") as TranslationKey;
+  if ("WaitForPort" in act) return i18n.t("act.wait_port") as TranslationKey;
+  if ("Delay" in act) return i18n.t("act.delay") as TranslationKey;
+  if ("ExecuteScript" in act) return i18n.t("act.script") as TranslationKey;
+  return i18n.t("act.unknown") as TranslationKey;
 }
 
 export function actionSummary(act: ActionType): string {
-  if ("RunCommand" in act) return act.RunCommand.command || "(empty)";
-  if ("OpenUrl" in act) return act.OpenUrl.url || "(empty)";
-  if ("OpenApplication" in act) return act.OpenApplication.path || "(empty)";
-  if ("WaitForUrl" in act) return act.WaitForUrl.url || "(empty)";
+  if ("RunCommand" in act) return act.RunCommand.command || (i18n.t("act.empty") as TranslationKey);
+  if ("OpenUrl" in act) return act.OpenUrl.url || (i18n.t("act.empty") as TranslationKey);
+  if ("OpenApplication" in act) return act.OpenApplication.path || (i18n.t("act.empty") as TranslationKey);
+  if ("WaitForUrl" in act) return act.WaitForUrl.url || (i18n.t("act.empty") as TranslationKey);
   if ("WaitForPort" in act) return `${act.WaitForPort.host}:${act.WaitForPort.port}`;
   if ("Delay" in act) return `${act.Delay.seconds}s`;
-  if ("ExecuteScript" in act) return act.ExecuteScript.script || "(empty)";
+  if ("ExecuteScript" in act) return act.ExecuteScript.script || (i18n.t("act.empty") as TranslationKey);
   return "?";
 }
 

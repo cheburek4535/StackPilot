@@ -33,6 +33,8 @@
     resultClass,
   } from "$lib/modules/devlauncher/actionMeta";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let project = $state<ProjectContext | null>(null);
   let profiles = $state<LaunchProfile[]>([]);
@@ -74,7 +76,7 @@
     try {
       project = await getCurrentProject();
     } catch (e) {
-      error = `Failed to load current project: ${e}`;
+      error = i18n.t("devl.load_project_failed", { err: String(e) });
     }
     loading = false;
   }
@@ -88,7 +90,7 @@
         selectedName = null;
       }
     } catch (e) {
-      error = `Failed to load profiles: ${e}`;
+      error = i18n.t("devl.load_profiles_failed", { err: String(e) });
     }
   }
 
@@ -137,9 +139,9 @@
   async function openProjectInVSCode(path: string) {
     try {
       await openInVSCode(path);
-      notifySuccess("VS Code", "Opening project in VS Code");
+      notifySuccess(i18n.t("devl.toast_vscode"), i18n.t("devl.toast_vscode_opening"));
     } catch (e) {
-      notifyError("VS Code", `Failed to open: ${e}`);
+      notifyError(i18n.t("devl.toast_vscode"), i18n.t("devl.toast_vscode_failed", { err: String(e) }));
     }
   }
 
@@ -154,7 +156,7 @@
       );
       goto("/workspace");
     } catch (e) {
-      notifyError("Open workspace", `Failed to set project: ${e}`);
+      notifyError(i18n.t("devl.toast_workspace"), i18n.t("devl.toast_workspace_failed", { err: String(e) }));
     }
   }
 
@@ -174,16 +176,16 @@
   }
 
   async function handleDelete(profile: LaunchProfile) {
-    if (!confirm(`Delete profile "${profile.name}"? This cannot be undone.`)) return;
+    if (!confirm(i18n.t("devl.confirm_delete", { name: profile.name }))) return;
     deleting = true;
     try {
       await deleteProfile(profile.name);
-      notifySuccess("Profile deleted", profile.name);
+      notifySuccess(i18n.t("devl.toast_deleted"), profile.name);
       if (selectedName === profile.name) selectedName = null;
       actionResults = new Map();
       await loadProfiles();
     } catch (e) {
-      notifyError("Delete profile", `Failed to delete: ${e}`);
+      notifyError(i18n.t("devl.toast_deleted"), i18n.t("devl.toast_delete_failed", { err: String(e) }));
     }
     deleting = false;
   }
@@ -191,24 +193,27 @@
 
 <PageContainer width="wide">
   <PageHeader
-    title="DevLauncher Overview"
-    description="Current project, saved profiles and actions. Launch the whole project or run actions individually."
+    title={i18n.t("devl.title") as TranslationKey}
+    description={i18n.t("devl.subtitle") as TranslationKey}
     icon="layers"
   />
 
   {#if loading}
-    <LoadingState label="Loading DevLauncher…" />
+    <LoadingState label={i18n.t("devl.loading") as TranslationKey} />
   {:else if error}
-    <ErrorState title="Failed to load DevLauncher" message={error} retry={reload} />
+    <ErrorState title={i18n.t("devl.load_failed") as TranslationKey} message={error} retry={reload} />
   {:else}
 
-    <Card title="Current project" description="Backend getCurrentProject() — the active workspace context.">
+    <Card
+      title={i18n.t("devl.current_project") as TranslationKey}
+      description={i18n.t("devl.current_project_desc") as TranslationKey}
+    >
       {#if project}
         {@const projectPath = project.project_path}
         <div class="sp-project">
           <div class="sp-project-head">
             <h4 class="sp-project-name">{project.profile_name}</h4>
-            <Badge tone="violet">current</Badge>
+            <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
           </div>
           <p class="sp-project-path">{projectPath ?? "—"}</p>
           {#if project.description}
@@ -223,7 +228,7 @@
           {/if}
           <div class="sp-actions">
             <Button variant="primary" icon="layers" onclick={openWorkspace}>
-              Open Workspace
+              {i18n.t("devl.open_workspace") as TranslationKey}
             </Button>
             {#if projectPath}
               <Button
@@ -231,39 +236,39 @@
                 icon="external"
                 onclick={() => openProjectInVSCode(projectPath!)}
               >
-                Open in VS Code
+                {i18n.t("devl.open_vscode") as TranslationKey}
               </Button>
             {/if}
           </div>
         </div>
       {:else}
         {#snippet emptyAction()}
-          <Button icon="bookmark" href="/devlauncher/profiles">Open a profile</Button>
+          <Button icon="bookmark" href="/devlauncher/profiles">{i18n.t("devl.open_profile") as TranslationKey}</Button>
           <Button variant="secondary" icon="search" href="/devlauncher/analyze">
-            Analyze a project
+            {i18n.t("devl.analyze_project") as TranslationKey}
           </Button>
         {/snippet}
         <EmptyState
           compact
           icon="folder"
-          title="No project is open"
-          description="Open a saved profile to launch it as a project, or analyze a project to build a launch profile."
+          title={i18n.t("devl.no_project") as TranslationKey}
+          description={i18n.t("devl.no_project_desc") as TranslationKey}
           action={emptyAction}
         />
       {/if}
     </Card>
 
     <div class="sp-section">
-      <h3 class="sp-section-title">Saved profiles</h3>
+      <h3 class="sp-section-title">{i18n.t("devl.saved_profiles") as TranslationKey}</h3>
 
       {#if profiles.length === 0}
         {#snippet emptyAction()}
-          <Button icon="search" href="/devlauncher/analyze">Analyze a project</Button>
+          <Button icon="search" href="/devlauncher/analyze">{i18n.t("devl.analyze_project") as TranslationKey}</Button>
         {/snippet}
         <EmptyState
           icon="bookmark"
-          title="No saved profiles"
-          description="Analyze a project to generate a launch profile."
+          title={i18n.t("devl.no_profiles") as TranslationKey}
+          description={i18n.t("devl.no_profiles_desc") as TranslationKey}
           action={emptyAction}
         />
       {:else}
@@ -282,9 +287,9 @@
                 <span class="sp-profile-row-desc">{profile.description}</span>
               </span>
               <span class="sp-profile-row-meta">
-                <Badge tone="neutral">{profile.actions.length} actions</Badge>
+                <Badge tone="neutral">{i18n.t("devl.actions_count", { n: profile.actions.length }) as TranslationKey}</Badge>
                 {#if profile.project_path}
-                  <Badge tone="cyan">has path</Badge>
+                  <Badge tone="cyan">{i18n.t("devl.has_path") as TranslationKey}</Badge>
                 {/if}
               </span>
             </button>
@@ -299,7 +304,7 @@
                   <h4 class="sp-profile-name">{selectedProfile.name}</h4>
                   <p class="sp-project-desc">{selectedProfile.description}</p>
                   <p class="sp-project-path">
-                    {selectedProfile.project_path ?? "No project path attached"}
+                    {selectedProfile.project_path ?? (i18n.t("devl.no_path") as TranslationKey)}
                   </p>
                 </div>
               </div>
@@ -312,7 +317,7 @@
                 disabled={launching || selectedProfile.actions.every((a) => !a.enabled)}
                 onclick={() => launchProfile(selectedProfile!)}
               >
-                {launching ? "Launching…" : `Launch ${selectedProfile.name}`}
+                {launching ? (i18n.t("devl.launching") as TranslationKey) : (i18n.t("devl.launch", { name: selectedProfile.name }) as TranslationKey)}
               </Button>
             </div>
             {#if launchCurrent}
@@ -331,7 +336,7 @@
                   icon="layers"
                   onclick={() => openProfileInWorkspace(selectedProfile!)}
                 >
-                  Open in Workspace
+                  {i18n.t("devl.open_in_workspace") as TranslationKey}
                 </Button>
               {/if}
               <Button
@@ -340,12 +345,12 @@
                 disabled={deleting || launching}
                 onclick={() => handleDelete(selectedProfile!)}
               >
-                Delete
+                {i18n.t("devl.delete") as TranslationKey}
               </Button>
             </div>
 
             <h5 class="sp-sub-title">
-              Actions ({selectedProfile.actions.length})
+              {i18n.t("devl.actions", { n: selectedProfile.actions.length }) as TranslationKey}
             </h5>
             <div class="sp-action-list">
               {#each selectedProfile.actions as action}
@@ -358,7 +363,7 @@
                     </span>
                   </div>
                   <Badge tone={action.enabled ? "lime" : "neutral"}>
-                    {action.enabled ? "on" : "off"}
+                    {action.enabled ? (i18n.t("devl.on") as TranslationKey) : (i18n.t("devl.off") as TranslationKey)}
                   </Badge>
                   <Button
                     size="sm"
@@ -368,7 +373,7 @@
                     loading={running.has(action.id)}
                     onclick={() => runAction(selectedProfile!, action.id)}
                   >
-                    Execute
+                    {i18n.t("devl.execute") as TranslationKey}
                   </Button>
                 </div>
                 {#if actionResults.has(action.id)}

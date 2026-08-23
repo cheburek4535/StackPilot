@@ -8,6 +8,8 @@
   import { initTheme } from "$lib/core/theme";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
@@ -42,10 +44,10 @@
     <div class="sp-topbar-actions">
       <IconButton
         icon="help"
-        label="Getting started"
+        label={i18n.t("nav.getting_started") as TranslationKey}
         onclick={() => reopenOnboarding()}
       />
-      <IconButton icon="settings" label="Settings" href="/settings" />
+      <IconButton icon="settings" label={i18n.t("nav.settings") as TranslationKey} href="/settings" />
     </div>
   </header>
 
@@ -58,7 +60,7 @@
               class="sp-nav-group"
               class:sp-nav-group-active={isNavGroupActive(group, pathname)}
             >
-              <span class="sp-nav-group-label">{group.label}</span>
+              <span class="sp-nav-group-label">{i18n.t(group.label as TranslationKey)}</span>
               {#each group.items as item}
                 {@render navItem(item)}
               {/each}
@@ -77,7 +79,7 @@
           onclick={() => reopenOnboarding()}
         >
           <Icon name="help" size={15} />
-          <span>Getting started</span>
+          <span>{i18n.t("nav.getting_started")}</span>
         </button>
       </div>
     </aside>
@@ -99,7 +101,7 @@
     aria-current={isNavItemActive(item, pathname) ? "page" : undefined}
   >
     <Icon name={item.icon as IconName} size={16} />
-    <span class="sp-nav-item-label">{item.label}</span>
+    <span class="sp-nav-item-label">{i18n.t(item.label as TranslationKey)}</span>
   </a>
 {/snippet}
 

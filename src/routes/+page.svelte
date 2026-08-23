@@ -24,6 +24,8 @@
     resultClass,
   } from "$lib/modules/devlauncher/actionMeta";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let project = $state<ProjectContext | null>(null);
   let loading = $state(true);
@@ -66,10 +68,10 @@
     openingPath = ref.path;
     try {
       await openProject(ref.path);
-      notifySuccess("Project opened", ref.name);
+      notifySuccess(i18n.t("home.open") as TranslationKey, ref.name);
       goto("/workspace");
     } catch (e) {
-      notifyError("Open project", `Failed to open ${ref.path}: ${e}`);
+      notifyError(i18n.t("home.open") as TranslationKey, `${e}`);
     }
     openingPath = null;
   }
@@ -77,9 +79,9 @@
   async function openInVSCodeSafe(path: string) {
     try {
       await openInVSCode(path);
-      notifySuccess("VS Code", "Opening project in VS Code");
+      notifySuccess("VS Code", i18n.t("home.open_vscode") as TranslationKey);
     } catch (e) {
-      notifyError("VS Code", `Failed to open: ${e}`);
+      notifyError("VS Code", `${e}`);
     }
   }
 
@@ -104,44 +106,44 @@
     const ms = Date.now() - Date.parse(iso);
     if (!Number.isFinite(ms)) return "";
     const mins = Math.floor(ms / 60000);
-    if (mins < 1) return "just now";
-    if (mins < 60) return `${mins}m ago`;
+    if (mins < 1) return i18n.t("home.just_now");
+    if (mins < 60) return i18n.t("home.minutes_ago", { n: mins });
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return i18n.t("home.hours_ago", { n: hours });
     const days = Math.floor(hours / 24);
-    return `${days}d ago`;
+    return i18n.t("home.days_ago", { n: days });
   }
 </script>
 
 <PageContainer width="wide">
   <PageHeader
-    title="Home"
-    description="Your current project, recent history, and quick actions."
+    title={i18n.t("home.title") as TranslationKey}
+    description={i18n.t("home.description") as TranslationKey}
     icon="home"
   >
     {#snippet actions()}
-      <Button variant="secondary" icon="layers" href="/devlauncher">DevLauncher</Button>
-      <Button variant="primary" icon="sparkles" href="/create">Project Creator</Button>
+      <Button variant="secondary" icon="layers" href="/devlauncher">{i18n.t("nav.devlauncher") as TranslationKey}</Button>
+      <Button variant="primary" icon="sparkles" href="/create">{i18n.t("nav.project_creator") as TranslationKey}</Button>
     {/snippet}
   </PageHeader>
 
   {#if loading}
-    <LoadingState label="Loading Home…" />
+    <LoadingState label={i18n.t("home.loading") as TranslationKey} />
   {:else if error}
-    <ErrorState title="Failed to load current project" message={error} retry={reload} />
+    <ErrorState title={i18n.t("home.load_error") as TranslationKey} message={error} retry={reload} />
   {:else}
 
     <div class="sp-grid">
       <Card
-        title="Current project"
-        description="Backend getCurrentProject() — the active workspace context."
+        title={i18n.t("home.current_project") as TranslationKey}
+        description={i18n.t("home.current_project_desc") as TranslationKey}
       >
         {#if project}
           {@const projectPath = project.project_path}
           <div class="sp-project">
             <div class="sp-project-head">
               <h4 class="sp-project-name">{project.profile_name}</h4>
-              <Badge tone="violet">current</Badge>
+              <Badge tone="violet">{i18n.t("home.current") as TranslationKey}</Badge>
             </div>
             <p class="sp-project-path">{projectPath ?? "—"}</p>
             {#if project.description}
@@ -156,7 +158,7 @@
             {/if}
             <div class="sp-actions">
               <Button variant="primary" icon="layers" onclick={() => goto("/workspace")}>
-                Open Workspace
+                {i18n.t("home.open_workspace") as TranslationKey}
               </Button>
               {#if projectPath}
                 <Button
@@ -164,22 +166,22 @@
                   icon="external"
                   onclick={() => openInVSCodeSafe(projectPath!)}
                 >
-                  Open in VS Code
+                  {i18n.t("home.open_vscode") as TranslationKey}
                 </Button>
               {/if}
             </div>
           </div>
         {:else}
-          <p class="sp-none">No project is open.</p>
+          <p class="sp-none">{i18n.t("home.no_project") as TranslationKey}</p>
         {/if}
       </Card>
 
       <Card
-        title="Recent projects"
-        description="UI-local history of projects you opened or created. Not the backend current project."
+        title={i18n.t("home.recent_projects") as TranslationKey}
+        description={i18n.t("home.recent_desc") as TranslationKey}
       >
         {#if $recentProjects.length === 0}
-          <p class="sp-none">No recent projects yet.</p>
+          <p class="sp-none">{i18n.t("home.no_recent") as TranslationKey}</p>
         {:else}
           <div class="sp-recent-list">
             {#each $recentProjects as ref}
@@ -201,7 +203,7 @@
                     disabled={openingPath !== null}
                     onclick={() => openRecent(ref)}
                   >
-                    Open
+                    {i18n.t("home.open") as TranslationKey}
                   </Button>
                   <Button
                     size="sm"
@@ -209,7 +211,7 @@
                     icon="external"
                     onclick={() => openInVSCodeSafe(ref.path)}
                   >
-                    VS Code
+                    {i18n.t("home.vscode") as TranslationKey}
                   </Button>
                 </div>
               </div>
@@ -221,15 +223,15 @@
 
     {#if !project && $recentProjects.length === 0}
       {#snippet emptyAction()}
-        <Button variant="primary" icon="layers" href="/devlauncher">Open DevLauncher</Button>
-        <Button variant="secondary" icon="sparkles" href="/create">Project Creator</Button>
+        <Button variant="primary" icon="layers" href="/devlauncher">{i18n.t("home.open_devlauncher") as TranslationKey}</Button>
+        <Button variant="secondary" icon="sparkles" href="/create">{i18n.t("home.project_creator") as TranslationKey}</Button>
       {/snippet}
 
       <div class="sp-empty-wrap">
         <EmptyState
           icon="folder"
-          title="Nothing here yet"
-          description="Open a project, analyze one to build a launch profile, or create a new project to get started."
+          title={i18n.t("home.empty_title") as TranslationKey}
+          description={i18n.t("home.empty_desc") as TranslationKey}
           action={emptyAction}
         />
       </div>
@@ -238,8 +240,8 @@
     {#if demo}
       <div class="sp-demo">
         <Card
-          title="Demo profile (diagnostics)"
-          description="Hardcoded backend demo data — not your project. Individual actions run via executeAction; there is no whole-profile launch."
+          title={i18n.t("home.demo_title") as TranslationKey}
+          description={i18n.t("home.demo_desc") as TranslationKey}
         >
           <div class="sp-demo-head">
             <h4 class="sp-project-name">{demo.name}</h4>
@@ -264,7 +266,7 @@
                   loading={demoRunning.has(action.id)}
                   onclick={() => runDemoAction(action.id)}
                 >
-                  Execute
+                  {i18n.t("home.execute") as TranslationKey}
                 </Button>
               </div>
               {#if demoResults.has(action.id)}

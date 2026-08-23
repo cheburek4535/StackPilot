@@ -4,6 +4,8 @@
   import { listProfiles } from "$lib/modules/devlauncher/api";
   import type { LaunchProfile } from "$lib/modules/devlauncher/types";
   import { notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let profiles = $state<LaunchProfile[]>([]);
   let loading = $state(true);
@@ -12,7 +14,7 @@
     try {
       profiles = await listProfiles();
     } catch (e) {
-      notifyError("Profiles", `Failed to load profiles: ${e}`);
+      notifyError(i18n.t("devl.profiles"), i18n.t("devl.load_profiles_failed", { err: String(e) }));
     }
     loading = false;
   });
@@ -23,18 +25,18 @@
 </script>
 
 <main>
-  <h1>Profiles</h1>
-  <p class="subtitle">Saved launch configurations</p>
+  <h1>{i18n.t("devl.profiles_title") as TranslationKey}</h1>
+  <p class="subtitle">{i18n.t("devl.profiles_subtitle") as TranslationKey}</p>
 
   {#if loading}
-    <p class="empty">Loading...</p>
+    <p class="empty">{i18n.t("devl.profiles_loading") as TranslationKey}</p>
   {:else if profiles.length === 0}
     <div class="empty-state">
-      <p class="empty">No saved profiles.</p>
-      <p class="hint">Profiles appear here after you analyze a project or create one manually.</p>
+      <p class="empty">{i18n.t("devl.profiles_empty") as TranslationKey}</p>
+      <p class="hint">{i18n.t("devl.profiles_hint") as TranslationKey}</p>
       <div class="empty-actions">
-        <button class="primary" onclick={() => goto("/devlauncher/analyze")}>Analyze a project</button>
-        <button class="secondary" onclick={() => goto("/devlauncher")}>Back to overview</button>
+        <button class="primary" onclick={() => goto("/devlauncher/analyze")}>{i18n.t("devl.analyze_project") as TranslationKey}</button>
+        <button class="secondary" onclick={() => goto("/devlauncher")}>{i18n.t("devl.back_to_overview") as TranslationKey}</button>
       </div>
     </div>
   {:else}
@@ -46,7 +48,7 @@
             <span class="desc">{profile.description}</span>
           </div>
           <div class="card-meta">
-            <span class="count">{profile.actions.length} actions</span>
+            <span class="count">{i18n.t("devl.actions_count", { n: profile.actions.length }) as TranslationKey}</span>
             <span class="arrow">→</span>
           </div>
         </button>

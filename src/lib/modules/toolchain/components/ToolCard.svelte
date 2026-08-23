@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Карточка инструмента каталога. Действия правдивы относительно
   // возможностей платформы (capabilities бэкенда); мутации НЕ запускаются
   // из клика — они открывают экран проверки плана.
@@ -24,6 +26,7 @@
     ondetails,
     onplan,
     onrecheck,
+    onuninstall,
   }: {
     tool: ToolScanResult;
     /** Метаданные каталога (описание/размер/права). Может отсутствовать. */
@@ -32,6 +35,7 @@
     ondetails: (toolId: string) => void;
     onplan: (operation: CardPlanOp, toolId: string) => void;
     onrecheck: (toolId: string) => void;
+    onuninstall?: (toolId: string) => void;
   } = $props();
 
   type PrimaryAction =
@@ -43,13 +47,13 @@
   const action = $derived.by<PrimaryAction>(() => {
     const s = tool.state.kind;
     if (s === "missing" && tool.capabilities.installable) {
-      return { kind: "plan", operation: "install", label: "Установить" };
+      return { kind: "plan", operation: "install", label: i18n.t("tc.op.install") as TranslationKey };
     }
     if (s === "update_available" && tool.capabilities.updatable) {
-      return { kind: "plan", operation: "update", label: "Обновить" };
+      return { kind: "plan", operation: "update", label: i18n.t("tc.op.update") as TranslationKey };
     }
     if (s === "path_broken" && tool.capabilities.repairable) {
-      return { kind: "plan", operation: "repair_path", label: "Починить PATH" };
+      return { kind: "plan", operation: "repair_path", label: i18n.t("tc.op.repair_path") as TranslationKey };
     }
     if (
       (s === "installed_healthy" ||
@@ -57,13 +61,13 @@
         s === "installed_unhealthy") &&
       tool.capabilities.health_checkable
     ) {
-      return { kind: "recheck", label: busy ? "Проверка…" : "Проверить" };
+      return { kind: "recheck", label: busy ? (i18n.t("tc.state.scanning") as TranslationKey) : (i18n.t("tc.op.health_check") as TranslationKey) };
     }
     if (
       (s === "manual_install" || s === "unsupported_platform") &&
       tool.capabilities.manual_instructions_available
     ) {
-      return { kind: "details", label: "Инструкция" };
+      return { kind: "details", label: i18n.t("tc.install.docs") as TranslationKey };
     }
     return null;
   });
@@ -83,9 +87,9 @@
       tool.state.kind === "installed_unhealthy";
     if (!installed || version || versionInfo || updateTarget) return null;
     return {
-      text: "версия не определена",
+      text: i18n.t("tc.install.version_unknown") as TranslationKey,
       title:
-        "Установка найдена, но ни одна проба не выдала версию (след без рабочего бинарника или молчащая проба).",
+        i18n.t("tc.install.version_unknown") as TranslationKey,
     };
   });
   const provenance = $derived(provenanceInfo(tool.provenance));
@@ -107,12 +111,12 @@
   </header>
 
   {#if def?.description}
-    <p class="description">{def.description}</p>
+    <p class="description">{i18n.t(def.description as TranslationKey)}</p>
   {/if}
 
   <dl class="meta">
     <div class="meta-item" title={version ?? versionInfo?.text ?? undefined}>
-      <dt>Версия</dt>
+      <dt>{i18n.t("tc.card.version") as TranslationKey}</dt>
       <dd>
         {#if updateTarget}
           <span class="update-line" title={`${version || versionInfo?.text || "?"} → ${updateTarget}`}>
@@ -123,7 +127,7 @@
         {:else if version}
           {version}
         {:else if versionInfo}
-          <span title={versionInfo.parsed ? "Разобранная версия" : "Сырой вывод пробы — версия не распознана"}>
+          <span title={versionInfo.parsed ? (i18n.t("tc.score_parsed") as TranslationKey) : (i18n.t("tc.score_raw") as TranslationKey)}>
             {versionInfo.text}{versionInfo.parsed ? "" : "*"}
           </span>
         {:else if versionUnknownExplanation}
@@ -136,28 +140,25 @@
       </dd>
     </div>
     <div class="meta-item" title={provenance.label}>
-      <dt>Источник</dt>
+      <dt>{i18n.t("tc.card.source") as TranslationKey}</dt>
       <dd class="ellipsis">{provenance.label}</dd>
     </div>
     <div class="meta-item" title={def ? formatSizeMb(def.size_mb) : undefined}>
-      <dt>Размер</dt>
+      <dt>{i18n.t("tc.install.size") as TranslationKey}</dt>
       <dd>{def ? formatSizeMb(def.size_mb) : "—"}</dd>
     </div>
   </dl>
 
   <div class="flags">
-    {#if def?.needs_admin}
-      <Badge tone="amber">нужны права администратора</Badge>
-    {/if}
     {#if hasPathProblem}
-      <Badge tone="red">PATH</Badge>
+      <Badge tone="amber"><span title={i18n.t("tc.card.path_warning") as TranslationKey}>{i18n.t("tc.card.path_broken") as TranslationKey}</span></Badge>
     {/if}
     {#if tool.health?.state.kind === "unhealthy"}
-      <Badge tone="red" dot>проверки не проходят</Badge>
+      <Badge tone="red" dot>{i18n.t("tc.health.unhealthy") as TranslationKey}</Badge>
     {:else if tool.health?.state.kind === "degraded"}
-      <Badge tone="amber" dot>деградация</Badge>
+      <Badge tone="cyan" dot>{i18n.t("tc.card.degraded") as TranslationKey}</Badge>
     {:else if tool.health?.state.kind === "healthy"}
-      <Badge tone="lime" dot>проверки пройдены</Badge>
+      <Badge tone="lime" dot>{i18n.t("tc.card.healthy") as TranslationKey}</Badge>
     {/if}
   </div>
 
@@ -185,13 +186,17 @@
       </Button>
     {:else}
       <Button variant="ghost" size="sm" onclick={() => ondetails(tool.tool_id)}>
-        Подробнее
+        {i18n.t("tc.card.details") as TranslationKey}
       </Button>
     {/if}
+      {#if onuninstall && tool.state.kind !== "missing" && tool.state.kind !== "unsupported_platform" && tool.state.kind !== "built_in_system" && tool.state.kind !== "docker_managed"}
+        <IconButton icon="trash" label={i18n.t("tc.uninstall.confirm", { tool: tool.display }) as TranslationKey} variant="ghost" onclick={() => onuninstall?.(tool.tool_id)} />
+      {/if}
+
     <span class="spacer"></span>
     <IconButton
       icon="chevronRight"
-      label={`Подробнее о ${tool.display}`}
+      label={i18n.t("tc.card.more_info", { name: tool.display }) as TranslationKey}
       size="sm"
       onclick={() => ondetails(tool.tool_id)}
     />

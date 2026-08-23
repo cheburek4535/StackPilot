@@ -43,207 +43,207 @@
     {
       "a": "phoenix",
       "b": "nextjs",
-      "reason": "Phoenix использует собственную технологию LiveView для интерфейса — «Next.js» дублирует UI-слой и ломает концепцию LiveView-приложения.",
-      "alternative": "используйте LiveView/HEEx для интерфейса, либо оставьте связку, если Phoenix нужен только как API"
+      "reason": "wizard.warn.phoenix.nextjs.reason",
+      "alternative": "wizard.warn.phoenix.nextjs.alt"
     },
     {
       "a": "phoenix",
       "b": "nuxt",
-      "reason": "Phoenix использует собственную технологию LiveView для интерфейса — «Nuxt» дублирует UI-слой и ломает концепцию LiveView-приложения.",
-      "alternative": "используйте LiveView/HEEx для интерфейса, либо оставьте связку, если Phoenix нужен только как API"
+      "reason": "wizard.warn.phoenix.nuxt.reason",
+      "alternative": "wizard.warn.phoenix.nuxt.alt"
     },
     {
       "a": "laravel",
       "b": "nextjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.laravel.nextjs.reason",
+      "alternative": "wizard.warn.laravel.nextjs.alt"
     },
     {
       "a": "laravel",
       "b": "nuxt",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.laravel.nuxt.reason",
+      "alternative": "wizard.warn.laravel.nuxt.alt"
     },
     {
       "a": "laravel",
       "b": "sveltekit",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.laravel.sveltekit.reason",
+      "alternative": "wizard.warn.laravel.sveltekit.alt"
     },
     {
       "a": "laravel",
       "b": "solidjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.laravel.solidjs.reason",
+      "alternative": "wizard.warn.laravel.solidjs.alt"
     },
     {
       "a": "django",
       "b": "nextjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.django.nextjs.reason",
+      "alternative": "wizard.warn.django.nextjs.alt"
     },
     {
       "a": "django",
       "b": "nuxt",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.django.nuxt.reason",
+      "alternative": "wizard.warn.django.nuxt.alt"
     },
     {
       "a": "django",
       "b": "sveltekit",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.django.sveltekit.reason",
+      "alternative": "wizard.warn.django.sveltekit.alt"
     },
     {
       "a": "django",
       "b": "solidjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.django.solidjs.reason",
+      "alternative": "wizard.warn.django.solidjs.alt"
     },
     {
       "a": "spring-boot",
       "b": "nextjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.spring_boot.nextjs.reason",
+      "alternative": "wizard.warn.spring_boot.nextjs.alt"
     },
     {
       "a": "spring-boot",
       "b": "nuxt",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.spring_boot.nuxt.reason",
+      "alternative": "wizard.warn.spring_boot.nuxt.alt"
     },
     {
       "a": "spring-boot",
       "b": "sveltekit",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.spring_boot.sveltekit.reason",
+      "alternative": "wizard.warn.spring_boot.sveltekit.alt"
     },
     {
       "a": "spring-boot",
       "b": "solidjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.spring_boot.solidjs.reason",
+      "alternative": "wizard.warn.spring_boot.solidjs.alt"
     },
     {
       "a": "rails",
       "b": "nextjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.rails.nextjs.reason",
+      "alternative": "wizard.warn.rails.nextjs.alt"
     },
     {
       "a": "rails",
       "b": "nuxt",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.rails.nuxt.reason",
+      "alternative": "wizard.warn.rails.nuxt.alt"
     },
     {
       "a": "rails",
       "b": "sveltekit",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.rails.sveltekit.reason",
+      "alternative": "wizard.warn.rails.sveltekit.alt"
     },
     {
       "a": "rails",
       "b": "solidjs",
-      "reason": "Вы выбрали два фреймворка, каждый из которых имеет свой собственный роутинг и сервер. Если вы хотите использовать {a} только как API, рассмотрите использование чистого SPA (React/Vue/Svelte) вместо {b}.",
-      "alternative": "оставьте {a} как API, а интерфейс соберите на чистом SPA (React/Vue/Svelte) вместо {b}, либо выберите только один из двух фреймворков"
+      "reason": "wizard.warn.rails.solidjs.reason",
+      "alternative": "wizard.warn.rails.solidjs.alt"
     },
     {
       "a": "laravel",
       "b": "electron",
-      "reason": "Electron предназначен для упаковки JS/TS кода. Бэкенд на {a_lang} придется запускать как отдельный сайдкар-процесс, это сложная архитектура.",
-      "alternative": "используйте Electron с JS/TS-фронтендом и отдельным API-сервисом на {a_lang}, либо замените Electron на Tauri"
+      "reason": "wizard.warn.laravel.electron.reason",
+      "alternative": "wizard.warn.laravel.electron.alt"
     },
     {
       "a": "spring-boot",
       "b": "electron",
-      "reason": "Electron предназначен для упаковки JS/TS кода. Бэкенд на {a_lang} придется запускать как отдельный сайдкар-процесс, это сложная архитектура.",
-      "alternative": "используйте Electron с JS/TS-фронтендом и отдельным API-сервисом на {a_lang}, либо замените Electron на Tauri"
+      "reason": "wizard.warn.spring_boot.electron.reason",
+      "alternative": "wizard.warn.spring_boot.electron.alt"
     },
     {
       "a": "expo",
       "b": "zap",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.expo.zap.reason",
+      "alternative": "wizard.warn.expo.zap.alt"
     },
     {
       "a": "expo",
       "b": "django",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API (DRF), к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.expo.django.reason",
+      "alternative": "wizard.warn.expo.django.alt"
     },
     {
       "a": "electron",
       "b": "fastapi",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.fastapi.reason",
+      "alternative": "wizard.warn.electron.fastapi.alt"
     },
     {
       "a": "electron",
       "b": "django",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API (DRF), к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.django.reason",
+      "alternative": "wizard.warn.electron.django.alt"
     },
     {
       "a": "electron",
       "b": "flask",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.flask.reason",
+      "alternative": "wizard.warn.electron.flask.alt"
     },
     {
       "a": "electron",
       "b": "axum",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.axum.reason",
+      "alternative": "wizard.warn.electron.axum.alt"
     },
     {
       "a": "electron",
       "b": "gin",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.gin.reason",
+      "alternative": "wizard.warn.electron.gin.alt"
     },
     {
       "a": "electron",
       "b": "aspnetcore",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.aspnetcore.reason",
+      "alternative": "wizard.warn.electron.aspnetcore.alt"
     },
     {
       "a": "electron",
       "b": "symfony",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.symfony.reason",
+      "alternative": "wizard.warn.electron.symfony.alt"
     },
     {
       "a": "electron",
       "b": "ktor",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.ktor.reason",
+      "alternative": "wizard.warn.electron.ktor.alt"
     },
     {
       "a": "electron",
       "b": "vapor",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.vapor.reason",
+      "alternative": "wizard.warn.electron.vapor.alt"
     },
     {
       "a": "electron",
       "b": "phoenix",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.phoenix.reason",
+      "alternative": "wizard.warn.electron.phoenix.alt"
     },
     {
       "a": "electron",
       "b": "zap",
-      "reason": "Вы пытаетесь связать мобильный/десктопный фреймворк «{a}» напрямую с серверным «{b}» без API-прослойки. Вы уверены, что хотите создать разделённую (API + Client) архитектуру?",
-      "alternative": "используйте «{b}» как чистый REST API, к которому «{a}» обращается по HTTP, — тогда связка легальна; иначе уберите серверную сторону"
+      "reason": "wizard.warn.electron.zap.reason",
+      "alternative": "wizard.warn.electron.zap.alt"
     }
   ],
   "project_types": [
     {
       "id": "rest-api",
-      "label": "REST API",
-      "description": "Backend service with HTTP endpoints",
+      "label": "wizard.pt.rest_api.label",
+      "description": "wizard.pt.rest_api.desc",
       "icon": "rest-api.png",
       "tags": [
         "web",
@@ -254,8 +254,8 @@
     },
     {
       "id": "desktop-app",
-      "label": "Desktop Application",
-      "description": "Native desktop application",
+      "label": "wizard.pt.desktop_app.label",
+      "description": "wizard.pt.desktop_app.desc",
       "icon": "desktop-app.png",
       "tags": [
         "desktop",
@@ -265,8 +265,8 @@
     },
     {
       "id": "web-app",
-      "label": "Web Application",
-      "description": "Full-stack web application",
+      "label": "wizard.pt.web_app.label",
+      "description": "wizard.pt.web_app.desc",
       "icon": "web-app.png",
       "tags": [
         "web",
@@ -277,8 +277,8 @@
     },
     {
       "id": "cli-tool",
-      "label": "CLI Tool",
-      "description": "Command-line interface tool",
+      "label": "wizard.pt.cli_tool.label",
+      "description": "wizard.pt.cli_tool.desc",
       "icon": "cli-tool.png",
       "tags": [
         "cli",
@@ -288,8 +288,8 @@
     },
     {
       "id": "telegram-bot",
-      "label": "Telegram Bot",
-      "description": "Automated Telegram bot",
+      "label": "wizard.pt.telegram_bot.label",
+      "description": "wizard.pt.telegram_bot.desc",
       "icon": "telegram-bot.webp",
       "tags": [
         "bot",
@@ -299,8 +299,8 @@
     },
     {
       "id": "library",
-      "label": "Library",
-      "description": "Reusable library or package",
+      "label": "wizard.pt.library.label",
+      "description": "wizard.pt.library.desc",
       "icon": "library.png",
       "tags": [
         "library",
@@ -310,8 +310,8 @@
     },
     {
       "id": "mobile-app",
-      "label": "Mobile App",
-      "description": "Cross-platform or native mobile application",
+      "label": "wizard.pt.mobile_app.label",
+      "description": "wizard.pt.mobile_app.desc",
       "icon": "mobile-app.svg",
       "tags": [
         "mobile",
@@ -323,8 +323,8 @@
     },
     {
       "id": "browser-extension",
-      "label": "Browser Extension",
-      "description": "Extension for Chrome, Firefox, etc.",
+      "label": "wizard.pt.browser_extension.label",
+      "description": "wizard.pt.browser_extension.desc",
       "icon": "browser-ex.png",
       "tags": [
         "browser",
@@ -335,8 +335,8 @@
     },
     {
       "id": "data-pipeline",
-      "label": "Data Pipeline / ETL",
-      "description": "Data processing pipeline or ETL job",
+      "label": "wizard.pt.data_pipeline.label",
+      "description": "wizard.pt.data_pipeline.desc",
       "icon": "data-pipeline2.png",
       "tags": [
         "data",
@@ -347,8 +347,8 @@
     },
     {
       "id": "embedded",
-      "label": "Embedded / IoT",
-      "description": "Firmware or IoT application",
+      "label": "wizard.pt.embedded.label",
+      "description": "wizard.pt.embedded.desc",
       "icon": "iot.png",
       "tags": [
         "embedded",
@@ -359,8 +359,8 @@
     },
     {
       "id": "custom",
-      "label": "Custom Stack",
-      "description": "Build your own recipe from scratch",
+      "label": "wizard.pt.custom.label",
+      "description": "wizard.pt.custom.desc",
       "icon": "custom.png",
       "tags": [
         "custom"
@@ -505,7 +505,7 @@
     {
       "id": "fastapi",
       "label": "FastAPI",
-      "description": "Modern async Python web framework with automatic OpenAPI docs",
+      "description": "wizard.fw.fastapi.desc",
       "icon": "fastapi.svg",
       "class": "inplace",
       "side": "backend",
@@ -534,7 +534,7 @@
     {
       "id": "django",
       "label": "Django",
-      "description": "Batteries-included Python web framework",
+      "description": "wizard.fw.django.desc",
       "icon": "django.svg",
       "class": "standalone",
       "side": "backend",
@@ -562,7 +562,7 @@
     {
       "id": "flask",
       "label": "Flask",
-      "description": "Lightweight Python web framework",
+      "description": "wizard.fw.flask.desc",
       "icon": "flask.svg",
       "class": "inplace",
       "side": "backend",
@@ -591,7 +591,7 @@
     {
       "id": "axum",
       "label": "Axum",
-      "description": "Ergonomic Rust web framework built on Tokio",
+      "description": "wizard.fw.axum.desc",
       "icon": null,
       "class": "inplace",
       "side": "backend",
@@ -615,7 +615,7 @@
     {
       "id": "tauri",
       "label": "Tauri",
-      "description": "Lightweight desktop app with web frontend",
+      "description": "wizard.fw.tauri.desc",
       "icon": "tauri.svg",
       "class": "standalone",
       "side": "either",
@@ -651,18 +651,18 @@
       "recommends": [
         {
           "framework": "svelte",
-          "note": "Лёгкий и быстрый фронтенд — стандартный выбор для Tauri"
+          "note": "wizard.rec.tauri.svelte"
         },
         {
           "framework": "react",
-          "note": "Самый популярный фронтенд для Tauri"
+          "note": "wizard.rec.tauri.react"
         }
       ]
     },
     {
       "id": "clap",
       "label": "Clap",
-      "description": "Rust CLI argument parser with derive macros",
+      "description": "wizard.fw.clap.desc",
       "icon": "clap.svg",
       "class": "inplace",
       "side": "backend",
@@ -686,7 +686,7 @@
     {
       "id": "gin",
       "label": "Gin",
-      "description": "Fast Go HTTP framework",
+      "description": "wizard.fw.gin.desc",
       "icon": "gin.svg",
       "class": "inplace",
       "side": "backend",
@@ -710,7 +710,7 @@
     {
       "id": "cobra",
       "label": "Cobra",
-      "description": "Powerful Go CLI framework",
+      "description": "wizard.fw.cobra.desc",
       "icon": null,
       "class": "inplace",
       "side": "backend",
@@ -734,7 +734,7 @@
     {
       "id": "nextjs",
       "label": "Next.js",
-      "description": "React full-stack framework",
+      "description": "wizard.fw.nextjs.desc",
       "icon": "nextjs.svg",
       "class": "standalone",
       "side": "frontend",
@@ -769,16 +769,16 @@
       "suppresses_language_scaffold": true,
       "kind": "app",
       "conflict_notes": {
-        "react": "React встроен в Next.js — выбор обоих дублирует UI-слой",
-        "vue": "Next.js работает на React — Vue дублирует UI-слой",
-        "svelte": "Next.js работает на React — Svelte дублирует UI-слой"
+        "react": "wizard.conflict.nextjs.react",
+        "vue": "wizard.conflict.nextjs.vue",
+        "svelte": "wizard.conflict.nextjs.svelte"
       },
       "recommends": []
     },
     {
       "id": "sveltekit",
       "label": "SvelteKit",
-      "description": "Full-stack Svelte framework",
+      "description": "wizard.fw.sveltekit.desc",
       "icon": "svelte.svg",
       "class": "standalone",
       "side": "frontend",
@@ -813,16 +813,16 @@
       "suppresses_language_scaffold": true,
       "kind": "app",
       "conflict_notes": {
-        "svelte": "Svelte встроен в SvelteKit — выбор обоих дублирует UI-слой",
-        "react": "SvelteKit работает на Svelte — React дублирует UI-слой",
-        "vue": "SvelteKit работает на Svelte — Vue дублирует UI-слой"
+        "svelte": "wizard.conflict.sveltekit.svelte",
+        "react": "wizard.conflict.sveltekit.react",
+        "vue": "wizard.conflict.sveltekit.vue"
       },
       "recommends": []
     },
     {
       "id": "nuxt",
       "label": "Nuxt",
-      "description": "Full-stack Vue framework",
+      "description": "wizard.fw.nuxt.desc",
       "icon": "nuxt.png",
       "class": "standalone",
       "side": "frontend",
@@ -857,21 +857,21 @@
       "suppresses_language_scaffold": true,
       "kind": "app",
       "conflict_notes": {
-        "vue": "Vue встроен в Nuxt — выбор обоих дублирует UI-слой",
-        "react": "Nuxt работает на Vue — React дублирует UI-слой",
-        "svelte": "Nuxt работает на Vue — Svelte дублирует UI-слой"
+        "vue": "wizard.conflict.nuxt.vue",
+        "react": "wizard.conflict.nuxt.react",
+        "svelte": "wizard.conflict.nuxt.svelte"
       },
       "recommends": [
         {
           "framework": "express",
-          "note": "Мини-API-сервер рядом с Nuxt-фронтендом"
+          "note": "wizard.rec.nuxt.express"
         }
       ]
     },
     {
       "id": "express",
       "label": "Express",
-      "description": "Minimal Node.js web framework",
+      "description": "wizard.fw.express.desc",
       "icon": "express.png",
       "class": "inplace",
       "side": "backend",
@@ -902,7 +902,7 @@
     {
       "id": "electron",
       "label": "Electron",
-      "description": "Cross-platform desktop app with Node.js",
+      "description": "wizard.fw.electron.desc",
       "icon": "electron.webp",
       "class": "standalone",
       "side": "frontend",
@@ -944,7 +944,7 @@
     {
       "id": "aiogram",
       "label": "Aiogram",
-      "description": "Async Python Telegram bot framework",
+      "description": "wizard.fw.aiogram.desc",
       "icon": null,
       "class": "inplace",
       "side": "backend",
@@ -971,7 +971,7 @@
     {
       "id": "telegraf",
       "label": "Telegraf",
-      "description": "Modern Node.js Telegram bot framework",
+      "description": "wizard.fw.telegraf.desc",
       "icon": "telegraf.png",
       "class": "inplace",
       "side": "backend",
@@ -1002,7 +1002,7 @@
     {
       "id": "spring-boot",
       "label": "Spring Boot",
-      "description": "Production-grade Java web/REST framework",
+      "description": "wizard.fw.spring_boot.desc",
       "icon": "spring-boot.svg",
       "class": "standalone",
       "side": "backend",
@@ -1032,7 +1032,7 @@
     {
       "id": "android",
       "label": "Android SDK",
-      "description": "Native Android development (Java/Kotlin)",
+      "description": "wizard.fw.android.desc",
       "icon": "android.svg",
       "class": "inplace",
       "side": "frontend",
@@ -1056,7 +1056,7 @@
     {
       "id": "aspnetcore",
       "label": "ASP.NET Core",
-      "description": ".NET web/REST framework",
+      "description": "wizard.fw.aspnetcore.desc",
       "icon": "aspnetcore.png",
       "class": "standalone",
       "side": "backend",
@@ -1083,7 +1083,7 @@
     {
       "id": "maui",
       "label": "MAUI",
-      "description": ".NET cross-platform desktop/mobile UI",
+      "description": "wizard.fw.maui.desc",
       "icon": "maui.png",
       "class": "standalone",
       "side": "frontend",
@@ -1110,7 +1110,7 @@
     {
       "id": "qt",
       "label": "Qt",
-      "description": "C++ cross-platform desktop/embedded framework",
+      "description": "wizard.fw.qt.desc",
       "icon": "qt.svg",
       "class": "inplace",
       "side": "either",
@@ -1141,22 +1141,22 @@
       "qt_ui_options": [
         {
           "id": "qt-qml",
-          "label": "QML (Qt Quick)",
-          "description": "Declarative UI with fluid animations — the modern Qt way (desktop & embedded)",
+          "label": "wizard.qt.qt_qml.label",
+          "description": "wizard.qt.qt_qml.desc",
           "icon": "qt.svg",
           "web_framework_options": []
         },
         {
           "id": "qt-widgets",
-          "label": "Qt Widgets",
-          "description": "Classic desktop controls — dialogs, forms, office-style tools",
+          "label": "wizard.qt.qt_widgets.label",
+          "description": "wizard.qt.qt_widgets.desc",
           "icon": "qt.svg",
           "web_framework_options": []
         },
         {
           "id": "qt-webengine",
-          "label": "Qt WebEngine",
-          "description": "Chromium-based web UI inside Qt — embed a React/Vue/Svelte frontend",
+          "label": "wizard.qt.qt_webengine.label",
+          "description": "wizard.qt.qt_webengine.desc",
           "icon": "qt.svg",
           "web_framework_options": [
             "react",
@@ -1166,8 +1166,8 @@
         },
         {
           "id": "qt-kirigami",
-          "label": "Kirigami (KDE)",
-          "description": "KDE adaptive UI framework on top of Qt Quick (convergent desktop/mobile)",
+          "label": "wizard.qt.qt_kirigami.label",
+          "description": "wizard.qt.qt_kirigami.desc",
           "icon": "qt.svg",
           "web_framework_options": []
         }
@@ -1176,7 +1176,7 @@
     {
       "id": "qt-qml",
       "label": "QML (Qt Quick)",
-      "description": "Declarative Qt Quick UI with fluid animations",
+      "description": "wizard.fw.qt_qml.desc",
       "icon": "qt.svg",
       "class": "inplace",
       "side": "either",
@@ -1200,7 +1200,7 @@
     {
       "id": "qt-widgets",
       "label": "Qt Widgets",
-      "description": "Classic Qt Widgets UI — dialogs, forms and desktop tools",
+      "description": "wizard.fw.qt_widgets.desc",
       "icon": "qt.svg",
       "class": "inplace",
       "side": "either",
@@ -1224,7 +1224,7 @@
     {
       "id": "qt-webengine",
       "label": "Qt WebEngine",
-      "description": "Chromium-based web UI inside Qt — embed a React/Vue/Svelte frontend",
+      "description": "wizard.fw.qt_webengine.desc",
       "icon": "qt.svg",
       "class": "inplace",
       "side": "either",
@@ -1251,7 +1251,7 @@
     {
       "id": "qt-kirigami",
       "label": "Kirigami (KDE)",
-      "description": "KDE adaptive UI framework on top of Qt Quick (convergent desktop/mobile)",
+      "description": "wizard.fw.qt_kirigami.desc",
       "icon": "qt.svg",
       "class": "inplace",
       "side": "either",
@@ -1275,7 +1275,7 @@
     {
       "id": "flutter",
       "label": "Flutter",
-      "description": "Dart cross-platform mobile/web/desktop",
+      "description": "wizard.fw.flutter.desc",
       "icon": "flutter.svg",
       "class": "standalone",
       "side": "frontend",
@@ -1307,7 +1307,7 @@
     {
       "id": "laravel",
       "label": "Laravel",
-      "description": "PHP full-stack web framework",
+      "description": "wizard.fw.laravel.desc",
       "icon": "laravel.svg",
       "class": "standalone",
       "side": "backend",
@@ -1334,7 +1334,7 @@
     {
       "id": "symfony",
       "label": "Symfony",
-      "description": "Modular PHP web framework",
+      "description": "wizard.fw.symfony.desc",
       "icon": "symfony.svg",
       "class": "standalone",
       "side": "backend",
@@ -1361,7 +1361,7 @@
     {
       "id": "jetpack-compose",
       "label": "Jetpack Compose",
-      "description": "Modern Android UI toolkit (Kotlin)",
+      "description": "wizard.fw.jetpack_compose.desc",
       "icon": "jetpack-compose.svg",
       "class": "inplace",
       "side": "frontend",
@@ -1384,7 +1384,7 @@
     {
       "id": "ktor",
       "label": "Ktor",
-      "description": "Async Kotlin web/REST framework",
+      "description": "wizard.fw.ktor.desc",
       "icon": "ktor.svg",
       "class": "inplace",
       "side": "backend",
@@ -1412,7 +1412,7 @@
     {
       "id": "swiftui",
       "label": "SwiftUI",
-      "description": "Native iOS/macOS UI framework",
+      "description": "wizard.fw.swiftui.desc",
       "icon": "swift.svg",
       "class": "inplace",
       "side": "frontend",
@@ -1439,7 +1439,7 @@
     {
       "id": "vapor",
       "label": "Vapor",
-      "description": "Swift web framework",
+      "description": "wizard.fw.vapor.desc",
       "icon": "vapor.svg",
       "class": "standalone",
       "side": "backend",
@@ -1467,7 +1467,7 @@
     {
       "id": "react-native",
       "label": "React Native",
-      "description": "JS/TS mobile app framework",
+      "description": "wizard.fw.react_native.desc",
       "icon": "reactnative.svg",
       "class": "standalone",
       "side": "frontend",
@@ -1506,7 +1506,7 @@
     {
       "id": "plasmo",
       "label": "Plasmo",
-      "description": "Browser extension framework (JS/TS)",
+      "description": "wizard.fw.plasmo.desc",
       "icon": null,
       "class": "standalone",
       "side": "frontend",
@@ -1544,7 +1544,7 @@
     {
       "id": "zig-cli",
       "label": "Zig CLI (std)",
-      "description": "Native CLI with Zig standard library",
+      "description": "wizard.fw.zig_cli.desc",
       "icon": "zig.svg",
       "class": "inplace",
       "side": "backend",
@@ -1567,7 +1567,7 @@
     {
       "id": "zap",
       "label": "Zap",
-      "description": "High-performance Zig web framework built on libxev",
+      "description": "wizard.fw.zap.desc",
       "icon": "zap.png",
       "class": "inplace",
       "side": "backend",
@@ -1591,7 +1591,7 @@
     {
       "id": "expo",
       "label": "Expo",
-      "description": "Managed React Native development",
+      "description": "wizard.fw.expo.desc",
       "icon": "expo.svg",
       "class": "standalone",
       "side": "frontend",
@@ -1630,7 +1630,7 @@
     {
       "id": "phoenix",
       "label": "Phoenix",
-      "description": "Elixir web framework for real-time apps",
+      "description": "wizard.fw.phoenix.desc",
       "icon": "phoenix-framework.svg",
       "class": "standalone",
       "side": "backend",
@@ -1655,7 +1655,7 @@
     {
       "id": "nest",
       "label": "NestJS",
-      "description": "Structured Node.js server framework",
+      "description": "wizard.fw.nest.desc",
       "icon": "nestjs.svg",
       "class": "standalone",
       "side": "backend",
@@ -1684,14 +1684,14 @@
       "recommends": [
         {
           "framework": "react",
-          "note": "Классическая связка для full-stack приложения"
+          "note": "wizard.rec.nest.react"
         }
       ]
     },
     {
       "id": "fastify",
       "label": "Fastify",
-      "description": "Fast, low-overhead Node.js web server",
+      "description": "wizard.fw.fastify.desc",
       "icon": "fastify.svg",
       "class": "inplace",
       "side": "backend",
@@ -1722,7 +1722,7 @@
     {
       "id": "solidjs",
       "label": "SolidStart",
-      "description": "Full-stack Solid.js framework",
+      "description": "wizard.fw.solidjs.desc",
       "icon": "solidjs.svg",
       "class": "standalone",
       "side": "frontend",
@@ -1761,7 +1761,7 @@
     {
       "id": "react",
       "label": "React",
-      "description": "UI library with Vite — the most popular frontend ecosystem",
+      "description": "wizard.fw.react.desc",
       "icon": "react.svg",
       "class": "standalone",
       "kind": "app",
@@ -1799,7 +1799,7 @@
     {
       "id": "vue",
       "label": "Vue",
-      "description": "Progressive UI framework with Vite — approachable and flexible",
+      "description": "wizard.fw.vue.desc",
       "icon": "vue.svg",
       "class": "standalone",
       "kind": "app",
@@ -1837,7 +1837,7 @@
     {
       "id": "svelte",
       "label": "Svelte",
-      "description": "Compiled UI framework with Vite — small bundles, great DX",
+      "description": "wizard.fw.svelte.desc",
       "icon": "svelte.svg",
       "class": "standalone",
       "kind": "app",
@@ -1877,7 +1877,7 @@
     {
       "id": "postgresql",
       "label": "PostgreSQL",
-      "description": "Relational database",
+      "description": "wizard.tool.postgresql.desc",
       "icon": "postgresql.svg",
       "category": "database",
       "knowledge_key": null,
@@ -1891,7 +1891,7 @@
     {
       "id": "redis",
       "label": "Redis",
-      "description": "In-memory cache and message broker",
+      "description": "wizard.tool.redis.desc",
       "icon": "redis.svg",
       "category": "cache",
       "knowledge_key": null,
@@ -1905,7 +1905,7 @@
     {
       "id": "docker",
       "label": "Docker",
-      "description": "Containerization platform",
+      "description": "wizard.tool.docker.desc",
       "icon": "docker.svg",
       "category": "container",
       "knowledge_key": null,
@@ -1919,7 +1919,7 @@
     {
       "id": "pytest",
       "label": "Pytest",
-      "description": "Python testing framework",
+      "description": "wizard.tool.pytest.desc",
       "icon": "pytest.svg",
       "category": "testing",
       "knowledge_key": null,
@@ -1935,7 +1935,7 @@
     {
       "id": "sqlalchemy",
       "label": "SQLAlchemy",
-      "description": "Python SQL toolkit and ORM",
+      "description": "wizard.tool.sqlalchemy.desc",
       "icon": "sqlalchemy.svg",
       "category": "database",
       "knowledge_key": null,
@@ -1951,7 +1951,7 @@
     {
       "id": "alembic",
       "label": "Alembic",
-      "description": "Database migrations for SQLAlchemy",
+      "description": "wizard.tool.alembic.desc",
       "icon": null,
       "category": "database",
       "knowledge_key": null,
@@ -1969,7 +1969,7 @@
     {
       "id": "ruff",
       "label": "Ruff",
-      "description": "Fast Python linter",
+      "description": "wizard.tool.ruff.desc",
       "icon": "ruff.svg",
       "category": "tooling",
       "knowledge_key": null,
@@ -1985,7 +1985,7 @@
     {
       "id": "npm",
       "label": "NPM",
-      "description": "Node.js package manager",
+      "description": "wizard.tool.npm.desc",
       "icon": "npm.svg",
       "category": "tooling",
       "knowledge_key": null,
@@ -2002,7 +2002,7 @@
     {
       "id": "gradle",
       "label": "Gradle",
-      "description": "Build tool for Java/Kotlin",
+      "description": "wizard.tool.gradle.desc",
       "icon": "gradle.svg",
       "category": "tooling",
       "knowledge_key": null,
@@ -2019,7 +2019,7 @@
     {
       "id": "maven",
       "label": "Maven",
-      "description": "Build tool for Java projects",
+      "description": "wizard.tool.maven.desc",
       "icon": "maven.svg",
       "category": "tooling",
       "knowledge_key": null,
@@ -2035,7 +2035,7 @@
     {
       "id": "mongodb",
       "label": "MongoDB",
-      "description": "NoSQL document database",
+      "description": "wizard.tool.mongodb.desc",
       "icon": "mongodb.svg",
       "category": "database",
       "knowledge_key": null,
@@ -2049,7 +2049,7 @@
     {
       "id": "mysql",
       "label": "MySQL",
-      "description": "Relational database",
+      "description": "wizard.tool.mysql.desc",
       "icon": null,
       "category": "database",
       "knowledge_key": null,
@@ -2063,7 +2063,7 @@
     {
       "id": "sqlite",
       "label": "SQLite",
-      "description": "Embedded relational database",
+      "description": "wizard.tool.sqlite.desc",
       "icon": "sqlite.svg",
       "category": "database",
       "knowledge_key": null,
@@ -2077,7 +2077,7 @@
     {
       "id": "firebase",
       "label": "Firebase",
-      "description": "Mobile/backend platform (auth, DB, etc.)",
+      "description": "wizard.tool.firebase.desc",
       "icon": "firebase.svg",
       "category": "baas",
       "knowledge_key": null,
@@ -2091,7 +2091,7 @@
     {
       "id": "kafka",
       "label": "Apache Kafka",
-      "description": "Distributed message broker",
+      "description": "wizard.tool.kafka.desc",
       "icon": "kafka.svg",
       "category": "messaging",
       "knowledge_key": null,
@@ -2109,7 +2109,7 @@
     {
       "id": "clickhouse",
       "label": "ClickHouse",
-      "description": "OLAP columnar database for analytics",
+      "description": "wizard.tool.clickhouse.desc",
       "icon": "clickhouse.svg",
       "category": "database",
       "knowledge_key": null,
@@ -2126,7 +2126,7 @@
     {
       "id": "airflow",
       "label": "Apache Airflow",
-      "description": "Workflow orchestrator for ETL pipelines",
+      "description": "wizard.tool.airflow.desc",
       "icon": "airflow.svg",
       "category": "orchestration",
       "knowledge_key": null,
@@ -2143,7 +2143,7 @@
     {
       "id": "dbt",
       "label": "dbt",
-      "description": "Data build tool for SQL transformations",
+      "description": "wizard.tool.dbt.desc",
       "icon": "dbt.svg",
       "category": "etl",
       "knowledge_key": null,
@@ -2160,7 +2160,7 @@
     {
       "id": "grafana",
       "label": "Grafana",
-      "description": "Observability dashboards and alerting",
+      "description": "wizard.tool.grafana.desc",
       "icon": "grafana.svg",
       "category": "observability",
       "knowledge_key": null,
@@ -2179,7 +2179,7 @@
     {
       "id": "mailpit",
       "label": "Mailpit",
-      "description": "Email testing UI and SMTP sink for development",
+      "description": "wizard.tool.mailpit.desc",
       "icon": null,
       "category": "messaging",
       "knowledge_key": null,
@@ -2197,7 +2197,7 @@
     {
       "id": "terraform",
       "label": "Terraform",
-      "description": "Infrastructure as code",
+      "description": "wizard.tool.terraform.desc",
       "icon": "terra.svg",
       "category": "infra",
       "knowledge_key": null,
@@ -2214,7 +2214,7 @@
     {
       "id": "prisma",
       "label": "Prisma",
-      "description": "Modern ORM for Node.js/TypeScript",
+      "description": "wizard.tool.prisma.desc",
       "icon": "prisma.svg",
       "category": "database",
       "knowledge_key": null,
@@ -2231,7 +2231,7 @@
     {
       "id": "drizzle",
       "label": "Drizzle ORM",
-      "description": "Lightweight TypeScript ORM",
+      "description": "wizard.tool.drizzle.desc",
       "icon": "drizzle.svg",
       "category": "database",
       "knowledge_key": null,
@@ -2248,7 +2248,7 @@
     {
       "id": "opentelemetry",
       "label": "OpenTelemetry",
-      "description": "Tracing, metrics, and logs collection",
+      "description": "wizard.tool.opentelemetry.desc",
       "icon": "opentelemetry.svg",
       "category": "observability",
       "knowledge_key": null,
@@ -2267,8 +2267,8 @@
   "presets": [
     {
       "id": "fastapi-api",
-      "label": "FastAPI + PostgreSQL",
-      "description": "Modern Python REST API with PostgreSQL",
+      "label": "wizard.preset.fastapi_api.label",
+      "description": "wizard.preset.fastapi_api.desc",
       "icon": "fastapi.svg",
       "tags": [
         "python",
@@ -2295,8 +2295,8 @@
     },
     {
       "id": "django-site",
-      "label": "Django + PostgreSQL",
-      "description": "Full-featured Python web application",
+      "label": "wizard.preset.django_site.label",
+      "description": "wizard.preset.django_site.desc",
       "icon": "django.svg",
       "tags": [
         "python",
@@ -2323,8 +2323,8 @@
     },
     {
       "id": "next-fullstack",
-      "label": "Next.js (Full-stack)",
-      "description": "React web app with TypeScript",
+      "label": "wizard.preset.next_fullstack.label",
+      "description": "wizard.preset.next_fullstack.desc",
       "icon": "nextjs.svg",
       "tags": [
         "react",
@@ -2348,8 +2348,8 @@
     },
     {
       "id": "nest-api",
-      "label": "NestJS REST API",
-      "description": "Structured TypeScript backend",
+      "label": "wizard.preset.nest_api.label",
+      "description": "wizard.preset.nest_api.desc",
       "icon": "nestjs.svg",
       "tags": [
         "typescript",
@@ -2373,8 +2373,8 @@
     },
     {
       "id": "spring-api",
-      "label": "Spring Boot REST API",
-      "description": "Production-grade Java backend",
+      "label": "wizard.preset.spring_api.label",
+      "description": "wizard.preset.spring_api.desc",
       "icon": "spring-boot.svg",
       "tags": [
         "java",
@@ -2400,8 +2400,8 @@
     },
     {
       "id": "aspnet-api",
-      "label": "ASP.NET Core Web API",
-      "description": "C# REST backend from dotnet CLI",
+      "label": "wizard.preset.aspnet_api.label",
+      "description": "wizard.preset.aspnet_api.desc",
       "icon": "aspnetcore.png",
       "tags": [
         "csharp",
@@ -2427,8 +2427,8 @@
     },
     {
       "id": "telegram-bot-py",
-      "label": "Telegram Bot (Python)",
-      "description": "Async bot with aiogram",
+      "label": "wizard.preset.telegram_bot_py.label",
+      "description": "wizard.preset.telegram_bot_py.desc",
       "icon": null,
       "tags": [
         "python",
@@ -2452,8 +2452,8 @@
     },
     {
       "id": "telegram-bot-js",
-      "label": "Telegram Bot (Node.js)",
-      "description": "TypeScript bot with Telegraf",
+      "label": "wizard.preset.telegram_bot_js.label",
+      "description": "wizard.preset.telegram_bot_js.desc",
       "icon": "telegraf.png",
       "tags": [
         "typescript",
@@ -2477,8 +2477,8 @@
     },
     {
       "id": "tauri-desktop",
-      "label": "Tauri Desktop App",
-      "description": "Lightweight native desktop with web UI",
+      "label": "wizard.preset.tauri_desktop.label",
+      "description": "wizard.preset.tauri_desktop.desc",
       "icon": "tauri.svg",
       "tags": [
         "rust",
@@ -2502,8 +2502,8 @@
     },
     {
       "id": "flutter-app",
-      "label": "Flutter Mobile App",
-      "description": "Cross-platform Dart mobile app",
+      "label": "wizard.preset.flutter_app.label",
+      "description": "wizard.preset.flutter_app.desc",
       "icon": "flutter.svg",
       "tags": [
         "dart",
@@ -2527,8 +2527,8 @@
     },
     {
       "id": "cli-go",
-      "label": "CLI Tool (Go + Cobra)",
-      "description": "Command-line tool with Cobra",
+      "label": "wizard.preset.cli_go.label",
+      "description": "wizard.preset.cli_go.desc",
       "icon": null,
       "tags": [
         "go",
@@ -2552,8 +2552,8 @@
     },
     {
       "id": "express-api",
-      "label": "Express REST API",
-      "description": "Minimal Node.js backend with Express",
+      "label": "wizard.preset.express_api.label",
+      "description": "wizard.preset.express_api.desc",
       "icon": "express.png",
       "tags": [
         "javascript",
@@ -2577,8 +2577,8 @@
     },
     {
       "id": "static-html",
-      "label": "Static HTML Site",
-      "description": "Plain HTML, CSS and JS — no frameworks",
+      "label": "wizard.preset.static_html.label",
+      "description": "wizard.preset.static_html.desc",
       "icon": "html.svg",
       "tags": [
         "html",
@@ -2600,8 +2600,8 @@
     },
     {
       "id": "etl-pipeline",
-      "label": "ETL Pipeline",
-      "description": "Kafka → ClickHouse/PG с Airflow-оркестрацией",
+      "label": "wizard.preset.etl_pipeline.label",
+      "description": "wizard.preset.etl_pipeline.desc",
       "icon": "data-pipeline2.png",
       "tags": [
         "data",
@@ -2629,8 +2629,8 @@
     },
     {
       "id": "react-app",
-      "label": "React Web App",
-      "description": "Vite + React с TypeScript",
+      "label": "wizard.preset.react_app.label",
+      "description": "wizard.preset.react_app.desc",
       "icon": "react.svg",
       "tags": [
         "web",
@@ -2656,8 +2656,8 @@
     },
     {
       "id": "django-vue-fullstack",
-      "label": "Django + Vue",
-      "description": "Python API + Vue SPA с PostgreSQL",
+      "label": "wizard.preset.django_vue_fullstack.label",
+      "description": "wizard.preset.django_vue_fullstack.desc",
       "icon": "django.svg",
       "tags": [
         "web",
@@ -2685,8 +2685,8 @@
     },
     {
       "id": "ms-axum",
-      "label": "Axum REST API",
-      "description": "High-performance Rust API with PostgreSQL",
+      "label": "wizard.preset.ms_axum.label",
+      "description": "wizard.preset.ms_axum.desc",
       "icon": null,
       "tags": [
         "rust",
@@ -2714,8 +2714,8 @@
     },
     {
       "id": "ms-gin",
-      "label": "Gin REST API",
-      "description": "Fast Go API with Redis cache and PostgreSQL",
+      "label": "wizard.preset.ms_gin.label",
+      "description": "wizard.preset.ms_gin.desc",
       "icon": "gin.svg",
       "tags": [
         "go",
@@ -2744,8 +2744,8 @@
     },
     {
       "id": "ms-nest",
-      "label": "NestJS REST API",
-      "description": "Structured TypeScript service with OpenTelemetry",
+      "label": "wizard.preset.ms_nest.label",
+      "description": "wizard.preset.ms_nest.desc",
       "icon": "nestjs.svg",
       "tags": [
         "typescript",
@@ -2774,8 +2774,8 @@
     },
     {
       "id": "ms-ktor",
-      "label": "Ktor REST API",
-      "description": "Async Kotlin API on the JVM",
+      "label": "wizard.preset.ms_ktor.label",
+      "description": "wizard.preset.ms_ktor.desc",
       "icon": "ktor.svg",
       "tags": [
         "kotlin",
@@ -2803,8 +2803,8 @@
     },
     {
       "id": "ms-zap",
-      "label": "Zap REST API",
-      "description": "High-performance Zig web service",
+      "label": "wizard.preset.ms_zap.label",
+      "description": "wizard.preset.ms_zap.desc",
       "icon": "zap.png",
       "tags": [
         "zig",
@@ -2832,8 +2832,8 @@
     },
     {
       "id": "evt-spring-kafka",
-      "label": "Spring Boot + Kafka",
-      "description": "Event-driven Java service with Kafka",
+      "label": "wizard.preset.evt_spring_kafka.label",
+      "description": "wizard.preset.evt_spring_kafka.desc",
       "icon": "spring-boot.svg",
       "tags": [
         "java",
@@ -2862,8 +2862,8 @@
     },
     {
       "id": "evt-ktor-kafka",
-      "label": "Ktor + Kafka",
-      "description": "Event-driven Kotlin service with Kafka",
+      "label": "wizard.preset.evt_ktor_kafka.label",
+      "description": "wizard.preset.evt_ktor_kafka.desc",
       "icon": "ktor.svg",
       "tags": [
         "kotlin",
@@ -2892,8 +2892,8 @@
     },
     {
       "id": "evt-nest-kafka",
-      "label": "NestJS + Kafka",
-      "description": "Event-driven TypeScript service with Kafka",
+      "label": "wizard.preset.evt_nest_kafka.label",
+      "description": "wizard.preset.evt_nest_kafka.desc",
       "icon": "nestjs.svg",
       "tags": [
         "typescript",
@@ -2922,8 +2922,8 @@
     },
     {
       "id": "evt-fastapi-kafka",
-      "label": "FastAPI + Kafka",
-      "description": "Async Python event producer and consumer",
+      "label": "wizard.preset.evt_fastapi_kafka.label",
+      "description": "wizard.preset.evt_fastapi_kafka.desc",
       "icon": "fastapi.svg",
       "tags": [
         "python",
@@ -2952,8 +2952,8 @@
     },
     {
       "id": "ext-plasmo-ts",
-      "label": "Browser Extension (Plasmo)",
-      "description": "TypeScript extension for Chrome and Firefox",
+      "label": "wizard.preset.ext_plasmo_ts.label",
+      "description": "wizard.preset.ext_plasmo_ts.desc",
       "icon": null,
       "tags": [
         "browser",
@@ -2980,8 +2980,8 @@
     },
     {
       "id": "desk-tauri-svelte",
-      "label": "Tauri + Svelte Desktop",
-      "description": "Lightweight native desktop app with Svelte UI",
+      "label": "wizard.preset.desk_tauri_svelte.label",
+      "description": "wizard.preset.desk_tauri_svelte.desc",
       "icon": "tauri.svg",
       "tags": [
         "rust",
@@ -3010,8 +3010,8 @@
     },
     {
       "id": "desk-tauri-vue",
-      "label": "Tauri + Vue Desktop",
-      "description": "Lightweight native desktop app with Vue UI",
+      "label": "wizard.preset.desk_tauri_vue.label",
+      "description": "wizard.preset.desk_tauri_vue.desc",
       "icon": "tauri.svg",
       "tags": [
         "rust",
@@ -3040,8 +3040,8 @@
     },
     {
       "id": "desk-tauri-react",
-      "label": "Tauri + React Desktop",
-      "description": "Lightweight native desktop app with React UI",
+      "label": "wizard.preset.desk_tauri_react.label",
+      "description": "wizard.preset.desk_tauri_react.desc",
       "icon": "tauri.svg",
       "tags": [
         "rust",
@@ -3070,8 +3070,8 @@
     },
     {
       "id": "desk-electron-react",
-      "label": "Electron + React Desktop",
-      "description": "Cross-platform desktop app with React",
+      "label": "wizard.preset.desk_electron_react.label",
+      "description": "wizard.preset.desk_electron_react.desc",
       "icon": "electron.webp",
       "tags": [
         "typescript",
@@ -3099,8 +3099,8 @@
     },
     {
       "id": "desk-electron-vue",
-      "label": "Electron + Vue Desktop",
-      "description": "Cross-platform desktop app with Vue",
+      "label": "wizard.preset.desk_electron_vue.label",
+      "description": "wizard.preset.desk_electron_vue.desc",
       "icon": "electron.webp",
       "tags": [
         "typescript",
@@ -3128,8 +3128,8 @@
     },
     {
       "id": "desk-electron-svelte",
-      "label": "Electron + Svelte Desktop",
-      "description": "Cross-platform desktop app with Svelte",
+      "label": "wizard.preset.desk_electron_svelte.label",
+      "description": "wizard.preset.desk_electron_svelte.desc",
       "icon": "electron.webp",
       "tags": [
         "typescript",
@@ -3157,8 +3157,8 @@
     },
     {
       "id": "desk-qt-widgets",
-      "label": "Qt Widgets Desktop",
-      "description": "Classic C++ desktop app with Qt Widgets",
+      "label": "wizard.preset.desk_qt_widgets.label",
+      "description": "wizard.preset.desk_qt_widgets.desc",
       "icon": "qt.svg",
       "tags": [
         "cpp",
@@ -3186,8 +3186,8 @@
     },
     {
       "id": "desk-qt-webengine",
-      "label": "Qt WebEngine + React",
-      "description": "Chromium-based UI inside Qt with React",
+      "label": "wizard.preset.desk_qt_webengine.label",
+      "description": "wizard.preset.desk_qt_webengine.desc",
       "icon": "qt.svg",
       "tags": [
         "cpp",
@@ -3218,8 +3218,8 @@
     },
     {
       "id": "mono-laravel",
-      "label": "Laravel Web App",
-      "description": "PHP full-stack application with PostgreSQL",
+      "label": "wizard.preset.mono_laravel.label",
+      "description": "wizard.preset.mono_laravel.desc",
       "icon": "laravel.svg",
       "tags": [
         "php",
@@ -3247,8 +3247,8 @@
     },
     {
       "id": "mono-laravel-react",
-      "label": "Laravel + React",
-      "description": "PHP API with React SPA frontend",
+      "label": "wizard.preset.mono_laravel_react.label",
+      "description": "wizard.preset.mono_laravel_react.desc",
       "icon": "laravel.svg",
       "tags": [
         "php",
@@ -3277,8 +3277,8 @@
     },
     {
       "id": "mono-symfony",
-      "label": "Symfony Web App",
-      "description": "Modular PHP application with PostgreSQL",
+      "label": "wizard.preset.mono_symfony.label",
+      "description": "wizard.preset.mono_symfony.desc",
       "icon": "symfony.svg",
       "tags": [
         "php",
@@ -3306,8 +3306,8 @@
     },
     {
       "id": "mono-phoenix",
-      "label": "Phoenix Web App",
-      "description": "Real-time Elixir app with LiveView",
+      "label": "wizard.preset.mono_phoenix.label",
+      "description": "wizard.preset.mono_phoenix.desc",
       "icon": "phoenix-framework.svg",
       "tags": [
         "elixir",
@@ -3335,8 +3335,8 @@
     },
     {
       "id": "mono-nest-next",
-      "label": "NestJS + Next.js",
-      "description": "TypeScript full-stack monolith",
+      "label": "wizard.preset.mono_nest_next.label",
+      "description": "wizard.preset.mono_nest_next.desc",
       "icon": "nestjs.svg",
       "tags": [
         "typescript",
@@ -3366,8 +3366,8 @@
     },
     {
       "id": "mono-nuxt",
-      "label": "Nuxt Web App",
-      "description": "Vue full-stack application",
+      "label": "wizard.preset.mono_nuxt.label",
+      "description": "wizard.preset.mono_nuxt.desc",
       "icon": "nuxt.png",
       "tags": [
         "vue",
@@ -3396,8 +3396,8 @@
     },
     {
       "id": "mono-sveltekit",
-      "label": "SvelteKit Web App",
-      "description": "Svelte full-stack application",
+      "label": "wizard.preset.mono_sveltekit.label",
+      "description": "wizard.preset.mono_sveltekit.desc",
       "icon": "svelte.svg",
       "tags": [
         "svelte",
@@ -3426,8 +3426,8 @@
     },
     {
       "id": "data-ml-api",
-      "label": "ML Model API",
-      "description": "FastAPI service serving trained ML models",
+      "label": "wizard.preset.data_ml_api.label",
+      "description": "wizard.preset.data_ml_api.desc",
       "icon": "fastapi.svg",
       "tags": [
         "python",
@@ -3456,8 +3456,8 @@
     },
     {
       "id": "data-airflow-etl",
-      "label": "Airflow ETL",
-      "description": "Python ETL jobs with Airflow orchestration",
+      "label": "wizard.preset.data_airflow_etl.label",
+      "description": "wizard.preset.data_airflow_etl.desc",
       "icon": "airflow.svg",
       "tags": [
         "data",
@@ -3484,8 +3484,8 @@
     },
     {
       "id": "data-dbt-clickhouse",
-      "label": "dbt + ClickHouse",
-      "description": "SQL transformations into ClickHouse with dbt",
+      "label": "wizard.preset.data_dbt_clickhouse.label",
+      "description": "wizard.preset.data_dbt_clickhouse.desc",
       "icon": "dbt.svg",
       "tags": [
         "data",
@@ -3513,8 +3513,8 @@
     },
     {
       "id": "data-kafka-stream",
-      "label": "Kafka Stream Pipeline",
-      "description": "Streaming pipeline with Kafka and Airflow",
+      "label": "wizard.preset.data_kafka_stream.label",
+      "description": "wizard.preset.data_kafka_stream.desc",
       "icon": "kafka.svg",
       "tags": [
         "data",
@@ -3541,8 +3541,8 @@
     },
     {
       "id": "emb-qt",
-      "label": "Qt Embedded",
-      "description": "C++ embedded UI on Qt",
+      "label": "wizard.preset.emb_qt.label",
+      "description": "wizard.preset.emb_qt.desc",
       "icon": "qt.svg",
       "tags": [
         "embedded",
@@ -3569,8 +3569,8 @@
     },
     {
       "id": "emb-qt-qml",
-      "label": "Qt Quick Embedded",
-      "description": "Declarative QML UI for embedded devices",
+      "label": "wizard.preset.emb_qt_qml.label",
+      "description": "wizard.preset.emb_qt_qml.desc",
       "icon": "qt.svg",
       "tags": [
         "embedded",
@@ -3598,8 +3598,8 @@
     },
     {
       "id": "emb-zig",
-      "label": "Zig Embedded",
-      "description": "Bare-metal Zig firmware for microcontrollers",
+      "label": "wizard.preset.emb_zig.label",
+      "description": "wizard.preset.emb_zig.desc",
       "icon": "zig.svg",
       "tags": [
         "embedded",
@@ -3621,8 +3621,8 @@
     },
     {
       "id": "mobile-android-compose",
-      "label": "Android + Jetpack Compose",
-      "description": "Native Kotlin app with Compose UI",
+      "label": "wizard.preset.mobile_android_compose.label",
+      "description": "wizard.preset.mobile_android_compose.desc",
       "icon": "android.svg",
       "tags": [
         "android",
@@ -3650,8 +3650,8 @@
     },
     {
       "id": "mobile-expo",
-      "label": "Expo Mobile App",
-      "description": "React Native with managed Expo tooling",
+      "label": "wizard.preset.mobile_expo.label",
+      "description": "wizard.preset.mobile_expo.desc",
       "icon": "expo.svg",
       "tags": [
         "mobile",
@@ -3678,8 +3678,8 @@
     },
     {
       "id": "mobile-react-native",
-      "label": "React Native App",
-      "description": "Cross-platform TypeScript mobile app",
+      "label": "wizard.preset.mobile_react_native.label",
+      "description": "wizard.preset.mobile_react_native.desc",
       "icon": "reactnative.svg",
       "tags": [
         "mobile",
@@ -3705,8 +3705,8 @@
     },
     {
       "id": "cli-rust",
-      "label": "CLI Tool (Rust + Clap)",
-      "description": "Native command-line tool with Clap",
+      "label": "wizard.preset.cli_rust.label",
+      "description": "wizard.preset.cli_rust.desc",
       "icon": "clap.svg",
       "tags": [
         "rust",
@@ -3730,8 +3730,8 @@
     },
     {
       "id": "cli-zig",
-      "label": "CLI Tool (Zig)",
-      "description": "Small native CLI built with Zig std",
+      "label": "wizard.preset.cli_zig.label",
+      "description": "wizard.preset.cli_zig.desc",
       "icon": "zig.svg",
       "tags": [
         "zig",
@@ -3755,8 +3755,8 @@
     },
     {
       "id": "cli-go-plus-api",
-      "label": "Go CLI + Gin API",
-      "description": "Cobra CLI with an embedded Gin HTTP server",
+      "label": "wizard.preset.cli_go_plus_api.label",
+      "description": "wizard.preset.cli_go_plus_api.desc",
       "icon": "gin.svg",
       "tags": [
         "go",
@@ -3784,8 +3784,8 @@
     },
     {
       "id": "bot-python-api",
-      "label": "Telegram Bot + FastAPI",
-      "description": "Aiogram bot with a FastAPI webhook API",
+      "label": "wizard.preset.bot_python_api.label",
+      "description": "wizard.preset.bot_python_api.desc",
       "icon": "fastapi.svg",
       "tags": [
         "python",
@@ -3814,8 +3814,8 @@
     },
     {
       "id": "web-vue",
-      "label": "Vue Web App",
-      "description": "Vite + Vue with TypeScript",
+      "label": "wizard.preset.web_vue.label",
+      "description": "wizard.preset.web_vue.desc",
       "icon": "vue.svg",
       "tags": [
         "vue",
@@ -3842,8 +3842,8 @@
     },
     {
       "id": "lib-rust",
-      "label": "Rust Library",
-      "description": "Reusable Rust crate with a demo CLI",
+      "label": "wizard.preset.lib_rust.label",
+      "description": "wizard.preset.lib_rust.desc",
       "icon": "clap.svg",
       "tags": [
         "rust",
@@ -3867,8 +3867,8 @@
     },
     {
       "id": "lib-python",
-      "label": "Python Library",
-      "description": "Reusable Python package with pytest",
+      "label": "wizard.preset.lib_python.label",
+      "description": "wizard.preset.lib_python.desc",
       "icon": "python.svg",
       "tags": [
         "python",

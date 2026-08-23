@@ -56,6 +56,8 @@ import type {
 } from "$lib/modules/toolchain/compat";
 import { statusKind, statusLabel, taskStateKind, taskStateLabel, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -69,7 +71,7 @@ let showUnavailable = $state<Record<string, boolean>>({});
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
 
 // ---- Constructor context ----
-const PHASES = ["Project Type", "Stack & Tools", "Review"];
+const PHASES = [i18n.t("create.phase_type"), i18n.t("create.phase_stack"), i18n.t("create.phase_review")];
 let phase = $state(0); // 0..4 — конструктор; 5 — окружение; 6 — генерация
 let selectedType = $state<ProjectTypeDef | null>(null);
 let backendLangs = $state<string[]>([]);
@@ -450,7 +452,7 @@ async function reSyncLiveSessions() {
           });
         } else if (execOverallStatus === "running") {
           execOverallStatus = "error";
-          execError = "Project creation was interrupted while you were away.";
+          execError = i18n.t("create.interrupted");
         }
       }
     } catch {
@@ -546,18 +548,18 @@ function fwLevelOf(fw: FrameworkDef): "full" | "inplace" | "side" {
 const FW_LEVELS = [
   {
     id: "full",
-    title: "Full application frameworks",
-    note: "Create the whole project scaffold by themselves (Spring Boot, Django, Next.js).",
+    title: i18n.t("create.fw_full_apps"),
+    note: i18n.t("create.fw_full_apps_desc"),
   },
   {
     id: "inplace",
-    title: "In-place & lightweight",
-    note: "Attach into a base project of their language (FastAPI, Express, Gin).",
+    title: i18n.t("create.fw_inplace"),
+    note: i18n.t("create.fw_inplace_desc"),
   },
   {
     id: "side",
-    title: "Side modules & libraries",
-    note: "Optional add-ons to the main stack (bots, plugins) — can coexist with anything.",
+    title: i18n.t("create.fw_side"),
+    note: i18n.t("create.fw_side_desc"),
   },
 ] as const;
 
@@ -621,9 +623,12 @@ function isMainLimitExempt(id: string): boolean {
   return tree?.main_limit_exempt.includes(id) ?? false;
 }
 
-/** Объяснение конфликта (conflict_notes) в обе стороны */
+/** Объяснение конфликта (conflict_notes) в обе стороны.
+ *  Значения conflict_notes — i18n-ключи, переводим один раз через i18n.t(). */
 function conflictNoteOf(fw: FrameworkDef, other: FrameworkDef): string | undefined {
-  return fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+  const key = fw.conflict_notes?.[other.id] ?? other.conflict_notes?.[fw.id];
+  if (!key) return undefined;
+  return i18n.t(key as TranslationKey);
 }
 
 /** Причина, по которой фреймворк нельзя выбрать (зеркало правил rules.ts) */
@@ -700,8 +705,11 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
   // 1. Платформа
   if (fw.platforms?.length && !fw.platforms.includes(hostOs)) {
     return {
-      message: `Доступен только на ${fw.platforms.join(", ")}`,
-      detail: `«${fw.label}» не поддерживает вашу ОС (${hostOs}).`,
+      message: i18n.t("create.block.platform_msg", { platforms: fw.platforms.join(", ") }),
+      detail: i18n.t("create.block.platform_detail", {
+        label: i18n.t(fw.label as TranslationKey),
+        os: hostOs,
+      }),
       alternatives: frameworkAlternatives(fw),
     };
   }
@@ -712,11 +720,13 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
     if (!sel) continue;
     if (sel.conflicts?.includes(fwId) || fw.conflicts?.includes(selId)) {
       const note = conflictNoteOf(fw, sel);
+      const fwLabel = i18n.t(fw.label as TranslationKey);
+      const selLabel = i18n.t(sel.label as TranslationKey);
       return {
-        message: `Несовместим с «${sel.label}»`,
+        message: i18n.t("create.block.conflict_msg", { label: selLabel }),
         detail: note
-          ? `«${fw.label}» и «${sel.label}»: ${note}`
-          : `«${fw.label}» и «${sel.label}» не могут работать вместе — снимите один из них.`,
+          ? i18n.t("create.block.conflict_detail", { a: fwLabel, b: selLabel, note })
+          : i18n.t("create.block.conflict_detail_plain", { a: fwLabel, b: selLabel }),
         alternatives: frameworkAlternatives(fw),
       };
     }
@@ -732,12 +742,13 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
     return !!f && f.side === "either";
   });
   if (fw.side === "either" && hasSpecific) {
+    const fwLabel = i18n.t(fw.label as TranslationKey);
     return {
-      message: "Недоступен вместе с бэкенд/фронтенд стеком",
+      message: i18n.t("create.block.either_vs_specific_msg"),
       detail:
         fw.id === "qt"
-          ? "«Qt» сам создаёт всё приложение. Если нужен веб-UI — выберите Qt первым, затем в его настройках Qt WebEngine + React/Vue/Svelte."
-          : `«${fw.label}» сам создаёт всё приложение и не сочетается с выбранной бэкенд/фронтенд стековой связкой.`,
+          ? i18n.t("create.block.either_vs_specific_detail_qt")
+          : i18n.t("create.block.either_vs_specific_detail", { label: fwLabel }),
       alternatives: frameworkAlternatives(fw),
     };
   }
@@ -746,14 +757,14 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
       const f = tree?.frameworks.find((x) => x.id === id);
       return !!f && f.side === "either";
     });
-    const eitherLabel =
-      tree?.frameworks.find((x) => x.id === eitherFw)?.label ?? "desktop";
+    const eitherDef = tree?.frameworks.find((x) => x.id === eitherFw);
+    const eitherLabel = eitherDef ? i18n.t(eitherDef.label as TranslationKey) : "desktop";
     return {
-      message: `Недоступен вместе с «${eitherLabel}»`,
+      message: i18n.t("create.block.specific_vs_either_msg", { label: eitherLabel }),
       detail:
         eitherFw === "qt" && (fw.id === "react" || fw.id === "vue" || fw.id === "svelte")
-          ? "«Qt» — самостоятельное приложение, но через Qt WebEngine он умеет встраивать веб-UI. Выберите Qt и в его настройках укажите WebEngine + этот фреймворк."
-          : `«${eitherLabel}» — самостоятельное приложение, отдельный UI-слой не нужен.`,
+          ? i18n.t("create.block.specific_vs_either_detail_qt")
+          : i18n.t("create.block.specific_vs_either_detail", { label: eitherLabel }),
       alternatives: frameworkAlternatives(fw),
     };
   }
@@ -766,11 +777,17 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
         return !!f && f.kind === "app" && f.side === fw.side && !isAllowedPair(fw.id, id);
       });
       if (sameSide) {
-        const selLabel =
-          tree?.frameworks.find((x) => x.id === sameSide)?.label ?? sameSide;
+        const selDef = tree?.frameworks.find((x) => x.id === sameSide);
+        const selLabel = selDef ? i18n.t(selDef.label as TranslationKey) : sameSide;
+        const sideLabel = i18n
+          .t(fw.side === "backend" ? "create.backend" : "create.frontend")
+          .toLowerCase();
         return {
-          message: `Только один главный ${fw.side === "backend" ? "бэкенд" : "фронтенд"}-фреймворк`,
-          detail: `«${selLabel}» и «${fw.label}» — оба главные фреймворки: два каркаса будут перезаписывать файлы друг друга. Снимите один или выберите другой.`,
+          message: i18n.t("create.block.one_main_msg", { side: sideLabel }),
+          detail: i18n.t("create.block.one_main_detail", {
+            a: selLabel,
+            b: i18n.t(fw.label as TranslationKey),
+          }),
           alternatives: frameworkAlternatives(fw),
         };
       }
@@ -778,9 +795,17 @@ function frameworkBlockInfo(fwId: string): BlockInfo | null {
     // 5. Язык
     const langs = fw.side === "backend" ? backendLangs : frontendLangs;
     if (langs.length > 0 && !fw.languages.some((l) => langs.includes(l))) {
+      const langNames = fw.languages.map((l) => langLabel(l));
+      const sideLabel = i18n
+        .t(fw.side === "backend" ? "create.backend" : "create.frontend")
+        .toLowerCase();
       return {
-        message: `Нужен язык: ${fw.languages.map((l) => langLabel(l)).join(", ")}`,
-        detail: `На стороне «${fw.side === "backend" ? "бэкенд" : "фронтенд"}» нет языка ${fw.languages.map((l) => langLabel(l)).join(" или ")}, необходимого «${fw.label}».`,
+        message: i18n.t("create.block.lang_msg", { langs: langNames.join(", ") }),
+        detail: i18n.t("create.block.lang_detail", {
+          side: sideLabel,
+          langs: langNames.join(i18n.t("create.block.lang_sep")),
+          label: i18n.t(fw.label as TranslationKey),
+        }),
         alternatives: frameworkAlternatives(fw),
       };
     }
@@ -843,10 +868,11 @@ function clickFramework(id: string) {
         const cfw = tree?.frameworks.find((f) => f.id === x);
         if (!cfw) return x;
         const cnote = conflictNoteOf(fw, cfw);
-        return cnote ? `${cfw.label} (${cnote})` : cfw.label;
+        const label = i18n.t(cfw.label as TranslationKey);
+        return cnote ? `${label} (${cnote})` : label;
       })
       .join(", ");
-    dropNotice = `Автоматически снято: ${note}.`;
+    dropNotice = i18n.t("create.drop_notice", { note });
     window.setTimeout(() => (dropNotice = null), 6000);
   }
   if (companionOptions(fw).length > 0 && !linkedCompanions[id]) {
@@ -934,7 +960,8 @@ function companionOptions(fw: FrameworkDef): FrameworkDef[] {
 }
 
 function langLabel(id: string): string {
-  return tree?.languages.find((l) => l.id === id)?.label ?? id;
+  const label = tree?.languages.find((l) => l.id === id)?.label ?? id;
+  return i18n.t(label as TranslationKey);
 }
 
 /** Языки, доступные для «чистого» backend-выбора (без фреймворка).
@@ -967,7 +994,7 @@ function languageBlockReason(lang: LanguageDef): string | null {
   const side = lang.category === "static" ? "frontend" : lang.category;
   const active = side === "frontend" ? frontendLangs : backendLangs;
   if (active.includes(lang.id)) return null;
-  if (active.length > 0) return `Already ${active.map((l) => langLabel(l)).join(", ")} on this side`;
+  if (active.length > 0) return i18n.t("create.already_on_side", { list: active.map((l) => langLabel(l)).join(", ") });
   return null;
 }
 
@@ -987,10 +1014,10 @@ function fwLangSummary(fw: FrameworkDef): string {
   if (fw.qt_ui_options?.length) {
     const modeId = qtUiMode[fw.id] ?? fw.qt_ui_options[0].id;
     const mode = fw.qt_ui_options.find((m) => m.id === modeId);
-    const parts = mode ? [mode.label] : [];
+    const parts = mode ? [i18n.t(mode.label as TranslationKey)] : [];
     if (modeId === "qt-webengine" && qtWebLinked[fw.id]) {
       const wf = tree?.frameworks.find((f) => f.id === qtWebLinked[fw.id]);
-      if (wf) parts.push(wf.label);
+      if (wf) parts.push(i18n.t(wf.label as TranslationKey));
     }
     return parts.join(" + ");
   }
@@ -1275,17 +1302,17 @@ function toggleTool(id: string) {
 }
 
 const TOOL_CATEGORIES: { id: string; label: string }[] = [
-  { id: "database", label: "Databases" },
-  { id: "cache", label: "Caches" },
-  { id: "messaging", label: "Messaging & Queues" },
-  { id: "observability", label: "Observability" },
-  { id: "testing", label: "Testing" },
-  { id: "tooling", label: "Tooling" },
-  { id: "container", label: "Containers" },
-  { id: "orchestration", label: "Orchestration" },
-  { id: "etl", label: "ETL & Data" },
-  { id: "baas", label: "Backend as a Service" },
-  { id: "infra", label: "Infrastructure" },
+  { id: "database", label: i18n.t("create.tool_category.databases") },
+  { id: "cache", label: i18n.t("create.tool_category.caches") },
+  { id: "messaging", label: i18n.t("create.tool_category.messaging") },
+  { id: "observability", label: i18n.t("create.tool_category.observability") },
+  { id: "testing", label: i18n.t("create.tool_category.testing") },
+  { id: "tooling", label: i18n.t("create.tool_category.tooling") },
+  { id: "container", label: i18n.t("create.tool_category.containers") },
+  { id: "orchestration", label: i18n.t("create.tool_category.orchestration") },
+  { id: "etl", label: i18n.t("create.tool_category.etl") },
+  { id: "baas", label: i18n.t("create.tool_category.baas") },
+  { id: "infra", label: i18n.t("create.tool_category.infrastructure") },
 ];
 
 // ----------------------------------------------------------
@@ -1493,7 +1520,7 @@ async function runEnvironmentCheck(silent = false) {
     );
   } catch (e) {
     console.error("[env] ОШИБКА проверки:", e);
-    envError = String(e) || "Неизвестная ошибка при проверке окружения";
+    envError = String(e) || i18n.t("create.env_check_unknown_error");
   } finally {
     envChecking = false;
   }
@@ -1695,8 +1722,8 @@ function handleInstallDone(plan: InstallPlan) {
 }
 
 function formatMb(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)}${i18n.t("create.format.gb")}`;
+  return `${mb}${i18n.t("create.format.mb")}`;
 }
 
 function downloadStatus(taskId: string): string {
@@ -1716,8 +1743,8 @@ function phaseElapsed(taskId: string): string {
   const started = envPhaseStart.get(taskId);
   if (!started) return "…";
   const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
-  if (secs < 60) return `${secs} с`;
-  return `${Math.floor(secs / 60)} мин ${secs % 60} с`;
+  if (secs < 60) return i18n.t("create.phase_elapsed_secs", { secs });
+  return i18n.t("create.phase_elapsed_min", { m: Math.floor(secs / 60), s: secs % 60 });
 }
 
 async function recheckEnvironment() {
@@ -1782,11 +1809,16 @@ async function confirmAll() {
       // Показываем ошибки бэкенд-валидации (нормализация, конфликты,
       // duplicate write paths), которых нет во фронтенд-зеркале rules.ts.
       // Раньше клик молча гасился — кнопка выглядела «сломанной».
-      reviewError = blocking[0].message;
+      // Если бэкенд вернул message_key — переводим через i18n.
+      const first = blocking[0];
+      reviewError =
+        first.message_key && first.args
+          ? i18n.t(first.message_key as TranslationKey, first.args)
+          : first.message;
       return;
     }
   } catch (e) {
-    reviewError = `Validation failed: ${e}`;
+    reviewError = i18n.t("create.validation_failed", { err: String(e) });
     return;
   }
 
@@ -1973,31 +2005,31 @@ function resetAll() {
 </script>
 
 <div class="wizard">
-  <h1>Create Project</h1>
+  <h1>{i18n.t("create.title") as TranslationKey}</h1>
 
   {#if status === "loading"}
-    <p class="muted">Initializing ProjectCreator...</p>
+    <p class="muted">{i18n.t("create.init") as TranslationKey}</p>
   {:else if status === "error"}
-    <p class="error">Failed to load ProjectCreator module. Check console.</p>
+    <p class="error">{i18n.t("create.init_failed") as TranslationKey}</p>
   {:else if status === "empty"}
-    <p class="muted">No project types configured yet.</p>
+    <p class="muted">{i18n.t("create.no_types") as TranslationKey}</p>
   {:else}
 
     <div class="mode-switch">
-      <button class="mode-btn" class:active={mode === "constructor"} onclick={() => { mode = "constructor"; }}>Constructor</button>
-      <button class="mode-btn" class:active={mode === "presets"} onclick={() => { mode = "presets"; }}>Templates</button>
-      <button class="mode-btn" class:active={mode === "analyze"} onclick={() => { mode = "analyze"; }}>Analyze</button>
+      <button class="mode-btn" class:active={mode === "constructor"} onclick={() => { mode = "constructor"; }}>{i18n.t("create.mode.constructor") as TranslationKey}</button>
+      <button class="mode-btn" class:active={mode === "presets"} onclick={() => { mode = "presets"; }}>{i18n.t("create.mode.templates") as TranslationKey}</button>
+      <button class="mode-btn" class:active={mode === "analyze"} onclick={() => { mode = "analyze"; }}>{i18n.t("create.mode.analyze") as TranslationKey}</button>
     </div>
 
     {#if mode === "analyze"}
       <div class="analysis-panel">
-        <p class="prompt">Analyze an existing project</p>
-        <p class="hint">Select a folder to detect technology stack and pre-fill the constructor.</p>
+        <p class="prompt">{i18n.t("create.analyze_title") as TranslationKey}</p>
+        <p class="hint">{i18n.t("create.analyze_desc") as TranslationKey}</p>
         <button class="btn-primary" onclick={runAnalysis} disabled={analyzing}>
-          {analyzing ? "Analyzing..." : "📂 Select Folder"}
+          {analyzing ? (i18n.t("create.analyzing") as TranslationKey) : (i18n.t("create.select_folder") as TranslationKey)}
         </button>
         {#if analyzedPath}
-          <p class="analyzed-path">Selected: {analyzedPath}</p>
+          <p class="analyzed-path">{i18n.t("create.selected", { path: analyzedPath }) as TranslationKey}</p>
         {/if}
         {#if analysisError}
           <p class="error">{analysisError}</p>
@@ -2006,7 +2038,7 @@ function resetAll() {
           <div class="analysis-result">
             <p class="analysis-summary">{analysisResult.summary}</p>
             <div class="analysis-section">
-              <p class="section-title">Detected Technologies</p>
+              <p class="section-title">{i18n.t("create.detected") as TranslationKey}</p>
               <div class="tech-tags">
                 {#each analysisResult.detected_technologies as tech}
                   <span class="tech-tag" class:certaion={tech.confidence === "Certain"}
@@ -2018,7 +2050,7 @@ function resetAll() {
               </div>
             </div>
             <div class="analysis-section">
-              <p class="section-title">Hints</p>
+              <p class="section-title">{i18n.t("create.hints") as TranslationKey}</p>
               <div class="hint-tags">
                 {#each analysisResult.project_type_hints as hint}
                   <span class="hint-tag">{hint}</span>
@@ -2030,30 +2062,30 @@ function resetAll() {
               </div>
             </div>
             <button class="btn-primary" onclick={applyAnalysis}>
-              Use detected values →
+              {i18n.t("create.use_detected") as TranslationKey}
             </button>
           </div>
         {/if}
       </div>
 
     {:else if mode === "presets"}
-      <p class="prompt">Project templates</p>
-      <p class="hint">Pick a ready-made stack and adjust it in the constructor.</p>
+      <p class="prompt">{i18n.t("create.templates_title") as TranslationKey}</p>
+      <p class="hint">{i18n.t("create.templates_desc") as TranslationKey}</p>
       <div class="preset-grid">
         {#each tree!.presets as p}
           <div class="preset-card">
-            <TechIcon icon={p.icon} alt={p.label} size="xl" />
-            <h3>{p.label}</h3>
-            <p class="preset-desc">{p.description}</p>
+            <TechIcon icon={p.icon} alt={i18n.t(p.label as TranslationKey)} size="xl" />
+            <h3>{i18n.t(p.label as TranslationKey)}</h3>
+            <p class="preset-desc">{i18n.t(p.description as TranslationKey)}</p>
             <div class="preset-stack">
               {#if p.stack.backend_lang}<span class="preset-chip">{p.stack.backend_lang}</span>{/if}
               {#if p.stack.frontend_lang}<span class="preset-chip">{p.stack.frontend_lang}</span>{/if}
               {#each p.stack.frameworks as fw}<span class="preset-chip">{fw}</span>{/each}
               {#if p.stack.tools.length > 0}
-                <span class="preset-chip">{p.stack.tools.length} tool{p.stack.tools.length > 1 ? "s" : ""}</span>
+                <span class="preset-chip">{i18n.t("create.tools_count", { n: p.stack.tools.length }) as TranslationKey}</span>
               {/if}
             </div>
-            <button class="btn-primary preset-apply" onclick={() => applyPreset(p)}>Use template</button>
+            <button class="btn-primary preset-apply" onclick={() => applyPreset(p)}>{i18n.t("create.use_template") as TranslationKey}</button>
           </div>
         {/each}
       </div>
@@ -2065,11 +2097,11 @@ function resetAll() {
              Environment check & install
              ================================================================ -->
         {#if phase === 5}
-          <p class="prompt">Environment check</p>
-          <p class="hint">We check your stack requirements before generating the project.</p>
+          <p class="prompt">{i18n.t("create.env_check") as TranslationKey}</p>
+          <p class="hint">{i18n.t("create.env_check_desc") as TranslationKey}</p>
 
           {#if envChecking}
-            <p class="muted">Checking installed tools…</p>
+            <p class="muted">{i18n.t("create.checking_tools") as TranslationKey}</p>
             {#if envCheckProgress.length > 0}
               <div class="env-progress-list">
                 {#each envCheckProgress as ev}
@@ -2080,7 +2112,7 @@ function resetAll() {
                     <span class="env-status muted">
                       {statusKind(ev.status) === "ok"
                         ? `✓ ${(ev.status as { Installed: { version: string } }).Installed.version}`
-                        : "checking…"}
+                        : (i18n.t("create.checking") as TranslationKey)}
                     </span>
                   </div>
                 {/each}
@@ -2091,14 +2123,14 @@ function resetAll() {
             {@const missingSelected = selectedMissingTools()}
             {#if envInstallDone && envPlan}
               <div class="env-summary">
-                <span>Installed: {envPlan.tasks.filter((t) => taskStateKind(t.state) === "success").length}/{envPlan.tasks.length}</span>
-                <span>Failed: {envPlan.tasks.filter((t) => taskStateKind(t.state) === "failed").length}</span>
+                <span>{i18n.t("create.installed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "success").length, y: envPlan.tasks.length }) as TranslationKey}</span>
+                <span>{i18n.t("create.failed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "failed").length }) as TranslationKey}</span>
                 {#if envErrors.length > 0}
-                  <span class="env-warn">⚠ {envErrors.length} error{envErrors.length > 1 ? "s" : ""}</span>
+                  <span class="env-warn">{i18n.t("create.errors_count", { n: envErrors.length }) as TranslationKey}</span>
                 {/if}
               </div>
               <div class="env-install">
-                <p class="group-label">Installation finished</p>
+                <p class="group-label">{i18n.t("create.install_finished") as TranslationKey}</p>
                 {#each envPlan.tasks as task}
                   {@const st = envTaskStates.get(task.task_id) ?? task.state}
                   <div class="env-row">
@@ -2110,7 +2142,7 @@ function resetAll() {
                     </span>
                     <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
                     <span class="env-name">{task.display}</span>
-                    <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
+                    <span class="env-source">{task.size_mb} MB · {i18n.t(task.source_description as TranslationKey)}</span>
                     <span
                       class="env-status"
                       class:ok={taskStateKind(st) === "success"}
@@ -2121,38 +2153,38 @@ function resetAll() {
                 {/each}
                 {#if envErrors.length > 0}
                   <details class="exec-full-log">
-                    <summary>Errors ({envErrors.length})</summary>
+                    <summary>{i18n.t("create.env_errors", { n: envErrors.length }) as TranslationKey}</summary>
                     <pre>{envErrors.join("\n")}</pre>
                   </details>
                 {/if}
                 {#if envLogs.length > 0}
                   <details class="exec-full-log">
-                    <summary>Log ({envLogs.length} lines)</summary>
+                    <summary>{i18n.t("create.log_lines", { n: envLogs.length }) as TranslationKey}</summary>
                     <pre>{envLogs.join("\n")}</pre>
                   </details>
                 {/if}
               </div>
               <div class="btn-row">
-                <button class="btn-back" onclick={() => (phase = 2)}>← Back</button>
-                <button class="btn-secondary" onclick={recheckEnvironment}>Re-check environment</button>
-                <button class="btn-primary" onclick={doCreateProject}>Continue</button>
+                <button class="btn-back" onclick={() => (phase = 2)}>{i18n.t("create.back") as TranslationKey}</button>
+                <button class="btn-secondary" onclick={recheckEnvironment}>{i18n.t("create.recheck_env") as TranslationKey}</button>
+                <button class="btn-primary" onclick={doCreateProject}>{i18n.t("create.continue") as TranslationKey}</button>
               </div>
               {#if envRestartHint}
-                <p class="env-warn">💡 New tools were installed. Restart your open terminals and editors to pick up the updated PATH.</p>
+                <p class="env-warn">{i18n.t("create.path_restart_hint") as TranslationKey}</p>
               {/if}
             {:else}
             <div class="env-summary">
-              <span>Ready: {envCheck.requirements.filter((r) => statusKind(r.status) === "ok" || statusKind(r.status) === "manual").length}/{envCheck.requirements.length}</span>
+              <span>{i18n.t("create.ready_count", { x: envCheck.requirements.filter((r) => statusKind(r.status) === "ok" || statusKind(r.status) === "manual").length, y: envCheck.requirements.length }) as TranslationKey}</span>
               {#if missingAll.length > 0}
-                <span>To install: {missingSelected.length}/{missingAll.length}</span>
+                <span>{i18n.t("create.to_install", { x: missingSelected.length, y: missingAll.length }) as TranslationKey}</span>
               {/if}
-              <span>Download: {missingSelected.reduce((sum, r) => sum + r.size_mb, 0)} MB</span>
-              <span>Free space: {envCheck.free_space_mb} MB</span>
+              <span>{i18n.t("create.download_mb", { x: missingSelected.reduce((sum, r) => sum + r.size_mb, 0) }) as TranslationKey}</span>
+              <span>{i18n.t("create.free_space", { x: envCheck.free_space_mb }) as TranslationKey}</span>
               {#if !envCheck.enough_space}
-                <span class="env-warn">⚠ Not enough disk space</span>
+                <span class="env-warn">{i18n.t("create.not_enough_disk") as TranslationKey}</span>
               {/if}
               {#if envCheck.needs_admin_any}
-                <span class="env-warn">⚠ Admin rights may be required</span>
+                <span class="env-warn">{i18n.t("create.admin_maybe") as TranslationKey}</span>
               {/if}
             </div>
 
@@ -2170,7 +2202,7 @@ function resetAll() {
                   {#if kind === "ok"}
                     <span class="env-select">✅</span>
                   {:else if kind === "manual"}
-                    <span class="env-select manual-badge" title="Installed manually, no auto-install"><TechIcon alt="" size="sm" /></span>
+                    <span class="env-select manual-badge" title={i18n.t("create.manual_install") as TranslationKey}><TechIcon alt="" size="sm" /></span>
                   {:else}
                     <label class="env-select">
                       <input
@@ -2182,7 +2214,7 @@ function resetAll() {
                   {/if}
                   <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
                   <span class="env-name">{req.display}</span>
-                  <span class="env-source">{req.source_description}</span>
+                  <span class="env-source">{i18n.t(req.source_description as TranslationKey)}</span>
                   <span
                     class="env-status"
                     class:ok={kind === "ok"}
@@ -2197,50 +2229,46 @@ function resetAll() {
 
             {#if (envCheck.optional_requirements ?? []).length > 0 || envLocalInfra.size > 0}
               <div class="env-optional" class:env-optional-local={envLocalInfra.size > 0}>
-                <p class="group-label">Optional — run in Docker</p>
+                <p class="group-label">{i18n.t("create.docker_optional") as TranslationKey}</p>
                 <p class="hint">
-                  These tools are deployed as Docker containers with the project by default.
-                  Switch a tool to <strong>Use Host Machine</strong> to install and run it on
-                  this machine instead — it is checked and installed like the requirements
-                  above, excluded from docker-compose, and its local setup is documented
-                  in <code>LOCAL_INFRA.md</code>.
+                  {i18n.t("create.docker_host_hint") as TranslationKey}
                 </p>
                 {#snippet infraToggle(toolId: string, onHost: boolean)}
-                  <span class="infra-toggle" role="group" aria-label="Run in Docker or on the host machine">
+                  <span class="infra-toggle" role="group" aria-label={i18n.t("create.docker_host_aria") as TranslationKey}>
                     <button
                       class="infra-toggle-opt"
                       class:active={!onHost}
-                      title="Deploy as a Docker container with the project (docker-compose.yaml)"
+                      title={i18n.t("create.docker_compose_title") as TranslationKey}
                       onclick={() => {
                         if (onHost) revertLocalInfra(toolId);
                       }}
                     >
-                      Run in Docker
+                      {i18n.t("create.run_docker") as TranslationKey}
                     </button>
                     <button
                       class="infra-toggle-opt"
                       class:active={onHost}
                       class:host={onHost}
-                      title="Install and run on this machine — excluded from docker-compose, see LOCAL_INFRA.md"
+                      title={i18n.t("create.host_install_title") as TranslationKey}
                       onclick={() => {
                         if (!onHost) optInLocalInfra(toolId);
                       }}
                     >
-                      Use Host Machine
+                      {i18n.t("create.use_host") as TranslationKey}
                     </button>
                   </span>
                 {/snippet}
                 {#each envCheck.optional_requirements ?? [] as req}
                   {@const installedHere = isLocallyInstalled(req.tool_id)}
                   <div class="env-row" class:ok={installedHere}>
-                    <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
+                    <span class="env-select"><TechIcon icon="docker.svg" alt={i18n.t("create.docker_badge") as TranslationKey} size="sm" /></span>
                     <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
                     <span class="env-name">{req.display}</span>
                     <span class="env-source">
-                      {installedHere ? "Running locally on this machine" : "Docker (docker-compose.yaml)"}
+                      {installedHere ? (i18n.t("create.running_local") as TranslationKey) : (i18n.t("create.running_docker") as TranslationKey)}
                     </span>
                     {#if installedHere}
-                      <span class="env-status ok">✓ Installed Locally (Host)</span>
+                      <span class="env-status ok">{i18n.t("create.installed_host") as TranslationKey}</span>
                     {/if}
                     {@render infraToggle(req.tool_id, false)}
                   </div>
@@ -2249,14 +2277,14 @@ function resetAll() {
                   {@const req = envCheck.requirements.find((r) => r.tool_id === toolId)}
                   {@const installedHere = isLocallyInstalled(toolId)}
                   <div class="env-row ok">
-                    <span class="env-select"><TechIcon icon="docker.svg" alt="Docker" size="sm" /></span>
+                    <span class="env-select"><TechIcon icon="docker.svg" alt={i18n.t("create.docker_badge") as TranslationKey} size="sm" /></span>
                     <span class="env-icon"><TechIcon icon={req?.icon ?? toolIcon(toolId)} alt={req?.display ?? toolId} size="sm" /></span>
                     <span class="env-name">{req?.display ?? toolId}</span>
                     <span class="env-source">
-                      {installedHere ? "Running locally on this machine" : "Local install pending"}
+                      {installedHere ? (i18n.t("create.running_local") as TranslationKey) : (i18n.t("create.local_pending") as TranslationKey)}
                     </span>
                     {#if installedHere}
-                      <span class="env-status ok">✓ Installed Locally (Host)</span>
+                      <span class="env-status ok">{i18n.t("create.installed_host") as TranslationKey}</span>
                     {/if}
                     {@render infraToggle(toolId, true)}
                   </div>
@@ -2266,7 +2294,7 @@ function resetAll() {
 
             {#if envPlan && envInstalling}
               <div class="env-install">
-                <p class="group-label">Installing…</p>
+                <p class="group-label">{i18n.t("create.installing") as TranslationKey}</p>
                 {#each envPlan.tasks as task}
                   {@const st = envTaskStates.get(task.task_id) ?? task.state}
                   {@const kind = taskStateKind(st)}
@@ -2285,11 +2313,11 @@ function resetAll() {
                       </span>
                       <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
                       <span class="env-name">{task.display}</span>
-                      <span class="env-source">{task.size_mb} MB · {task.source_description}</span>
+                      <span class="env-source">{task.size_mb} MB · {i18n.t(task.source_description as TranslationKey)}</span>
                       <span class="env-status">
                         {#if running}
                           {#if downloading && pct !== null && dl}
-                            Downloading… {pct}% ({formatMb(Math.floor(dl.received / 1024 / 1024))} / {formatMb(Math.floor(dl.total / 1024 / 1024))})
+                            {i18n.t("create.downloading", { pct, received: formatMb(Math.floor(dl.received / 1024 / 1024)), total: formatMb(Math.floor(dl.total / 1024 / 1024)) }) as TranslationKey}
                           {:else}
                             <span class="spin" aria-hidden="true"></span> {taskStateLabel(st)} · {phaseElapsed(task.task_id)}
                           {/if}
@@ -2307,7 +2335,7 @@ function resetAll() {
                 {/each}
                 {#if envLogs.length > 0}
                   <details class="exec-full-log">
-                    <summary>Log ({envLogs.length} lines)</summary>
+                    <summary>{i18n.t("create.log_lines", { n: envLogs.length }) as TranslationKey}</summary>
                     <pre>{envLogs.join("\n")}</pre>
                   </details>
                 {/if}
@@ -2319,38 +2347,38 @@ function resetAll() {
             {/if}
 
             <div class="btn-row">
-              <button class="btn-back" onclick={() => (phase = 2)} disabled={envInstalling}>← Back</button>
+              <button class="btn-back" onclick={() => (phase = 2)} disabled={envInstalling}>{i18n.t("create.back") as TranslationKey}</button>
               {#if envInstalling}
-                <button class="btn-secondary" onclick={cancelInstall}>Abort</button>
+                <button class="btn-secondary" onclick={cancelInstall}>{i18n.t("create.abort") as TranslationKey}</button>
               {:else if missingAll.length > 0}
                 <button class="btn-primary" onclick={startInstall} disabled={missingSelected.length === 0}>
-                  Install selected ({missingSelected.length})
+                  {i18n.t("create.install_selected", { n: missingSelected.length }) as TranslationKey}
                 </button>
                 {#if missingSelected.length < missingAll.length}
-                  <button class="btn-secondary" onclick={selectAllEnvTools}>Select all ({missingAll.length})</button>
+                  <button class="btn-secondary" onclick={selectAllEnvTools}>{i18n.t("create.select_all", { n: missingAll.length }) as TranslationKey}</button>
                 {/if}
-                <button class="btn-secondary" onclick={doCreateProject}>Continue anyway</button>
+                <button class="btn-secondary" onclick={doCreateProject}>{i18n.t("create.continue_anyway") as TranslationKey}</button>
               {:else}
-                <button class="btn-primary" onclick={doCreateProject}>🚀 Create Project</button>
+                <button class="btn-primary" onclick={doCreateProject}>{i18n.t("create.create_project") as TranslationKey}</button>
               {/if}
             </div>
 
             {#if envRestartHint}
               <p class="env-warn">
-                💡 New tools were installed. Restart your open terminals and editors to pick up the updated PATH.
+                {i18n.t("create.path_restart_hint") as TranslationKey}
               </p>
             {/if}
             {/if}
           {:else}
             <p class="error">
               {envError
-                ? `Failed to check environment: ${envError}`
-                : "Environment not checked yet — run a check to see what your stack needs."}
+                ? (i18n.t("create.env_check_failed", { err: envError }) as TranslationKey)
+                : (i18n.t("create.env_not_checked") as TranslationKey)}
             </p>
             <div class="btn-row">
-              <button class="btn-back" onclick={back}>← Back</button>
+              <button class="btn-back" onclick={back}>{i18n.t("create.back") as TranslationKey}</button>
               <button class="btn-primary" onclick={() => runEnvironmentCheck()}>
-                {envError ? "Retry" : "Check environment"}
+                {envError ? (i18n.t("create.retry") as TranslationKey) : (i18n.t("create.check_env") as TranslationKey)}
               </button>
             </div>
           {/if}
@@ -2358,19 +2386,19 @@ function resetAll() {
           {#if newSecrets}
             <div class="conflict-overlay" onclick={() => { newSecrets = null; }}>
               <div class="conflict-dialog" onclick={(e) => e.stopPropagation()}>
-                <h3>🔑 Generated passwords</h3>
-                <p class="hint">Save these now — they will not be shown again.</p>
+                <h3>{i18n.t("create.generated_passwords") as TranslationKey}</h3>
+                <p class="hint">{i18n.t("create.save_passwords_hint") as TranslationKey}</p>
                 {#each Object.entries(newSecrets) as [toolId, value]}
                   <div class="secret-row">
                     <span class="secret-name">{secretToolName(toolId)}</span>
                     <code class="secret-value">{value}</code>
                     <button class="btn-secondary" onclick={() => copySecret(toolId, value)}>
-                      {secretCopied === toolId ? "Copied ✓" : "Copy"}
+                      {secretCopied === toolId ? (i18n.t("create.copied") as TranslationKey) : (i18n.t("create.copy") as TranslationKey)}
                     </button>
                   </div>
                 {/each}
                 <div class="btn-row">
-                  <button class="btn-primary" onclick={() => { newSecrets = null; }}>Got it</button>
+                  <button class="btn-primary" onclick={() => { newSecrets = null; }}>{i18n.t("create.got_it") as TranslationKey}</button>
                 </div>
               </div>
             </div>
@@ -2381,7 +2409,7 @@ function resetAll() {
              Execution
              ================================================================ -->
         {#if phase === 6}
-          <p class="prompt">Generating your project...</p>
+          <p class="prompt">{i18n.t("create.generating") as TranslationKey}</p>
 
           <div class="exec-steps">
             {#each [...execStatuses.entries()] as [idx, entry]}
@@ -2415,30 +2443,30 @@ function resetAll() {
 
           {#if execLogs.length > 0}
             <details class="exec-full-log">
-              <summary>Full log ({execLogs.length} lines)</summary>
+              <summary>{i18n.t("create.full_log", { n: execLogs.length }) as TranslationKey}</summary>
               <pre>{execLogs.join("\n")}</pre>
             </details>
           {/if}
 
           {#if execOverallStatus === "running"}
             <div class="btn-row">
-              <button class="btn-secondary" onclick={cancelExecution}>Cancel</button>
+              <button class="btn-secondary" onclick={cancelExecution}>{i18n.t("create.cancel") as TranslationKey}</button>
             </div>
           {:else if execOverallStatus === "done"}
             <div class="exec-finished">
-              <p>✅ Project generated in {execResult?.duration ?? 0}ms</p>
-              <p class="exec-plan-path">Location: {execPlan?.project_path ?? execProjectPath}</p>
+              <p>{i18n.t("create.generated_ms", { x: execResult?.duration ?? 0 }) as TranslationKey}</p>
+              <p class="exec-plan-path">{i18n.t("create.location", { path: execPlan?.project_path ?? execProjectPath ?? "" }) as TranslationKey}</p>
             </div>
             <div class="btn-row">
-              <button class="btn-secondary" onclick={openInVSCode}>Open in VS Code</button>
-              <button class="btn-primary" onclick={resetAll}>Create Another</button>
+              <button class="btn-secondary" onclick={openInVSCode}>{i18n.t("create.open_vscode") as TranslationKey}</button>
+              <button class="btn-primary" onclick={resetAll}>{i18n.t("create.create_another") as TranslationKey}</button>
             </div>
           {:else if execOverallStatus === "error" || execOverallStatus === "cancelled"}
             <div class="exec-finished error">
-              <p>{execOverallStatus === "cancelled" ? "Cancelled" : `Error: ${execError}`}</p>
+              <p>{execOverallStatus === "cancelled" ? (i18n.t("create.cancelled") as TranslationKey) : (i18n.t("create.exec_error", { err: execError ?? "" }) as TranslationKey)}</p>
             </div>
             <div class="btn-row">
-              <button class="btn-primary" onclick={resetAll}>Start Over</button>
+              <button class="btn-primary" onclick={resetAll}>{i18n.t("create.start_over") as TranslationKey}</button>
             </div>
           {/if}
         {/if}
@@ -2469,18 +2497,18 @@ function resetAll() {
                 <div class="arch-body">
                   <p class="arch-title">
                     {archMode === "integrated"
-                      ? "Integrated App Mode"
-                      : "Decoupled Architecture Mode"}
+                      ? (i18n.t("create.mode_integrated") as TranslationKey)
+                      : (i18n.t("create.mode_decoupled") as TranslationKey)}
                   </p>
                   <p class="arch-text">
                     {archMode === "integrated"
-                      ? "Single integrated project structure."
-                      : "Generates two independent projects in ./backend and ./frontend connected via REST/GraphQL API."}
+                      ? (i18n.t("create.mode_integrated_desc") as TranslationKey)
+                      : (i18n.t("create.mode_decoupled_desc") as TranslationKey)}
                   </p>
                   <p class="arch-examples">
                     {archMode === "integrated"
-                      ? "e.g., Tauri + Svelte, Qt + C++, Go + Cobra"
-                      : "e.g., NestJS + Next.js, Django + Vue, Expo + FastAPI"}
+                      ? (i18n.t("create.mode_integrated_ex") as TranslationKey)
+                      : (i18n.t("create.mode_decoupled_ex") as TranslationKey)}
                   </p>
                 </div>
               </div>
@@ -2489,13 +2517,13 @@ function resetAll() {
 
           <!-- Phase 0: Project Type -->
           {#if phase === 0}
-            <p class="prompt">What are you building?</p>
+            <p class="prompt">{i18n.t("create.what_building") as TranslationKey}</p>
             <div class="card-grid type-grid">
               {#each tree!.project_types as pt}
                 <button class="card" onclick={() => selectType(pt)}>
-                  <TechIcon icon={pt.icon} alt={pt.label} size="xl" />
-                  <h3>{pt.label}</h3>
-                  <p>{pt.description}</p>
+                  <TechIcon icon={pt.icon} alt={i18n.t(pt.label as TranslationKey)} size="xl" />
+                  <h3>{i18n.t(pt.label as TranslationKey)}</h3>
+                  <p>{i18n.t(pt.description as TranslationKey)}</p>
                 </button>
               {/each}
             </div>
@@ -2521,16 +2549,16 @@ function resetAll() {
                   title={altInfo?.detail}
                   onclick={() => clickFramework(fw.id)}
                 >
-                  <TechIcon icon={fw.icon} alt={fw.label} size="lg" />
-                  <h3>{fw.label}</h3>
-                  <p>{fw.description}</p>
+                  <TechIcon icon={fw.icon} alt={i18n.t(fw.label as TranslationKey)} size="lg" />
+                  <h3>{i18n.t(fw.label as TranslationKey)}</h3>
+                  <p>{i18n.t(fw.description as TranslationKey)}</p>
                   {#if selectedFrameworks.includes(fw.id) && summary}
                     <span class="fw-lang-chip selected">✓ {summary}</span>
                   {:else}
                     <span class="fw-lang-chip">{fwLangsLabel(fw)}</span>
                   {/if}
                   {#if fw.languages.length > 1}
-                    <span class="fw-lang-multi">choose language</span>
+                    <span class="fw-lang-multi">{i18n.t("create.choose_language") as TranslationKey}</span>
                   {/if}
                   {#if warnReason !== null}
                     <span class="warn-badge" title={warnReason}>⚠ {warnReason}</span>
@@ -2542,7 +2570,7 @@ function resetAll() {
                     {/if}
                     {#if altInfo?.alternatives?.length}
                       <span class="conflict-alts">
-                        <span class="conflict-alts-label">Вместо этого:</span>
+                        <span class="conflict-alts-label">{i18n.t("create.instead_of") as TranslationKey}</span>
                         {#each altInfo.alternatives as altId}
                           {@const altFw = tree?.frameworks.find((f) => f.id === altId)}
                           {#if altFw}
@@ -2562,7 +2590,7 @@ function resetAll() {
                                 }
                               }}
                             >
-                              {altFw.label}
+                              {i18n.t(altFw.label as TranslationKey)}
                             </span>
                           {/if}
                         {/each}
@@ -2572,13 +2600,13 @@ function resetAll() {
                 </button>
                 {#if fwPopup === fw.id}
                   <div class="fw-popup">
-                    <p class="popup-title">{fw.label}</p>
+                    <p class="popup-title">{i18n.t(fw.label as TranslationKey)}</p>
                     {#if fw.qt_ui_options?.length}
                       {@const selectedMode = fw.qt_ui_options.find((m) => m.id === popupQtUi) ?? fw.qt_ui_options[0]}
                       {@const webDefs = (selectedMode.web_framework_options ?? [])
                         .map((wid) => tree?.frameworks.find((f) => f.id === wid))
                         .filter((d): d is FrameworkDef => !!d)}
-                      <p class="popup-label">UI technology</p>
+                      <p class="popup-label">{i18n.t("create.ui_technology") as TranslationKey}</p>
                       <div class="popup-list">
                         {#each fw.qt_ui_options as mode}
                           <button
@@ -2587,17 +2615,17 @@ function resetAll() {
                             onclick={() => (popupQtUi = mode.id)}
                           >
                             <span class="popup-opt-label">
-                              {mode.label}
+                              {i18n.t(mode.label as TranslationKey)}
                               {#if (mode.web_framework_options ?? []).length > 0}
-                                <span class="popup-opt-tag">web UI</span>
+                                <span class="popup-opt-tag">{i18n.t("create.web_ui") as TranslationKey}</span>
                               {/if}
                             </span>
-                            <span class="popup-opt-desc">{mode.description}</span>
+                            <span class="popup-opt-desc">{i18n.t(mode.description as TranslationKey)}</span>
                           </button>
                         {/each}
                       </div>
                       {#if webDefs.length > 0}
-                        <p class="popup-label">Web frontend</p>
+                        <p class="popup-label">{i18n.t("create.web_frontend") as TranslationKey}</p>
                         <div class="popup-list">
                           {#each webDefs as wf}
                             <button
@@ -2605,14 +2633,14 @@ function resetAll() {
                               class:selected={popupWebFw === wf.id}
                               onclick={() => (popupWebFw = wf.id)}
                             >
-                              <span class="popup-opt-label">{wf.label}</span>
-                              <span class="popup-opt-desc">{wf.description}</span>
+                              <span class="popup-opt-label">{i18n.t(wf.label as TranslationKey)}</span>
+                              <span class="popup-opt-desc">{i18n.t(wf.description as TranslationKey)}</span>
                             </button>
                           {/each}
                         </div>
                       {/if}
                     {:else if companionOptions(fw).length > 0}
-                      <p class="popup-label">Frontend framework</p>
+                      <p class="popup-label">{i18n.t("create.frontend_framework") as TranslationKey}</p>
                       <div class="popup-list">
                         {#each companionOptions(fw) as c, ci}
                           <button
@@ -2623,9 +2651,9 @@ function resetAll() {
                               popupCompanionLang = c.recommended_language;
                             }}
                           >
-                            <span>{c.label}</span>
+                            <span>{i18n.t(c.label as TranslationKey)}</span>
                             {#if ci === 0}
-                              <span class="star">⭐ recommended</span>
+                              <span class="star">{i18n.t("create.recommended") as TranslationKey}</span>
                             {/if}
                           </button>
                         {/each}
@@ -2633,7 +2661,7 @@ function resetAll() {
                       {#if popupCompanion}
                         {@const cfw = tree?.frameworks.find((f) => f.id === popupCompanion)}
                         {#if cfw}
-                          <p class="popup-label">Frontend language</p>
+                          <p class="popup-label">{i18n.t("create.frontend_language") as TranslationKey}</p>
                           <div class="popup-list">
                             {#each cfw.languages as l}
                               <button
@@ -2643,7 +2671,7 @@ function resetAll() {
                               >
                                 <span>{langLabel(l)}</span>
                                 {#if l === cfw.recommended_language}
-                                  <span class="star">⭐ recommended</span>
+                                  <span class="star">{i18n.t("create.recommended") as TranslationKey}</span>
                                 {/if}
                               </button>
                             {/each}
@@ -2651,7 +2679,7 @@ function resetAll() {
                         {/if}
                       {/if}
                     {:else}
-                      <p class="popup-label">Language</p>
+                      <p class="popup-label">{i18n.t("create.language") as TranslationKey}</p>
                       <div class="popup-list">
                         {#each fw.languages as l}
                           <button
@@ -2661,17 +2689,17 @@ function resetAll() {
                           >
                             <span>{langLabel(l)}</span>
                             {#if l === fw.recommended_language}
-                              <span class="star">⭐ recommended</span>
+                              <span class="star">{i18n.t("create.recommended") as TranslationKey}</span>
                             {/if}
                           </button>
                         {/each}
                       </div>
                     {/if}
                     <div class="popup-actions">
-                      <button class="btn-primary btn-xs" onclick={applyFwPopup}>✓ Done</button>
-                      <button class="btn-secondary btn-xs" onclick={cancelFwPopup}>Cancel</button>
+                      <button class="btn-primary btn-xs" onclick={applyFwPopup}>{i18n.t("create.done") as TranslationKey}</button>
+                      <button class="btn-secondary btn-xs" onclick={cancelFwPopup}>{i18n.t("create.cancel") as TranslationKey}</button>
                       {#if selectedFrameworks.includes(fw.id)}
-                        <button class="btn-remove" onclick={() => removeFramework(fw.id)}>✕ Remove</button>
+                        <button class="btn-remove" onclick={() => removeFramework(fw.id)}>{i18n.t("create.remove") as TranslationKey}</button>
                       {/if}
                     </div>
                   </div>
@@ -2679,42 +2707,34 @@ function resetAll() {
               </div>
             {/snippet}
 
-            <p class="prompt">Stack & Tools</p>
+            <p class="prompt">{i18n.t("create.stack_tools") as TranslationKey}</p>
             {@render archBanner()}
             {#if selectedFrameworks.length > 0 || selectedTools.length > 0}
               <button
                 class="btn-clear-stack"
-                title="Сбросить все выбранные фреймворки и инструменты"
+                title={i18n.t("create.clear_stack_title") as TranslationKey}
                 onclick={() => (confirmClearStack = true)}
               >
-                ✕ Clear stack
+                {i18n.t("create.clear_stack") as TranslationKey}
               </button>
             {/if}
             {#if dropNotice}
               <p class="notice-bar" role="status">{dropNotice}</p>
             {/if}
             <p class="hint">
-              Pick frameworks freely — languages are assigned automatically when you select one
-              (multi-language frameworks open a language menu). Options marked
-              <span class="star">⭐</span> are the recommended defaults and apply automatically.
-              One main framework per side — side libraries (bots, plugins) can be added alongside.
-              Conflicting picks are removed automatically; on blocked cards you'll find the reason
-              and compatible alternatives.
+              {i18n.t("create.fw_hint") as TranslationKey}
             </p>
 
             {#if confirmClearStack}
               <div class="clear-overlay" onclick={() => (confirmClearStack = false)}>
                 <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-                  <h3>✕ Clear the selected stack?</h3>
+                  <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
                   <p>
-                    This will remove all selected <strong>frameworks and tools</strong>
-                    ({selectedFrameworks.length} framework{selectedFrameworks.length === 1 ? "" : "s"},{" "}
-                    {selectedTools.length} tool{selectedTools.length === 1 ? "" : "s"}).
-                    Project type and languages will stay untouched.
+                    {i18n.t("create.clear_confirm_body") as TranslationKey}
                   </p>
                   <div class="clear-actions">
-                    <button class="btn-primary" onclick={() => clearStack()}>Yes, clear everything</button>
-                    <button class="btn-back" onclick={() => (confirmClearStack = false)}>Cancel</button>
+                    <button class="btn-primary" onclick={() => clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
+                    <button class="btn-back" onclick={() => (confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
                   </div>
                 </div>
               </div>
@@ -2736,7 +2756,7 @@ function resetAll() {
                       class="fw-level-action"
                       onclick={() => toggleUnavailable(levelKey)}
                     >
-                      {showUnavailable[levelKey] ? "Hide unavailable" : "Show unavailable"}
+                      {showUnavailable[levelKey] ? (i18n.t("create.hide_unavailable") as TranslationKey) : (i18n.t("create.show_unavailable") as TranslationKey)}
                     </button>
                   </div>
                 {/if}
@@ -2751,8 +2771,8 @@ function resetAll() {
                       class="unavailable-summary"
                       onclick={() => toggleUnavailable(levelKey)}
                     >
-                      <strong>{unavailable.length} unavailable framework{unavailable.length === 1 ? "" : "s"}</strong>
-                      <span>Blocked by the current stack. Show them dimmed.</span>
+                      <strong>{i18n.t("create.unavailable_count", { n: unavailable.length }) as TranslationKey}</strong>
+                      <span>{i18n.t("create.unavailable_desc") as TranslationKey}</span>
                     </button>
                   {/if}
                 </div>
@@ -2788,8 +2808,8 @@ function resetAll() {
             {#if hasBackend && backendFws.length > 0}
               {@render territory(
                 "backend",
-                "Backend territory",
-                "Server-side: APIs, services, bots — goes into backend/",
+                i18n.t("create.terr_backend") as TranslationKey,
+                i18n.t("create.terr_backend_desc") as TranslationKey,
                 backendFws,
                 backendLangs,
               )}
@@ -2797,8 +2817,8 @@ function resetAll() {
             {#if frontendFws.length > 0}
               {@render territory(
                 "frontend",
-                "Frontend territory",
-                "Client-side: interfaces for the browser or apps — goes into frontend/",
+                i18n.t("create.terr_frontend") as TranslationKey,
+                i18n.t("create.terr_frontend_desc") as TranslationKey,
                 frontendFws,
                 frontendLangs,
               )}
@@ -2806,20 +2826,19 @@ function resetAll() {
             {#if eitherFws.length > 0}
               {@render territory(
                 "either",
-                "Desktop & standalone territory",
-                "Whole-project apps that own everything (Tauri, Qt) — conflicts with backend/frontend stacks",
+                i18n.t("create.terr_standalone") as TranslationKey,
+                i18n.t("create.terr_standalone_desc") as TranslationKey,
                 eitherFws,
                 [],
               )}
             {/if}
             {#if !hasBackend}
               <p class="hint backendless-note">
-                This project type has no backend — the «Backend Language» and «Backend Framework»
-                steps are skipped. Only client-side technologies apply.
+                {i18n.t("create.no_backend_note") as TranslationKey}
               </p>
             {/if}
             {#if fws.length === 0}
-              <p class="muted">No frameworks available for this project type.</p>
+              <p class="muted">{i18n.t("create.no_frameworks") as TranslationKey}</p>
             {/if}
 
             <!-- Языки без фреймворков (необязательно): чистый стек или поддержка -->
@@ -2827,10 +2846,9 @@ function resetAll() {
               <header class="territory-head">
                 <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
-                  <h3 class="territory-title">Plain languages</h3>
+                  <h3 class="territory-title">{i18n.t("create.plain_languages") as TranslationKey}</h3>
                   <p class="territory-desc">
-                    Optional — pick languages without frameworks (pure backend, plain JS frontend).
-                    Frameworks adapt to them automatically.
+                    {i18n.t("create.plain_languages_desc") as TranslationKey}
                   </p>
                 </div>
               </header>
@@ -2838,8 +2856,8 @@ function resetAll() {
                 <div class="lang-sides">
                   {#if hasBackend && backendCandidates().length > 0}
                     <div class="lang-side">
-                      <p class="lang-side-title">Backend language</p>
-                      <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                      <p class="lang-side-title">{i18n.t("create.backend_language") as TranslationKey}</p>
+                      <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
                       <div class="card-grid lang-grid">
                         {#each backendCandidates() as lang}
                           {@const blockedReason = languageBlockReason(lang)}
@@ -2852,10 +2870,10 @@ function resetAll() {
                             title={blockedDetail ?? undefined}
                             onclick={() => toggleLang("backend", lang.id)}
                           >
-                            <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
-                            <h3>{lang.label}</h3>
+                            <TechIcon icon={lang.icon} alt={i18n.t(lang.label as TranslationKey)} size="lg" />
+                            <h3>{i18n.t(lang.label as TranslationKey)}</h3>
                             {#if backendLangs.includes(lang.id)}
-                              <span class="fw-lang-chip selected">✓ active</span>
+                              <span class="fw-lang-chip selected">{i18n.t("create.active") as TranslationKey}</span>
                             {/if}
                             {#if blockedReason}
                               <span class="conflict-badge">{blockedReason}</span>
@@ -2870,8 +2888,8 @@ function resetAll() {
                   {/if}
                   {#if frontendCandidates().length > 0}
                     <div class="lang-side">
-                      <p class="lang-side-title">Frontend language</p>
-                      <p class="hint-sm">One per side — picking another replaces it. ✓ = active.</p>
+                      <p class="lang-side-title">{i18n.t("create.frontend_language2") as TranslationKey}</p>
+                      <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
                       <div class="card-grid lang-grid">
                         {#each frontendCandidates() as lang}
                           {@const blockedReason = languageBlockReason(lang)}
@@ -2882,13 +2900,13 @@ function resetAll() {
                             disabled={blockedReason !== null}
                             onclick={() => toggleLang("frontend", lang.id)}
                           >
-                            <TechIcon icon={lang.icon} alt={lang.label} size="lg" />
-                            <h3>{lang.label}</h3>
+                            <TechIcon icon={lang.icon} alt={i18n.t(lang.label as TranslationKey)} size="lg" />
+                            <h3>{i18n.t(lang.label as TranslationKey)}</h3>
                             {#if lang.category === "static"}
-                              <p>Plain HTML, CSS & JS</p>
+                              <p>{i18n.t("create.plain_html") as TranslationKey}</p>
                             {/if}
                             {#if frontendLangs.includes(lang.id)}
-                              <span class="fw-lang-chip selected">✓ active</span>
+                              <span class="fw-lang-chip selected">{i18n.t("create.active") as TranslationKey}</span>
                             {/if}
                             {#if blockedReason}
                               <span class="conflict-badge">{blockedReason}</span>
@@ -2900,7 +2918,7 @@ function resetAll() {
                   {/if}
                   {#if !hasBackend}
                     <p class="hint backendless-note">
-                      Backend language selection is skipped for this project type — it has no server side.
+                      {i18n.t("create.backend_lang_skipped") as TranslationKey}
                     </p>
                   {/if}
                 </div>
@@ -2912,10 +2930,10 @@ function resetAll() {
               <header class="territory-head">
                 <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
-                  <h3 class="territory-title">Tools & Features</h3>
-                  <p class="territory-desc">Databases, caches, testing, containers — pick what your stack needs.</p>
+                  <h3 class="territory-title">{i18n.t("create.tools_features") as TranslationKey}</h3>
+                  <p class="territory-desc">{i18n.t("create.tools_features_desc") as TranslationKey}</p>
                 </div>
-                <span class="territory-count">{selectedTools.length} selected</span>
+                <span class="territory-count">{i18n.t("create.selected_count", { n: selectedTools.length }) as TranslationKey}</span>
               </header>
               <div class="territory-body">
                 {#each TOOL_CATEGORIES as cat}
@@ -2928,7 +2946,7 @@ function resetAll() {
                         {cat.label}
                         <span class="tool-cat-count">{catTools.length}</span>
                         {#if recTools.length > 0}
-                          <span class="tool-cat-rec">⭐ {recTools.length} for your stack</span>
+                          <span class="tool-cat-rec">{i18n.t("create.for_your_stack", { n: recTools.length }) as TranslationKey}</span>
                         {/if}
                       </p>
                       <div class="tool-menu">
@@ -2942,21 +2960,21 @@ function resetAll() {
                             onfocus={(e) => showTooltip(tool, e)}
                             onblur={hideTooltip}
                           >
-                            <TechIcon icon={tool.icon} alt={tool.label} size="md" />
+                            <TechIcon icon={tool.icon} alt={i18n.t(tool.label as TranslationKey)} size="md" />
                             <span class="tool-item-text">
-                              <span class="tool-item-name">{tool.label}</span>
-                              <span class="tool-item-desc">{tool.description}</span>
+                              <span class="tool-item-name">{i18n.t(tool.label as TranslationKey)}</span>
+                              <span class="tool-item-desc">{i18n.t(tool.description as TranslationKey)}</span>
                             </span>
                             <span class="tool-item-badges">
                               {#if isToolRecommended(tool)}
-                                <span class="tool-item-badge rec">⭐ recommended</span>
+                                <span class="tool-item-badge rec">{i18n.t("create.recommended") as TranslationKey}</span>
                               {/if}
                               {#if tool.requires_docker}
-                                <span class="tool-item-badge docker"><TechIcon icon="docker.svg" alt="" size="xs" /> Docker</span>
+                                <span class="tool-item-badge docker"><TechIcon icon="docker.svg" alt="" size="xs" /> {i18n.t("create.docker_badge") as TranslationKey}</span>
                               {/if}
                               {#if tool.conflicts.length > 0}
                                 <span class="tool-item-badge conflict">
-                                  ⚠ conflicts {tool.conflicts.length > 1 ? `(${tool.conflicts.length})` : ""}
+                                  {i18n.t("create.conflicts_count", { n: tool.conflicts.length }) as TranslationKey}
                                 </span>
                               {/if}
                               {#if selectedTools.includes(tool.id)}
@@ -2972,37 +2990,37 @@ function resetAll() {
 
                 {#if tooltipData}
                   <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
-                    <strong>{tooltipData.tool.label}</strong>
-                    <p>{tooltipData.tool.description}</p>
+                    <strong>{i18n.t(tooltipData.tool.label as TranslationKey)}</strong>
+                    <p>{i18n.t(tooltipData.tool.description as TranslationKey)}</p>
                     {#if tooltipData.tool.requires.length > 0}
-                      <p class="tt-req">Requires: {tooltipData.tool.requires.join(", ")}</p>
+                      <p class="tt-req">{i18n.t("create.requires", { list: tooltipData.tool.requires.join(", ") }) as TranslationKey}</p>
                     {/if}
                     {#if tooltipData.tool.conflicts.length > 0}
-                      <p class="tt-conf">Conflicts with: {tooltipData.tool.conflicts.join(", ")}</p>
+                      <p class="tt-conf">{i18n.t("create.conflicts_with", { list: tooltipData.tool.conflicts.join(", ") }) as TranslationKey}</p>
                     {/if}
                     {#if tooltipData.tool.requires_docker}
-                      <p class="tt-docker"><TechIcon icon="docker.svg" alt="" size="xs" /> Requires Docker</p>
+                      <p class="tt-docker"><TechIcon icon="docker.svg" alt="" size="xs" /> {i18n.t("create.requires_docker") as TranslationKey}</p>
                     {/if}
                   </div>
                 {/if}
 
                 <div class="features-panel">
-                  <p class="group-label">Features</p>
+                  <p class="group-label">{i18n.t("create.features") as TranslationKey}</p>
                   <label class="feature-toggle">
                     <input type="checkbox" bind:checked={testing} />
-                    <span>Testing</span>
+                    <span>{i18n.t("create.feature.testing") as TranslationKey}</span>
                   </label>
                   <label class="feature-toggle">
                     <input type="checkbox" bind:checked={git} />
-                    <span>Git Init</span>
+                    <span>{i18n.t("create.feature.git") as TranslationKey}</span>
                   </label>
                   <label class="feature-toggle">
                     <input type="checkbox" bind:checked={vscode} />
-                    <span>VS Code Config</span>
+                    <span>{i18n.t("create.feature.vscode") as TranslationKey}</span>
                   </label>
                   <label class="feature-toggle">
                     <input type="checkbox" checked={dockerEnabled()} disabled />
-                    <span>Docker {isDockerForced() ? "(required by tools)" : ""}</span>
+                    <span>{i18n.t("create.feature.docker") as TranslationKey}{isDockerForced() ? ` ${i18n.t("create.feature.docker_forced") as TranslationKey}` : ""}</span>
                   </label>
                 </div>
               </div>
@@ -3014,35 +3032,35 @@ function resetAll() {
                 {#if allSelectedLangs().length > 0}
                   <span class="mega-langs">{allSelectedLangs().map((l) => langLabel(l)).join(" · ")}</span>
                 {/if}
-                {selectedFrameworks.length} framework{selectedFrameworks.length === 1 ? "" : "s"} · {selectedTools.length} tool{selectedTools.length === 1 ? "" : "s"}
+                {i18n.t("create.summary_count", { f: selectedFrameworks.length, t: selectedTools.length }) as TranslationKey}
                 {#if stackError}
                   <span class="mega-error">⚠ {stackError}</span>
                 {/if}
               </span>
               <button class="btn-primary" onclick={() => (phase = 2)} disabled={!!stackError}>
-                Review & Create →
+                {i18n.t("create.review_create") as TranslationKey}
               </button>
             </div>
           {/if}
 
           <!-- Phase 2: Review -->
           {#if phase === 2}
-            <p class="prompt">Review & Create</p>
+            <p class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</p>
             {@render archBanner()}
 
             <div class="project-name-section">
-              <label class="pn-label" for="project-name">Project Name</label>
+              <label class="pn-label" for="project-name">{i18n.t("create.project_name") as TranslationKey}</label>
               <input
                 id="project-name"
                 class="pn-input"
                 type="text"
-                placeholder="my-awesome-app"
+                placeholder={i18n.t("create.project_name_ph") as TranslationKey}
                 bind:value={projectName}
                 oninput={onProjectNameInput}
               />
               <div class="folder-row">
                 <button class="btn-select-folder" onclick={pickProjectFolder}>
-                  📁 {selectedFolder ? "Change folder" : "Select destination folder"}
+                  📁 {selectedFolder ? (i18n.t("create.change_folder") as TranslationKey) : (i18n.t("create.select_dest") as TranslationKey)}
                 </button>
                 {#if selectedFolder}
                   <span class="folder-path" title={selectedFolder}>{selectedFolder}</span>
@@ -3050,12 +3068,12 @@ function resetAll() {
               </div>
               {#if selectedFolder && projectName}
                 <div class="path-preview">
-                  <span class="pp-label">Full path:</span>
+                  <span class="pp-label">{i18n.t("create.full_path") as TranslationKey}</span>
                   <code class="pp-path">{effectiveProjectPath()}</code>
                   {#if folderCheckPending}
-                    <span class="pp-checking">checking…</span>
+                    <span class="pp-checking">{i18n.t("create.checking") as TranslationKey}</span>
                   {:else if folderExists}
-                    <span class="pp-exists">⚠️ Folder already exists</span>
+                    <span class="pp-exists">{i18n.t("create.folder_exists") as TranslationKey}</span>
                   {/if}
                 </div>
               {/if}
@@ -3064,20 +3082,19 @@ function resetAll() {
             {#if showConflictDialog}
               <div class="conflict-overlay" onclick={() => { showConflictDialog = false; }}>
                 <div class="conflict-dialog" onclick={(e) => e.stopPropagation()}>
-                  <h3>⚠️ Folder already exists</h3>
+                  <h3>{i18n.t("create.folder_exists") as TranslationKey}</h3>
                   <p>
-                    The folder <strong>{effectiveProjectPath()}</strong> already exists.
-                    Creating a project here may overwrite existing files.
+                    {i18n.t("create.folder_conflict_body") as TranslationKey}
                   </p>
                   <div class="conflict-actions">
                     <button class="btn-primary" onclick={() => resolveFolderConflict('overwrite')}>
-                      Overwrite
+                      {i18n.t("create.overwrite") as TranslationKey}
                     </button>
                     <button class="btn-secondary" onclick={() => resolveFolderConflict('auto-rename')}>
-                      Auto-rename folder to <code>{projectName}-2</code>
+                      {i18n.t("create.auto_rename", { name: projectName }) as TranslationKey}
                     </button>
                     <button class="btn-back" onclick={() => resolveFolderConflict('cancel')}>
-                      Use different name
+                      {i18n.t("create.use_other_name") as TranslationKey}
                     </button>
                   </div>
                 </div>
@@ -3085,26 +3102,26 @@ function resetAll() {
             {/if}
 
             {#if reviewError}
-              <p class="review-error" role="alert">⛔ {reviewError}</p>
+              <p class="review-error" role="alert">⛔ {i18n.t(reviewError as TranslationKey)}</p>
             {/if}
             {#if stackError && (!projectName || !selectedFolder)}
               <p class="review-hint">⚠ {stackError}</p>
             {/if}
 
             <div class="btn-row">
-              <button class="btn-back" onclick={back}>← Back</button>
+              <button class="btn-back" onclick={back}>{i18n.t("create.back") as TranslationKey}</button>
               <button
                 class="btn-primary create-btn"
                 disabled={!projectName || !selectedFolder || stackError !== null}
                 title={stackError ?? undefined}
                 onclick={confirmAll}
               >
-                🚀 Create Project
+                {i18n.t("create.create_project") as TranslationKey}
               </button>
             </div>
             {#if !projectName || !selectedFolder}
               <p class="review-hint">
-                {!projectName ? "Enter a project name" : "Select a destination folder"}
+                {!projectName ? (i18n.t("create.enter_name") as TranslationKey) : (i18n.t("create.select_folder_first") as TranslationKey)}
                 {stackError ? ` · ${stackError}` : ""}
               </p>
             {/if}
@@ -3113,7 +3130,7 @@ function resetAll() {
 
         <!-- ============ Панель контекста (правая колонка) ============ -->
         <aside class="builder-context">
-          <p class="ctx-title">Your stack</p>
+          <p class="ctx-title">{i18n.t("create.your_stack") as TranslationKey}</p>
 
           {#if stackIssues.length > 0}
             <div class="stack-issues">
@@ -3127,57 +3144,60 @@ function resetAll() {
 
           <div class="ctx-group">
             <div class="ctx-row">
-              <span class="ctx-label">Project Type</span>
-              <span class="ctx-value">{selectedType?.label ?? "—"}</span>
-              <button class="btn-change" onclick={() => goPhase(0)}>change</button>
+              <span class="ctx-label">{i18n.t("create.project_type") as TranslationKey}</span>
+              <span class="ctx-value">{selectedType ? (i18n.t(selectedType.label as TranslationKey)) : "—"}</span>
+              <button class="btn-change" onclick={() => goPhase(0)}>{i18n.t("create.change") as TranslationKey}</button>
             </div>
             <div class="ctx-row">
-              <span class="ctx-label">Backend</span>
+              <span class="ctx-label">{i18n.t("create.backend") as TranslationKey}</span>
               <span class="ctx-value">
                 {hasBackend
-                  ? (backendLangs.length > 0 ? backendLangs.join(", ") : "None")
-                  : "N/A (no backend)"}
+                  ? (backendLangs.length > 0 ? backendLangs.map((l) => langLabel(l)).join(", ") : (i18n.t("create.none") as TranslationKey))
+                  : (i18n.t("create.na_no_backend") as TranslationKey)}
               </span>
               {#if hasBackend}
-                <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+                <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>
               {/if}
             </div>
             <div class="ctx-row">
-              <span class="ctx-label">Frontend</span>
-              <span class="ctx-value">{frontendLangs.length > 0 ? frontendLangs.join(", ") : "None"}</span>
-              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              <span class="ctx-label">{i18n.t("create.frontend") as TranslationKey}</span>
+              <span class="ctx-value">{frontendLangs.length > 0 ? frontendLangs.map((l) => langLabel(l)).join(", ") : (i18n.t("create.none") as TranslationKey)}</span>
+              <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>
             </div>
             <div class="ctx-row">
-              <span class="ctx-label">Frameworks</span>
+              <span class="ctx-label">{i18n.t("create.frameworks") as TranslationKey}</span>
               <span class="ctx-value">
                 {selectedFrameworks.length > 0
                   ? selectedFrameworks
-                      .map((id) => tree?.frameworks.find((f) => f.id === id)?.label ?? id)
+                      .map((id) => {
+                        const f = tree?.frameworks.find((x) => x.id === id);
+                        return f ? i18n.t(f.label as TranslationKey) : id;
+                      })
                       .join(", ")
-                  : "None"}
+                  : (i18n.t("create.none") as TranslationKey)}
               </span>
-              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>
             </div>
             <div class="ctx-row">
-              <span class="ctx-label">Tools</span>
+              <span class="ctx-label">{i18n.t("create.tools") as TranslationKey}</span>
               <span class="ctx-value">
                 {selectedTools.length > 0
-                  ? `${selectedTools.length} tool${selectedTools.length > 1 ? "s" : ""}`
-                  : "None"}
+                  ? (i18n.t("create.tools_count", { n: selectedTools.length }) as TranslationKey)
+                  : (i18n.t("create.none") as TranslationKey)}
               </span>
-              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>
             </div>
             <div class="ctx-row">
-              <span class="ctx-label">Features</span>
+              <span class="ctx-label">{i18n.t("create.features") as TranslationKey}</span>
               <span class="ctx-value">
                 {[
-                  git && "Git Init",
-                  testing && "Testing",
-                  vscode && "VS Code",
-                  dockerEnabled() && "Docker",
-                ].filter(Boolean).join(", ") || "None"}
+                  git && i18n.t("create.feature.git"),
+                  testing && i18n.t("create.feature.testing"),
+                  vscode && i18n.t("create.feature.vscode"),
+                  dockerEnabled() && i18n.t("create.feature.docker"),
+                ].filter(Boolean).join(", ") || (i18n.t("create.none") as TranslationKey)}
               </span>
-              <button class="btn-change" onclick={() => goPhase(1)}>change</button>
+              <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>
             </div>
           </div>
 

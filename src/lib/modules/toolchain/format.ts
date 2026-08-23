@@ -31,6 +31,8 @@ import type {
   VersionAssessment,
 } from "./types";
 import { isRecord } from "./types";
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 
 export type InfoTone = "neutral" | "violet" | "cyan" | "blue" | "lime" | "amber" | "red";
 
@@ -43,22 +45,22 @@ export type StateInfo = { label: string; tone: InfoTone; short?: string };
 /** Форматирует мегабайты в человекочитаемый размер (МБ/ГБ). */
 export function formatSizeMb(mb: number | null | undefined): string {
   if (mb == null || Number.isNaN(mb)) return "—";
-  if (mb <= 0) return "0 МБ";
-  if (mb < 1024) return `${Math.round(mb)} МБ`;
+  if (mb <= 0) return `0 ${i18n.t("tc.time.mb")}`;
+  if (mb < 1024) return `${Math.round(mb)} ${i18n.t("tc.time.mb")}`;
   const gb = mb / 1024;
-  return `${gb >= 100 ? Math.round(gb) : gb.toFixed(1)} ГБ`;
+  return `${gb >= 100 ? Math.round(gb) : gb.toFixed(1)} ${i18n.t("tc.time.gb")}`;
 }
 
 /** Форматирует байты (Б/КБ/МБ/ГБ) — для будущих потоков загрузки. */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null || Number.isNaN(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${Math.round(bytes)} Б`;
+  if (bytes < 1024) return `${Math.round(bytes)} ${i18n.t("tc.time.bytes")}`;
   const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} КБ`;
+  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} ${i18n.t("tc.time.kb")}`;
   const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} МБ`;
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} ${i18n.t("tc.time.mb")}`;
   const gb = mb / 1024;
-  return `${gb.toFixed(gb >= 100 ? 0 : 1)} ГБ`;
+  return `${gb.toFixed(gb >= 100 ? 0 : 1)} ${i18n.t("tc.time.gb")}`;
 }
 
 // ------------------------------------------------------------
@@ -75,15 +77,15 @@ export function formatRelativeTime(
   const ms = date.getTime();
   if (Number.isNaN(ms)) return "—";
   const diffSec = Math.max(0, Math.round((now.getTime() - ms) / 1000));
-  if (diffSec < 45) return "только что";
+  if (diffSec < 45) return i18n.t("tc.time.just_now") as TranslationKey;
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} мин назад`;
+  if (diffMin < 60) return i18n.t("tc.time.min_ago", { n: diffMin }) as TranslationKey;
   const diffH = Math.round(diffMin / 60);
-  if (diffH < 24) return `${diffH} ч назад`;
+  if (diffH < 24) return i18n.t("tc.time.hour_ago", { n: diffH }) as TranslationKey;
   const diffD = Math.round(diffH / 24);
-  if (diffD < 30) return `${diffD} дн назад`;
+  if (diffD < 30) return i18n.t("tc.time.day_ago", { n: diffD }) as TranslationKey;
   try {
-    return date.toLocaleDateString("ru-RU");
+    return date.toLocaleDateString(i18n.locale === "ru" ? "ru-RU" : "en-US");
   } catch {
     return date.toISOString().slice(0, 10);
   }
@@ -92,8 +94,8 @@ export function formatRelativeTime(
 /** Возраст снапшота по age_seconds (поле бэкенда). */
 export function formatAgeSeconds(seconds: number | null | undefined): string {
   if (seconds == null || Number.isNaN(seconds)) return "—";
-  if (seconds < 45) return "только что";
-  if (seconds < 60) return `${Math.round(seconds)} с назад`;
+  if (seconds < 45) return i18n.t("tc.time.just_now") as TranslationKey;
+  if (seconds < 60) return i18n.t("tc.time.sec_ago", { n: Math.round(seconds) }) as TranslationKey;
   return formatRelativeTime(new Date(Date.now() - seconds * 1000));
 }
 
@@ -102,18 +104,18 @@ export function formatAgeSeconds(seconds: number | null | undefined): string {
 // ------------------------------------------------------------
 
 const TOOL_STATE_INFO: { [K in ToolState["kind"]]: StateInfo } = {
-  scan_pending: { label: "Проверяется…", tone: "neutral", short: "…" },
-  scan_failed: { label: "Ошибка проверки", tone: "amber", short: "?" },
-  missing: { label: "Не установлен", tone: "neutral", short: "—" },
-  installed_healthy: { label: "Установлен", tone: "lime", short: "✓" },
-  installed_health_unknown: { label: "Здоровье не проверялось", tone: "cyan", short: "?" },
-  installed_unhealthy: { label: "Нездоров", tone: "red", short: "✕" },
-  update_available: { label: "Доступно обновление", tone: "amber", short: "↑" },
-  path_broken: { label: "PATH сломан", tone: "red", short: "!" },
-  manual_install: { label: "Только вручную", tone: "violet", short: "✋" },
-  docker_managed: { label: "В Docker", tone: "blue", short: "🐳" },
-  built_in_system: { label: "Встроен в ОС", tone: "neutral", short: "•" },
-  unsupported_platform: { label: "Не поддерживается", tone: "neutral", short: "×" },
+  scan_pending: { label: i18n.t("tc.state.scanning") as TranslationKey, tone: "neutral", short: "…" },
+  scan_failed: { label: i18n.t("tc.state.scan_error") as TranslationKey, tone: "amber", short: "?" },
+  missing: { label: i18n.t("tc.state.missing") as TranslationKey, tone: "neutral", short: "—" },
+  installed_healthy: { label: i18n.t("tc.state.installed") as TranslationKey, tone: "lime", short: "✓" },
+  installed_health_unknown: { label: i18n.t("tc.state.health_unknown") as TranslationKey, tone: "cyan", short: "?" },
+  installed_unhealthy: { label: i18n.t("tc.state.unhealthy") as TranslationKey, tone: "red", short: "✕" },
+  update_available: { label: i18n.t("tc.state.update") as TranslationKey, tone: "amber", short: "↑" },
+  path_broken: { label: i18n.t("tc.state.path_broken") as TranslationKey, tone: "red", short: "!" },
+  manual_install: { label: i18n.t("tc.state.manual") as TranslationKey, tone: "violet", short: "✋" },
+  docker_managed: { label: i18n.t("tc.state.docker") as TranslationKey, tone: "blue", short: "🐳" },
+  built_in_system: { label: i18n.t("tc.state.builtin") as TranslationKey, tone: "neutral", short: "•" },
+  unsupported_platform: { label: i18n.t("tc.state.unsupported") as TranslationKey, tone: "neutral", short: "×" },
 };
 
 /** Подпись+тон состояния; неизвестный kind → честное «неизвестно». */
@@ -123,13 +125,13 @@ export function toolStateInfo(state: ToolState): StateInfo {
     // Детали варианта — в подсказку/детали, здесь только класс состояния.
     return known;
   }
-  return { label: "Неизвестное состояние", tone: "neutral", short: "?" };
+  return { label: i18n.t("tc.state.unknown") as TranslationKey, tone: "neutral", short: "?" };
 }
 
 /** Вариант по kind (для фильтров/счётчиков, где объекта состояния нет). */
 export function toolStateKindInfo(kind: ToolStateKind): StateInfo {
   const known = (TOOL_STATE_INFO as Record<string, StateInfo | undefined>)[kind];
-  return known ?? { label: "Неизвестное состояние", tone: "neutral" };
+  return known ?? { label: i18n.t("tc.state.unknown") as TranslationKey, tone: "neutral" };
 }
 
 /** Все kind состояний с подписями — для фильтра состояний. */
@@ -298,25 +300,25 @@ export function versionAssessmentInfo(assessment: VersionAssessment): StateInfo 
 export function healthStateInfo(state: HealthState): StateInfo {
   switch (state.kind) {
     case "healthy":
-      return { label: "Здоров", tone: "lime" };
+      return { label: i18n.t("tc.health.healthy") as TranslationKey, tone: "lime" };
     case "degraded":
-      return { label: "Работает с деградацией", tone: "amber" };
+      return { label: i18n.t("tc.health.degraded") as TranslationKey, tone: "amber" };
     case "unhealthy":
-      return { label: "Нездоров", tone: "red" };
+      return { label: i18n.t("tc.health.unhealthy") as TranslationKey, tone: "red" };
     case "checking":
-      return { label: "Проверяется…", tone: "cyan" };
+      return { label: i18n.t("tc.health.checking") as TranslationKey, tone: "cyan" };
     case "not_checked":
-      return { label: "Не проверялся", tone: "neutral" };
+      return { label: i18n.t("tc.health.not_checked") as TranslationKey, tone: "neutral" };
     case "no_checks_defined":
-      return { label: "Проверки не заявлены", tone: "neutral" };
+      return { label: i18n.t("tc.health.no_checks") as TranslationKey, tone: "neutral" };
     case "unavailable":
-      return { label: "Проверки неприменимы", tone: "neutral" };
+      return { label: i18n.t("tc.health.unavailable") as TranslationKey, tone: "neutral" };
     case "unsupported":
-      return { label: "Не поддерживается здесь", tone: "neutral" };
+      return { label: i18n.t("tc.health.unsupported") as TranslationKey, tone: "neutral" };
     case "failed_to_run":
-      return { label: "Не удалось проверить", tone: "amber" };
+      return { label: i18n.t("tc.health.failed") as TranslationKey, tone: "amber" };
     default:
-      return { label: "Неизвестное состояние здоровья", tone: "neutral" };
+      return { label: i18n.t("tc.state.unknown") as TranslationKey, tone: "neutral" };
   }
 }
 
@@ -327,21 +329,21 @@ export function healthStateInfo(state: HealthState): StateInfo {
 export function provenanceInfo(provenance: Provenance): StateInfo {
   switch (provenance.kind) {
     case "stack_pilot_managed":
-      return { label: "Установлен StackPilot", tone: "violet" };
+      return { label: i18n.t("tc.prov.managed") as TranslationKey, tone: "violet" };
     case "package_manager":
-      return { label: "Через менеджер пакетов", tone: "blue" };
+      return { label: i18n.t("tc.prov.pkg") as TranslationKey, tone: "blue" };
     case "external":
-      return { label: "Сторонняя установка", tone: "cyan" };
+      return { label: i18n.t("tc.prov.external") as TranslationKey, tone: "cyan" };
     case "system":
-      return { label: "Предоставлен ОС", tone: "neutral" };
+      return { label: i18n.t("tc.prov.system") as TranslationKey, tone: "neutral" };
     case "bundled_with":
-      return { label: `В комплекте с ${provenance.tool}`, tone: "cyan" };
+      return { label: i18n.t("tc.prov.bundled", { tool: provenance.tool }) as TranslationKey, tone: "cyan" };
     case "docker":
-      return { label: "Работает в Docker", tone: "blue" };
+      return { label: i18n.t("tc.prov.docker") as TranslationKey, tone: "blue" };
     case "unknown":
-      return { label: "Происхождение неизвестно", tone: "neutral" };
+      return { label: i18n.t("tc.prov.unknown") as TranslationKey, tone: "neutral" };
     default:
-      return { label: "Неизвестное происхождение", tone: "neutral" };
+      return { label: i18n.t("tc.prov.unknown") as TranslationKey, tone: "neutral" };
   }
 }
 
@@ -349,7 +351,7 @@ export function provenanceInfo(provenance: Provenance): StateInfo {
 export function provenanceKindInfo(kind: ProvenanceKind, host?: string): StateInfo {
   if (kind === "bundled_with") {
     return {
-      label: host ? `В комплекте с ${host}` : "В комплекте с другим инструментом",
+      label: host ? i18n.t("tc.prov.bundled", { tool: host }) as TranslationKey : i18n.t("tc.prov.bundled", { tool: i18n.t("tc.prov.unknown") }) as TranslationKey,
       tone: "cyan",
     };
   }
@@ -375,14 +377,14 @@ export function allProvenanceKinds(): { kind: ProvenanceKind; info: StateInfo }[
 // ------------------------------------------------------------
 
 const CAPABILITY_LABELS: { [K in keyof ToolPlatformCapabilities]: string } = {
-  detectable: "Обнаруживаемый",
-  installable: "Устанавливаемый",
-  updatable: "Обновляемый",
-  removable: "Удаляемый",
-  repairable: "Восстанавливаемый",
-  health_checkable: "Проверяемый",
-  manual_instructions_available: "Есть инструкция",
-  docker_alternative_available: "Docker-альтернатива",
+  detectable: i18n.t("tc.cap.detectable"),
+  installable: i18n.t("tc.cap.installable"),
+  updatable: i18n.t("tc.cap.updatable"),
+  removable: i18n.t("tc.cap.removable"),
+  repairable: i18n.t("tc.cap.repairable"),
+  health_checkable: i18n.t("tc.cap.health_checkable"),
+  manual_instructions_available: i18n.t("tc.cap.manual_instructions"),
+  docker_alternative_available: i18n.t("tc.cap.docker_alt"),
 };
 
 /** Подписи ВКЛЮЧЁННЫХ возможностей (для карточек/фильтров). */
@@ -416,10 +418,10 @@ export function platformName(os: string): string {
 }
 
 const SOURCE_KIND_LABELS: Record<string, string> = {
-  PkgManager: "менеджер пакетов",
-  Official: "официальный установщик",
-  Script: "скрипт",
-  QtOnline: "online-репозиторий Qt",
+  PkgManager: i18n.t("tc.src.pkg_manager"),
+  Official: i18n.t("tc.src.official"),
+  Script: i18n.t("tc.src.script"),
+  QtOnline: i18n.t("tc.src.qt_online"),
 };
 
 function sourceKindLabel(kind: string): string {
@@ -435,7 +437,7 @@ export function installSourceDescription(source: InstallSource): string {
 /** Описание источника канонического плана (SelectedSource). */
 export function selectedSourceDescription(source: SelectedSource): string {
   const base = source.description || sourceKindLabel(source.kind);
-  const integrity = source.sha256 ? "" : " (без контроля целостности)";
+  const integrity = source.sha256 ? "" : ` (${i18n.t("tc.drawer.no_checksum")})`;
   return `${base}${integrity}`;
 }
 
@@ -460,13 +462,13 @@ export function installSourcesSummary(
 export function operationLabel(operation: OperationKind): string {
   switch (operation) {
     case "install":
-      return "Установка";
+      return i18n.t("tc.op.install");
     case "update":
-      return "Обновление";
+      return i18n.t("tc.op.update");
     case "repair_path":
-      return "Ремонт PATH";
+      return i18n.t("tc.op.repair_path");
     case "health_check":
-      return "Проверка здоровья";
+      return i18n.t("tc.op.health_check");
     default:
       return operation;
   }
@@ -475,50 +477,50 @@ export function operationLabel(operation: OperationKind): string {
 export function jobStatusLabel(status: JobStatus): StateInfo {
   switch (status) {
     case "queued":
-      return { label: "В очереди", tone: "neutral" };
+      return { label: i18n.t("tc.job.queued") as TranslationKey, tone: "neutral" };
     case "running":
-      return { label: "Выполняется", tone: "cyan" };
+      return { label: i18n.t("tc.job.running") as TranslationKey, tone: "cyan" };
     case "succeeded":
-      return { label: "Готово", tone: "lime" };
+      return { label: i18n.t("tc.job.done") as TranslationKey, tone: "lime" };
     case "partial":
-      return { label: "Завершено частично", tone: "amber" };
+      return { label: i18n.t("tc.job.partial") as TranslationKey, tone: "amber" };
     case "failed":
-      return { label: "Ошибка", tone: "red" };
+      return { label: i18n.t("tc.job.failed") as TranslationKey, tone: "red" };
     case "cancelled":
-      return { label: "Отменено", tone: "neutral" };
+      return { label: i18n.t("tc.job.cancelled") as TranslationKey, tone: "neutral" };
     case "interrupted":
-      return { label: "Прервано перезапуском", tone: "amber" };
+      return { label: i18n.t("tc.job.interrupted") as TranslationKey, tone: "amber" };
     default:
-      return { label: "Неизвестный статус", tone: "neutral" };
+      return { label: i18n.t("tc.job.unknown") as TranslationKey, tone: "neutral" };
   }
 }
 
 export function phaseLabel(phase: Phase): string {
   switch (phase) {
     case "validating":
-      return "Валидация…";
+      return i18n.t("tc.phase.validating");
     case "preparing":
-      return "Подготовка…";
+      return i18n.t("tc.phase.preparing");
     case "downloading":
-      return "Скачивание…";
+      return i18n.t("tc.phase.downloading");
     case "verifying":
-      return "Проверка целостности…";
+      return i18n.t("tc.phase.verifying");
     case "installing":
-      return "Установка…";
+      return i18n.t("tc.phase.installing");
     case "configuring":
-      return "Настройка…";
+      return i18n.t("tc.phase.configuring");
     case "updating_path":
-      return "Обновление PATH…";
+      return i18n.t("tc.phase.updating_path");
     case "checking_health":
-      return "Проверка здоровья…";
+      return i18n.t("tc.phase.checking_health");
     case "completed":
-      return "Завершено";
+      return i18n.t("tc.phase.completed");
     case "failed":
-      return "Ошибка";
+      return i18n.t("tc.phase.failed");
     case "cancelled":
-      return "Отменено";
+      return i18n.t("tc.phase.cancelled");
     case "interrupted":
-      return "Прервано";
+      return i18n.t("tc.phase.interrupted");
     default:
       return phase;
   }
@@ -528,34 +530,33 @@ export function phaseLabel(phase: Phase): string {
 export function noopReasonLabel(reason: unknown): string {
   if (typeof reason === "string") {
     return reason === "docker_managed"
-      ? "Управляется Docker (без действий)"
-      : "Без действий (причина неизвестна)";
+      ? i18n.t("tc.noop.docker_managed")
+      : i18n.t("tc.noop.unknown_reason");
   }
   if (!isRecord(reason)) {
-    return "Без действий (причина не указана)";
+    return i18n.t("tc.noop.unknown_reason");
   }
   const keys = Object.keys(reason);
-  if (keys.length !== 1) return "Без действий (причина не указана)";
+  if (keys.length !== 1) return i18n.t("tc.noop.unknown_reason");
   switch (keys[0]) {
     case "already_installed": {
       const version = isRecord(reason.already_installed)
         ? reason.already_installed.version
         : null;
       return typeof version === "string" && version
-        ? `Уже установлен (${version})`
-        : "Уже установлен";
+        ? i18n.t("tc.noop.already_installed_ver", { version })
+        : i18n.t("tc.noop.already_installed");
     }
     case "update_unavailable": {
       const version = isRecord(reason.update_unavailable)
         ? reason.update_unavailable.version
         : null;
       return typeof version === "string" && version
-        ? `Обновление недоступно (${version})`
-        : "Обновление недоступно";
+        ? i18n.t("tc.noop.update_unavailable_ver", { version })
+        : i18n.t("tc.noop.update_unavailable");
     }
     default:
-      // Неизвестная причина НЕ угадывается — честное «неизвестно».
-      return "Без действий (неизвестная причина)";
+      return i18n.t("tc.noop.unknown_reason");
   }
 }
 
@@ -565,36 +566,35 @@ export function noopReasonLabel(reason: unknown): string {
  * «Неизвестное действие», а НЕ краш «in operator … in undefined».
  */
 export function taskActionLabel(task: PlanTask | null | undefined): string {
-  if (!isRecord(task)) return "Неизвестное действие";
+  if (!isRecord(task)) return i18n.t("tc.task.unknown");
   const action: unknown = task.action;
 
   if (typeof action === "string") {
-    if (action === "repair_path") return "Ремонт PATH";
-    if (action === "health_check") return "Проверка здоровья";
-    return "Неизвестное действие";
+    if (action === "repair_path") return i18n.t("tc.task.repair_path");
+    if (action === "health_check") return i18n.t("tc.task.health_check");
+    return i18n.t("tc.task.unknown");
   }
-  if (!isRecord(action)) return "Неизвестное действие";
+  if (!isRecord(action)) return i18n.t("tc.task.unknown");
 
   const keys = Object.keys(action);
-  // Малиформация (0 или >1 ключей) — безопасное «неизвестно».
-  if (keys.length !== 1) return "Неизвестное действие";
+  if (keys.length !== 1) return i18n.t("tc.task.unknown");
 
   switch (keys[0]) {
     case "install_new": {
       const payload = action.install_new;
       const target = isRecord(payload) ? payload.target_version : null;
-      return typeof target === "string" && target ? `Установка (${target})` : "Установка";
+      return typeof target === "string" && target ? i18n.t("tc.task.install_ver", { version: target }) : i18n.t("tc.task.install");
     }
     case "update": {
       const payload = action.update;
       const target = isRecord(payload) ? payload.target_version : null;
-      return typeof target === "string" && target ? `Обновление до ${target}` : "Обновление";
+      return typeof target === "string" && target ? i18n.t("tc.task.update_to", { version: target }) : i18n.t("tc.op.update");
     }
     case "noop":
     case "no_op":
       return noopReasonLabel(action[keys[0]]);
     default:
-      return "Неизвестное действие";
+      return i18n.t("tc.task.unknown");
   }
 }
 
@@ -631,11 +631,11 @@ export function planWarningInfo(
   warning: unknown,
 ): { kind: PlanWarningKind; tone: "amber" | "red"; text: string } {
   if (!isRecord(warning)) {
-    return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+    return { kind: "unknown", tone: "amber", text: i18n.t("tc.warn.unverified_source", { tool: "?", source: "?" }) };
   }
   const keys = Object.keys(warning);
   if (keys.length !== 1) {
-    return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+    return { kind: "unknown", tone: "amber", text: i18n.t("tc.warn.unverified_source", { tool: "?", source: "?" }) };
   }
   const payload = warning[keys[0]];
   const toolId = isRecord(payload) && typeof payload.tool_id === "string" ? payload.tool_id : "?";
@@ -646,23 +646,23 @@ export function planWarningInfo(
       return {
         kind: "unverified_source",
         tone: "amber",
-        text: `${toolId}: источник «${sourceId}» без контрольной суммы — целостность загрузки проверить нельзя.`,
+        text: i18n.t("tc.warn.unverified_source", { tool: toolId, source: sourceId }),
       };
     }
     case "admin_required":
       return {
         kind: "admin_required",
         tone: "amber",
-        text: `${toolId}: установка потребует повышения прав (UAC).`,
+        text: i18n.t("tc.warn.admin_required", { tool: toolId }),
       };
     case "reinstall_on_broken":
       return {
         kind: "reinstall_on_broken",
         tone: "red",
-        text: `${toolId}: инструмент сломан — будет выполнена переустановка.`,
+        text: i18n.t("tc.warn.reinstall_on_broken", { tool: toolId }),
       };
     default:
-      return { kind: "unknown", tone: "amber", text: "Неизвестное предупреждение плана." };
+      return { kind: "unknown", tone: "amber", text: i18n.t("tc.warn.unverified_source", { tool: "?", source: "?" }) };
   }
 }
 
@@ -680,15 +680,15 @@ export type PlanWarningKind =
 export function scanPhaseLabel(phase: string): string {
   switch (phase) {
     case "Queued":
-      return "в очереди";
+      return i18n.t("tc.scan.queued");
     case "Environment":
-      return "окружение";
+      return i18n.t("tc.scan.environment");
     case "Tools":
-      return "проверка инструментов";
+      return i18n.t("tc.scan.tools");
     case "Finalizing":
-      return "завершение";
+      return i18n.t("tc.scan.finalizing");
     case "Done":
-      return "готово";
+      return i18n.t("tc.scan.done");
     default:
       return phase;
   }
@@ -697,17 +697,17 @@ export function scanPhaseLabel(phase: string): string {
 export function scanTerminalLabel(terminal: string): string {
   switch (terminal) {
     case "Running":
-      return "выполняется";
+      return i18n.t("tc.scan.running");
     case "Completed":
-      return "завершён полностью";
+      return i18n.t("tc.scan.completed");
     case "Partial":
-      return "завершён частично";
+      return i18n.t("tc.scan.partial_done");
     case "Cancelled":
-      return "отменён";
+      return i18n.t("tc.scan.cancelled");
     case "Failed":
-      return "ошибка";
+      return i18n.t("tc.scan.failed");
     case "Interrupted":
-      return "прерван перезапуском";
+      return i18n.t("tc.scan.interrupted");
     default:
       return terminal;
   }

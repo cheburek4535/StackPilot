@@ -9,6 +9,8 @@
   import { workspaceContext } from "$lib/modules/workspace/context";
   import { listProcesses } from "$lib/modules/workspace/api";
   import { formatDateTime } from "$lib/modules/workspace/status";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processCount = $state<number | null>(null);
   let dataLoaded = $state(false);
@@ -33,54 +35,54 @@
       const procs = await listProcesses();
       processCount = procs.length;
     } catch (e) {
-      error = `Failed to load process count: ${e}`;
+      error = `${i18n.t("ws.load_failed")}: ${String(e)}`;
     }
   }
 </script>
 
 <PageContainer width="wide">
   <PageHeader
-    title="Project Information"
-    description="Facts about the current workspace project, straight from getCurrentProject()."
+    title={i18n.t("ws.info_title") as TranslationKey}
+    description={i18n.t("ws.info_desc") as TranslationKey}
     icon="info"
   />
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
-    <ErrorState title="Failed to load workspace" message={wsError} />
+    <ErrorState title={i18n.t("ws.load_failed") as TranslationKey} message={wsError} />
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to see its details here."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.info_desc") as TranslationKey}
     />
   {:else if error}
-    <ErrorState title="Failed to load project info" message={error} />
+    <ErrorState title={i18n.t("ws.info_title") as TranslationKey} message={error} />
   {:else}
     <Card variant="elevated" padding="none">
       <div class="sp-info-list">
         <div class="sp-info-row">
-          <span class="sp-info-key">Profile name</span>
+          <span class="sp-info-key">{i18n.t("ws.profile_name") as TranslationKey}</span>
           <span class="sp-info-val">
             {project.profile_name}
-            <Badge tone="violet">current</Badge>
+            <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
           </span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Description</span>
+          <span class="sp-info-key">{i18n.t("ws.description") as TranslationKey}</span>
           <span class="sp-info-val">{project.description || "—"}</span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Project path</span>
+          <span class="sp-info-key">{i18n.t("ws.project_path") as TranslationKey}</span>
           <span class="sp-info-val sp-info-mono">{project.project_path ?? "—"}</span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Opened at</span>
+          <span class="sp-info-key">{i18n.t("ws.opened_at") as TranslationKey}</span>
           <span class="sp-info-val">{formatDateTime(project.opened_at)}</span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Stack</span>
+          <span class="sp-info-key">{i18n.t("ws.stack") as TranslationKey}</span>
           <span class="sp-info-val">
             {#if project.stack.length > 0}
               <span class="sp-tags">
@@ -92,7 +94,7 @@
           </span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Processes</span>
+          <span class="sp-info-key">{i18n.t("ws.processes") as TranslationKey}</span>
           <span class="sp-info-val">{processCount ?? "—"}</span>
         </div>
       </div>

@@ -928,6 +928,7 @@ pub fn compose_state(
         Some(HealthState::Healthy)
         | Some(HealthState::Degraded)
         | Some(HealthState::NoChecksDefined) => ToolState::InstalledHealthy { version },
+        Some(HealthState::Unhealthy) => ToolState::InstalledUnhealthy { version },
         _ => ToolState::InstalledHealthUnknown { version },
     }
 }

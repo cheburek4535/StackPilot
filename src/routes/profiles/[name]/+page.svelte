@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   onMount(() => {
     goto(`/devlauncher/profiles/${encodeURIComponent($page.params.name ?? "")}`, {
@@ -10,7 +12,7 @@
   });
 </script>
 
-<div class="sp-redirect">Redirecting to DevLauncher profile…</div>
+<div class="sp-redirect">{i18n.t("devl.redirect_profile") as TranslationKey}</div>
 
 <style>
   .sp-redirect {

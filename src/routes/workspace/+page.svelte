@@ -27,6 +27,8 @@
   import { recentProjects } from "$lib/core/recent";
   import type { RecentProjectRef } from "$lib/core/recent";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let session = $state<SessionInfo | null>(null);
@@ -102,9 +104,12 @@
     try {
       await openProject(ref.path);
       await reloadWorkspaceContext();
-      notifySuccess("Project opened", ref.name);
+      notifySuccess(i18n.t("ws.toast_project_opened"), ref.name);
     } catch (e) {
-      notifyError("Open project", `Failed to open ${ref.path}: ${e}`);
+      notifyError(
+        i18n.t("ws.toast_project_opened"),
+        i18n.t("ws.toast_open_failed", { path: ref.path, err: String(e) }),
+      );
     }
     openingPath = null;
   }
@@ -114,11 +119,11 @@
     const ms = Date.now() - Date.parse(iso);
     if (!Number.isFinite(ms)) return "";
     const mins = Math.floor(ms / 60000);
-    if (mins < 1) return "just now";
-    if (mins < 60) return `${mins}m ago`;
+    if (mins < 1) return i18n.t("time.just_now");
+    if (mins < 60) return i18n.t("time.mins_ago", { n: mins });
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
+    if (hours < 24) return i18n.t("time.hours_ago", { n: hours });
+    return i18n.t("time.days_ago", { n: Math.floor(hours / 24) });
   }
 
   function reloadAll() {
@@ -132,10 +137,10 @@
 
 <PageContainer width="wide">
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
     <ErrorState
-      title="Failed to load workspace"
+      title={i18n.t("ws.load_failed") as TranslationKey}
       message={wsError}
       retry={reloadAll}
     />
@@ -143,16 +148,16 @@
     <div class="sp-empty-wrap">
       {#snippet emptyAction()}
         <Button variant="primary" icon="layers" href="/devlauncher">
-          Open DevLauncher
+          {i18n.t("ws.open_devlauncher") as TranslationKey}
         </Button>
         <Button variant="secondary" icon="sparkles" href="/create">
-          Project Creator
+          {i18n.t("ws.open_project_creator") as TranslationKey}
         </Button>
       {/snippet}
       <EmptyState
         icon="folder"
-        title="No project is open"
-        description="Open a project to start a workspace. A project becomes the current workspace only when you explicitly open it — local history is shown below, never auto-loaded."
+        title={i18n.t("ws.no_project_open") as TranslationKey}
+        description={i18n.t("ws.no_project_desc") as TranslationKey}
         action={emptyAction}
       />
     </div>
@@ -160,8 +165,8 @@
     {#if $recentProjects.length > 0}
       <div class="sp-recent-section">
         <Card
-          title="Recent projects"
-          description="UI-local history of projects you opened or created — these are references, not the current workspace. Open one to make it current."
+          title={i18n.t("ws.recent_projects") as TranslationKey}
+          description={i18n.t("ws.recent_desc") as TranslationKey}
         >
           <div class="sp-recent-list">
             {#each $recentProjects as ref}
@@ -182,7 +187,7 @@
                   disabled={openingPath !== null}
                   onclick={() => openRecent(ref)}
                 >
-                  Open
+                  {i18n.t("ws.open") as TranslationKey}
                 </Button>
               </div>
             {/each}
@@ -192,8 +197,8 @@
     {/if}
   {:else}
     <PageHeader
-      title="Overview"
-      description="Project context, session and the processes running under this workspace."
+      title={i18n.t("ws.overview_title") as TranslationKey}
+      description={i18n.t("ws.overview_desc") as TranslationKey}
       icon="layers"
     />
 
@@ -202,7 +207,7 @@
         <div class="sp-hero-main">
           <div class="sp-hero-head">
             <h2 class="sp-hero-name">{project.profile_name}</h2>
-            <Badge tone="violet">current</Badge>
+            <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
           </div>
           {#if project.description}
             <p class="sp-hero-desc">{project.description}</p>
@@ -218,7 +223,7 @@
             </div>
           {/if}
           <p class="sp-hero-opened">
-            Opened {formatDateTime(project.opened_at)}
+            {i18n.t("ws.opened", { when: formatDateTime(project.opened_at) }) as TranslationKey}
           </p>
         </div>
         {#if project.project_path}
@@ -227,7 +232,7 @@
             icon="folder"
             onclick={() => goto("/workspace/files")}
           >
-            Browse files
+            {i18n.t("ws.browse_files") as TranslationKey}
           </Button>
         {/if}
       </div>
@@ -240,7 +245,7 @@
         </span>
         <div class="sp-stat-text">
           <span class="sp-stat-value">{runningCount}</span>
-          <span class="sp-stat-label">Running processes</span>
+          <span class="sp-stat-label">{i18n.t("ws.stat_running") as TranslationKey}</span>
         </div>
       </div>
       <div class="sp-stat">
@@ -249,7 +254,7 @@
         </span>
         <div class="sp-stat-text">
           <span class="sp-stat-value">{processes.length}</span>
-          <span class="sp-stat-label">Total processes</span>
+          <span class="sp-stat-label">{i18n.t("ws.stat_total") as TranslationKey}</span>
         </div>
       </div>
       <div class="sp-stat">
@@ -258,7 +263,7 @@
         </span>
         <div class="sp-stat-text">
           <span class="sp-stat-value">{restarts}</span>
-          <span class="sp-stat-label">Restarts</span>
+          <span class="sp-stat-label">{i18n.t("ws.stat_restarts") as TranslationKey}</span>
         </div>
       </div>
       <div class="sp-stat">
@@ -269,26 +274,26 @@
           <span class="sp-stat-value">
             {session ? formatDuration(session.duration_secs) : "—"}
           </span>
-          <span class="sp-stat-label">Session uptime</span>
+          <span class="sp-stat-label">{i18n.t("ws.stat_uptime") as TranslationKey}</span>
         </div>
       </div>
     </div>
 
     <div class="sp-grid">
       <Card
-        title="Running processes"
-        description="Live list from listProcesses(). Manage them from Runtime."
+        title={i18n.t("ws.stat_running") as TranslationKey}
+        description={i18n.t("ws.overview_desc") as TranslationKey}
       >
         {#if runningProcs.length === 0}
           <div class="sp-inline-empty">
-            <p>No processes are running.</p>
+            <p>{i18n.t("ws.no_processes") as TranslationKey}</p>
             <Button
               size="sm"
               variant="secondary"
               icon="terminal"
               onclick={() => goto("/workspace/runtime")}
             >
-              Open Runtime
+              {i18n.t("ws.open_runtime") as TranslationKey}
             </Button>
           </div>
         {:else}
@@ -301,7 +306,7 @@
                 <div class="sp-proc-main">
                   <span class="sp-proc-label">{p.label}</span>
                   <span class="sp-proc-meta">
-                    PID {p.pid} · {formatDuration(p.duration_secs)}
+                    {i18n.t("ws.pid", { pid: p.pid }) as TranslationKey} · {formatDuration(p.duration_secs)}
                   </span>
                 </div>
                 <Badge tone={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
@@ -310,41 +315,40 @@
           </div>
           {#if erroredCount > 0}
             <p class="sp-proc-warn">
-              {erroredCount} process{erroredCount === 1 ? "" : "es"} in an errored
-              state — see Problems.
+              {i18n.t("ws.errored_count", { n: erroredCount }) as TranslationKey}
             </p>
           {/if}
         {/if}
       </Card>
 
       <Card
-        title="Session"
-        description="Backend getSessionInfo() — the current development session."
+        title={i18n.t("ws.session_title") as TranslationKey}
+        description={i18n.t("ws.session_desc") as TranslationKey}
       >
         {#if !session}
           <div class="sp-inline-empty">
-            <p>No session has been started for this project yet.</p>
+            <p>{i18n.t("ws.no_session") as TranslationKey}</p>
           </div>
         {:else}
           <div class="sp-session-grid">
             <div class="sp-session-item">
-              <span class="sp-session-label">Started</span>
+              <span class="sp-session-label">{i18n.t("ws.started") as TranslationKey}</span>
               <span class="sp-session-value">
                 {formatDateTime(session.started_at)}
               </span>
             </div>
             <div class="sp-session-item">
-              <span class="sp-session-label">Duration</span>
+              <span class="sp-session-label">{i18n.t("ws.duration") as TranslationKey}</span>
               <span class="sp-session-value">
                 {formatDuration(session.duration_secs)}
               </span>
             </div>
             <div class="sp-session-item">
-              <span class="sp-session-label">Processes</span>
+              <span class="sp-session-label">{i18n.t("ws.processes") as TranslationKey}</span>
               <span class="sp-session-value">{session.process_count}</span>
             </div>
             <div class="sp-session-item">
-              <span class="sp-session-label">Errors</span>
+              <span class="sp-session-label">{i18n.t("ws.errors") as TranslationKey}</span>
               <span class="sp-session-value" class:sp-session-err={session.error_count > 0}>
                 {session.error_count}
               </span>

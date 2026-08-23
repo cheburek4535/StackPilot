@@ -17,6 +17,8 @@
     statusIcon,
     formatDuration,
   } from "$lib/modules/workspace/status";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let dataLoaded = $state(false);
@@ -71,7 +73,7 @@
     try {
       processes = await listProcesses();
     } catch (e) {
-      error = `Failed to load processes: ${e}`;
+      error = i18n.t("devl.load_processes_failed", { err: String(e) });
     }
   }
 
@@ -93,7 +95,7 @@
     try {
       logs = await getProcessLogs(id);
     } catch (e) {
-      logsError = `Failed to load logs: ${e}`;
+      logsError = i18n.t("devl.load_logs_failed", { err: String(e) });
     }
     logsLoading = false;
   }
@@ -101,33 +103,33 @@
 
 <PageContainer width="wide">
   <PageHeader
-    title="Logs"
-    description="Captured output for the processes under this workspace, from getProcessLogs()."
+    title={i18n.t("ws.logs") as TranslationKey}
+    description={i18n.t("ws.logs_desc") as TranslationKey}
     icon="terminal"
   />
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
-    <ErrorState title="Failed to load workspace" message={wsError} />
+    <ErrorState title={i18n.t("ws.load_failed") as TranslationKey} message={wsError} />
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to browse its process logs."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.no_project_open") as TranslationKey}
     />
   {:else if error}
-    <ErrorState title="Failed to load processes" message={error} />
+    <ErrorState title={i18n.t("devl.load_processes_failed") as TranslationKey} message={error} />
   {:else if processes.length === 0}
     <EmptyState
       icon="terminal"
-      title="No processes"
-      description="Spawn a process or run a profile first — its output will appear here."
+      title={i18n.t("ws.no_processes_panel") as TranslationKey}
+      description={i18n.t("ws.no_processes_desc") as TranslationKey}
     />
   {:else}
     <div class="sp-logs-layout">
       <div class="sp-proc-panel">
-        <h3 class="sp-panel-title">Processes</h3>
+        <h3 class="sp-panel-title">{i18n.t("ws.processes") as TranslationKey}</h3>
         <div class="sp-proc-select">
           {#each processes as p (p.id)}
             <button
@@ -149,9 +151,9 @@
 
       <Card padding="none" variant="elevated">
         {#if !selectedId}
-          <div class="sp-log-hint">Select a process to view its captured output.</div>
+          <div class="sp-log-hint">{i18n.t("ws.select_process") as TranslationKey}</div>
         {:else if logsLoading}
-          <div class="sp-log-hint">Loading logs…</div>
+          <div class="sp-log-hint">{i18n.t("ws.loading_logs") as TranslationKey}</div>
         {:else if logsError}
           <div class="sp-log-hint sp-log-hint-err">{logsError}</div>
         {:else if logs}
@@ -159,7 +161,7 @@
             <div class="sp-log-head-main">
               <strong class="sp-log-name">{selectedProc?.label ?? selectedId}</strong>
               <span class="sp-log-meta">
-                PID {selectedProc?.pid ?? "—"} · {selectedProc
+                {i18n.t("ws.pid", { pid: selectedProc?.pid ?? "—" }) as TranslationKey} · {selectedProc
                   ? formatDuration(selectedProc.duration_secs)
                   : ""}
               </span>
@@ -170,7 +172,7 @@
           </div>
           <div class="sp-log-view">
             {#if logs.stdout_lines.length === 0 && logs.stderr_lines.length === 0}
-              <div class="sp-log-hint">No output captured for this process.</div>
+              <div class="sp-log-hint">{i18n.t("ws.no_output") as TranslationKey}</div>
             {:else}
               {#each logs.stdout_lines as line}
                 <pre class="sp-log-line sp-log-out">{line}</pre>
@@ -181,7 +183,7 @@
             {/if}
           </div>
         {:else}
-          <div class="sp-log-hint">No logs available.</div>
+          <div class="sp-log-hint">{i18n.t("ws.no_logs") as TranslationKey}</div>
         {/if}
       </Card>
     </div>

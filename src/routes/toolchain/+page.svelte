@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // ================================================================
   // Toolchain Control Center — канонический маршрут /toolchain.
   //
@@ -82,9 +84,9 @@
   });
 
   const modeTabs = [
-    { id: "manage_everything", label: "Управлять всем", icon: "layers" as const },
-    { id: "build_environment", label: "Собрать окружение", icon: "sparkles" as const },
-    { id: "tool_marketplace", label: "Витрина инструментов", icon: "store" as const },
+    { id: "manage_everything", label: i18n.t("tc.mode.manage"), icon: "layers" as const },
+    { id: "build_environment", label: i18n.t("tc.mode.build"), icon: "sparkles" as const },
+    { id: "tool_marketplace", label: i18n.t("tc.mode.marketplace"), icon: "store" as const },
   ];
 
   onMount(() => {
@@ -127,7 +129,9 @@
 
   const activeOpLabel = $derived.by(() => {
     if (scanning && toolchain.currentScan) {
-      return `скан ${toolchain.currentScan.completed_tools}/${toolchain.currentScan.total_tools}`;
+      const s = toolchain.currentScan;
+      const currentLabel = s.current_tool ? ` - ${s.current_tool}` : "";
+      return `${i18n.t("tc.scan_prefix") as TranslationKey} ${s.completed_tools}/${s.total_tools}${currentLabel}`;
     }
     const job = toolchain.currentJob;
     if (job && ["queued", "running"].includes(job.status)) {
@@ -137,14 +141,14 @@
   });
 
   const issues = $derived(
-    snapshot ? [...snapshot.errors, ...snapshot.warnings].slice(0, 3) : [],
+    snapshot ? [...(snapshot.errors || []), ...(snapshot.warnings || [])].slice(0, 3) : [],
   );
 </script>
 
 <PageContainer width="wide">
   <PageHeader
     title="Toolchain"
-    description="Центр управления окружением разработки: что установлено, что сломано и чего не хватает"
+    description={i18n.t("tc.page_desc") as TranslationKey}
     icon="wrench"
   >
     {#snippet actions()}
@@ -152,12 +156,12 @@
         {#if snapshot}
           <Badge tone="neutral">{platformName(snapshot.os)} · {snapshot.arch}</Badge>
           {#if freshness === "live"}
-            <Badge tone="cyan" dot>данные актуальны</Badge>
+            <Badge tone="cyan" dot>{i18n.t("tc.data_live") as TranslationKey}</Badge>
           {:else if freshness === "stale"}
-            <Badge tone="amber" dot>устарели · {formatAgeSeconds(snapshot.age_seconds)}</Badge>
+            <Badge tone="amber" dot>{i18n.t("tc.data_stale") as TranslationKey} · {formatAgeSeconds(snapshot.age_seconds)}</Badge>
           {/if}
         {:else}
-          <Badge tone="neutral">нет данных скана</Badge>
+          <Badge tone="neutral">{i18n.t("tc.no_data") as TranslationKey}</Badge>
         {/if}
 
         {#if activeOpLabel}
@@ -165,7 +169,7 @@
             type="button"
             class="active-op"
             onclick={() => toolchain.toggleLogPanel(true)}
-            title="Открыть центр операций"
+            title={i18n.t("tc.open_ops") as TranslationKey}
           >
             <span class="active-op-dot" aria-hidden="true"></span>
             {activeOpLabel}
@@ -179,11 +183,11 @@
           loading={scanning || toolchain.scanReconnecting}
           onclick={() => void toolchain.ensureScanRunning()}
         >
-          {scanning ? "Сканирование…" : toolchain.scanReconnecting ? "Подключение…" : "Сканировать"}
+          {scanning ? (i18n.t("tc.scanning") as TranslationKey) : toolchain.scanReconnecting ? (i18n.t("tc.connecting") as TranslationKey) : (i18n.t("tc.scan_btn") as TranslationKey)}
         </Button>
         <IconButton
           icon="terminal"
-          label={toolchain.logPanelOpen ? "Скрыть операции" : "Показать операции"}
+          label={toolchain.logPanelOpen ? (i18n.t("tc.hide_ops") as TranslationKey) : (i18n.t("tc.show_ops") as TranslationKey)}
           variant={toolchain.logPanelOpen ? "solid" : "ghost"}
           onclick={() => toolchain.toggleLogPanel()}
         />
@@ -208,7 +212,7 @@
   <!-- ===== Проблемы последнего скана (честно, не скрыты) ===== -->
   {#if issues.length > 0}
     <div class="issues" role="alert">
-      {#each issues as issue (issue.code + issue.message)}
+      {#each issues as issue, i (i + "-" + issue.code)}
         <p class={`issue ${issue.code.includes("cancel") ? "" : "issue-warn"}`}>
           <Icon name={issue.code.includes("cancel") ? "info" : "alert"} size={13} />
           <span>{issue.message}</span>
@@ -217,15 +221,22 @@
     </div>
   {/if}
 
+  <!-- ===== Центр операций (сворачиваемый) ===== -->
+  {#if toolchain.logPanelOpen}
+    <div class="job-center">
+      <JobCenter />
+    </div>
+  {/if}
+
   <!-- ===== Переключатель режимов ===== -->
   <div class="modes">
     <Tabs tabs={modeTabs} value={toolchain.mode} onchange={switchMode} />
     <span class="modes-hint" id="mode-hint">
       {toolchain.mode === "build_environment"
-        ? "Выберите стек — бэкенд соберёт план окружения"
+        ? (i18n.t("tc.hint_build") as TranslationKey)
         : toolchain.mode === "tool_marketplace"
-          ? "Каталог standalone Toolchain для этой платформы — работает и без скана"
-          : "Полный каталог инструментов этой машины"}
+          ? (i18n.t("tc.hint_marketplace") as TranslationKey)
+          : (i18n.t("tc.hint_manage") as TranslationKey)}
     </span>
   </div>
 
@@ -248,12 +259,7 @@
     />
   </div>
 
-  <!-- ===== Центр операций (сворачиваемый) ===== -->
-  {#if toolchain.logPanelOpen}
-    <div class="job-center">
-      <JobCenter />
-    </div>
-  {/if}
+
 
   <!-- ===== Drawer деталей инструмента ===== -->
   <ToolDetailDrawer
@@ -382,6 +388,6 @@
   }
 
   .job-center {
-    margin-top: var(--sp-8);
+    margin-bottom: var(--sp-5);
   }
 </style>

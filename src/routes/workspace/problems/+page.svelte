@@ -11,6 +11,8 @@
   import { listProcesses } from "$lib/modules/workspace/api";
   import type { TrackedProcess } from "$lib/modules/workspace/types";
   import { statusLabel, formatStarted } from "$lib/modules/workspace/status";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let dataLoaded = $state(false);
@@ -34,7 +36,7 @@
     try {
       processes = await listProcesses();
     } catch (e) {
-      error = `Failed to load processes: ${e}`;
+      error = i18n.t("devl.load_processes_failed", { err: String(e) });
     }
   }
 
@@ -56,33 +58,33 @@
 
   function problemReason(p: TrackedProcess): string {
     if (p.last_error) return p.last_error;
-    if (p.status === "Crashed") return "Process crashed.";
+    if (p.status === "Crashed") return i18n.t("ws.reason_crashed");
     if (typeof p.status === "object" && "Exited" in p.status) {
-      return `Process exited with code ${p.status.Exited}.`;
+      return i18n.t("ws.reason_exited", { code: p.status.Exited });
     }
-    return "Process reported a problem.";
+    return i18n.t("ws.reason_error");
   }
 </script>
 
 <PageContainer width="wide">
   <PageHeader
-    title="Problems"
-    description="Issues derived from the real process state under this workspace (backend get_problems has no frontend wrapper, so this is computed from listProcesses())."
+    title={i18n.t("ws.problems") as TranslationKey}
+    description={i18n.t("ws.problems_desc") as TranslationKey}
     icon="alert"
   />
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
-    <ErrorState title="Failed to load workspace" message={wsError} />
+    <ErrorState title={i18n.t("ws.load_failed") as TranslationKey} message={wsError} />
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to review its process issues."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.no_project_open") as TranslationKey}
     />
   {:else if error}
-    <ErrorState title="Failed to load processes" message={error} />
+    <ErrorState title={i18n.t("devl.load_processes_failed") as TranslationKey} message={error} />
   {:else if problems.length === 0}
     <Card variant="elevated" padding="lg">
       <div class="sp-clear">
@@ -90,11 +92,9 @@
           <Icon name="check" size={22} />
         </span>
         <div>
-          <h3 class="sp-clear-title">No problems detected</h3>
+          <h3 class="sp-clear-title">{i18n.t("ws.no_problems") as TranslationKey}</h3>
           <p class="sp-clear-desc">
-            None of the {processes.length} tracked process
-            {processes.length === 1 ? "" : "es"} is crashed, failed or reported
-            an error.
+            {i18n.t("ws.no_problems_desc", { n: processes.length }) as TranslationKey}
           </p>
         </div>
       </div>
@@ -112,12 +112,12 @@
               <Badge tone="red">{statusLabel(p.status)}</Badge>
             </div>
             <div class="sp-problem-meta">
-              <span>PID <code>{p.pid}</code></span>
+              <span>{i18n.t("ws.pid", { pid: p.pid }) as TranslationKey}</span>
               <span class="sp-sep">·</span>
-              <span>started {formatStarted(p.started_at)}</span>
+              <span>{i18n.t("devl.started", { when: formatStarted(p.started_at) }) as TranslationKey}</span>
               {#if p.restarts > 0}
                 <span class="sp-sep">·</span>
-                <span>restarts {p.restarts}</span>
+                <span>{i18n.t("devl.restarts", { n: p.restarts }) as TranslationKey}</span>
               {/if}
             </div>
             <div class="sp-problem-error">{problemReason(p)}</div>
@@ -208,14 +208,6 @@
     flex-wrap: wrap;
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-2);
-  }
-
-  .sp-problem-meta code {
-    font-size: var(--sp-fs-xs);
-    background: var(--sp-code-bg);
-    padding: 0.05rem 0.35rem;
-    border-radius: var(--sp-radius-xs);
-    color: var(--sp-text-1);
   }
 
   .sp-sep {

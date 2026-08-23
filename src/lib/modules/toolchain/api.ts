@@ -276,3 +276,7 @@ export function mutationRequest(
     expected_plan_fingerprint: options.expected_plan_fingerprint ?? null,
   };
 }
+
+export function uninstallTool(toolId: string): Promise<void> {
+  return invoke("tcx_uninstall_tool", { toolId });
+}

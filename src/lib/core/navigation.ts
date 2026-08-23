@@ -40,7 +40,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "home",
-        label: "Home",
+        label: "nav.home",
         href: "/",
         icon: "home",
         match: exact(["/"]),
@@ -49,25 +49,25 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     id: "devlauncher",
-    label: "DevLauncher",
+    label: "nav.devlauncher",
     items: [
       {
         id: "devlauncher",
-        label: "Overview",
+        label: "nav.devlauncher.overview",
         href: "/devlauncher",
         icon: "layers",
         match: exact(["/devlauncher"]),
       },
       {
         id: "profiles",
-        label: "Profiles",
+        label: "nav.devlauncher.profiles",
         href: "/devlauncher/profiles",
         icon: "bookmark",
         match: prefix(["/devlauncher/profiles", "/profiles"]),
       },
       {
         id: "processes",
-        label: "Processes",
+        label: "nav.devlauncher.processes",
         href: "/devlauncher/processes",
         icon: "terminal",
         match: prefix(["/devlauncher/processes", "/processes"]),
@@ -80,7 +80,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "analyze",
-        label: "Analyze",
+        label: "nav.analyze",
         href: "/devlauncher/analyze",
         icon: "search",
         match: exact(["/devlauncher/analyze", "/analyze"]),
@@ -93,7 +93,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "project-creator",
-        label: "Project Creator",
+        label: "nav.project_creator",
         href: "/create",
         icon: "sparkles",
         match: exact(["/project-creator", "/create"]),
@@ -106,7 +106,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "toolchain",
-        label: "Toolchain",
+        label: "nav.toolchain",
         href: "/toolchain",
         icon: "wrench",
         match: exact(["/toolchain", "/environment"]),
@@ -119,7 +119,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "workspace",
-        label: "Workspace",
+        label: "nav.workspace",
         href: "/workspace",
         icon: "folder",
         match: prefix(["/workspace"]),
@@ -132,7 +132,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "settings",
-        label: "Settings",
+        label: "nav.settings",
         href: "/settings",
         icon: "settings",
         match: exact(["/settings"]),

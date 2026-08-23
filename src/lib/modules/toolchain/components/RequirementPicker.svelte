@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Селектор требований Build Environment. Источник вариантов —
   // wizard_tree с бэкенда (никаких захардкоженных списков стеков).
   // Выбор — это ВХОД для бэкенд-резолвера, а не авторитет (контракт §1.1).
@@ -34,18 +36,18 @@
 
   // ---- Группы тулов по категориям wizard_tree ----
 
-  const TOOL_GROUP_LABELS: Record<string, string> = {
-    database: "Базы данных",
-    cache: "Кэши и брокеры",
-    messaging: "Сообщения и почта",
-    observability: "Наблюдаемость",
-    container: "Контейнеры",
-    testing: "Тестирование",
-    baas: "Облако и BaaS",
-    orchestration: "Оркестрация",
-    etl: "ETL / пайплайны",
-    infra: "Инфраструктура",
-    tooling: "Сборка и качество кода",
+  const TOOL_GROUP_LABELS: Record<string, TranslationKey> = {
+    database: i18n.t("tc.picker.db") as TranslationKey,
+    cache: i18n.t("tc.picker.cache") as TranslationKey,
+    messaging: i18n.t("tc.picker.messaging") as TranslationKey,
+    observability: i18n.t("tc.picker.observability") as TranslationKey,
+    container: i18n.t("tc.picker.container") as TranslationKey,
+    testing: i18n.t("tc.picker.testing") as TranslationKey,
+    baas: i18n.t("tc.picker.baas") as TranslationKey,
+    orchestration: i18n.t("tc.picker.orchestration") as TranslationKey,
+    etl: i18n.t("tc.picker.etl") as TranslationKey,
+    infra: i18n.t("tc.picker.infra") as TranslationKey,
+    tooling: i18n.t("tc.picker.tooling") as TranslationKey,
   };
 
   const toolGroups = $derived.by(() => {
@@ -60,10 +62,10 @@
 
   // ---- Фреймворки: поиск + группировка по стороне ----
 
-  const SIDE_LABELS: Record<string, string> = {
-    backend: "Backend",
-    frontend: "Frontend",
-    either: "Универсальные",
+  const SIDE_LABELS: Record<string, TranslationKey> = {
+    backend: i18n.t("tc.picker.backend") as TranslationKey,
+    frontend: i18n.t("tc.picker.frontend") as TranslationKey,
+    either: i18n.t("tc.picker.either") as TranslationKey,
   };
 
   const filteredFrameworks = $derived.by(() => {
@@ -139,8 +141,8 @@
   <!-- ===== Типы проектов ===== -->
   <details class="group" open>
     <summary>
-      <span class="group-title">Тип проекта</span>
-      <span class="group-hint">добавляет рекомендованные языки и инструменты</span>
+      <span class="group-title">{i18n.t("tc.picker.project_type") as TranslationKey}</span>
+      <span class="group-hint">{i18n.t("tc.picker.adds_recommended") as TranslationKey}</span>
     </summary>
     <div class="chips">
       {#each tree.project_types as pt (pt.id)}
@@ -150,7 +152,7 @@
           class:active={projectTypeActive(pt.id)}
           onclick={() => toggleProjectType(pt.id)}
           aria-pressed={projectTypeActive(pt.id)}
-          title={pt.description}
+          title={i18n.t(pt.description as TranslationKey)}
         >
           {#if projectTypeActive(pt.id)}<Icon name="check" size={12} />{/if}
           {pt.label}
@@ -162,7 +164,7 @@
   <!-- ===== Языки ===== -->
   <details class="group" open>
     <summary>
-      <span class="group-title">Языки</span>
+      <span class="group-title">{i18n.t("tc.picker.languages") as TranslationKey}</span>
       {#if languages.length > 0}<Badge tone="violet">{languages.length}</Badge>{/if}
     </summary>
     <div class="chips">
@@ -184,16 +186,16 @@
   <!-- ===== Фреймворки ===== -->
   <details class="group">
     <summary>
-      <span class="group-title">Фреймворки</span>
+      <span class="group-title">{i18n.t("tc.picker.frameworks") as TranslationKey}</span>
       {#if frameworks.length > 0}<Badge tone="violet">{frameworks.length}</Badge>{/if}
     </summary>
     <div class="fw-search">
       <Icon name="search" size={14} />
       <input
         type="search"
-        placeholder="Поиск фреймворка…"
+        placeholder={i18n.t("tc.picker.search_fw") as TranslationKey}
         bind:value={frameworkQuery}
-        aria-label="Поиск фреймворка"
+        aria-label={i18n.t("tc.picker.search_fw_aria") as TranslationKey}
       />
     </div>
     {#each frameworksBySide as [side, list] (side)}
@@ -211,7 +213,7 @@
             disabled={!compatible && !frameworks.includes(fw.id)}
             onclick={() => (frameworks = toggle(frameworks, fw.id))}
             aria-pressed={frameworks.includes(fw.id)}
-            title={`${fw.description}${compatible ? "" : " · требует язык: " + fw.languages.join(", ")}`}
+            title={`${i18n.t(fw.description as TranslationKey)}${compatible ? "" : " · " + i18n.t("tc.picker.requires_lang") + " " + fw.languages.join(", ")}`}
           >
             <TechIcon icon={fw.icon} alt="" size="xs" />
             {fw.label}
@@ -219,7 +221,7 @@
         {/each}
       </div>
     {:else}
-      <p class="empty-note">Ничего не найдено по запросу «{frameworkQuery}».</p>
+      <p class="empty-note">{i18n.t("tc.picker.no_results", { query: frameworkQuery }) as TranslationKey}</p>
     {/each}
   </details>
 
@@ -239,18 +241,18 @@
               class:active={tools.includes(t.id)}
               onclick={() => (tools = toggle(tools, t.id))}
               aria-pressed={tools.includes(t.id)}
-              title={t.description}
+              title={i18n.t(t.description as TranslationKey)}
             >
               <TechIcon icon={t.icon} alt="" size="xs" />
               {t.label}
               {#if t.requires_docker}
-                <span class="docker-mark" title="По умолчанию разворачивается в Docker">D</span>
+                <span class="docker-mark" title={i18n.t("tc.picker.docker_default") as TranslationKey}>D</span>
               {/if}
             </button>
             {#if tools.includes(t.id) && isDualTool(t.id)}
               <label
                 class="local-toggle"
-                title="Локальная установка вместо docker-compose проекта"
+                title={i18n.t("tc.picker.local_install") as TranslationKey}
               >
                 <input
                   type="checkbox"
@@ -262,7 +264,7 @@
                       : localInfra.filter((x) => x !== t.id);
                   }}
                 />
-                локально
+                {i18n.t("tc.picker.local") as TranslationKey}
               </label>
             {/if}
           </div>
@@ -274,33 +276,32 @@
   <!-- ===== Утилиты и флаги ===== -->
   <details class="group" open>
     <summary>
-      <span class="group-title">Репозиторий, редактор, Docker</span>
+      <span class="group-title">{i18n.t("tc.picker.tools_flags") as TranslationKey}</span>
     </summary>
     <div class="switches">
       <label class="switch-row">
         <input type="checkbox" bind:checked={git} />
-        <span>Git-репозиторий <span class="hint">(git init)</span></span>
+        <span>{i18n.t("tc.picker.git") as TranslationKey} <span class="hint">(git init)</span></span>
       </label>
       <label class="switch-row">
         <input type="checkbox" bind:checked={vscode} />
-        <span>Конфигурация VS Code <span class="hint">(.vscode)</span></span>
+        <span>{i18n.t("tc.picker.vscode") as TranslationKey} <span class="hint">(.vscode)</span></span>
       </label>
       <label class="switch-row">
         <input type="checkbox" bind:checked={docker} />
-        <span>Docker для окружения проекта</span>
+        <span>{i18n.t("tc.picker.docker") as TranslationKey}</span>
       </label>
     </div>
   </details>
 
   <div class="picker-footer">
     <Button variant="ghost" size="sm" onclick={clearAll} disabled={selectedCount(languages, frameworks, tools) === 0 && !git && !vscode && !docker}>
-      Сбросить выбор
+      {i18n.t("tc.picker.select_none") as TranslationKey}
     </Button>
     <span class="picked-count">
-      выбрано: {selectedCount(languages, frameworks, tools)}
+      {i18n.t("tc.picker.selected") as TranslationKey} {selectedCount(languages, frameworks, tools)}
       {#if git || vscode || docker}
-        +{[git, vscode, docker].filter(Boolean).length} опц.
-      {/if}
+        +{[git, vscode, docker].filter(Boolean).length} {i18n.t("tc.picker.optional") as TranslationKey}{/if}
     </span>
   </div>
 </div>
