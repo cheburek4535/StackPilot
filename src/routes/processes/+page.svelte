@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   onMount(() => {
     const q = $page.url.search;
@@ -9,7 +11,7 @@
   });
 </script>
 
-<div class="sp-redirect">Redirecting to DevLauncher Processes…</div>
+<div class="sp-redirect">{i18n.t("devl.redirecting") as TranslationKey}</div>
 
 <style>
   .sp-redirect {

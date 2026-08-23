@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Кольцо оценки окружения: тон честно отражает качество данных.
   // Нет данных / частичный скан — нейтральный/янтарный, никогда «зелёный успех».
   export type ScoreTone = "lime" | "amber" | "red" | "neutral";
@@ -40,7 +42,7 @@
   class="score-ring"
   style="--ring-size: {size}px; --ring-color: {toneColor};"
   role="img"
-  aria-label={label ?? (score == null ? "Оценка недоступна" : `Оценка окружения ${score} из 100`)}
+  aria-label={label ?? (score == null ? (i18n.t("tc.score.unavailable") as TranslationKey) : (i18n.t("tc.score.label", { score }) as TranslationKey))}
 >
   <svg width={size} height={size} viewBox="0 0 {size} {size}" aria-hidden="true">
     <circle
@@ -67,7 +69,7 @@
   </svg>
   <div class="ring-center">
     <span class="ring-value">{score == null ? "—" : score}</span>
-    <span class="ring-unit">из 100</span>
+    <span class="ring-unit">{i18n.t("tc.score.of_100") as TranslationKey}</span>
   </div>
 </div>
 

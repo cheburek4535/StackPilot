@@ -97,6 +97,10 @@ export type StackSeverity = "Error" | "Warning";
 export type StackIssue = {
   severity: StackSeverity;
   message: string;
+  /** i18n-ключ сообщения (если задан — переводим через i18n.t вместо message) */
+  message_key?: string;
+  /** Параметры подстановки для message_key */
+  args?: Record<string, string>;
 };
 
 export type ToolDef = {

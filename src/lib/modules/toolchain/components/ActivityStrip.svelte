@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Полоса активных операций: идущий скан и активное задание.
   // Прогресс, фаза, отмена. Терминалы — с итогом и повтором где безопасно.
   import Badge from "$lib/components/ui/Badge.svelte";
@@ -60,10 +62,10 @@
         <span class="op-icon spin" aria-hidden="true"><Icon name="refresh" size={14} /></span>
         <div class="op-main">
           <div class="op-title-row">
-            <span class="op-title">Сканирование окружения</span>
+            <span class="op-title">{i18n.t("tc.scanning") as TranslationKey}</span>
             <Badge tone="cyan">{scanPhaseLabel(scan!.phase)}</Badge>
             <span class="op-count">{scan!.completed_tools}/{scan!.total_tools}</span>
-            {#if scan!.cancel_requested}<span class="muted">отмена…</span>{/if}
+            {#if scan!.cancel_requested}<span class="muted">{i18n.t("tc.job.cancelled") as TranslationKey}</span>{/if}
           </div>
           <Progress
             value={scan!.completed_tools}
@@ -71,7 +73,7 @@
             size="sm"
           />
         </div>
-        <IconButton icon="x" label="Отменить сканирование" size="sm" onclick={cancelScan} />
+        <IconButton icon="x" label={i18n.t("tc.scan.cancelled") as TranslationKey} size="sm" onclick={cancelScan} />
       </div>
     {/if}
 
@@ -93,7 +95,7 @@
         </div>
         <IconButton
           icon="x"
-          label="Отменить задание"
+          label={i18n.t("tc.plan.cancel") as TranslationKey}
           size="sm"
           onclick={() => toolchain.cancelCurrentJob()}
         />
@@ -104,17 +106,17 @@
     {/if}
 
     {#if onopenactivity}
-      <Button variant="ghost" size="sm" onclick={onopenactivity}>Все операции</Button>
+      <Button variant="ghost" size="sm" onclick={onopenactivity}>{i18n.t("tc.open_ops") as TranslationKey}</Button>
     {/if}
   </div>
 {:else if scan && scan.terminal !== "Running"}
   <div class="strip strip-terminal" role="status">
     <Badge tone={scan.terminal === "Cancelled" ? "neutral" : scan.terminal === "Completed" ? "lime" : "amber"}>
-      Скан {scanTerminalLabel(scan.terminal)}
+      {i18n.t("tc.scan_prefix") as TranslationKey} {scanTerminalLabel(scan.terminal)}
     </Badge>
-    <span class="muted">{scan.completed_tools}/{scan.total_tools} инструментов</span>
+    <span class="muted">{scan.completed_tools}/{scan.total_tools} {i18n.t("tc.tools_suffix") as TranslationKey}</span>
     <Button variant="ghost" size="sm" icon="refresh" onclick={() => toolchain.ensureScanRunning()}>
-      Повторить скан
+      {i18n.t("tc.retry_scan") as TranslationKey}
     </Button>
   </div>
 {/if}

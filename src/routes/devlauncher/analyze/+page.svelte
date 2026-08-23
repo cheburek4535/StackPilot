@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { analyzeProject, saveProfile } from "$lib/modules/devlauncher/api";
   import { goto } from "$app/navigation";
@@ -354,21 +356,21 @@
 </script>
 
 <main>
-  <h1>📊 Анализ проекта</h1>
-  <p class="subtitle">Выберите папку с проектом — DevLauncher проанализирует структуру и предложит готовый профиль запуска</p>
+  <h1>{i18n.t("analyze.title" as TranslationKey)}</h1>
+  <p class="subtitle">{i18n.t("analyze.subtitle" as TranslationKey)}</p>
 
   <div class="picker-card">
     <div class="picker-row">
-      <button class="primary" onclick={pickFolder}>📁 Выбрать папку</button>
+      <button class="primary" onclick={pickFolder}>{i18n.t("analyze.select_folder" as TranslationKey)}</button>
       {#if projectPath}
         <span class="path-display">{projectPath}</span>
         <button class="secondary" onclick={handleAnalyze} disabled={loading}>
-          {loading ? "Анализирую..." : "🔍 Анализировать"}
+          {loading ? i18n.t("analyze.analyzing" as TranslationKey) : i18n.t("analyze.analyze_btn" as TranslationKey)}
         </button>
       {/if}
     </div>
     {#if !projectPath}
-      <p class="hint">Нажмите «Выбрать папку», затем «Анализировать»</p>
+      <p class="hint">{i18n.t("analyze.folder_hint" as TranslationKey)}</p>
     {/if}
 
     {#if error}
@@ -377,8 +379,8 @@
 
     {#if savedOk}
       <div class="msg success">
-        ✅ Профиль сохранён!
-        <button class="link" onclick={() => goto("/devlauncher/profiles")}>Go to profiles →</button>
+        {i18n.t("analyze.saved" as TranslationKey)}
+        <button class="link" onclick={() => goto("/devlauncher/profiles")}>{i18n.t("analyze.go_to_profiles" as TranslationKey)}</button>
       </div>
     {/if}
   </div>
@@ -391,7 +393,7 @@
           <p class="desc">{profile.description}</p>
         </div>
         <button class="primary save-btn" onclick={handleSave} disabled={saving}>
-          {saving ? "Сохранение..." : "💾 Сохранить профиль"}
+          {saving ? i18n.t("analyze.saving" as TranslationKey) : i18n.t("analyze.save_profile" as TranslationKey)}
         </button>
       </div>
 
@@ -410,10 +412,10 @@
             ondragend={onDragEnd}
           >
             <div class="card-header">
-              <span class="drag-handle" title="Перетащить чтобы изменить порядок">⠿</span>
+              <span class="drag-handle" title={i18n.t("analyze.drag_reorder" as TranslationKey)}>⠿</span>
               <span class="card-icon">{actionIcon(action.action_type)}</span>
               <div class="card-info" onclick={() => toggleExpand(action.id)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && toggleExpand(action.id)}>
-                <span class="card-label">{action.label || "(без названия)"}</span>
+                <span class="card-label">{action.label || i18n.t("analyze.untitled" as TranslationKey)}</span>
                 <span class="card-type">{actionTypeName(action.action_type)}</span>
                 <span class="card-summary">{actionSummary(action.action_type)}</span>
               </div>
@@ -422,15 +424,15 @@
                   class="toggle-btn"
                   class:on={action.enabled}
                   onclick={() => toggleEnabled(i)}
-                  title={action.enabled ? "Выключить" : "Включить"}
+                  title={action.enabled ? i18n.t("analyze.disable" as TranslationKey) : i18n.t("analyze.enable" as TranslationKey)}
                 >
-                  {action.enabled ? "ON" : "OFF"}
+                  {action.enabled ? i18n.t("analyze.on" as TranslationKey) : i18n.t("analyze.off" as TranslationKey)}
                 </button>
-                <button class="icon-btn" onclick={() => removeAction(i)} title="Удалить">✕</button>
+                <button class="icon-btn" onclick={() => removeAction(i)} title={i18n.t("analyze.delete" as TranslationKey)}>✕</button>
                 <button
                   class="icon-btn expand-btn"
                   onclick={() => toggleExpand(action.id)}
-                  title="Редактировать"
+                  title={i18n.t("analyze.expand" as TranslationKey)}
                 >
                   {expanded.has(action.id) ? "▲" : "▼"}
                 </button>
@@ -440,16 +442,16 @@
             {#if expanded.has(action.id)}
               <div class="card-editor">
                 <div class="field">
-                  <label>Название</label>
+                  <label>{i18n.t("analyze.label" as TranslationKey)}</label>
                   <input
                     type="text"
                     value={action.label}
                     oninput={(e) => updateLabel(i, (e.target as HTMLInputElement).value)}
-                    placeholder="Краткое описание действия"
+                    placeholder={i18n.t("analyze.label_placeholder" as TranslationKey)}
                   />
                 </div>
                 <div class="field">
-                  <label>Тип действия</label>
+                  <label>{i18n.t("analyze.action_type" as TranslationKey)}</label>
                   <select
                     value={actionVariant(action.action_type)}
                     onchange={(e) => changeActionType(i, (e.target as HTMLSelectElement).value)}
@@ -501,7 +503,7 @@
 
       <div class="add-wrapper">
         <button class="secondary add-btn" onclick={() => (showAddMenu = !showAddMenu)}>
-          + Добавить действие
+          {i18n.t("analyze.add_action" as TranslationKey)}
         </button>
         {#if showAddMenu}
           <div class="add-menu">
@@ -520,7 +522,7 @@
 
       <div class="footer-save">
         <button class="primary" onclick={handleSave} disabled={saving}>
-          {saving ? "Сохранение..." : "💾 Сохранить профиль"}
+          {saving ? i18n.t("analyze.saving" as TranslationKey) : i18n.t("analyze.save_profile" as TranslationKey)}
         </button>
       </div>
     </section>

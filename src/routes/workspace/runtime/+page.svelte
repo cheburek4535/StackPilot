@@ -26,6 +26,8 @@
     formatStarted,
   } from "$lib/modules/workspace/status";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let dataLoaded = $state(false);
@@ -78,7 +80,7 @@
     try {
       processes = await listProcesses();
     } catch (e) {
-      errorMsg = `Failed to load processes: ${e}`;
+      errorMsg = i18n.t("devl.load_processes_failed", { err: String(e) });
     }
   }
 
@@ -101,17 +103,21 @@
       await refreshProcess(id);
       await loadProcesses();
     } catch (e) {
-      errorMsg = `Refresh failed: ${e}`;
+      errorMsg = i18n.t("devl.refresh_failed", { err: String(e) });
     }
   }
 
   async function handleKill(id: string) {
     try {
       await killProcess(id);
-      notifySuccess("Process killed", `PID ${processes.find((p) => p.id === id)?.pid ?? ""}`);
+      const pid = processes.find((p) => p.id === id)?.pid ?? "";
+      notifySuccess(i18n.t("ws.toast_killed"), i18n.t("ws.pid", { pid }));
       await loadProcesses();
     } catch (e) {
-      notifyError("Kill process", `Failed to kill: ${e}`);
+      notifyError(
+        i18n.t("ws.toast_kill_failed"),
+        i18n.t("ws.toast_kill_failed", { err: String(e) }),
+      );
     }
   }
 
@@ -125,7 +131,7 @@
     try {
       logs = await getProcessLogs(id);
     } catch (e) {
-      logsError = `Failed to load logs: ${e}`;
+      logsError = i18n.t("devl.load_logs_failed", { err: String(e) });
     }
     logsLoading = false;
   }
@@ -139,8 +145,8 @@
 
 <PageContainer width="wide">
   <PageHeader
-    title="Runtime"
-    description="Processes under this workspace — status, logs and control. Data comes from listProcesses()/refreshProcess()/killProcess()/getProcessLogs()."
+    title={i18n.t("ws.runtime_title") as TranslationKey}
+    description={i18n.t("ws.runtime_desc") as TranslationKey}
     icon="play"
   >
     {#snippet actions()}
@@ -151,16 +157,16 @@
         loading={refreshing}
         onclick={refreshAllStatuses}
       >
-        Refresh
+        {i18n.t("devl.refresh") as TranslationKey}
       </Button>
     {/snippet}
   </PageHeader>
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
     <ErrorState
-      title="Failed to load workspace"
+      title={i18n.t("ws.load_failed") as TranslationKey}
       message={wsError}
       retry={() => {
         reloadWorkspaceContext();
@@ -171,8 +177,8 @@
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to see its runtime processes here."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.no_project_open") as TranslationKey}
     />
   {:else}
     {#if errorMsg}
@@ -180,16 +186,16 @@
     {/if}
 
     {#if !dataLoaded}
-      <LoadingState label="Loading processes…" />
+      <LoadingState label={i18n.t("devl.load_processes_failed") as TranslationKey} />
     {:else if processes.length === 0}
       <EmptyState
         icon="terminal"
-        title="No processes"
-        description="Nothing has been spawned for this workspace yet. Use the DevLauncher Process Manager to spawn or run a profile."
+        title={i18n.t("ws.no_processes_runtime") as TranslationKey}
+        description={i18n.t("ws.no_processes_runtime_desc") as TranslationKey}
       >
         {#snippet action()}
           <Button variant="secondary" icon="terminal" href="/devlauncher/processes">
-            Open Process Manager
+            {i18n.t("ws.open_process_manager") as TranslationKey}
           </Button>
         {/snippet}
       </EmptyState>
@@ -209,14 +215,14 @@
                   </Badge>
                 </div>
                 <div class="sp-proc-meta">
-                  <span>PID <code>{p.pid}</code></span>
+                  <span>{i18n.t("ws.pid", { pid: p.pid }) as TranslationKey}</span>
                   <span class="sp-sep">·</span>
                   <span>{formatDuration(p.duration_secs)}</span>
                   <span class="sp-sep">·</span>
-                  <span>started {formatStarted(p.started_at)}</span>
+                  <span>{i18n.t("devl.started", { when: formatStarted(p.started_at) }) as TranslationKey}</span>
                   {#if p.restarts > 0}
                     <span class="sp-sep">·</span>
-                    <span class="sp-restarts">restarts {p.restarts}</span>
+                    <span class="sp-restarts">{i18n.t("devl.restarts", { n: p.restarts }) as TranslationKey}</span>
                   {/if}
                 </div>
                 {#if p.last_error}
@@ -230,13 +236,13 @@
                   icon="terminal"
                   onclick={() => openLogs(p.id)}
                 >
-                  Logs
+                  {i18n.t("devl.logs") as TranslationKey}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
                   icon="refresh"
-                  label="Refresh status"
+                  label={i18n.t("devl.refresh_status") as TranslationKey}
                   onclick={() => handleRefresh(p.id)}
                 />
                 <Button
@@ -246,7 +252,7 @@
                   disabled={p.status !== "Running"}
                   onclick={() => handleKill(p.id)}
                 >
-                  Kill
+                  {i18n.t("devl.kill") as TranslationKey}
                 </Button>
               </div>
             </div>
@@ -260,18 +266,18 @@
 <Modal
   open={logProcId !== null}
   onclose={closeLogs}
-  title="Process logs"
+  title={i18n.t("devl.logs_aria") as TranslationKey}
   description={logProcName}
   size="lg"
 >
   {#if logsLoading}
-    <div class="sp-log-hint">Loading logs…</div>
+    <div class="sp-log-hint">{i18n.t("ws.loading_logs") as TranslationKey}</div>
   {:else if logsError}
     <div class="sp-log-hint sp-log-hint-err">{logsError}</div>
   {:else if logs}
     <div class="sp-log-view">
       {#if logs.stdout_lines.length === 0 && logs.stderr_lines.length === 0}
-        <div class="sp-log-hint">No output captured for this process.</div>
+        <div class="sp-log-hint">{i18n.t("ws.no_output") as TranslationKey}</div>
       {:else}
         {#each logs.stdout_lines as line}
           <pre class="sp-log-line sp-log-out">{line}</pre>
@@ -282,7 +288,7 @@
       {/if}
     </div>
   {:else}
-    <div class="sp-log-hint">No logs available.</div>
+    <div class="sp-log-hint">{i18n.t("ws.no_logs") as TranslationKey}</div>
   {/if}
 </Modal>
 
@@ -368,14 +374,6 @@
     flex-wrap: wrap;
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-2);
-  }
-
-  .sp-proc-meta code {
-    font-size: var(--sp-fs-xs);
-    background: var(--sp-code-bg);
-    padding: 0.05rem 0.35rem;
-    border-radius: var(--sp-radius-xs);
-    color: var(--sp-text-1);
   }
 
   .sp-sep {

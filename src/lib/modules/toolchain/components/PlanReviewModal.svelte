@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Экран проверки плана установки/обновления/ремонта PATH.
   // План строит БЭКЕНД из ограниченного запроса (tcx_build_plan);
   // UI показывает задачи и предупреждения и требует явного одобрения.
@@ -58,11 +60,11 @@
     | { stage: "ready" }
     | { stage: "failed"; message: string };
 
-  const PHASE_LABELS: Record<Exclude<PlanPhase["stage"], "failed">, string> = {
-    validating: "Проверяем запрос…",
-    refreshing: "Обновляем факты об инструментах (точечно)…",
-    preparing: "Готовим план…",
-    ready: "План готов",
+  const PHASE_LABELS: Record<Exclude<PlanPhase["stage"], "failed">, TranslationKey> = {
+    validating: i18n.t("tc.plan.validating") as TranslationKey,
+    refreshing: i18n.t("tc.plan.refreshing") as TranslationKey,
+    preparing: i18n.t("tc.plan.preparing") as TranslationKey,
+    ready: i18n.t("tc.plan.ready") as TranslationKey,
   };
 
   let plan = $state<CanonicalPlan | null>(null);
@@ -85,7 +87,7 @@
 
   /** Подпись текущего этапа загрузки (безопасно для любых состояний). */
   function loadingLabel(stage: PlanPhase["stage"]): string {
-    return (PHASE_LABELS as Record<string, string | undefined>)[stage] ?? "Проверяем запрос…";
+    return (PHASE_LABELS as Record<string, TranslationKey | undefined>)[stage] ?? (i18n.t("tc.plan.validating") as TranslationKey);
   }
 
   /** Отпечаток одобренного превью — уезжает на бэкенд при старте:
@@ -125,14 +127,14 @@
     if (!plan) return null;
     if (actionableTasks.length === 0) {
       return noopTasks.length > 0
-        ? "Все выбранные инструменты уже в порядке — исполнять нечего (причины указаны у задач)."
-        : "В плане нет задач, требующих действий.";
+        ? (i18n.t("tc.modal.no_actions") as TranslationKey)
+        : (i18n.t("tc.modal.no_tasks") as TranslationKey);
     }
     if (!plan.enough_space) {
-      return `Недостаточно места на диске установки: нужно ~${formatSizeMb(plan.total_size_mb)}, свободно ${formatSizeMb(plan.free_space_mb)}.`;
+      return i18n.t("tc.modal.low_disk", { need: formatSizeMb(plan.total_size_mb), free: formatSizeMb(plan.free_space_mb) }) as TranslationKey;
     }
     if (plan.needs_admin_any && plan.capabilities && !plan.capabilities.elevation_supported) {
-      return "План требует прав администратора, но повышение прав на этой ОС недоступно.";
+      return i18n.t("tc.modal.admin_no_support") as TranslationKey;
     }
     if (!gate.allowed) return gate.reason;
     return null;
@@ -169,7 +171,7 @@
     const generation = ++loadGeneration;
     if (request.toolIds.length === 0) {
       plan = null;
-      phase = { stage: "failed", message: "Не выбран ни один инструмент." };
+      phase = { stage: "failed", message: i18n.t("tc.plan.no_tools_selected") as TranslationKey };
       return;
     }
 
@@ -191,7 +193,10 @@
         // случае, поэтому сбой перепроверки не должен блокировать план
         // (страховка на случай будущих изменений runHealthChecks).
         try {
-          await toolchain.runHealthChecks([...request.toolIds]);
+          await Promise.race([
+            toolchain.runHealthChecks([...request.toolIds]),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Таймаут точечной проверки")), 15000))
+          ]);
         } catch {
           /* не фатально: план строится дальше */
         }
@@ -210,7 +215,7 @@
         planPromise,
         new Promise<never>((_, reject) =>
           setTimeout(
-            () => reject(new Error(`Бэкенд не построил план за ${PLAN_FLIGHT_TIMEOUT_MS / 1000} с — повторите`)),
+            () => reject(new Error(i18n.t("tc.plan.timeout_error", { n: PLAN_FLIGHT_TIMEOUT_MS / 1000 }) as TranslationKey)),
             PLAN_FLIGHT_TIMEOUT_MS,
           ),
         ),
@@ -263,7 +268,7 @@
     } else {
       phase = {
         stage: "failed",
-        message: "Не удалось запустить задание — подробности во всплывающем сообщении.",
+        message: i18n.t("tc.plan.start_failed") as TranslationKey,
       };
     }
   }
@@ -274,46 +279,46 @@
   {onclose}
   title={request
     ? request.operation === "install"
-      ? `План установки · ${request.toolIds.length} инстр.`
+      ? (i18n.t("tc.plan.title_install", { n: request.toolIds.length }) as TranslationKey)
       : request.operation === "update"
-        ? `План обновления · ${request.toolIds.length} инстр.`
-        : `План ремонта PATH · ${request.toolIds.length} инстр.`
-    : "План"}
-  description="Ничего не выполняется до вашего подтверждения. План построен бэкендом из свежих данных."
+        ? (i18n.t("tc.plan.title_update", { n: request.toolIds.length }) as TranslationKey)
+        : (i18n.t("tc.plan.title_repair", { n: request.toolIds.length }) as TranslationKey)
+    : (i18n.t("tc.plan.title_default") as TranslationKey)}
+  description={i18n.t("tc.plan.ready") as TranslationKey}
   size="lg"
 >
   {#if loading}
     <LoadingState label={loadingLabel(phase.stage)} />
   {:else if phase.stage === "failed"}
-    <ErrorState title="План не построен" message={phase.message} retry={() => void loadPlan()} />
+    <ErrorState title={i18n.t("tc.plan.not_built") as TranslationKey} message={phase.message} retry={() => void loadPlan()} />
   {:else if plan}
     <div class="plan">
       <!-- Сводка -->
       <div class="summary">
         <span class="sum-item">
-          задач к исполнению: <strong>{actionableTasks.length}</strong>
+          {i18n.t("tc.plan.tasks_to_run") as TranslationKey} <strong>{actionableTasks.length}</strong>
         </span>
         {#if noopTasks.length > 0}
           <span class="sum-item">
-            без действий: <strong>{noopTasks.length}</strong>
+            {i18n.t("tc.plan.no_action") as TranslationKey} <strong>{noopTasks.length}</strong>
           </span>
         {/if}
         <span class="sum-item">
-          объём: <strong>{formatSizeMb(plan.total_size_mb)}</strong>
+          {i18n.t("tc.plan.total_size") as TranslationKey} <strong>{formatSizeMb(plan.total_size_mb)}</strong>
         </span>
         <span class="sum-item">
-          свободно: <strong class={plan.enough_space ? "" : "bad"}>{formatSizeMb(plan.free_space_mb)}</strong>
+          {i18n.t("tc.plan.free_space") as TranslationKey} <strong class={plan.enough_space ? "" : "bad"}>{formatSizeMb(plan.free_space_mb)}</strong>
         </span>
         <Badge tone={plan.enough_space ? "lime" : "red"}>
-          {plan.enough_space ? "места достаточно" : "места недостаточно"}
+          {plan.enough_space ? (i18n.t("tc.plan.space_ok") as TranslationKey) : (i18n.t("tc.plan.space_low") as TranslationKey)}
         </Badge>
         {#if plan.needs_admin_any}
-          <Badge tone="amber">нужны права администратора</Badge>
+          <Badge tone="amber">{i18n.t("tc.plan.admin_needed") as TranslationKey}</Badge>
         {/if}
       </div>
 
       <!-- Задачи -->
-      <ul class="tasks" aria-label="Задачи плана">
+      <ul class="tasks" aria-label={i18n.t("tc.plan.tasks_label") as TranslationKey}>
         {#each plan.tasks as task (task.task_id)}
           {@const isNoop = planTaskIsNoop(task)}
           {@const taskDef = definitionFor(task?.tool_id)}
@@ -321,7 +326,7 @@
           <li class="task" class:noop={isNoop}>
             <TechIcon icon={task?.icon} alt="" size="sm" />
             <div class="task-main">
-              <span class="task-name">{task?.display ?? task?.tool_id ?? "Неизвестная задача"}</span>
+              <span class="task-name">{task?.display ?? task?.tool_id ?? (i18n.t("tc.plan.unknown_task") as TranslationKey)}</span>
               <!-- Причина no-op честна и всегда видна (тотальный форматтер). -->
               <span class="task-action">{taskActionLabel(task)}</span>
               {#if task?.source}
@@ -331,17 +336,17 @@
                    Правда по execution_mode задачи (не «у тула есть docker»):
                    хост-задача, у которой есть docker-альтернатива в каталоге. -->
               {#if !isNoop && task?.execution_mode === "host" && taskDef?.docker}
-                <span class="task-host">локальная установка на этой машине</span>
+                <span class="task-host">{i18n.t("tc.plan.local_install") as TranslationKey}</span>
               {/if}
               {#if Array.isArray(task?.depends_on) && task.depends_on.length > 0}
-                <span class="task-deps">после: {task.depends_on.join(", ")}</span>
+                <span class="task-deps">{i18n.t("tc.plan.after_deps", { deps: task.depends_on.join(", ") }) as TranslationKey}</span>
               {/if}
               <!-- Docker — отдельная рекомендация, не действие задачи. -->
               {#if docker}
                 <span class="task-docker">
                   <Icon name="info" size={12} />
-                  Docker-альтернатива{docker.image ? `: ${docker.image}` : ""}{docker.notes
-                    ? ` — ${docker.notes}`
+                  {i18n.t("tc.plan.docker_alt") as TranslationKey}{docker.image ? `: ${docker.image}` : ""}{docker.notes
+                    ? ` — ${i18n.t(docker.notes as TranslationKey)}`
                     : ""}
                 </span>
               {/if}
@@ -352,7 +357,7 @@
                 <Badge tone="amber">UAC</Badge>
               {/if}
               {#if isNoop}
-                <Badge tone="neutral">без действий</Badge>
+                <Badge tone="neutral">{i18n.t("tc.plan.no_action_badge") as TranslationKey}</Badge>
               {/if}
             </div>
           </li>
@@ -361,7 +366,7 @@
 
       <!-- Предупреждения -->
       {#if Array.isArray(plan.warnings) && plan.warnings.length > 0}
-        <ul class="warnings" aria-label="Предупреждения плана">
+        <ul class="warnings" aria-label={i18n.t("tc.plan.warnings_label") as TranslationKey}>
           {#each warningsList(plan.warnings) as w}
             <li class={`warning warning-${w.tone}`}>
               <Icon name="alert" size={14} />
@@ -372,11 +377,13 @@
       {/if}
 
       <!-- Подтверждения -->
+      
+      
       {#if unverifiedCount > 0}
         <label class="confirm">
           <input type="checkbox" bind:checked={confirmUnverified} />
           <span>
-            Я понимаю, что {unverifiedCount} источник(ов) не имеют контрольных сумм, и подтверждаю установку.
+            {i18n.t("tc.plan.confirm_unverified", { n: unverifiedCount }) as TranslationKey}
           </span>
         </label>
       {/if}
@@ -384,7 +391,7 @@
         <label class="confirm">
           <input type="checkbox" bind:checked={confirmAdmin} />
           <span>
-            Подтверждаю повышение прав администратора ({adminTools} задач(и) через UAC).
+            {i18n.t("tc.plan.confirm_admin", { n: adminTools }) as TranslationKey}
           </span>
         </label>
       {/if}
@@ -396,7 +403,7 @@
   {/if}
 
   {#snippet footer()}
-    <Button variant="ghost" onclick={onclose}>Отмена</Button>
+    <Button variant="ghost" onclick={onclose}>{i18n.t("tc.plan.cancel") as TranslationKey}</Button>
     <Button
       variant="primary"
       icon="play"
@@ -404,7 +411,7 @@
       loading={starting}
       onclick={start}
     >
-      Запустить
+      {i18n.t("tc.plan.start") as TranslationKey}
     </Button>
   {/snippet}
 </Modal>

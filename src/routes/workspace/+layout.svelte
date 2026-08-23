@@ -17,17 +17,19 @@
   import { openInVSCode } from "$lib/modules/workspace/api";
   import { notifyInfo, notifySuccess, notifyError } from "$lib/core/toasts";
   import type { WorkspaceAssistantContext } from "$lib/modules/assistant/types";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let { children }: { children: Snippet } = $props();
 
   const tabs: TabDef[] = [
-    { id: "overview", label: "Overview", icon: "home" },
-    { id: "runtime", label: "Runtime", icon: "play" },
-    { id: "session", label: "Session", icon: "clock" },
-    { id: "logs", label: "Logs", icon: "terminal" },
-    { id: "problems", label: "Problems", icon: "alert" },
-    { id: "info", label: "Info", icon: "info" },
-    { id: "files", label: "Files", icon: "folder" },
+    { id: "overview", label: i18n.t("ws.overview") as TranslationKey, icon: "home" },
+    { id: "runtime", label: i18n.t("ws.runtime") as TranslationKey, icon: "play" },
+    { id: "session", label: i18n.t("ws.session") as TranslationKey, icon: "clock" },
+    { id: "logs", label: i18n.t("ws.logs") as TranslationKey, icon: "terminal" },
+    { id: "problems", label: i18n.t("ws.problems") as TranslationKey, icon: "alert" },
+    { id: "info", label: i18n.t("ws.info") as TranslationKey, icon: "info" },
+    { id: "files", label: i18n.t("ws.files") as TranslationKey, icon: "folder" },
   ];
 
   let assistantOpen = $state(false);
@@ -71,15 +73,21 @@
   async function openInVsCodeSafe(path: string) {
     try {
       await openInVSCode(path);
-      notifySuccess("VS Code", "Opening in VS Code");
+      notifySuccess(
+        i18n.t("ws.toast_vscode"),
+        i18n.t("ws.toast_opening"),
+      );
     } catch (e) {
-      notifyError("VS Code", `Failed to open: ${e}`);
+      notifyError(
+        i18n.t("ws.toast_vscode"),
+        i18n.t("ws.toast_failed", { err: String(e) }),
+      );
     }
   }
 
   async function closeWorkspace() {
     await clearWorkspaceProject();
-    notifyInfo("Workspace", "Project closed");
+    notifyInfo(i18n.t("ws.toast_workspace"), i18n.t("ws.toast_closed"));
   }
 </script>
 
@@ -91,12 +99,12 @@
           <Icon name="layers" size={20} />
         </span>
         <div class="sp-ws-title-text">
-          <h1 class="sp-ws-title-main">Workspace</h1>
+          <h1 class="sp-ws-title-main">{i18n.t("ws.title") as TranslationKey}</h1>
           <p class="sp-ws-title-sub">
             {#if project}
               {project.profile_name}
             {:else}
-              No project open
+              {i18n.t("ws.no_project") as TranslationKey}
             {/if}
           </p>
         </div>
@@ -107,10 +115,10 @@
           variant="secondary"
           size="sm"
           icon="sparkles"
-          label="AI Assistant (extension point)"
+          label={i18n.t("ws.assistant_aria") as TranslationKey}
           onclick={() => (assistantOpen = true)}
         >
-          Assistant
+          {i18n.t("ws.assistant") as TranslationKey}
         </Button>
         {#if project?.project_path}
           <Button
@@ -119,12 +127,12 @@
             icon="external"
             onclick={() => openInVsCodeSafe(project!.project_path!)}
           >
-            Open in VS Code
+            {i18n.t("ws.open_vscode") as TranslationKey}
           </Button>
         {/if}
         {#if project}
           <Button variant="ghost" size="sm" icon="x" onclick={closeWorkspace}>
-            Close workspace
+            {i18n.t("ws.close_workspace") as TranslationKey}
           </Button>
         {/if}
       </div>
@@ -142,12 +150,12 @@
             {/each}
           </span>
         {/if}
-        <Badge tone="violet">current</Badge>
+        <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
       </div>
     {/if}
   </header>
 
-  <nav class="sp-ws-tabs" aria-label="Workspace sections">
+  <nav class="sp-ws-tabs" aria-label={i18n.t("ws.sections_aria") as TranslationKey}>
     <Tabs tabs={tabs} value={activeTab} onchange={onTab} />
   </nav>
 

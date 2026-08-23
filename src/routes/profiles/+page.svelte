@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   onMount(() => {
     goto("/devlauncher/profiles", { replaceState: true });
   });
 </script>
 
-<div class="sp-redirect">Redirecting to DevLauncher Profiles…</div>
+<div class="sp-redirect">{i18n.t("devl.redirect_profiles") as TranslationKey}</div>
 
 <style>
   .sp-redirect {

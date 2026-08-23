@@ -4,14 +4,16 @@
   import { goto } from "$app/navigation";
   import Tabs from "$lib/components/ui/Tabs.svelte";
   import type { TabDef } from "$lib/components/ui/Tabs.svelte";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let { children }: { children: Snippet } = $props();
 
   const tabs: TabDef[] = [
-    { id: "overview", label: "Overview", icon: "home" },
-    { id: "analyze", label: "Analyze", icon: "search" },
-    { id: "profiles", label: "Profiles", icon: "bookmark" },
-    { id: "processes", label: "Processes", icon: "terminal" },
+    { id: "overview", label: i18n.t("devl.overview") as TranslationKey, icon: "home" },
+    { id: "analyze", label: i18n.t("devl.analyze") as TranslationKey, icon: "search" },
+    { id: "profiles", label: i18n.t("devl.profiles") as TranslationKey, icon: "bookmark" },
+    { id: "processes", label: i18n.t("devl.processes") as TranslationKey, icon: "terminal" },
   ];
 
   const pathname = $derived($page.url.pathname);

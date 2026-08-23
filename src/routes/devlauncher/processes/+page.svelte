@@ -18,6 +18,8 @@
     ProcessOutputEvent,
     ProcessStatusEvent,
   } from "$lib/modules/workspace/types";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let loading = $state(true);
@@ -101,7 +103,7 @@
     try {
       processes = await listProcesses();
     } catch (e) {
-      errorMsg = `Failed to load processes: ${e}`;
+      errorMsg = i18n.t("devl.load_processes_failed", { err: String(e) });
     }
     loading = false;
   }
@@ -137,10 +139,10 @@
       command = "";
       argsStr = "";
       label = "";
-      resultMsg = `✓ Spawned successfully`;
+      resultMsg = i18n.t("devl.spawned") as TranslationKey;
       resultType = "ok";
     } catch (e) {
-      resultMsg = `✗ Spawn failed: ${e}`;
+      resultMsg = i18n.t("devl.spawn_failed", { err: String(e) });
       resultType = "err";
     }
     spawning = false;
@@ -154,7 +156,7 @@
       await killProcess(id);
       await loadProcesses();
     } catch (e) {
-      errorMsg = `Kill failed: ${e}`;
+      errorMsg = i18n.t("devl.kill_failed", { err: String(e) });
     }
   }
 
@@ -163,7 +165,7 @@
       await refreshProcess(id);
       await loadProcesses();
     } catch (e) {
-      errorMsg = `Refresh failed: ${e}`;
+      errorMsg = i18n.t("devl.refresh_failed", { err: String(e) });
     }
   }
 
@@ -217,7 +219,7 @@
           term.writeln(`\x1b[31m${line}\x1b[0m`);
         }
       } catch (e) {
-        term.writeln(`\x1b[33mFailed to load logs: ${e}\x1b[0m`);
+        term.writeln(`\x1b[33m${i18n.t("devl.load_logs_failed", { err: String(e) })}\x1b[0m`);
       }
     }
   }
@@ -234,14 +236,14 @@
   }
 
   function statusLabel(status: ProcessStatus): string {
-    if (status === "Running") return "Running";
-    if (status === "Killed") return "Killed";
-    if (status === "Crashed") return "Crashed";
+    if (status === "Running") return i18n.t("devl.status_running");
+    if (status === "Killed") return i18n.t("devl.status_killed");
+    if (status === "Crashed") return i18n.t("devl.status_crashed");
     if (typeof status === "object" && "Exited" in status) {
       const code = (status as { Exited: number }).Exited;
-      return code === 0 ? "Success" : `Failed (${code})`;
+      return code === 0 ? "Success" : i18n.t("devl.status_failed", { code });
     }
-    return "Unknown";
+    return i18n.t("devl.status_unknown");
   }
 
   function statusClass(status: ProcessStatus): string {
@@ -256,35 +258,35 @@
   }
 
   function formatDuration(secs: number): string {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    if (secs < 60) return i18n.t("time.dur_secs", { n: secs });
+    if (secs < 3600) return i18n.t("time.dur_min", { m: Math.floor(secs / 60), s: secs % 60 });
     const h = Math.floor(secs / 3600);
     const m = Math.floor((secs % 3600) / 60);
-    return `${h}h ${m}m`;
+    return i18n.t("time.dur_hour", { h, m });
   }
 
   function formatStarted(timestamp: string): string {
     if (!timestamp) return "—";
     const secs = Math.floor(Date.now() / 1000 - Number(timestamp));
-    if (secs < 60) return `${secs}s ago`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-    return `${Math.floor(secs / 86400)}d ago`;
+    if (secs < 60) return i18n.t("time.secs_ago", { n: secs });
+    if (secs < 3600) return i18n.t("time.mins_ago", { n: Math.floor(secs / 60) });
+    if (secs < 86400) return i18n.t("time.hours_ago", { n: Math.floor(secs / 3600) });
+    return i18n.t("time.days_ago", { n: Math.floor(secs / 86400) });
   }
 
   function copyCommand(proc: TrackedProcess) {
-    navigator.clipboard.writeText(`${proc.label} (PID: ${proc.pid})`);
+    navigator.clipboard.writeText(`${proc.label} (${i18n.t("devl.pid", { pid: proc.pid })})`);
   }
 </script>
 
 <main>
   <div class="page-header">
     <div>
-      <h1>Process Manager</h1>
-      <p class="subtitle">Full control over running processes — spawn, monitor, view logs, terminate</p>
+      <h1>{i18n.t("devl.process_manager") as TranslationKey}</h1>
+      <p class="subtitle">{i18n.t("devl.pm_subtitle") as TranslationKey}</p>
     </div>
-    <button class="refresh-btn" onclick={refreshAllStatuses} title="Refresh all">
-      ⟳ Refresh
+    <button class="refresh-btn" onclick={refreshAllStatuses} title={i18n.t("devl.refresh_all") as TranslationKey}>
+      {i18n.t("devl.refresh") as TranslationKey}
     </button>
   </div>
 
@@ -298,38 +300,38 @@
 
   <!-- Spawn form -->
   <section class="card spawn-card">
-    <h2>▶ Spawn Process</h2>
+    <h2>{i18n.t("devl.spawn_process") as TranslationKey}</h2>
     <div class="spawn-form">
       <div class="field-row">
         <div class="field flex-2">
-          <label for="cmd-input">Command *</label>
-          <input id="cmd-input" type="text" bind:value={command} placeholder="npm run dev" />
+          <label for="cmd-input">{i18n.t("devl.cmd") as TranslationKey}</label>
+          <input id="cmd-input" type="text" bind:value={command} placeholder={i18n.t("devl.cmd_ph") as TranslationKey} />
         </div>
         <div class="field flex-1">
-          <label for="label-input">Label</label>
-          <input id="label-input" type="text" bind:value={label} placeholder="Dev Server" />
+          <label for="label-input">{i18n.t("devl.label") as TranslationKey}</label>
+          <input id="label-input" type="text" bind:value={label} placeholder={i18n.t("devl.label_ph") as TranslationKey} />
         </div>
       </div>
       <div class="field">
-        <label for="args-input">Arguments</label>
-        <input id="args-input" type="text" bind:value={argsStr} placeholder="--port 3000 --mode dev" />
+        <label for="args-input">{i18n.t("devl.args") as TranslationKey}</label>
+        <input id="args-input" type="text" bind:value={argsStr} placeholder={i18n.t("devl.args_ph") as TranslationKey} />
       </div>
       <button class="primary" onclick={handleSpawn} disabled={spawning || !command}>
-        {spawning ? "Spawning..." : "▶ Spawn"}
+        {spawning ? (i18n.t("devl.spawning") as TranslationKey) : (i18n.t("devl.spawn") as TranslationKey)}
       </button>
     </div>
   </section>
 
   <!-- Process list -->
   <section>
-    <h2>Processes ({processes.length})</h2>
+    <h2>{i18n.t("devl.processes_count", { n: processes.length }) as TranslationKey}</h2>
 
     {#if loading}
-      <p class="empty">Loading...</p>
+      <p class="empty">{i18n.t("devl.profiles_loading") as TranslationKey}</p>
     {:else if processes.length === 0}
       <div class="empty-state">
-        <p class="empty">No processes running.</p>
-        <p class="hint">Use the form above to start a process.</p>
+        <p class="empty">{i18n.t("devl.no_processes") as TranslationKey}</p>
+        <p class="hint">{i18n.t("devl.use_form") as TranslationKey}</p>
       </div>
     {:else}
       <div class="process-list">
@@ -347,14 +349,14 @@
                   </span>
                 </div>
                 <div class="proc-meta-row">
-                  <span class="meta-item">PID <code>{proc.pid}</code></span>
+                  <span class="meta-item"><code>{i18n.t("devl.pid", { pid: proc.pid }) as TranslationKey}</code></span>
                   <span class="meta-item sep">·</span>
                   <span class="meta-item">{formatDuration(proc.duration_secs)}</span>
                   <span class="meta-item sep">·</span>
-                  <span class="meta-item">started {formatStarted(proc.started_at)}</span>
+                  <span class="meta-item">{i18n.t("devl.started", { when: formatStarted(proc.started_at) }) as TranslationKey}</span>
                   {#if proc.restarts > 0}
                     <span class="meta-item sep">·</span>
-                    <span class="meta-item restart-count">restarts: {proc.restarts}</span>
+                    <span class="meta-item restart-count">{i18n.t("devl.restarts", { n: proc.restarts }) as TranslationKey}</span>
                   {/if}
                 </div>
                 {#if proc.last_error}
@@ -362,19 +364,19 @@
                 {/if}
               </div>
               <div class="proc-actions">
-                <button class="action-btn logs" onclick={() => openLogs(proc.id)} title="View logs">
-                  📋 Logs
+                <button class="action-btn logs" onclick={() => openLogs(proc.id)} title={i18n.t("devl.view_logs") as TranslationKey}>
+                  {i18n.t("devl.logs") as TranslationKey}
                 </button>
-                <button class="action-btn refresh" onclick={() => handleRefresh(proc.id)} title="Refresh status">
+                <button class="action-btn refresh" onclick={() => handleRefresh(proc.id)} title={i18n.t("devl.refresh_status") as TranslationKey}>
                   ⟳
                 </button>
                 <button
                   class="action-btn kill"
                   onclick={() => handleKill(proc.id)}
                   disabled={proc.status !== "Running"}
-                  title="Kill process"
+                  title={i18n.t("devl.kill_process") as TranslationKey}
                 >
-                  ✕ Kill
+                  {i18n.t("devl.kill") as TranslationKey}
                 </button>
               </div>
             </div>
@@ -390,12 +392,12 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-overlay" onclick={closeLogs} role="presentation">
     <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
-    <div class="modal-content" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Process logs">
+    <div class="modal-content" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={i18n.t("devl.logs_aria") as TranslationKey}>
       <div class="modal-header">
         <div class="modal-title">
           <span class="modal-icon">📋</span>
-          <span>Logs: {logProcessName()}</span>
-          <span class="modal-pid">PID {processes.find(p => p.id === logProcessId)?.pid ?? "—"}</span>
+          <span>{i18n.t("devl.logs") as TranslationKey}: {logProcessName()}</span>
+          <span class="modal-pid">{i18n.t("devl.pid", { pid: processes.find(p => p.id === logProcessId)?.pid ?? "—" }) as TranslationKey}</span>
         </div>
         <div class="modal-actions">
           <button class="modal-close" onclick={closeLogs}>✕</button>
@@ -403,8 +405,8 @@
       </div>
       <div class="terminal-wrapper" bind:this={terminalEl}></div>
       <div class="modal-footer">
-        <span class="footer-hint">Real-time output · stderr shown in red</span>
-        <button class="secondary" onclick={closeLogs}>Close</button>
+        <span class="footer-hint">{i18n.t("devl.realtime") as TranslationKey}</span>
+        <button class="secondary" onclick={closeLogs}>{i18n.t("devl.close") as TranslationKey}</button>
       </div>
     </div>
   </div>

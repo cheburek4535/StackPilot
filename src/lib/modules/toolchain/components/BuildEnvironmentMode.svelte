@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Режим «Собрать окружение»: выбор стека → канонический профиль бэкенда
   // → группы инструментов → проверка плана установки. Установки по клику
   // на выбор НЕ происходит — только явное одобрение плана.
@@ -37,7 +39,7 @@
     try {
       tree = await getWizardTree();
       if (!tree || tree.languages.length === 0) {
-        treeError = "Каталог стеков пуст — варианты выбора недоступны.";
+        treeError = i18n.t("tc.market.catalog_empty_desc") as TranslationKey;
       }
     } catch (err) {
       treeError = String(err);
@@ -111,16 +113,16 @@
   <!-- ===== Левая колонка: селектор ===== -->
   <div class="picker-col">
     <div class="col-head">
-      <h3 class="col-title">Что нужно собрать</h3>
+      <h3 class="col-title">{i18n.t("tc.picker.project_type") as TranslationKey}</h3>
       <p class="col-hint">
-        Выбор пересчитывается в профиль на бэкенде; ничего не устанавливается без одобрения плана.
+        {i18n.t("tc.picker.adds_recommended") as TranslationKey}
       </p>
     </div>
 
     {#if treeLoading}
-      <LoadingState label="Загружаем каталог стеков…" />
+      <LoadingState label={i18n.t("tc.ui.loading_env") as TranslationKey} />
     {:else if treeError}
-      <ErrorState title="Каталог стеков недоступен" message={treeError} retry={() => void loadTree()} />
+      <ErrorState title={i18n.t("tc.market.catalog_empty") as TranslationKey} message={treeError} retry={() => void loadTree()} />
     {:else if tree}
       <RequirementPicker
         {tree}
@@ -138,11 +140,11 @@
   <!-- ===== Правая колонка: результат резолвера ===== -->
   <div class="result-col" aria-live="polite">
     <div class="col-head">
-      <h3 class="col-title">Разрешённый профиль</h3>
+      <h3 class="col-title">{i18n.t("tc.profile.env_profile") as TranslationKey}</h3>
       <p class="col-hint">
-        Группы сформированы бэкендом из каталога и вашей ОС.
+        {i18n.t("tc.profile.select_stack") as TranslationKey}
         <button type="button" class="link-btn" onclick={onopenmanage}>
-          Управлять всеми инструментами <Icon name="chevronRight" size={12} />
+          {i18n.t("tc.hint_manage") as TranslationKey} <Icon name="chevronRight" size={12} />
         </button>
       </p>
     </div>
@@ -150,15 +152,15 @@
     {#if toolchain.profileError && toolchain.profile}
       <p class="profile-warn" role="alert">
         <Icon name="alert" size={14} />
-        Показан предыдущий профиль; обновить не удалось: {toolchain.profileError}
+        {i18n.t("tc.ui.load_error") as TranslationKey} {toolchain.profileError}
       </p>
     {/if}
 
     {#if toolchain.profileLoading}
-      <LoadingState label="Резолвер строит профиль…" />
+      <LoadingState label={i18n.t("tc.plan.preparing") as TranslationKey} />
     {:else if toolchain.profileError && !toolchain.profile}
       <ErrorState
-        title="Не удалось построить профиль"
+        title={i18n.t("tc.plan.not_built") as TranslationKey}
         message={toolchain.profileError}
         retry={() => void toolchain.loadProfile(requirements())}
       />
@@ -177,15 +179,15 @@
     {:else}
       <div class="empty-result">
         <Icon name="sparkles" size={22} />
-        <p>Выберите языки, фреймворки и инфраструктуру слева.</p>
-        <p class="muted">Профиль окружения соберётся автоматически.</p>
+        <p>{i18n.t("tc.profile.select_stack") as TranslationKey}</p>
+        <p class="muted">{i18n.t("tc.profile.recommendations_note") as TranslationKey}</p>
       </div>
     {/if}
 
     {#if toolchain.profile?.required.length}
       <div class="review-bar">
         <Button variant="primary" icon="check" onclick={reviewPlan}>
-          Проверить план установки ({toolchain.profile.required.length})
+          {i18n.t("tc.profile.review_plan") as TranslationKey} ({toolchain.profile.required.length})
         </Button>
       </div>
     {/if}

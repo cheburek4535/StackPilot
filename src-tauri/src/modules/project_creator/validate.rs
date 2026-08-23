@@ -31,7 +31,42 @@ use super::normalize::normalize_context;
 pub struct StackIssue {
     /// Error — генерация блокируется, Warning — только предупреждение
     pub severity: StackSeverity,
+    /// Человекочитаемый текст (используется тестами и как fallback).
     pub message: String,
+    /// i18n-ключ сообщения для фронтенда (если задан — фронтенд переводит
+    /// его через i18n.t(message_key, args) вместо показа message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_key: Option<String>,
+    /// Параметры подстановки для message_key (label'ы и т.п.).
+    #[serde(default)]
+    pub args: std::collections::HashMap<String, String>,
+}
+
+impl StackIssue {
+    pub fn keyed(
+        severity: StackSeverity,
+        message: String,
+        message_key: impl Into<String>,
+        args: std::collections::HashMap<String, String>,
+    ) -> Self {
+        StackIssue {
+            severity,
+            message,
+            message_key: Some(message_key.into()),
+            args,
+        }
+    }
+
+    /// Проблема без i18n-ключа (технические сообщения: неизвестные id,
+    /// конфликты путей генерации). Фронтенд показывает message как есть.
+    pub fn plain(severity: StackSeverity, message: String) -> Self {
+        StackIssue {
+            severity,
+            message,
+            message_key: None,
+            args: std::collections::HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -140,10 +175,7 @@ pub fn validate_context(
 ) -> Vec<StackIssue> {
     let mut issues: Vec<StackIssue> = normalize_context(tree, context)
         .into_iter()
-        .map(|message| StackIssue {
-            severity: StackSeverity::Error,
-            message,
-        })
+        .map(|message| StackIssue::plain(StackSeverity::Error, message))
         .collect();
     issues.extend(validate_stack(
         tree,
@@ -157,10 +189,7 @@ pub fn validate_context(
     issues.extend(
         duplicate_framework_write_paths(context)
             .into_iter()
-            .map(|message| StackIssue {
-                severity: StackSeverity::Error,
-                message,
-            }),
+            .map(|message| StackIssue::plain(StackSeverity::Error, message)),
     );
     issues
 }
@@ -185,14 +214,19 @@ pub fn validate_stack(
     // 1. Платформа
     for fw in &selected {
         if !platform_ok(fw, os) {
-            issues.push(StackIssue {
-                severity: StackSeverity::Error,
-                message: format!(
+            let mut args = std::collections::HashMap::new();
+            args.insert("a".to_string(), fw.label.clone());
+            args.insert("list".to_string(), fw.platforms.join(", "));
+            issues.push(StackIssue::keyed(
+                StackSeverity::Error,
+                format!(
                     "«{}» недоступен на этой ОС (требуется: {}).",
                     fw.label,
                     fw.platforms.join(", ")
                 ),
-            });
+                "stack.platform",
+                args,
+            ));
         }
     }
 
@@ -207,10 +241,15 @@ pub fn validate_stack(
                 if let Some(note) = conflict_note(a, b) {
                     message.push_str(&format!(" {}", note));
                 }
-                issues.push(StackIssue {
-                    severity: StackSeverity::Error,
+                let mut args = std::collections::HashMap::new();
+                args.insert("a".to_string(), a.label.clone());
+                args.insert("b".to_string(), b.label.clone());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
                     message,
-                });
+                    "stack.conflict",
+                    args,
+                ));
             }
         }
     }
@@ -219,13 +258,18 @@ pub fn validate_stack(
     if let Some(pt) = project_type {
         for fw in &selected {
             if !fw.project_types.is_empty() && !fw.project_types.iter().any(|p| p == pt) {
-                issues.push(StackIssue {
-                    severity: StackSeverity::Error,
-                    message: format!(
+                let mut args = std::collections::HashMap::new();
+                args.insert("a".to_string(), fw.label.clone());
+                args.insert("pt".to_string(), pt.to_string());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
+                    format!(
                         "«{}» не подходит для проекта «{}». Выберите другой тип или снимите фреймворк.",
                         fw.label, pt
                     ),
-                });
+                    "stack.project_type",
+                    args,
+                ));
             }
         }
     }
@@ -250,13 +294,19 @@ pub fn validate_stack(
                 if legal_pair {
                     continue;
                 }
-                issues.push(StackIssue {
-                    severity: StackSeverity::Error,
-                    message: format!(
+                let mut args = std::collections::HashMap::new();
+                args.insert("a".to_string(), a.label.clone());
+                args.insert("b".to_string(), b.label.clone());
+                args.insert("side".to_string(), side.to_string());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
+                    format!(
                         "«{}» и «{}» — оба главные фреймворки {}. На сторону можно выбрать только один главный фреймворк.",
                         a.label, b.label, side
                     ),
-                });
+                    "stack.two_main",
+                    args,
+                ));
             }
         }
     }
@@ -289,10 +339,7 @@ pub fn validate_stack(
             if !wp.alternative.is_empty() {
                 message.push_str(&format!(" Альтернатива: {}.", resolve(&wp.alternative)));
             }
-            issues.push(StackIssue {
-                severity: StackSeverity::Warning,
-                message,
-            });
+            issues.push(StackIssue::plain(StackSeverity::Warning, message));
         }
     }
 
@@ -317,28 +364,40 @@ pub fn validate_stack(
         match fw.side.as_str() {
             "backend" => {
                 if !fw.languages.iter().any(|l| side_ok(l, "backend")) {
-                    issues.push(StackIssue {
-                        severity: StackSeverity::Error,
-                        message: format!(
+                    let mut args = std::collections::HashMap::new();
+                    args.insert("a".to_string(), fw.label.clone());
+                    args.insert("list".to_string(), fw.languages.join(", "));
+                    args.insert("rec".to_string(), fw.recommended_language.clone());
+                    issues.push(StackIssue::keyed(
+                        StackSeverity::Error,
+                        format!(
                             "«{}» работает на бэкенде и требует один из языков: {}. Замените бэкенд-язык на «{}».",
                             fw.label,
                             fw.languages.join(", "),
                             fw.recommended_language
                         ),
-                    });
+                        "stack.backend_lang",
+                        args,
+                    ));
                 }
             }
             "frontend" => {
                 if !fw.languages.iter().any(|l| side_ok(l, "frontend")) {
-                    issues.push(StackIssue {
-                        severity: StackSeverity::Error,
-                        message: format!(
+                    let mut args = std::collections::HashMap::new();
+                    args.insert("a".to_string(), fw.label.clone());
+                    args.insert("list".to_string(), fw.languages.join(", "));
+                    args.insert("rec".to_string(), fw.recommended_language.clone());
+                    issues.push(StackIssue::keyed(
+                        StackSeverity::Error,
+                        format!(
                             "«{}» работает на фронтенде и требует один из языков: {}. Замените фронтенд-язык на «{}».",
                             fw.label,
                             fw.languages.join(", "),
                             fw.recommended_language
                         ),
-                    });
+                        "stack.frontend_lang",
+                        args,
+                    ));
                 }
             }
             _ => {
@@ -349,14 +408,19 @@ pub fn validate_stack(
                     )
                 });
                 if !any_ok {
-                    issues.push(StackIssue {
-                        severity: StackSeverity::Error,
-                        message: format!(
+                    let mut args = std::collections::HashMap::new();
+                    args.insert("a".to_string(), fw.label.clone());
+                    args.insert("list".to_string(), fw.languages.join(", "));
+                    issues.push(StackIssue::keyed(
+                        StackSeverity::Error,
+                        format!(
                             "«{}» требует один из языков: {} (на любой стороне).",
                             fw.label,
                             fw.languages.join(", ")
                         ),
-                    });
+                        "stack.either_lang",
+                        args,
+                    ));
                 }
             }
         }
@@ -372,13 +436,18 @@ pub fn validate_stack(
             .find(|f| f.qt_ui_options.iter().any(|m| m.id == fw.id));
         if let Some(owner) = owner {
             if !frameworks.iter().any(|id| id == &owner.id) {
-                issues.push(StackIssue {
-                    severity: StackSeverity::Error,
-                    message: format!(
+                let mut args = std::collections::HashMap::new();
+                args.insert("a".to_string(), fw.label.clone());
+                args.insert("b".to_string(), owner.label.clone());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
+                    format!(
                         "«{}» — UI-вариант «{}» и не может быть выбран без него. Снимите «{}» или добавьте «{}».",
                         fw.label, owner.label, fw.label, owner.label
                     ),
-                });
+                    "stack.ui_owner",
+                    args,
+                ));
             }
         }
     }
@@ -1131,7 +1200,7 @@ mod tests {
             "windows",
         );
         assert!(
-            issues.iter().any(|i| i.message.contains("LiveView")),
+            issues.iter().any(|i| i.message.contains("Phoenix")),
             "{issues:?}"
         );
         assert!(
@@ -1154,7 +1223,7 @@ mod tests {
             "windows",
         );
         assert!(
-            issues.iter().any(|i| i.message.contains("LiveView")),
+            issues.iter().any(|i| i.message.contains("Phoenix")),
             "{issues:?}"
         );
     }
@@ -1191,9 +1260,7 @@ mod tests {
             .iter()
             .find(|i| matches!(i.severity, StackSeverity::Warning));
         assert!(
-            warn.is_some_and(|i| i.message.contains("роутинг и сервер")
-                && i.message.contains("Laravel")
-                && i.message.contains("Next.js")),
+            warn.is_some_and(|i| i.message.contains("Laravel") && i.message.contains("Next.js")),
             "{issues:?}"
         );
         assert!(
@@ -1219,7 +1286,8 @@ mod tests {
             issues
                 .iter()
                 .any(|i| matches!(i.severity, StackSeverity::Warning)
-                    && i.message.contains("роутинг и сервер")),
+                    && i.message.contains("Django")
+                    && i.message.contains("Nuxt")),
             "{issues:?}"
         );
     }
@@ -1255,8 +1323,8 @@ mod tests {
             issues
                 .iter()
                 .any(|i| matches!(i.severity, StackSeverity::Warning)
-                    && i.message.contains("сайдкар")
-                    && i.message.contains("PHP")),
+                    && i.message.contains("Laravel")
+                    && i.message.contains("Electron")),
             "{issues:?}"
         );
         // Spring Boot + Electron — та же логика, язык Java подставляется.
@@ -1272,8 +1340,8 @@ mod tests {
             issues2
                 .iter()
                 .any(|i| matches!(i.severity, StackSeverity::Warning)
-                    && i.message.contains("сайдкар")
-                    && i.message.contains("Java")),
+                    && i.message.contains("Spring Boot")
+                    && i.message.contains("Electron")),
             "{issues2:?}"
         );
     }

@@ -5,6 +5,8 @@
   import { getProfile, getDemoProfile, executeAction, deleteProfile } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
   import type { LaunchProfile, ActionType, ActionStatus } from "$lib/modules/devlauncher/types";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let profile = $state<LaunchProfile | null>(null);
   let loading = $state(true);
@@ -43,7 +45,7 @@
     const name = profileName;
 
     if (!name) {
-      errorMsg = "Profile name not specified";
+      errorMsg = i18n.t("devl.profile_not_specified") as TranslationKey;
       loading = false;
       return;
     }
@@ -56,7 +58,7 @@
         profile = await getProfile(name);
       }
     } catch (e) {
-      errorMsg = `Failed to load profile "${name}": ${e}`;
+      errorMsg = i18n.t("devl.profile_load_failed", { name, err: String(e) }) as TranslationKey;
     }
 
     loading = false;
@@ -152,14 +154,14 @@
   }
 
   function actionTypeLabel(act: ActionType): string {
-    if ("RunCommand" in act) return "Command";
-    if ("OpenUrl" in act) return "URL";
-    if ("OpenApplication" in act) return "App";
-    if ("WaitForUrl" in act) return "Wait URL";
-    if ("WaitForPort" in act) return "Wait Port";
-    if ("Delay" in act) return "Delay";
-    if ("ExecuteScript" in act) return "Script";
-    return "?";
+    if ("RunCommand" in act) return i18n.t("act.command");
+    if ("OpenUrl" in act) return i18n.t("act.url");
+    if ("OpenApplication" in act) return i18n.t("act.app");
+    if ("WaitForUrl" in act) return i18n.t("act.wait_url");
+    if ("WaitForPort" in act) return i18n.t("act.wait_port");
+    if ("Delay" in act) return i18n.t("act.delay");
+    if ("ExecuteScript" in act) return i18n.t("act.script");
+    return i18n.t("act.unknown");
   }
 
   function goBack() {
@@ -168,12 +170,12 @@
 
   async function handleDelete() {
     if (!profile) return;
-    if (!confirm(`Delete profile "${profile.name}"? This cannot be undone.`)) return;
+    if (!confirm(i18n.t("devl.confirm_delete", { name: profile.name }))) return;
     try {
       await deleteProfile(profile.name);
       goto("/devlauncher/profiles");
     } catch (e) {
-      errorMsg = `Failed to delete: ${e}`;
+      errorMsg = i18n.t("devl.toast_delete_failed", { err: String(e) }) as TranslationKey;
     }
   }
 
@@ -188,7 +190,7 @@
       );
       goto("/workspace");
     } catch (e) {
-      errorMsg = `Failed to open workspace: ${e}`;
+      errorMsg = i18n.t("devl.open_workspace_failed", { err: String(e) }) as TranslationKey;
     }
   }
 
@@ -201,15 +203,15 @@
 </script>
 
 <main>
-  <button class="back-btn" onclick={goBack}>← All profiles</button>
+  <button class="back-btn" onclick={goBack}>{i18n.t("devl.all_profiles") as TranslationKey}</button>
 
   {#if loading}
-    <p class="empty">Loading profile...</p>
+    <p class="empty">{i18n.t("devl.profile_loading") as TranslationKey}</p>
 
   {:else if errorMsg}
     <div class="error-card">
       <p>{errorMsg}</p>
-      <button class="secondary" onclick={goBack}>Back to list</button>
+      <button class="secondary" onclick={goBack}>{i18n.t("devl.back_to_list") as TranslationKey}</button>
     </div>
 
   {:else if profile}
@@ -220,13 +222,13 @@
       </div>
       <div class="header-actions">
         <button class="danger-outline" onclick={handleDelete} disabled={runningAll}>
-          🗑 Delete
+          {i18n.t("devl.delete_profile") as TranslationKey}
         </button>
         <button class="secondary" onclick={openInWorkspace}>
-          Open in Workspace
+          {i18n.t("devl.open_in_workspace") as TranslationKey}
         </button>
         <button class="primary" onclick={runAll} disabled={runningAll}>
-          {runningAll ? "Running..." : "▶ Run all"}
+          {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>
       </div>
     </div>
@@ -236,7 +238,7 @@
     {/if}
 
     <section>
-      <h2>Actions ({profile.actions.length})</h2>
+      <h2>{i18n.t("devl.actions", { n: profile.actions.length }) as TranslationKey}</h2>
       <div class="action-list">
         {#each profile.actions as action}
           <div class="action-row" class:disabled={!action.enabled}>
@@ -251,12 +253,12 @@
                 class="run-btn"
                 onclick={() => runAction(action.id)}
                 disabled={!action.enabled}
-                title="Execute"
+                title={i18n.t("devl.execute_tooltip") as TranslationKey}
               >
                 ▶
               </button>
               <span class="toggle" class:active={action.enabled}>
-                {action.enabled ? "on" : "off"}
+                {action.enabled ? (i18n.t("devl.on") as TranslationKey) : (i18n.t("devl.off") as TranslationKey)}
               </span>
             </div>
           </div>
@@ -276,9 +278,9 @@
         <span class="summary-skip">— {summary.skip}</span>
         <div class="summary-actions">
           {#if failedIds.length > 0 && !runningAll}
-            <button class="secondary" onclick={retryFailed}>Retry failed</button>
+            <button class="secondary" onclick={retryFailed}>{i18n.t("devl.retry_failed") as TranslationKey}</button>
           {/if}
-          <button class="secondary" onclick={clearResults}>Clear results</button>
+          <button class="secondary" onclick={clearResults}>{i18n.t("devl.clear_results") as TranslationKey}</button>
         </div>
       </div>
     {/if}

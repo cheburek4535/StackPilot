@@ -1,0 +1,481 @@
+src/routes/devlauncher/analyze/+page.svelte:      title: "Выберите папку проекта",
+src/routes/devlauncher/analyze/+page.svelte:      error = `Ошибка анализа: ${e}`;
+src/routes/devlauncher/analyze/+page.svelte:      error = `Ошибка сохранения: ${e}`;
+src/routes/devlauncher/analyze/+page.svelte:      label: "Новое действие",
+src/routes/devlauncher/analyze/+page.svelte:    if ("RunCommand" in act) return "Команда";
+src/routes/devlauncher/analyze/+page.svelte:    if ("OpenApplication" in act) return "Приложение";
+src/routes/devlauncher/analyze/+page.svelte:    if ("WaitForUrl" in act) return "Ожидание URL";
+src/routes/devlauncher/analyze/+page.svelte:    if ("WaitForPort" in act) return "Ожидание порта";
+src/routes/devlauncher/analyze/+page.svelte:    if ("Delay" in act) return "Пауза";
+src/routes/devlauncher/analyze/+page.svelte:    if ("ExecuteScript" in act) return "Скрипт";
+src/routes/devlauncher/analyze/+page.svelte:    if ("RunCommand" in act) return act.RunCommand.command || "(пусто)";
+src/routes/devlauncher/analyze/+page.svelte:    if ("OpenUrl" in act) return act.OpenUrl.url || "(пусто)";
+src/routes/devlauncher/analyze/+page.svelte:    if ("OpenApplication" in act) return act.OpenApplication.path || "(пусто)";
+src/routes/devlauncher/analyze/+page.svelte:    if ("WaitForUrl" in act) return act.WaitForUrl.url || "(пусто)";
+src/routes/devlauncher/analyze/+page.svelte:    if ("Delay" in act) return `${act.Delay.seconds}с`;
+src/routes/devlauncher/analyze/+page.svelte:    if ("ExecuteScript" in act) return act.ExecuteScript.script || "(пусто)";
+src/routes/devlauncher/analyze/+page.svelte:    { key: "RunCommand", icon: "▶", label: "Команда", desc: "Запустить команду в терминале" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "OpenUrl", icon: "🌐", label: "URL", desc: "Открыть веб-страницу" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "OpenApplication", icon: "⬛", label: "Приложение", desc: "Запустить приложение" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "WaitForUrl", icon: "⏳", label: "Ожидание URL", desc: "Ждать пока URL ответит" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "WaitForPort", icon: "🔌", label: "Ожидание порта", desc: "Ждать TCP порт" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "Delay", icon: "⏱", label: "Пауза", desc: "Подождать N секунд" },
+src/routes/devlauncher/analyze/+page.svelte:    { key: "ExecuteScript", icon: "📜", label: "Скрипт", desc: "Выполнить скрипт" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Команда", path: ["action_type", "RunCommand", "command"], type: "text", value: v.command ?? "", placeholder: "npm run dev" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Рабочая папка", path: ["action_type", "RunCommand", "working_dir"], type: "text", value: v.working_dir ?? "", placeholder: "оставить пустым для корня проекта" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Путь к приложению", path: ["action_type", "OpenApplication", "path"], type: "text", value: v.path ?? "", placeholder: "code" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Аргументы", path: ["action_type", "OpenApplication", "args"], type: "text", value: v.args ?? "", placeholder: "." },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Таймаут (сек)", path: ["action_type", "WaitForUrl", "timeout_secs"], type: "number", value: v.timeout_secs, placeholder: "30" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Хост", path: ["action_type", "WaitForPort", "host"], type: "text", value: v.host ?? "", placeholder: "localhost" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Порт", path: ["action_type", "WaitForPort", "port"], type: "number", value: v.port, placeholder: "3000" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Таймаут (сек)", path: ["action_type", "WaitForPort", "timeout_secs"], type: "number", value: v.timeout_secs, placeholder: "30" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Секунд", path: ["action_type", "Delay", "seconds"], type: "number", value: v.seconds, placeholder: "5" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Скрипт", path: ["action_type", "ExecuteScript", "script"], type: "textarea", value: v.script ?? "", placeholder: "echo Hello" },
+src/routes/devlauncher/analyze/+page.svelte:          { label: "Оболочка", path: ["action_type", "ExecuteScript", "shell"], type: "text", value: v.shell ?? "cmd", placeholder: "cmd" },
+src/routes/devlauncher/analyze/+page.svelte:  <h1>📊 Анализ проекта</h1>
+src/routes/devlauncher/analyze/+page.svelte:  <p class="subtitle">Выберите папку с проектом — DevLauncher проанализирует структуру и предложит готовый профиль запуска</p>
+src/routes/devlauncher/analyze/+page.svelte:      <button class="primary" onclick={pickFolder}>📁 Выбрать папку</button>
+src/routes/devlauncher/analyze/+page.svelte:          {loading ? "Анализирую..." : "🔍 Анализировать"}
+src/routes/devlauncher/analyze/+page.svelte:      <p class="hint">Нажмите «Выбрать папку», затем «Анализировать»</p>
+src/routes/devlauncher/analyze/+page.svelte:        ✅ Профиль сохранён!
+src/routes/devlauncher/analyze/+page.svelte:          {saving ? "Сохранение..." : "💾 Сохранить профиль"}
+src/routes/devlauncher/analyze/+page.svelte:              <span class="drag-handle" title="Перетащить чтобы изменить порядок">⠿</span>
+src/routes/devlauncher/analyze/+page.svelte:                <span class="card-label">{action.label || "(без названия)"}</span>
+src/routes/devlauncher/analyze/+page.svelte:                  title={action.enabled ? "Выключить" : "Включить"}
+src/routes/devlauncher/analyze/+page.svelte:                <button class="icon-btn" onclick={() => removeAction(i)} title="Удалить">✕</button>
+src/routes/devlauncher/analyze/+page.svelte:                  title="Редактировать"
+src/routes/devlauncher/analyze/+page.svelte:                  <label>Название</label>
+src/routes/devlauncher/analyze/+page.svelte:                    placeholder="Краткое описание действия"
+src/routes/devlauncher/analyze/+page.svelte:                  <label>Тип действия</label>
+src/routes/devlauncher/analyze/+page.svelte:          + Добавить действие
+src/routes/devlauncher/analyze/+page.svelte:          {saving ? "Сохранение..." : "💾 Сохранить профиль"}
+src/routes/create/+page.svelte:      message: `Доступен только на ${fw.platforms.join(", ")}`,
+src/routes/create/+page.svelte:      detail: `«${fw.label}» не поддерживает вашу ОС (${hostOs}).`,
+src/routes/create/+page.svelte:        message: `Несовместим с «${sel.label}»`,
+src/routes/create/+page.svelte:          ? `«${fw.label}» и «${sel.label}»: ${note}`
+src/routes/create/+page.svelte:          : `«${fw.label}» и «${sel.label}» не могут работать вместе — снимите один из них.`,
+src/routes/create/+page.svelte:      message: "Недоступен вместе с бэкенд/фронтенд стеком",
+src/routes/create/+page.svelte:          ? "«Qt» сам создаёт всё приложение. Если нужен веб-UI — выберите Qt первым, затем в его настройках Qt WebEngine + React/Vue/Svelte."
+src/routes/create/+page.svelte:          : `«${fw.label}» сам создаёт всё приложение и не сочетается с выбранной бэкенд/фронтенд стековой связкой.`,
+src/routes/create/+page.svelte:      message: `Недоступен вместе с «${eitherLabel}»`,
+src/routes/create/+page.svelte:          ? "«Qt» — самостоятельное приложение, но через Qt WebEngine он умеет встраивать веб-UI. Выберите Qt и в его настройках укажите WebEngine + этот фреймворк."
+src/routes/create/+page.svelte:          : `«${eitherLabel}» — самостоятельное приложение, отдельный UI-слой не нужен.`,
+src/routes/create/+page.svelte:          message: `Только один главный ${fw.side === "backend" ? "бэкенд" : "фронтенд"}-фреймворк`,
+src/routes/create/+page.svelte:          detail: `«${selLabel}» и «${fw.label}» — оба главные фреймворки: два каркаса будут перезаписывать файлы друг друга. Снимите один или выберите другой.`,
+src/routes/create/+page.svelte:        message: `Нужен язык: ${fw.languages.map((l) => langLabel(l)).join(", ")}`,
+src/routes/create/+page.svelte:        detail: `На стороне «${fw.side === "backend" ? "бэкенд" : "фронтенд"}» нет языка ${fw.languages.map((l) => langLabel(l)).join(" или ")}, необходимого «${fw.label}».`,
+src/routes/create/+page.svelte:    dropNotice = `Автоматически снято: ${note}.`;
+src/routes/create/+page.svelte:    console.error("[env] ОШИБКА проверки:", e);
+src/routes/create/+page.svelte:    envError = String(e) || "Неизвестная ошибка при проверке окружения";
+src/routes/create/+page.svelte:  if (secs < 60) return `${secs} с`;
+src/routes/create/+page.svelte:  return `${Math.floor(secs / 60)} мин ${secs % 60} с`;
+src/routes/create/+page.svelte:           Конструктор: слева фазы + содержимое, справа панель контекста
+src/routes/create/+page.svelte:          <!-- Phase 1: Stack & Tools — одна скролл-страница -->
+src/routes/create/+page.svelte:                        <span class="conflict-alts-label">Вместо этого:</span>
+src/routes/create/+page.svelte:                title="Сбросить все выбранные фреймворки и инструменты"
+src/routes/create/+page.svelte:            <!-- Языки без фреймворков (необязательно): чистый стек или поддержка -->
+src/routes/create/+page.svelte:            <!-- Инструменты и фичи -->
+src/routes/create/+page.svelte:            <!-- Липкий футер: сводка + переход к финальной сверке -->
+src/routes/create/+page.svelte:        <!-- ============ Панель контекста (правая колонка) ============ -->
+src/routes/toolchain/+page.svelte:    { id: "manage_everything", label: "Управлять всем", icon: "layers" as const },
+src/routes/toolchain/+page.svelte:    { id: "build_environment", label: "Собрать окружение", icon: "sparkles" as const },
+src/routes/toolchain/+page.svelte:    { id: "tool_marketplace", label: "Витрина инструментов", icon: "store" as const },
+src/routes/toolchain/+page.svelte:      return `скан ${s.completed_tools}/${s.total_tools}${currentLabel}`;
+src/routes/toolchain/+page.svelte:    description="Центр управления окружением разработки: что установлено, что сломано и чего не хватает"
+src/routes/toolchain/+page.svelte:            <Badge tone="cyan" dot>данные актуальны</Badge>
+src/routes/toolchain/+page.svelte:            <Badge tone="amber" dot>устарели · {formatAgeSeconds(snapshot.age_seconds)}</Badge>
+src/routes/toolchain/+page.svelte:          <Badge tone="neutral">нет данных скана</Badge>
+src/routes/toolchain/+page.svelte:            title="Открыть центр операций"
+src/routes/toolchain/+page.svelte:          {scanning ? "Сканирование…" : toolchain.scanReconnecting ? "Подключение…" : "Сканировать"}
+src/routes/toolchain/+page.svelte:          label={toolchain.logPanelOpen ? "Скрыть операции" : "Показать операции"}
+src/routes/toolchain/+page.svelte:  <!-- ===== Герой состояния окружения ===== -->
+src/routes/toolchain/+page.svelte:  <!-- ===== Проблемы последнего скана (честно, не скрыты) ===== -->
+src/routes/toolchain/+page.svelte:  <!-- ===== Центр операций (сворачиваемый) ===== -->
+src/routes/toolchain/+page.svelte:  <!-- ===== Переключатель режимов ===== -->
+src/routes/toolchain/+page.svelte:        ? "Выберите стек — бэкенд соберёт план окружения"
+src/routes/toolchain/+page.svelte:          ? "Каталог standalone Toolchain для этой платформы — работает и без скана"
+src/routes/toolchain/+page.svelte:          : "Полный каталог инструментов этой машины"}
+src/routes/toolchain/+page.svelte:  <!-- ===== Содержимое режима (все ветки живут: выбор не теряется) ===== -->
+src/routes/toolchain/+page.svelte:  <!-- ===== Drawer деталей инструмента ===== -->
+src/routes/toolchain/+page.svelte:  <!-- ===== План установки ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Сводка готовности ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:        Профиль окружения
+src/lib/modules/toolchain/components/ProfileResult.svelte:        {#if resolving}<span class="resolving">пересчитывается…</span>{/if}
+src/lib/modules/toolchain/components/ProfileResult.svelte:        {profile.required.length} обязательных · {totalSize > 0 ? formatSizeMb(totalSize) : "0 МБ"}
+src/lib/modules/toolchain/components/ProfileResult.svelte:          · <span class="warn-text">нужны права администратора</span>
+src/lib/modules/toolchain/components/ProfileResult.svelte:        <Badge tone="neutral">готовность неизвестна — выполните скан</Badge>
+src/lib/modules/toolchain/components/ProfileResult.svelte:        <Badge tone="lime" dot>окружение готово ({readiness.satisfied_count}/{readiness.required_total})</Badge>
+src/lib/modules/toolchain/components/ProfileResult.svelte:          готово {readiness.satisfied_count}/{readiness.required_total}
+src/lib/modules/toolchain/components/ProfileResult.svelte:        Проверить план установки
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Конфликты и предупреждения ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:          Конфликт: «{c.tool}» конфликтует с «{c.conflicts_with}» (заявлено каталогом).
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Обязательные ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <section aria-label="Обязательные инструменты">
+src/lib/modules/toolchain/components/ProfileResult.svelte:      <h4 class="group-title"><Badge tone="violet">{profile.required.length}</Badge> Обязательные</h4>
+src/lib/modules/toolchain/components/ProfileResult.svelte:              {#if t.needs_admin}<Icon name="alert" size={12} class="admin-icon" /><span class="sr-only">нужны права администратора</span>{/if}
+src/lib/modules/toolchain/components/ProfileResult.svelte:                <span class="no-state">нет данных</span>
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <p class="muted-note">Выберите стек слева — профиль появится здесь.</p>
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Рекомендованные (честно пусто) ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <section aria-label="Рекомендованные">
+src/lib/modules/toolchain/components/ProfileResult.svelte:      <h4 class="group-title"><Badge tone="cyan">{profile.recommended.length}</Badge> Рекомендованные</h4>
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <p class="reserved-note">Рекомендации появятся, когда каталог получит метаданные рекомендаций.</p>
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Опциональные (docker с локальным выбором) ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <section aria-label="Опциональные">
+src/lib/modules/toolchain/components/ProfileResult.svelte:      <h4 class="group-title"><Badge tone="blue">{profile.optional.length}</Badge> Опциональные — Docker или локально</h4>
+src/lib/modules/toolchain/components/ProfileResult.svelte:              <span class="item-reason">по умолчанию разворачивается контейнером проекта</span>
+src/lib/modules/toolchain/components/ProfileResult.svelte:              установить локально
+src/lib/modules/toolchain/components/ProfileResult.svelte:            <span class="item-how">docker-compose проекта</span>
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Только вручную ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:    <section aria-label="Устанавливаются вручную">
+src/lib/modules/toolchain/components/ProfileResult.svelte:      <h4 class="group-title"><Badge tone="amber">{profile.manual.length}</Badge> Установка вручную</h4>
+src/lib/modules/toolchain/components/ProfileResult.svelte:              <span class="item-reason">{t.reason || "движки и SDK не устанавливаются автоматически"}</span>
+src/lib/modules/toolchain/components/ProfileResult.svelte:  <!-- ===== Неподдерживаемые ===== -->
+src/lib/modules/toolchain/components/ProfileResult.svelte:      <summary>Недоступно на этой ОС / вне каталога ({profile.unsupported.length})</summary>
+src/lib/modules/toolchain/components/ProfileResult.svelte:            <span class="item-how warn-text">{t.source_description || "нет источника для этой платформы"}</span>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:<section class="hero" class:hero-empty={!snapshot} aria-label="Состояние окружения">
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:      <h2>Локальное окружение</h2>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        <Badge tone="amber">Данные устарели</Badge>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        <Badge tone="cyan" dot>Актуально</Badge>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        Последнее сканирование: {formatAgeSeconds(snapshot.age_seconds)}
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        Сканирование ещё не выполнялось
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:          <span class="stat-label">Установлено</span>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:            <span class="stat-label">Доступно обновлений</span>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:            <span class="stat-label">Требуют ремонта</span>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:            <Icon name="folder" size={14} /> Свободно {formatSizeMb(disk.free_mb)}
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        <Button variant="primary" loading={scanning} onclick={onscan}>Начать сканирование</Button>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:          <Button variant="primary" onclick={onupdates}>Обновить инструменты ({updatesCount})</Button>
+src/lib/modules/toolchain/components/EnvironmentHero.svelte:        <Button variant="outline" onclick={onbuild}>Собрать для проекта</Button>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:    version_probe: "проба версии",
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:    known_path: "известный путь",
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:    footprint: "след установки",
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      return { kind: "plan", operation: "install", label: "Установить" };
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      return { kind: "plan", operation: "update", label: "Обновить" };
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      return { kind: "plan", operation: "repair_path", label: "Починить PATH" };
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      return { kind: "recheck", label: busyRecheck ? "Проверка…" : "Проверить здоровье" };
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      aria-label="Закрыть панель"
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:      aria-label={tool ? `Детали: ${tool.display}` : "Детали инструмента"}
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <h2 class="title">Нет данных</h2>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <IconButton icon="x" label="Закрыть" size="sm" onclick={onclose} />
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          Инструмент ещё не проверялся сканом. Запустите сканирование или повторите позже.
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <Badge tone="violet" dot>отслеживается</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <IconButton icon="x" label="Закрыть" size="sm" onclick={onclose} />
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            Обновляем данные инструмента…
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              aria-label="Повторить загрузку деталей"
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              Повторить
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Версии ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            <h3 class="section-title">Версия</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <dt>Установлена</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                    <Badge tone="amber">сырой вывод — не распознано</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Рекомендуемая</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Оценка</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Обнаружение ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            <h3 class="section-title">Обнаружение</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="muted">Ещё не проверялось.</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="muted">Установок не найдено.</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                Обнаружено установок: {tool.installs.length}. Вердикт объясняется уликами ниже.
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="warn-text">Проверка не удалась: {tool.detection.reason || "причина неизвестна"}. Результат — «неизвестно», а не «отсутствует».</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <!-- Неизвестный kind не роняет UI (контракт §8.1) -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="muted">Неизвестный результат обнаружения.</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                          <span class="unparsed">(сырой вывод)</span>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                        <Badge tone="cyan">каноническая</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                    <code class="path">{inst.location || "путь неизвестен"}</code>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                          {copiedKey === `probe-${i}` ? "Скопировано" : "Копировать лог"}
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                      <!-- Полный лог пробы: единственная копия не усекается
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                           CSS-эллипсисом — панель прокручивается целиком. -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                        <summary>Полный лог пробы</summary>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="muted">Длительность проверки: {(tool.duration_ms / 1000).toFixed(1)} с</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Здоровье ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Здоровье</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                          <span class="check-code">код {check.exit_code}</span>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                          <Badge tone="amber">таймаут</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                        <span class="check-ms">{check.duration_ms} мс</span>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                          {copiedKey === `health-${ci}` ? "Скопировано" : "Копировать лог"}
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                      <!-- Полный лог проверки: stdout/stderr/код выхода/таймаут
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                           целиком, без усечения в единственной копии. -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                        <summary>Полный лог проверки</summary>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                      <code class="path">{f.entry || "(запись)"}</code>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Зависимости ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            <h3 class="section-title">Зависимости</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <Badge tone="cyan">в комплекте с {def.bundled_with}</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <Badge tone="neutral">требует {dep}</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <Badge tone="red">конфликт с {conflict}</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                  <Badge tone="violet">нужен для {dep}</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <span class="muted">самодостаточен</span>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Источники и целостность ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                Источники установки{os ? ` · ${platformName(os)}` : ""}
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                      {src.verified ? "контроль суммы" : "без контроля целостности"}
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Каталог</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                    <Badge tone="neutral">псевдоним: {alias}</Badge>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <code class="mono-inline">{def.docker.image ?? "образ не указан"}</code>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Служебное ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            <h3 class="section-title">Служебное</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Размер загрузки</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Права</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dd><Badge tone="amber">требует прав администратора</Badge></dd>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Установка</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dd><Badge tone="lime">поддерживается</Badge></dd>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Установка</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dd><Badge tone="violet">только вручную</Badge></dd>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Установка</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dd><Badge tone="neutral">не поддерживается на этой ОС</Badge></dd>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dt>Режим</dt>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <dd><Badge tone="blue">управляется Docker</Badge></dd>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Примечания</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Ручная установка</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Ссылки</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                    <Icon name="external" size={13} /> Документация
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                    <Icon name="external" size={13} /> Исходный код
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:          <!-- ===== Журнал ===== -->
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:            <h3 class="section-title">Журнал операций</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:                <summary>{jobLogLines.length} записей</summary>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <p class="muted">Операций с этим инструментом в этой сессии не было.</p>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              <h3 class="section-title">Ошибка последней проверки</h3>
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              Проверить здоровье
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              label="Запомнить эту стороннюю установку как наблюдаемую (не «установлено StackPilot»)"
+src/lib/modules/toolchain/components/ToolDetailDrawer.svelte:              Отслеживать
+src/lib/modules/toolchain/components/ScoreRing.svelte:  aria-label={label ?? (score == null ? "Оценка недоступна" : `Оценка окружения ${score} из 100`)}
+src/lib/modules/toolchain/components/ScoreRing.svelte:    <span class="ring-unit">из 100</span>
+src/lib/modules/toolchain/components/ToolCard.svelte:      return { kind: "plan", operation: "install", label: "Установить" };
+src/lib/modules/toolchain/components/ToolCard.svelte:      return { kind: "plan", operation: "update", label: "Обновить" };
+src/lib/modules/toolchain/components/ToolCard.svelte:      return { kind: "plan", operation: "repair_path", label: "Починить PATH" };
+src/lib/modules/toolchain/components/ToolCard.svelte:      return { kind: "recheck", label: busy ? "Проверка…" : "Проверить" };
+src/lib/modules/toolchain/components/ToolCard.svelte:      return { kind: "details", label: "Инструкция" };
+src/lib/modules/toolchain/components/ToolCard.svelte:      text: "версия не определена",
+src/lib/modules/toolchain/components/ToolCard.svelte:        "Установка найдена, но ни одна проба не выдала версию (след без рабочего бинарника или молчащая проба).",
+src/lib/modules/toolchain/components/ToolCard.svelte:      <dt>Версия</dt>
+src/lib/modules/toolchain/components/ToolCard.svelte:          <span title={versionInfo.parsed ? "Разобранная версия" : "Сырой вывод пробы — версия не распознана"}>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <dt>Источник</dt>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <dt>Размер</dt>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <Badge tone="amber"><span title="Инструмент установлен, но не найден в PATH. Перезапустите приложение или добавьте путь вручную.">PATH (нужен рестарт)</span></Badge>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <Badge tone="red" dot>ошибка проверок</Badge>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <Badge tone="cyan" dot>работает с ограничениями</Badge>
+src/lib/modules/toolchain/components/ToolCard.svelte:      <Badge tone="lime" dot>работает</Badge>
+src/lib/modules/toolchain/components/ToolCard.svelte:        Подробнее
+src/lib/modules/toolchain/components/ToolCard.svelte:        <IconButton icon="trash" label="Удалить" variant="ghost" onclick={() => onuninstall?.(tool.tool_id)} />
+src/lib/modules/toolchain/components/ToolCard.svelte:      label={`Подробнее о ${tool.display}`}
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    validating: "Проверяем запрос…",
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    refreshing: "Обновляем факты об инструментах (точечно)…",
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    preparing: "Готовим план…",
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    ready: "План готов",
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    return (PHASE_LABELS as Record<string, string | undefined>)[stage] ?? "Проверяем запрос…";
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        ? "Для выбранных инструментов нет доступных автоматических действий. Если инструмент был установлен вручную, обновите его самостоятельно."
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        : "В плане нет задач, требующих действий.";
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      return `Недостаточно места на диске установки: нужно ~${formatSizeMb(plan.total_size_mb)}, свободно ${formatSizeMb(plan.free_space_mb)}.`;
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      return "План требует прав администратора, но повышение прав на этой ОС недоступно.";
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      phase = { stage: "failed", message: "Не выбран ни один инструмент." };
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:            new Promise((_, reject) => setTimeout(() => reject(new Error("Таймаут точечной проверки")), 15000))
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:            () => reject(new Error(`Бэкенд не построил план за ${PLAN_FLIGHT_TIMEOUT_MS / 1000} с — повторите`)),
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        message: "Не удалось запустить задание — подробности во всплывающем сообщении.",
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      ? `План установки · ${request.toolIds.length} инстр.`
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        ? `План обновления · ${request.toolIds.length} инстр.`
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        : `План ремонта PATH · ${request.toolIds.length} инстр.`
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    : "План"}
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:  description="Ничего не выполняется до вашего подтверждения. План построен бэкендом из свежих данных."
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    <ErrorState title="План не построен" message={phase.message} retry={() => void loadPlan()} />
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      <!-- Сводка -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:          задач к исполнению: <strong>{actionableTasks.length}</strong>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:            без действий: <strong>{noopTasks.length}</strong>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:          объём: <strong>{formatSizeMb(plan.total_size_mb)}</strong>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:          свободно: <strong class={plan.enough_space ? "" : "bad"}>{formatSizeMb(plan.free_space_mb)}</strong>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:          {plan.enough_space ? "места достаточно" : "места недостаточно"}
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:          <Badge tone="amber">нужны права администратора</Badge>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      <!-- Задачи -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      <ul class="tasks" aria-label="Задачи плана">
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:              <span class="task-name">{task?.display ?? task?.tool_id ?? "Неизвестная задача"}</span>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:              <!-- Причина no-op честна и всегда видна (тотальный форматтер). -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:              <!-- Локальная установка инфраструктурных тулов — явный факт.
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                   Правда по execution_mode задачи (не «у тула есть docker»):
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                   хост-задача, у которой есть docker-альтернатива в каталоге. -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                <span class="task-host">локальная установка на этой машине</span>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                <span class="task-deps">после: {task.depends_on.join(", ")}</span>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:              <!-- Docker — отдельная рекомендация, не действие задачи. -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                  Docker-альтернатива{docker.image ? `: ${docker.image}` : ""}{docker.notes
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:                <Badge tone="neutral">без действий</Badge>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      <!-- Предупреждения -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:        <ul class="warnings" aria-label="Предупреждения плана">
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      <!-- Подтверждения -->
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:            Я понимаю, что {unverifiedCount} источник(ов) не имеют контрольных сумм, и подтверждаю установку.
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:            Подтверждаю повышение прав администратора ({adminTools} задач(и) через UAC).
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:    <Button variant="ghost" onclick={onclose}>Отмена</Button>
+src/lib/modules/toolchain/components/PlanReviewModal.svelte:      Запустить
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        return { label: "контроль суммы: есть", tone: "lime" as const };
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        return { label: "контроль суммы: частично", tone: "amber" as const };
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        return { label: "без контроля целостности", tone: "amber" as const };
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:    def.bundled_with ? `В комплекте с ${def.bundled_with}` : "Встроен в ОС",
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      <Badge tone="neutral">нет данных скана</Badge>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:  <!-- ===== Живой факт: версия / состояние ===== -->
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      <div class="meta-item" title={version?.text ?? (versionUnknown ? "версия не определена" : "")}>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        <dt>Установлена</dt>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:            <span title="Установка найдена, но ни одна проба не выдала версию (след без рабочего бинарника или молчащая проба).">
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:              версия не определена
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        <dt>Рекомендуемая</dt>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        <dt>Рекомендуемая</dt>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      <dt>Размер</dt>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:  <!-- ===== Компактные факты каталога (одна строка, всё усекается) ===== -->
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:  <div class="facts" aria-label="Факты каталога">
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      <Badge tone="blue">docker: {item.docker_alternative.image ?? "образ не указан"}</Badge>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      <Badge tone="violet">только вручную</Badge>
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        <a class="link-icon" href={def.docs_url} target="_blank" rel="noreferrer noopener" title="Документация">
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:        <a class="link-icon" href={def.source_url} target="_blank" rel="noreferrer noopener" title="Исходный код">
+src/lib/modules/toolchain/components/MarketplaceCard.svelte:      label={`Подробнее о ${def.display}`}
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { kind: "healthy", label: "Здоров" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { kind: "degraded", label: "Деградация" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { kind: "unhealthy", label: "Нездоров" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { kind: "not_checked", label: "Не проверялся" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { key: "update_only", label: "Только обновления" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { key: "admin_only", label: "Нужны права администратора" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { key: "manual_only", label: "Только ручная установка" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { key: "installable", label: "Устанавливаемые локально" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { key: "has_docker_alternative", label: "Есть Docker-альтернатива" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { mode: "host", label: "На хосте" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { mode: "docker", label: "В Docker" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { value: "status", label: "Проблемные сверху" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { value: "name_asc", label: "Имя А→Я" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { value: "name_desc", label: "Имя Я→А" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { value: "category", label: "По категории" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    { value: "catalog", label: "Порядок каталога" },
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:  <!-- ===== Панель поиска и сортировки ===== -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        placeholder="Поиск по имени, id или категории…"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        aria-label="Поиск инструментов"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          label="Очистить поиск"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:      <span class="sort-label">Сортировка</span>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        aria-label="Порядок сортировки"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        Фильтры
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    <!-- ===== Рейло фильтров ===== -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры каталога">
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <span>Фильтры</span>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          Сбросить всё
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Состояния -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Состояние</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Здоровье -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Здоровье</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Категории -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Категории</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Происхождение -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Происхождение</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Возможности платформы -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Возможности</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Режим исполнения -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Исполнение</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <!-- Быстрые фильтры -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          <legend>Быстрые фильтры</legend>
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:    <!-- ===== Сетка карточек ===== -->
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        {visibleTools.length} из {totalTools} инструментов
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:            сбросить фильтры
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:        <LoadingState label="Загружаем состояние окружения…" />
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          title="Не удалось загрузить состояние окружения"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          title="Данных о машине пока нет"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          description="Запустите первый диагностический скан — он ничего не устанавливает и занимает меньше двух минут."
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:              Запустить скан
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          title="Ничего не найдено"
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          description="По текущим фильтрам и поиску инструменты не найдены. Попробуйте ослабить условия."
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:              Сбросить фильтры
+src/lib/modules/toolchain/components/ManageEverythingMode.svelte:          Часть инструментов ещё проверяется — карточки дополнятся по мере сканирования.
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        treeError = "Каталог стеков пуст — варианты выбора недоступны.";
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:  <!-- ===== Левая колонка: селектор ===== -->
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:      <h3 class="col-title">Что нужно собрать</h3>
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        Выбор пересчитывается в профиль на бэкенде; ничего не устанавливается без одобрения плана.
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:      <LoadingState label="Загружаем каталог стеков…" />
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:      <ErrorState title="Каталог стеков недоступен" message={treeError} retry={() => void loadTree()} />
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:  <!-- ===== Правая колонка: результат резолвера ===== -->
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:      <h3 class="col-title">Разрешённый профиль</h3>
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        Группы сформированы бэкендом из каталога и вашей ОС.
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:          Управлять всеми инструментами <Icon name="chevronRight" size={12} />
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        Показан предыдущий профиль; обновить не удалось: {toolchain.profileError}
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:      <LoadingState label="Резолвер строит профиль…" />
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        title="Не удалось построить профиль"
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        <p>Выберите языки, фреймворки и инфраструктуру слева.</p>
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:        <p class="muted">Профиль окружения соберётся автоматически.</p>
+src/lib/modules/toolchain/components/BuildEnvironmentMode.svelte:          Проверить план установки ({toolchain.profile.required.length})
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    database: "Базы данных",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    cache: "Кэши и брокеры",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    messaging: "Сообщения и почта",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    observability: "Наблюдаемость",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    container: "Контейнеры",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    testing: "Тестирование",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    baas: "Облако и BaaS",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    orchestration: "Оркестрация",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    etl: "ETL / пайплайны",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    infra: "Инфраструктура",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    tooling: "Сборка и качество кода",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:    either: "Универсальные",
+src/lib/modules/toolchain/components/RequirementPicker.svelte:  <!-- ===== Типы проектов ===== -->
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <span class="group-title">Тип проекта</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <span class="group-hint">добавляет рекомендованные языки и инструменты</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:  <!-- ===== Языки ===== -->
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <span class="group-title">Языки</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:  <!-- ===== Фреймворки ===== -->
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <span class="group-title">Фреймворки</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        placeholder="Поиск фреймворка…"
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        aria-label="Поиск фреймворка"
+src/lib/modules/toolchain/components/RequirementPicker.svelte:            title={`${fw.description}${compatible ? "" : " · требует язык: " + fw.languages.join(", ")}`}
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <p class="empty-note">Ничего не найдено по запросу «{frameworkQuery}».</p>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:  <!-- ===== Инфраструктура по категориям ===== -->
+src/lib/modules/toolchain/components/RequirementPicker.svelte:                <span class="docker-mark" title="По умолчанию разворачивается в Docker">D</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:                title="Локальная установка вместо docker-compose проекта"
+src/lib/modules/toolchain/components/RequirementPicker.svelte:                локально
+src/lib/modules/toolchain/components/RequirementPicker.svelte:  <!-- ===== Утилиты и флаги ===== -->
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      <span class="group-title">Репозиторий, редактор, Docker</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        <span>Git-репозиторий <span class="hint">(git init)</span></span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        <span>Конфигурация VS Code <span class="hint">(.vscode)</span></span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        <span>Docker для окружения проекта</span>
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      Сбросить выбор
+src/lib/modules/toolchain/components/RequirementPicker.svelte:      выбрано: {selectedCount(languages, frameworks, tools)}
+src/lib/modules/toolchain/components/RequirementPicker.svelte:        +{[git, vscode, docker].filter(Boolean).length} опц.
+src/lib/modules/toolchain/components/JobCenter.svelte:    if (!activeJob) return "Операция";
+src/lib/modules/toolchain/components/JobCenter.svelte:<Card title="Операции" description="Текущее состояние установки инструментов">
+src/lib/modules/toolchain/components/JobCenter.svelte:                  : "выполняется…"}
+src/lib/modules/toolchain/components/JobCenter.svelte:            label="Отменить задание"
+src/lib/modules/toolchain/components/JobCenter.svelte:        <p class="log-title" style="font-size: var(--sp-fs-xs); color: var(--sp-text-2); margin-bottom: 0.5rem;">Журнал вывода:</p>
+src/lib/modules/toolchain/components/JobCenter.svelte:          <p class="log-empty">Ждём вывода...</p>
+src/lib/modules/toolchain/components/ActivityStrip.svelte:            <span class="op-title">Сканирование окружения</span>
+src/lib/modules/toolchain/components/ActivityStrip.svelte:            {#if scan!.cancel_requested}<span class="muted">отмена…</span>{/if}
+src/lib/modules/toolchain/components/ActivityStrip.svelte:        <IconButton icon="x" label="Отменить сканирование" size="sm" onclick={cancelScan} />
+src/lib/modules/toolchain/components/ActivityStrip.svelte:          label="Отменить задание"
+src/lib/modules/toolchain/components/ActivityStrip.svelte:      <Button variant="ghost" size="sm" onclick={onopenactivity}>Все операции</Button>
+src/lib/modules/toolchain/components/ActivityStrip.svelte:      Скан {scanTerminalLabel(scan.terminal)}
+src/lib/modules/toolchain/components/ActivityStrip.svelte:    <span class="muted">{scan.completed_tools}/{scan.total_tools} инструментов</span>
+src/lib/modules/toolchain/components/ActivityStrip.svelte:      Повторить скан
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { kind: "healthy", label: "Здоров" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { kind: "degraded", label: "Деградация" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { kind: "unhealthy", label: "Нездоров" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { kind: "not_checked", label: "Не проверялся" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { key: "update_only", label: "Только обновления" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { key: "admin_only", label: "Нужны права администратора" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { key: "manual_only", label: "Только ручная установка" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { key: "installable", label: "Устанавливаемые локально" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { key: "has_docker_alternative", label: "Есть Docker-альтернатива" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { mode: "host", label: "На хосте" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    { mode: "docker", label: "В Docker" },
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:  <!-- ===== Панель поиска ===== -->
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        placeholder="Поиск по имени, id, псевдонимам, описанию, ссылкам…"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        aria-label="Поиск инструментов витрины"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          label="Очистить поиск"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        Фильтры
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    <!-- ===== Рейло фильтров (все значения — с живыми счётчиками) ===== -->
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры витрины">
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        <span>Фильтры</span>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          Сбросить всё
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:            Нет данных скана — фильтры состояния, здоровья и происхождения недоступны.
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:            <legend>Состояние</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:            <legend>Здоровье</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:            <legend>Происхождение</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          <legend>Категории</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          <legend>Возможности</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          <legend>Исполнение</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          <legend>Быстрые фильтры</legend>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:    <!-- ===== Сетка карточек ===== -->
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        {visibleItems.length} из {items.length} инструментов витрины
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:            сбросить фильтры
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:        <LoadingState label="Загружаем каталог инструментов…" />
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          title="Каталог недоступен"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          title="Платформу определить не удалось"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          title="Определяем платформу…"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          description="Витрина строится из каталога для текущей ОС. Платформа ещё не определена."
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          title="Каталог пуст"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          description="В каталоге standalone Toolchain нет инструментов для этой платформы."
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          title="Ничего не найдено"
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          description="По текущим фильтрам и поиску инструменты не найдены. Попробуйте ослабить условия."
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:              Сбросить фильтры
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:                <span style="font-size: 0.85rem; color: var(--sp-text-3); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em;">Установленные инструменты</span>
+src/lib/modules/toolchain/components/MarketplaceMode.svelte:          Данные о состоянии машины появятся после первого скана — витрина работает по каталогу уже сейчас.

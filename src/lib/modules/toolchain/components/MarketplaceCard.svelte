@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Карточка витрины: определение-driven, живые факты накладываются только
   // когда есть скан. Действие правдиво относительно состояния скана:
   // установленный инструмент НЕ предлагается ставить заново (обновление —
@@ -51,11 +53,11 @@
   const checksum = $derived.by(() => {
     switch (item.checksum) {
       case "all_verified":
-        return { label: "контроль суммы: есть", tone: "lime" as const };
+        return { label: i18n.t("tc.install.checksum_yes") as TranslationKey, tone: "lime" as const };
       case "partial":
-        return { label: "контроль суммы: частично", tone: "amber" as const };
+        return { label: i18n.t("tc.install.checksum_partial") as TranslationKey, tone: "amber" as const };
       case "none":
-        return { label: "без контроля целостности", tone: "amber" as const };
+        return { label: i18n.t("tc.install.checksum_none") as TranslationKey, tone: "amber" as const };
       default:
         return null;
     }
@@ -67,7 +69,7 @@
   /** Для bundled-инструментов (pip с python) подпись «предоставляется ОС»
    *  была бы ложью — честно «в комплекте с <хостом>». */
   const builtInLabel = $derived(
-    def.bundled_with ? `В комплекте с ${def.bundled_with}` : "Встроен в ОС",
+    def.bundled_with ? (i18n.t("tc.install.bundled_with", { tool: def.bundled_with }) as TranslationKey) : (i18n.t("tc.install.builtin_os") as TranslationKey),
   );
 
   const hasLinks = $derived(!!(def.docs_url || def.source_url));
@@ -85,27 +87,27 @@
     {#if scan}
       <StateBadge state={scan.state} />
     {:else}
-      <Badge tone="neutral">нет данных скана</Badge>
+      <Badge tone="neutral">{i18n.t("tc.install.no_scan") as TranslationKey}</Badge>
     {/if}
   </header>
 
   {#if def.description}
-    <p class="description">{def.description}</p>
+    <p class="description">{i18n.t(def.description as TranslationKey)}</p>
   {/if}
 
   <!-- ===== Живой факт: версия / состояние ===== -->
   <dl class="meta">
     {#if scan}
-      <div class="meta-item" title={version?.text ?? (versionUnknown ? "версия не определена" : "")}>
-        <dt>Установлена</dt>
+      <div class="meta-item" title={version?.text ?? (versionUnknown ? (i18n.t("tc.install.version_unknown") as TranslationKey) : "")}>
+        <dt>{i18n.t("tc.card.version") as TranslationKey}</dt>
         <dd>
           {#if version}
             {version.text}{#if !version.parsed}
-              <span title="Сырой вывод пробы — версия не распознана">*</span>
+              <span title={i18n.t("tc.install.raw_output") as TranslationKey}>*</span>
             {/if}
           {:else if versionUnknown}
-            <span title="Установка найдена, но ни одна проба не выдала версию (след без рабочего бинарника или молчащая проба).">
-              версия не определена
+            <span title={i18n.t("tc.install.raw_output") as TranslationKey}>
+              {i18n.t("tc.install.version_unknown") as TranslationKey}
             </span>
           {:else}
             —
@@ -115,23 +117,23 @@
     {/if}
     {#if scan?.state.kind === "update_available"}
       <div class="meta-item" title={scan.state.recommended}>
-        <dt>Рекомендуемая</dt>
+        <dt>{i18n.t("tc.install.recommended_label") as TranslationKey}</dt>
         <dd class="update-target">{scan.state.recommended}</dd>
       </div>
     {:else if recommended}
       <div class="meta-item" title={recommended}>
-        <dt>Рекомендуемая</dt>
+        <dt>{i18n.t("tc.install.recommended_label") as TranslationKey}</dt>
         <dd>{recommended}</dd>
       </div>
     {/if}
     <div class="meta-item">
-      <dt>Размер</dt>
+      <dt>{i18n.t("tc.install.size") as TranslationKey}</dt>
       <dd>{formatSizeMb(def.size_mb)}</dd>
     </div>
   </dl>
 
   <!-- ===== Компактные факты каталога (одна строка, всё усекается) ===== -->
-  <div class="facts" aria-label="Факты каталога">
+  <div class="facts" aria-label={i18n.t("tc.install.facts") as TranslationKey}>
     {#if item.availability.length > 0}
       {#each item.availability as p (p)}
         <Badge tone={p === item.os ? "cyan" : "neutral"}>{platformName(p)}</Badge>
@@ -141,18 +143,15 @@
       <Badge tone={checksum.tone}>{checksum.label}</Badge>
     {/if}
     {#if item.docker_alternative}
-      <Badge tone="blue">docker: {item.docker_alternative.image ?? "образ не указан"}</Badge>
-    {/if}
-    {#if def.needs_admin}
-      <Badge tone="amber">нужны права администратора</Badge>
+      <Badge tone="blue">{i18n.t("tc.install.docker_image", { image: item.docker_alternative.image ?? (i18n.t("tc.install.no_image") as TranslationKey) }) as TranslationKey}</Badge>
     {/if}
     {#if def.manual_install}
-      <Badge tone="violet">только вручную</Badge>
+      <Badge tone="violet">{i18n.t("tc.install.manual_only") as TranslationKey}</Badge>
     {/if}
   </div>
 
   {#if def.manual_install}
-    <p class="manual-note" title={def.manual_install}>{def.manual_install}</p>
+    <p class="manual-note" title={i18n.t(def.manual_install as TranslationKey)}>{i18n.t(def.manual_install as TranslationKey)}</p>
   {/if}
 
   <footer class="foot">
@@ -186,19 +185,19 @@
     <span class="spacer"></span>
     {#if hasLinks}
       {#if def.docs_url}
-        <a class="link-icon" href={def.docs_url} target="_blank" rel="noreferrer noopener" title="Документация">
+        <a class="link-icon" href={def.docs_url} target="_blank" rel="noreferrer noopener" title={i18n.t("tc.install.docs") as TranslationKey}>
           <Icon name="external" size={12} />
         </a>
       {/if}
       {#if def.source_url}
-        <a class="link-icon" href={def.source_url} target="_blank" rel="noreferrer noopener" title="Исходный код">
+        <a class="link-icon" href={def.source_url} target="_blank" rel="noreferrer noopener" title={i18n.t("tc.install.source") as TranslationKey}>
           <Icon name="file" size={12} />
         </a>
       {/if}
     {/if}
     <IconButton
       icon="chevronRight"
-      label={`Подробнее о ${def.display}`}
+      label={i18n.t("tc.install.more_info", { name: def.display }) as TranslationKey}
       size="sm"
       onclick={() => ondetails(def.id)}
     />

@@ -7,6 +7,8 @@
  */
 
 import type { ProcessStatus } from "./types";
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 
 export type StatusTone =
   | "neutral"
@@ -18,13 +20,15 @@ export type StatusTone =
   | "red";
 
 export function statusLabel(status: ProcessStatus): string {
-  if (status === "Running") return "Running";
-  if (status === "Killed") return "Killed";
-  if (status === "Crashed") return "Crashed";
+  if (status === "Running") return i18n.t("stat.running") as TranslationKey;
+  if (status === "Killed") return i18n.t("stat.killed") as TranslationKey;
+  if (status === "Crashed") return i18n.t("stat.crashed") as TranslationKey;
   if (typeof status === "object" && "Exited" in status) {
-    return status.Exited === 0 ? "Success" : `Exit ${status.Exited}`;
+    return status.Exited === 0
+      ? (i18n.t("stat.success") as TranslationKey)
+      : (i18n.t("stat.exited", { code: status.Exited }) as TranslationKey);
   }
-  return "Unknown";
+  return i18n.t("stat.unknown") as TranslationKey;
 }
 
 export function statusTone(status: ProcessStatus): StatusTone {
@@ -62,11 +66,12 @@ export function isProcessFailed(status: ProcessStatus): boolean {
 export function formatDuration(secs: number): string {
   if (!Number.isFinite(secs) || secs < 0) return "—";
   const s = Math.floor(secs);
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return i18n.t("time.dur_secs", { n: s }) as TranslationKey;
+  if (s < 3600)
+    return i18n.t("time.dur_min", { m: Math.floor(s / 60), s: s % 60 }) as TranslationKey;
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return `${h}h ${m}m`;
+  return i18n.t("time.dur_hour", { h, m }) as TranslationKey;
 }
 
 /** "N s/m/h/d ago" from a backend epoch-seconds timestamp. */
@@ -75,11 +80,13 @@ export function formatStarted(timestamp: string): string {
   const ts = Number(timestamp);
   if (!Number.isFinite(ts) || ts <= 0) return "—";
   const secs = Math.floor(Date.now() / 1000 - ts);
-  if (secs < 0) return "just now";
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
+  if (secs < 0) return i18n.t("time.just_now") as TranslationKey;
+  if (secs < 60) return i18n.t("time.secs_ago", { n: secs }) as TranslationKey;
+  if (secs < 3600)
+    return i18n.t("time.mins_ago", { n: Math.floor(secs / 60) }) as TranslationKey;
+  if (secs < 86400)
+    return i18n.t("time.hours_ago", { n: Math.floor(secs / 3600) }) as TranslationKey;
+  return i18n.t("time.days_ago", { n: Math.floor(secs / 86400) }) as TranslationKey;
 }
 
 /** Local date-time from a backend epoch-seconds value. */
@@ -91,7 +98,8 @@ export function formatDateTime(epochSeconds: string | number): string {
 
 export function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return i18n.t("size.bytes", { n: bytes }) as TranslationKey;
+  if (bytes < 1024 * 1024)
+    return i18n.t("size.kb", { n: (bytes / 1024).toFixed(1) }) as TranslationKey;
+  return i18n.t("size.mb", { n: (bytes / (1024 * 1024)).toFixed(1) }) as TranslationKey;
 }

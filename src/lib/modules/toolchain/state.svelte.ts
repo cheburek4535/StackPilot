@@ -70,6 +70,8 @@ import { defaultCatalogFilters, validateCatalogFilters } from "./filters";
 import { sanitizeErrorMessage } from "./format";
 import { notifyError, notifyInfo, notifySuccess } from "$lib/core/toasts";
 import { readLocal, writeLocal } from "$lib/core/storage";
+import { i18n } from "$lib/core/i18n.svelte";
+import type { TranslationKey } from "$lib/core/i18n.svelte";
 
 // ------------------------------------------------------------
 // Лёгкие UI-настройки (персистятся локально; никаких данных бэкенда)
@@ -174,6 +176,21 @@ class ToolchainController {
   profile = $state<EnvironmentProfile | null>(null);
   profileLoading = $state(false);
   profileError = $state<string | null>(null);
+
+
+  async uninstallTool(toolId: string): Promise<boolean> {
+    if (confirm(i18n.t("tc.uninstall.confirm", { tool: toolId }) as string)) {
+      try {
+        await api.uninstallTool(toolId);
+        await this.runHealthChecks([toolId]);
+        return true;
+      } catch (e: any) {
+        notifyError(i18n.t("tc.uninstall.failed") as TranslationKey, e.toString());
+        return false;
+      }
+    }
+    return false;
+  }
 
   // ---- UI-состояние (часть персистится) ----
   mode = $state<ToolchainMode>(DEFAULT_PREFS.mode);
@@ -324,9 +341,9 @@ class ToolchainController {
         this.liveTools = {};
         void this.refreshSnapshot({ background: true });
         if (event.terminal === "Cancelled") {
-          notifyInfo("Скан отменён", "Частичные результаты сохранены");
+          notifyInfo(i18n.t("tc.scan.cancelled") as TranslationKey, i18n.t("tc.scan.partial_results") as TranslationKey);
         } else if (event.terminal === "Failed" || event.terminal === "Interrupted") {
-          notifyError("Скан завершился аварийно", `Состояние: ${event.terminal}`);
+          notifyError(i18n.t("tc.scan.crashed") as TranslationKey, i18n.t("tc.scan.state", { state: event.terminal }) as TranslationKey);
         }
       }),
     );
@@ -420,13 +437,13 @@ class ToolchainController {
     }
     this.jobLogs = logs;
 
-    const opLabel = job ? job.operation : "задание";
+    const opLabel = job ? job.operation : (i18n.t("tc.job.default_label") as string);
     if (isJobSucceeded(status)) {
-      notifySuccess(`Задание «${opLabel}» завершено`, errors.length ? `${errors.length} ошибок` : undefined);
+      notifySuccess(i18n.t("tc.job.finished", { op: opLabel }) as TranslationKey, errors.length ? i18n.t("tc.job.errors", { n: errors.length }) as TranslationKey : undefined);
     } else if (status === "cancelled") {
-      notifyInfo("Задание отменено");
+      notifyInfo(i18n.t("tc.job.cancelled_toast") as TranslationKey);
     } else if (status === "failed" || status === "interrupted") {
-      notifyError(`Задание «${opLabel}» не выполнено`, errors[0] ? sanitizeErrorMessage(errors[0]) : undefined);
+      notifyError(i18n.t("tc.job.failed", { op: opLabel }) as TranslationKey, errors[0] ? sanitizeErrorMessage(errors[0]) : undefined);
     }
     // Данные машины изменились — обновляем снапшот в фоне.
     void this.refreshSnapshot({ background: true });
@@ -530,8 +547,6 @@ class ToolchainController {
     // Живой срез валиден только для того же запуска скана.
     if (snapshot.scan_id && this.currentScan && snapshot.scan_id === this.currentScan.scan_id) {
       // оставляем инкрементальные данные текущего скана
-    } else {
-      this.liveTools = {};
     }
   }
 
@@ -578,7 +593,7 @@ class ToolchainController {
       // малиформированным — тогда честный null, а не краш.
       const job = scanStartJobId(outcome);
       if (!job) {
-        this.snapshotError = "Бэкенд вернул нечитаемый результат запуска скана";
+        this.snapshotError = i18n.t("tc.backend.unreadable") as TranslationKey;
         return null;
       }
       this.#adoptScan(job);
@@ -606,7 +621,7 @@ class ToolchainController {
       this.currentScan = { ...scan, cancel_requested: true };
       return true;
     } catch (err) {
-      notifyError("Не удалось отменить скан", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.scan.cancel_failed") as TranslationKey, sanitizeErrorMessage(err));
       return false;
     } finally {
       this.scanCancelling = false;
@@ -634,7 +649,7 @@ class ToolchainController {
   async startMutation(request: Parameters<typeof api.startJob>[0]): Promise<string | null> {
     const gate = this.mutationGate(request.operation);
     if (!gate.allowed) {
-      notifyError("Задание не запущено", gate.reason);
+      notifyError(i18n.t("tc.job.start_failed") as TranslationKey, gate.reason);
       return null;
     }
     this.jobStarting = true;
@@ -673,7 +688,7 @@ class ToolchainController {
       return jobId;
     } catch (err) {
       // Провал старта не меняет существующее состояние заданий.
-      notifyError("Не удалось запустить задание", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.job.start_failed") as TranslationKey, sanitizeErrorMessage(err));
       return null;
     } finally {
       this.jobStarting = false;
@@ -715,7 +730,7 @@ class ToolchainController {
       await api.cancelJob(job.job_id);
       return true;
     } catch (err) {
-      notifyError("Не удалось отменить задание", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.job.cancel_failed") as TranslationKey, sanitizeErrorMessage(err));
       return false;
     }
   }
@@ -730,10 +745,10 @@ class ToolchainController {
       const newId = await api.retryJob(jobId);
       const job = await api.getJob(newId);
       if (job) this.#adoptJob(job);
-      notifyInfo("Повтор задания запущен", `Новое задание: ${newId}`);
+      notifyInfo(i18n.t("tc.job.retry_started") as TranslationKey, i18n.t("tc.job.new_job", { id: newId }) as TranslationKey);
       return newId;
     } catch (err) {
-      notifyError("Не удалось повторить задание", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.job.retry_failed") as TranslationKey, sanitizeErrorMessage(err));
       return null;
     }
   }
@@ -760,10 +775,10 @@ class ToolchainController {
     try {
       await api.adoptTool(toolId);
       await this.refreshAdopted();
-      notifySuccess("Инструмент отслеживается", `${toolId}: помечен как наблюдаемый`);
+      notifySuccess(i18n.t("tc.tool.tracked") as TranslationKey, i18n.t("tc.tool.tracked_desc", { tool: toolId }) as TranslationKey);
       return true;
     } catch (err) {
-      notifyError("Не удалось взять под наблюдение", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.tool.track_failed") as TranslationKey, sanitizeErrorMessage(err));
       return false;
     }
   }
@@ -783,7 +798,7 @@ class ToolchainController {
       if (snap) {
         this.catalog = snap.tools;
       } else {
-        this.catalogError = this.snapshotError ?? "Снапшот отсутствует — выполните первый скан";
+        this.catalogError = this.snapshotError ?? (i18n.t("tc.snapshot.missing") as TranslationKey);
       }
     } finally {
       this.catalogLoading = false;
@@ -837,7 +852,7 @@ class ToolchainController {
       .catch((err) => {
         if (this.#detailsGuard.isLatest(toolId)) {
           this.detailsError = sanitizeErrorMessage(err);
-          notifyError("Не удалось обновить инструмент", this.detailsError);
+          notifyError(i18n.t("tc.details.update_failed") as TranslationKey, this.detailsError);
         }
         return null;
       })
@@ -863,7 +878,7 @@ class ToolchainController {
       this.liveTools = next;
       return results;
     } catch (err) {
-      notifyError("Проверка здоровья не удалась", sanitizeErrorMessage(err));
+      notifyError(i18n.t("tc.health.check_failed") as TranslationKey, sanitizeErrorMessage(err));
       return [];
     } finally {
       for (const id of pending) this.#healthInFlight.delete(id);
@@ -914,7 +929,7 @@ class ToolchainController {
     try {
       const info = await api.getEnvironmentInfo();
       this.marketplaceOs = info?.os ?? null;
-      this.marketplaceOsError = info?.os ? null : "Бэкенд не сообщил платформу";
+      this.marketplaceOsError = info?.os ? null : (i18n.t("tc.platform.not_reported") as TranslationKey);
     } catch (err) {
       this.marketplaceOs = null;
       this.marketplaceOsError = sanitizeErrorMessage(err);

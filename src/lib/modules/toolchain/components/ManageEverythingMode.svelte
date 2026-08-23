@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Режим «Управлять всем»: поиск, рейло фильтров и сортировка над полным
   // каталогом. Фильтрация/сортировка — единственное, что решает фронтенд;
   // статусы и факты приходят только из снапшота бэкенда.
@@ -142,11 +144,11 @@
     }
   }
 
-  const HEALTH_OPTIONS: { kind: HealthState["kind"]; label: string }[] = [
-    { kind: "healthy", label: "Здоров" },
-    { kind: "degraded", label: "Деградация" },
-    { kind: "unhealthy", label: "Нездоров" },
-    { kind: "not_checked", label: "Не проверялся" },
+  const HEALTH_OPTIONS: { kind: HealthState["kind"]; label: TranslationKey }[] = [
+    { kind: "healthy", label: i18n.t("tc.health.healthy") as TranslationKey },
+    { kind: "degraded", label: i18n.t("tc.health.degraded") as TranslationKey },
+    { kind: "unhealthy", label: i18n.t("tc.health.unhealthy") as TranslationKey },
+    { kind: "not_checked", label: i18n.t("tc.health.not_checked") as TranslationKey },
   ];
 
   const QUICK_FILTERS: {
@@ -156,13 +158,13 @@
       | "manual_only"
       | "installable"
       | "has_docker_alternative";
-    label: string;
+    label: TranslationKey;
   }[] = [
-    { key: "update_only", label: "Только обновления" },
-    { key: "admin_only", label: "Нужны права администратора" },
-    { key: "manual_only", label: "Только ручная установка" },
-    { key: "installable", label: "Устанавливаемые локально" },
-    { key: "has_docker_alternative", label: "Есть Docker-альтернатива" },
+    { key: "update_only", label: i18n.t("tc.ui.filter.statuses_only") as TranslationKey },
+    { key: "admin_only", label: i18n.t("tc.ui.filter.admin_only") as TranslationKey },
+    { key: "manual_only", label: i18n.t("tc.ui.filter.manual_only") as TranslationKey },
+    { key: "installable", label: i18n.t("tc.ui.filter.installable") as TranslationKey },
+    { key: "has_docker_alternative", label: i18n.t("tc.ui.filter.docker_alt") as TranslationKey },
   ];
 
   function quickFilterCount(
@@ -182,9 +184,9 @@
     }
   }
 
-  const EXECUTION_OPTIONS: { mode: ExecutionMode; label: string }[] = [
-    { mode: "host", label: "На хосте" },
-    { mode: "docker", label: "В Docker" },
+  const EXECUTION_OPTIONS: { mode: ExecutionMode; label: TranslationKey }[] = [
+    { mode: "host", label: i18n.t("tc.ui.exec.host") as TranslationKey },
+    { mode: "docker", label: i18n.t("tc.ui.exec.docker") as TranslationKey },
   ];
 
   const capabilityOptions = [
@@ -197,12 +199,12 @@
     "docker_alternative_available",
   ] as const;
 
-  const SORT_OPTIONS: { value: CatalogSort; label: string }[] = [
-    { value: "status", label: "Проблемные сверху" },
-    { value: "name_asc", label: "Имя А→Я" },
-    { value: "name_desc", label: "Имя Я→А" },
-    { value: "category", label: "По категории" },
-    { value: "catalog", label: "Порядок каталога" },
+  const SORT_OPTIONS: { value: CatalogSort; label: TranslationKey }[] = [
+    { value: "status", label: i18n.t("tc.ui.sort.problematic") as TranslationKey },
+    { value: "name_asc", label: i18n.t("tc.ui.sort.name_asc") as TranslationKey },
+    { value: "name_desc", label: i18n.t("tc.ui.sort.name_desc") as TranslationKey },
+    { value: "category", label: i18n.t("tc.ui.sort.category") as TranslationKey },
+    { value: "catalog", label: i18n.t("tc.ui.sort.catalog") as TranslationKey },
   ];
 </script>
 
@@ -213,15 +215,15 @@
       <Icon name="search" size={16} />
       <input
         type="search"
-        placeholder="Поиск по имени, id или категории…"
+        placeholder={i18n.t("tc.ui.search_placeholder") as TranslationKey}
         value={toolchain.filters.search}
         oninput={(e) => toolchain.setFilters({ search: e.currentTarget.value })}
-        aria-label="Поиск инструментов"
+        aria-label={i18n.t("tc.ui.search_aria") as TranslationKey}
       />
       {#if toolchain.filters.search}
         <IconButton
           icon="x"
-          label="Очистить поиск"
+          label={i18n.t("tc.ui.clear_search") as TranslationKey}
           size="sm"
           onclick={() => toolchain.setFilters({ search: "" })}
         />
@@ -229,11 +231,11 @@
     </div>
 
     <label class="sort">
-      <span class="sort-label">Сортировка</span>
+      <span class="sort-label">{i18n.t("tc.ui.sorting") as TranslationKey}</span>
       <select
         value={sort}
         onchange={(e) => (sort = e.currentTarget.value as CatalogSort)}
-        aria-label="Порядок сортировки"
+        aria-label={i18n.t("tc.ui.sort_aria") as TranslationKey}
       >
         {#each SORT_OPTIONS as opt (opt.value)}
           <option value={opt.value}>{opt.label}</option>
@@ -243,25 +245,25 @@
 
     <div class="rail-toggle-wrap">
       <Button variant="ghost" size="sm" icon={railOpen ? "x" : "layers"} onclick={() => (railOpen = !railOpen)}>
-        Фильтры
+        {i18n.t("tc.ui.filters") as TranslationKey}
       </Button>
     </div>
   </div>
 
   <div class="content">
     <!-- ===== Рейло фильтров ===== -->
-    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры каталога">
+    <aside class="rail" class:rail-open={railOpen} aria-label={i18n.t("tc.ui.catalog_filters") as TranslationKey}>
       <div class="rail-head">
-        <span>Фильтры</span>
+        <span>{i18n.t("tc.ui.filters") as TranslationKey}</span>
         <Button variant="ghost" size="sm" onclick={() => toolchain.resetFilters()}>
-          Сбросить всё
+          {i18n.t("tc.ui.reset_all") as TranslationKey}
         </Button>
       </div>
 
       <div class="rail-body">
         <!-- Состояния -->
         <fieldset>
-          <legend>Состояние</legend>
+          <legend>{i18n.t("tc.ui.status") as TranslationKey}</legend>
           {#each allToolStateKinds() as { kind, info } (kind)}
             {@const count = stateCounts.get(kind) ?? 0}
             {#if count > 0}
@@ -283,7 +285,7 @@
 
         <!-- Здоровье -->
         <fieldset>
-          <legend>Здоровье</legend>
+          <legend>{i18n.t("tc.ui.health") as TranslationKey}</legend>
           {#each HEALTH_OPTIONS as opt (opt.kind)}
             {@const count = healthCounts.get(opt.kind) ?? 0}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -304,7 +306,7 @@
 
         <!-- Категории -->
         <fieldset>
-          <legend>Категории</legend>
+          <legend>{i18n.t("tc.ui.categories") as TranslationKey}</legend>
           {#each categories as cat (cat)}
             <label class="filter-row">
               <input
@@ -323,7 +325,7 @@
 
         <!-- Происхождение -->
         <fieldset>
-          <legend>Происхождение</legend>
+          <legend>{i18n.t("tc.ui.origin") as TranslationKey}</legend>
           {#each allProvenanceKinds() as { kind, info } (kind)}
             {@const count = provenanceCounts.get(kind) ?? 0}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -344,7 +346,7 @@
 
         <!-- Возможности платформы -->
         <fieldset>
-          <legend>Возможности</legend>
+          <legend>{i18n.t("tc.ui.capabilities") as TranslationKey}</legend>
           {#each capabilityOptions as flag (flag)}
             {@const count = capabilityCounts.get(flag) ?? 0}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -365,7 +367,7 @@
 
         <!-- Режим исполнения -->
         <fieldset>
-          <legend>Исполнение</legend>
+          <legend>{i18n.t("tc.ui.execution") as TranslationKey}</legend>
           {#each EXECUTION_OPTIONS as opt (opt.mode)}
             {@const count = executionCounts[opt.mode]}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -386,7 +388,7 @@
 
         <!-- Быстрые фильтры -->
         <fieldset>
-          <legend>Быстрые фильтры</legend>
+          <legend>{i18n.t("tc.ui.quick_filters") as TranslationKey}</legend>
           {#each QUICK_FILTERS as opt (opt.key)}
             {@const count = quickFilterCount(opt.key)}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -408,31 +410,31 @@
     <!-- ===== Сетка карточек ===== -->
     <div class="results">
       <p class="results-count" role="status">
-        {visibleTools.length} из {totalTools} инструментов
+        {visibleTools.length} {i18n.t("tc.ui.of") as TranslationKey} {totalTools} {i18n.t("tc.ui.tools") as TranslationKey}
         {#if visibleTools.length !== totalTools}
           <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
-            сбросить фильтры
+            {i18n.t("tc.ui.reset_filters") as TranslationKey}
           </button>
         {/if}
       </p>
 
       {#if toolchain.snapshotLoading && !snapshot}
-        <LoadingState label="Загружаем состояние окружения…" />
+        <LoadingState label={i18n.t("tc.ui.loading_env") as TranslationKey} />
       {:else if toolchain.snapshotError && !snapshot}
         <ErrorState
-          title="Не удалось загрузить состояние окружения"
+          title={i18n.t("tc.ui.load_error") as TranslationKey}
           message={toolchain.snapshotError}
           retry={() => void toolchain.refreshSnapshot()}
         />
       {:else if !snapshot || snapshot.tools.length === 0}
         <EmptyState
           icon="wrench"
-          title="Данных о машине пока нет"
-          description="Запустите первый диагностический скан — он ничего не устанавливает и занимает меньше двух минут."
+          title={i18n.t("tc.ui.no_data_title") as TranslationKey}
+          description={i18n.t("tc.ui.no_data_desc") as TranslationKey}
         >
           {#snippet action()}
             <Button variant="primary" icon="refresh" loading={toolchain.snapshotLoading} onclick={() => void toolchain.ensureScanRunning()}>
-              Запустить скан
+              {i18n.t("tc.ui.run_scan") as TranslationKey}
             </Button>
           {/snippet}
         </EmptyState>
@@ -440,12 +442,12 @@
         <EmptyState
           compact
           icon="search"
-          title="Ничего не найдено"
-          description="По текущим фильтрам и поиску инструменты не найдены. Попробуйте ослабить условия."
+          title={i18n.t("tc.ui.no_results") as TranslationKey}
+          description={i18n.t("tc.ui.no_results_desc") as TranslationKey}
         >
           {#snippet action()}
             <Button variant="secondary" size="sm" icon="refresh" onclick={() => toolchain.resetFilters()}>
-              Сбросить фильтры
+              {i18n.t("tc.ui.reset_filters") as TranslationKey}
             </Button>
           {/snippet}
         </EmptyState>
@@ -459,6 +461,7 @@
               ondetails={(id) => toolchain.selectTool(id)}
               onplan={onplan}
               onrecheck={handleRecheck}
+              onuninstall={(id) => toolchain.uninstallTool(id)}
             />
           {/each}
         </div>
@@ -467,7 +470,7 @@
       {#if snapshot && snapshot.tools.some((t) => t.state.kind === "scan_pending")}
         <p class="scan-note" role="status">
           <Icon name="clock" size={13} />
-          Часть инструментов ещё проверяется — карточки дополнятся по мере сканирования.
+          {i18n.t("tc.ui.scanning_note") as TranslationKey}
         </p>
       {/if}
     </div>

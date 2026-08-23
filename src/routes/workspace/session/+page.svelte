@@ -12,6 +12,8 @@
   import { getSessionInfo } from "$lib/modules/workspace/api";
   import type { SessionInfo } from "$lib/modules/workspace/types";
   import { formatDuration, formatDateTime } from "$lib/modules/workspace/status";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   let session = $state<SessionInfo | null>(null);
   let dataLoaded = $state(false);
@@ -58,35 +60,35 @@
     try {
       session = await getSessionInfo();
     } catch (e) {
-      error = `Failed to load session: ${e}`;
+      error = i18n.t("ws.load_failed", { err: String(e) });
     }
   }
 </script>
 
 <PageContainer width="wide">
   <PageHeader
-    title="Session"
-    description="The current development session, straight from backend getSessionInfo()."
+    title={i18n.t("ws.session_title") as TranslationKey}
+    description={i18n.t("ws.session_desc2") as TranslationKey}
     icon="clock"
   />
 
   {#if wsLoading}
-    <LoadingState label="Loading workspace…" />
+    <LoadingState label={i18n.t("ws.loading_workspace") as TranslationKey} />
   {:else if wsError}
-    <ErrorState title="Failed to load workspace" message={wsError} />
+    <ErrorState title={i18n.t("ws.load_failed") as TranslationKey} message={wsError} />
   {:else if !project}
     <EmptyState
       icon="folder"
-      title="No project is open"
-      description="Open a project to start a session."
+      title={i18n.t("ws.no_project_open") as TranslationKey}
+      description={i18n.t("ws.no_project_open") as TranslationKey}
     />
   {:else if error}
-    <ErrorState title="Failed to load session" message={error} />
+    <ErrorState title={i18n.t("ws.session_title") as TranslationKey} message={error} />
   {:else if !session}
     <EmptyState
       icon="clock"
-      title="No session started"
-      description="A session starts when a project is set as the current workspace. None has been recorded for this project yet — nothing is shown instead of fabricated zeros."
+      title={i18n.t("ws.no_session2") as TranslationKey}
+      description={i18n.t("ws.no_session_desc2") as TranslationKey}
     />
   {:else}
     <div class="sp-session-grid">
@@ -94,28 +96,28 @@
         <span class="sp-session-icon sp-session-icon-cyan" aria-hidden="true">
           <Icon name="clock" size={18} />
         </span>
-        <span class="sp-session-label">Started</span>
+        <span class="sp-session-label">{i18n.t("ws.started") as TranslationKey}</span>
         <span class="sp-session-value">{formatDateTime(session.started_at)}</span>
       </div>
       <div class="sp-session-item">
         <span class="sp-session-icon sp-session-icon-violet" aria-hidden="true">
           <Icon name="refresh" size={18} />
         </span>
-        <span class="sp-session-label">Duration</span>
+        <span class="sp-session-label">{i18n.t("ws.duration") as TranslationKey}</span>
         <span class="sp-session-value">{formatDuration(session.duration_secs)}</span>
       </div>
       <div class="sp-session-item">
         <span class="sp-session-icon sp-session-icon-blue" aria-hidden="true">
           <Icon name="terminal" size={18} />
         </span>
-        <span class="sp-session-label">Processes</span>
+        <span class="sp-session-label">{i18n.t("ws.processes") as TranslationKey}</span>
         <span class="sp-session-value">{session.process_count}</span>
       </div>
       <div class="sp-session-item">
         <span class="sp-session-icon sp-session-icon-red" aria-hidden="true">
           <Icon name="alert" size={18} />
         </span>
-        <span class="sp-session-label">Errors</span>
+        <span class="sp-session-label">{i18n.t("ws.errors") as TranslationKey}</span>
         <span
           class="sp-session-value"
           class:sp-session-value-err={session.error_count > 0}
@@ -125,21 +127,21 @@
       </div>
     </div>
 
-    <Card title="Project context">
+    <Card title={i18n.t("ws.project_context") as TranslationKey}>
       <div class="sp-info-list">
         <div class="sp-info-row">
-          <span class="sp-info-key">Profile</span>
+          <span class="sp-info-key">{i18n.t("ws.profile") as TranslationKey}</span>
           <span class="sp-info-val">
             {project.profile_name}
-            <Badge tone="violet">current</Badge>
+            <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
           </span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Path</span>
+          <span class="sp-info-key">{i18n.t("ws.path") as TranslationKey}</span>
           <span class="sp-info-val sp-info-mono">{project.project_path ?? "—"}</span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Stack</span>
+          <span class="sp-info-key">{i18n.t("ws.stack") as TranslationKey}</span>
           <span class="sp-info-val">
             {#if project.stack.length > 0}
               <span class="sp-tags">
@@ -151,7 +153,7 @@
           </span>
         </div>
         <div class="sp-info-row">
-          <span class="sp-info-key">Opened</span>
+          <span class="sp-info-key">{i18n.t("ws.opened2") as TranslationKey}</span>
           <span class="sp-info-val">{formatDateTime(project.opened_at)}</span>
         </div>
       </div>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Режим «Витрина инструментов»: определение-driven маркетплейс.
   // Работает БЕЗ снапшота (только каталог tcx_get_catalog); живые факты
   // (состояние/версия/здоровье/происхождение) накладываются из скана,
@@ -25,6 +27,7 @@
     marketplaceHealthCounts,
     marketplaceProvenanceCounts,
     marketplaceStateCounts,
+    type MarketplaceItem,
   } from "../marketplace";
   import {
     allProvenanceKinds,
@@ -54,7 +57,36 @@
   const items = $derived(
     os ? buildMarketplaceItems(toolchain.definitions, snapshot, os) : [],
   );
-  const visibleItems = $derived(applyMarketplaceFilters(items, toolchain.filters));
+  
+  const stateSortWeights: Record<string, number> = {
+    missing: 0,
+    update_available: 1,
+    unhealthy: 2,
+    path_broken: 2,
+    installed_unhealthy: 2,
+    installed_health_unknown: 3,
+    installed_healthy: 3,
+    built_in_system: 3,
+    unsupported_platform: 4,
+    docker_managed: 3,
+    manual_install: 3,
+    scan_pending: 3,
+    scan_failed: 3
+  };
+
+  function sortWeight(item: MarketplaceItem): number {
+    return stateSortWeights[item.scan?.state.kind ?? "missing"] ?? 99;
+  }
+
+  const visibleItems = $derived(
+    applyMarketplaceFilters(items, toolchain.filters).sort((a, b) => {
+      const wa = sortWeight(a);
+      const wb = sortWeight(b);
+      if (wa !== wb) return wa - wb;
+      return a.def.display.localeCompare(b.def.display);
+    })
+  );
+
 
   /** Идёт активная мутация по инструменту (карточка показывает занятость). */
   const busyIds = $derived.by(() => {
@@ -71,11 +103,11 @@
   /** Скана нет — рантайм-факты отсутствуют, их группы не показываются. */
   const hasScanData = $derived(!!snapshot && snapshot.tools.length > 0);
 
-  const HEALTH_OPTIONS: { kind: HealthState["kind"]; label: string }[] = [
-    { kind: "healthy", label: "Здоров" },
-    { kind: "degraded", label: "Деградация" },
-    { kind: "unhealthy", label: "Нездоров" },
-    { kind: "not_checked", label: "Не проверялся" },
+  const HEALTH_OPTIONS: { kind: HealthState["kind"]; label: TranslationKey }[] = [
+    { kind: "healthy", label: i18n.t("tc.health.healthy") as TranslationKey },
+    { kind: "degraded", label: i18n.t("tc.health.degraded") as TranslationKey },
+    { kind: "unhealthy", label: i18n.t("tc.health.unhealthy") as TranslationKey },
+    { kind: "not_checked", label: i18n.t("tc.health.not_checked") as TranslationKey },
   ];
 
   const capabilityOptions = [
@@ -95,18 +127,18 @@
       | "manual_only"
       | "installable"
       | "has_docker_alternative";
-    label: string;
+    label: TranslationKey;
   }[] = [
-    { key: "update_only", label: "Только обновления" },
-    { key: "admin_only", label: "Нужны права администратора" },
-    { key: "manual_only", label: "Только ручная установка" },
-    { key: "installable", label: "Устанавливаемые локально" },
-    { key: "has_docker_alternative", label: "Есть Docker-альтернатива" },
+    { key: "update_only", label: i18n.t("tc.ui.filter.statuses_only") as TranslationKey },
+    { key: "admin_only", label: i18n.t("tc.ui.filter.admin_only") as TranslationKey },
+    { key: "manual_only", label: i18n.t("tc.ui.filter.manual_only") as TranslationKey },
+    { key: "installable", label: i18n.t("tc.ui.filter.installable") as TranslationKey },
+    { key: "has_docker_alternative", label: i18n.t("tc.ui.filter.docker_alt") as TranslationKey },
   ];
 
-  const EXECUTION_OPTIONS: { mode: ExecutionMode; label: string }[] = [
-    { mode: "host", label: "На хосте" },
-    { mode: "docker", label: "В Docker" },
+  const EXECUTION_OPTIONS: { mode: ExecutionMode; label: TranslationKey }[] = [
+    { mode: "host", label: i18n.t("tc.ui.exec.host") as TranslationKey },
+    { mode: "docker", label: i18n.t("tc.ui.exec.docker") as TranslationKey },
   ];
 
   function toggleInArray<T>(arr: T[], value: T): T[] {
@@ -121,15 +153,15 @@
       <Icon name="search" size={16} />
       <input
         type="search"
-        placeholder="Поиск по имени, id, псевдонимам, описанию, ссылкам…"
+        placeholder={i18n.t("tc.ui.search_placeholder") as TranslationKey}
         value={toolchain.filters.search}
         oninput={(e) => toolchain.setFilters({ search: e.currentTarget.value })}
-        aria-label="Поиск инструментов витрины"
+        aria-label={i18n.t("tc.ui.search_aria") as TranslationKey}
       />
       {#if toolchain.filters.search}
         <IconButton
           icon="x"
-          label="Очистить поиск"
+          label={i18n.t("tc.ui.clear_search") as TranslationKey}
           size="sm"
           onclick={() => toolchain.setFilters({ search: "" })}
         />
@@ -138,18 +170,18 @@
 
     <div class="rail-toggle-wrap">
       <Button variant="ghost" size="sm" icon={railOpen ? "x" : "layers"} onclick={() => (railOpen = !railOpen)}>
-        Фильтры
+        {i18n.t("tc.ui.filters") as TranslationKey}
       </Button>
     </div>
   </div>
 
   <div class="content">
     <!-- ===== Рейло фильтров (все значения — с живыми счётчиками) ===== -->
-    <aside class="rail" class:rail-open={railOpen} aria-label="Фильтры витрины">
+    <aside class="rail" class:rail-open={railOpen} aria-label={i18n.t("tc.ui.catalog_filters") as TranslationKey}>
       <div class="rail-head">
-        <span>Фильтры</span>
+        <span>{i18n.t("tc.ui.filters") as TranslationKey}</span>
         <Button variant="ghost" size="sm" onclick={() => toolchain.resetFilters()}>
-          Сбросить всё
+          {i18n.t("tc.ui.reset_all") as TranslationKey}
         </Button>
       </div>
 
@@ -157,13 +189,13 @@
         {#if !hasScanData}
           <p class="rail-note" role="status">
             <Icon name="info" size={13} />
-            Нет данных скана — фильтры состояния, здоровья и происхождения недоступны.
+            {i18n.t("tc.market.no_data") as TranslationKey}
           </p>
         {/if}
 
         {#if hasScanData}
           <fieldset>
-            <legend>Состояние</legend>
+            <legend>{i18n.t("tc.ui.status") as TranslationKey}</legend>
             {#each allToolStateKinds() as { kind, info } (kind)}
               {@const count = stateCounts.get(kind) ?? 0}
               <label class="filter-row" class:filter-disabled={count === 0}>
@@ -183,7 +215,7 @@
           </fieldset>
 
           <fieldset>
-            <legend>Здоровье</legend>
+            <legend>{i18n.t("tc.ui.health") as TranslationKey}</legend>
             {#each HEALTH_OPTIONS as opt (opt.kind)}
               {@const count = healthCounts.get(opt.kind) ?? 0}
               <label class="filter-row" class:filter-disabled={count === 0}>
@@ -203,7 +235,7 @@
           </fieldset>
 
           <fieldset>
-            <legend>Происхождение</legend>
+            <legend>{i18n.t("tc.ui.origin") as TranslationKey}</legend>
             {#each allProvenanceKinds() as { kind, info } (kind)}
               {@const count = provenanceCounts.get(kind) ?? 0}
               <label class="filter-row" class:filter-disabled={count === 0}>
@@ -224,7 +256,7 @@
         {/if}
 
         <fieldset>
-          <legend>Категории</legend>
+          <legend>{i18n.t("tc.ui.categories") as TranslationKey}</legend>
           {#each [...categoryCounts.entries()] as [cat, count] (cat)}
             <label class="filter-row" class:filter-disabled={count === 0}>
               <input
@@ -243,7 +275,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>Возможности</legend>
+          <legend>{i18n.t("tc.ui.capabilities") as TranslationKey}</legend>
           {#each capabilityOptions as flag (flag)}
             {@const count = marketplaceCapabilityCounts(items, flag)}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -263,7 +295,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>Исполнение</legend>
+          <legend>{i18n.t("tc.ui.execution") as TranslationKey}</legend>
           {#each EXECUTION_OPTIONS as opt (opt.mode)}
             {@const count = marketplaceExecutionCounts(items, opt.mode)}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -283,7 +315,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>Быстрые фильтры</legend>
+          <legend>{i18n.t("tc.ui.quick_filters") as TranslationKey}</legend>
           {#each QUICK_FILTERS as opt (opt.key)}
             {@const count = marketplaceBooleanCount(items, opt.key)}
             <label class="filter-row" class:filter-disabled={count === 0}>
@@ -305,57 +337,66 @@
     <!-- ===== Сетка карточек ===== -->
     <div class="results">
       <p class="results-count" role="status">
-        {visibleItems.length} из {items.length} инструментов витрины
+        {visibleItems.length} {i18n.t("tc.ui.of") as TranslationKey} {items.length} {i18n.t("tc.ui.tools") as TranslationKey}
         {#if visibleItems.length !== items.length}
           <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
-            сбросить фильтры
+            {i18n.t("tc.ui.reset_filters") as TranslationKey}
           </button>
         {/if}
       </p>
 
       {#if toolchain.definitionsLoading}
-        <LoadingState label="Загружаем каталог инструментов…" />
+        <LoadingState label={i18n.t("tc.market.loading_catalog") as TranslationKey} />
       {:else if toolchain.definitionsError && Object.keys(toolchain.definitions).length === 0}
         <ErrorState
-          title="Каталог недоступен"
+          title={i18n.t("tc.market.catalog_unavailable") as TranslationKey}
           message={toolchain.definitionsError}
           retry={() => void toolchain.ensureDefinitions()}
         />
       {:else if !os && toolchain.marketplaceOsError}
         <ErrorState
-          title="Платформу определить не удалось"
+          title={i18n.t("tc.market.platform_error") as TranslationKey}
           message={toolchain.marketplaceOsError}
           retry={() => void toolchain.ensureMarketplacePlatform()}
         />
       {:else if !os}
         <EmptyState
           icon="info"
-          title="Определяем платформу…"
-          description="Витрина строится из каталога для текущей ОС. Платформа ещё не определена."
+          title={i18n.t("tc.market.detecting") as TranslationKey}
+          description={i18n.t("tc.market.detecting_desc") as TranslationKey}
         />
       {:else if items.length === 0}
         <EmptyState
           icon="store"
-          title="Каталог пуст"
-          description="В каталоге standalone Toolchain нет инструментов для этой платформы."
+          title={i18n.t("tc.market.catalog_empty") as TranslationKey}
+          description={i18n.t("tc.market.catalog_empty_desc") as TranslationKey}
         />
       {:else if visibleItems.length === 0}
         <EmptyState
           compact
           icon="search"
-          title="Ничего не найдено"
-          description="По текущим фильтрам и поиску инструменты не найдены. Попробуйте ослабить условия."
+          title={i18n.t("tc.ui.no_results") as TranslationKey}
+          description={i18n.t("tc.ui.no_results_desc") as TranslationKey}
         >
           {#snippet action()}
             <Button variant="secondary" size="sm" icon="refresh" onclick={() => toolchain.resetFilters()}>
-              Сбросить фильтры
+              {i18n.t("tc.ui.reset_filters") as TranslationKey}
             </Button>
           {/snippet}
         </EmptyState>
       {:else}
         <div class="grid">
-          {#each visibleItems as item (item.def.id)}
+          
+          {#each visibleItems as item, i (item.def.id)}
+            {#if i > 0 && sortWeight(visibleItems[i-1]) < 3 && sortWeight(item) >= 3}
+              <div class="marketplace-boundary" style="grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; margin: 1.5rem 0 0.5rem 0;">
+                <hr style="flex-grow: 1; border: none; border-top: 1px dashed var(--sp-border);" />
+                <span style="font-size: 0.85rem; color: var(--sp-text-3); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em;">{i18n.t("tc.ui.installed_tools") as TranslationKey}</span>
+                <hr style="flex-grow: 1; border: none; border-top: 1px dashed var(--sp-border);" />
+              </div>
+            {/if}
             <MarketplaceCard
+
               {item}
               busy={busyIds.has(item.def.id)}
               onplan={onplan}
@@ -368,7 +409,7 @@
       {#if items.length > 0 && !snapshot}
         <p class="scan-note" role="status">
           <Icon name="info" size={13} />
-          Данные о состоянии машины появятся после первого скана — витрина работает по каталогу уже сейчас.
+          {i18n.t("tc.ui.scanning_note") as TranslationKey}
         </p>
       {/if}
     </div>

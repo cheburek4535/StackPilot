@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Боковая панель деталей инструмента: статус, версии, обнаружение,
   // здоровье, PATH, происхождение, источники, зависимости и журнал.
   import Badge from "$lib/components/ui/Badge.svelte";
@@ -69,9 +71,9 @@
   } = $props();
 
   const EVIDENCE_LABELS: Record<string, string> = {
-    version_probe: "проба версии",
-    known_path: "известный путь",
-    footprint: "след установки",
+    version_probe: i18n.t("tc.drawer.evidence.version_probe") as TranslationKey,
+    known_path: i18n.t("tc.drawer.evidence.known_path") as TranslationKey,
+    footprint: i18n.t("tc.drawer.evidence.footprint") as TranslationKey,
   };
 
   function evidenceLabel(kind: string): string {
@@ -133,13 +135,13 @@
     if (!tool) return null;
     const s = tool.state.kind;
     if (s === "missing" && tool.capabilities.installable) {
-      return { kind: "plan", operation: "install", label: "Установить" };
+      return { kind: "plan", operation: "install", label: i18n.t("tc.op.install") as TranslationKey };
     }
     if (s === "update_available" && tool.capabilities.updatable) {
-      return { kind: "plan", operation: "update", label: "Обновить" };
+      return { kind: "plan", operation: "update", label: i18n.t("tc.op.update") as TranslationKey };
     }
     if (s === "path_broken" && tool.capabilities.repairable) {
-      return { kind: "plan", operation: "repair_path", label: "Починить PATH" };
+      return { kind: "plan", operation: "repair_path", label: i18n.t("tc.op.repair_path") as TranslationKey };
     }
     if (
       (s === "installed_healthy" ||
@@ -147,7 +149,7 @@
         s === "installed_unhealthy") &&
       tool.capabilities.health_checkable
     ) {
-      return { kind: "recheck", label: busyRecheck ? "Проверка…" : "Проверить здоровье" };
+      return { kind: "recheck", label: busyRecheck ? (i18n.t("tc.state.scanning") as TranslationKey) : (i18n.t("tc.op.health_check") as TranslationKey) };
     }
     return null;
   });
@@ -183,7 +185,7 @@
     <button
       type="button"
       class="backdrop"
-      aria-label="Закрыть панель"
+      aria-label={i18n.t("tc.drawer.close_panel") as TranslationKey}
       onclick={onclose}
     ></button>
     <div
@@ -191,16 +193,16 @@
       class="drawer"
       role="dialog"
       aria-modal="true"
-      aria-label={tool ? `Детали: ${tool.display}` : "Детали инструмента"}
+      aria-label={tool ? `${i18n.t("tc.drawer.version") as TranslationKey}: ${tool.display}` : (i18n.t("tc.drawer.no_data") as TranslationKey)}
       tabindex="-1"
     >
       {#if !tool}
         <header class="head">
-          <h2 class="title">Нет данных</h2>
-          <IconButton icon="x" label="Закрыть" size="sm" onclick={onclose} />
+          <h2 class="title">{i18n.t("tc.drawer.no_data") as TranslationKey}</h2>
+          <IconButton icon="x" label={i18n.t("tc.drawer.close") as TranslationKey} size="sm" onclick={onclose} />
         </header>
         <p class="placeholder">
-          Инструмент ещё не проверялся сканом. Запустите сканирование или повторите позже.
+          {i18n.t("tc.drawer.not_scanned") as TranslationKey}
         </p>
       {:else}
         <!-- ===== Hero ===== -->
@@ -215,20 +217,20 @@
                 <Badge tone={provenance.tone}>{provenance.label}</Badge>
               {/if}
               {#if adopted}
-                <Badge tone="violet" dot>отслеживается</Badge>
+                <Badge tone="violet" dot>{i18n.t("tc.drawer.tracked") as TranslationKey}</Badge>
               {/if}
               {#if tool.category}
                 <Badge tone="neutral">{tool.category}</Badge>
               {/if}
             </div>
           </div>
-          <IconButton icon="x" label="Закрыть" size="sm" onclick={onclose} />
+          <IconButton icon="x" label={i18n.t("tc.drawer.close") as TranslationKey} size="sm" onclick={onclose} />
         </header>
 
         {#if busyDetails}
           <p class="details-refresh" role="status">
             <Icon name="refresh" size={12} />
-            Обновляем данные инструмента…
+            {i18n.t("tc.drawer.refreshing") as TranslationKey}
           </p>
         {:else if detailsError}
           <p class="details-refresh details-error" role="alert">
@@ -238,39 +240,39 @@
               type="button"
               class="details-retry"
               onclick={() => detailsRetry?.()}
-              aria-label="Повторить загрузку деталей"
+              aria-label={i18n.t("tc.drawer.retry") as TranslationKey}
             >
-              Повторить
+              {i18n.t("tc.drawer.retry") as TranslationKey}
             </button>
           </p>
         {/if}
 
         <div class="body">
           {#if def?.description}
-            <p class="description">{def.description}</p>
+            <p class="description">{i18n.t(def.description as TranslationKey)}</p>
           {/if}
 
           <!-- ===== Версии ===== -->
           <section>
-            <h3 class="section-title">Версия</h3>
+            <h3 class="section-title">{i18n.t("tc.drawer.version") as TranslationKey}</h3>
             <dl class="kv">
-              <dt>Установлена</dt>
+              <dt>{i18n.t("tc.drawer.installed") as TranslationKey}</dt>
               <dd>
                 {#if version}
                   <span class="mono">{version.text}</span>
                   {#if !version.parsed}
-                    <Badge tone="amber">сырой вывод — не распознано</Badge>
+                    <Badge tone="amber">{i18n.t("tc.drawer.raw_output") as TranslationKey}</Badge>
                   {/if}
                 {:else}
                   —
                 {/if}
               </dd>
               {#if recommended}
-                <dt>Рекомендуемая</dt>
+                <dt>{i18n.t("tc.drawer.recommended") as TranslationKey}</dt>
                 <dd>{recommended}</dd>
               {/if}
               {#if assessment}
-                <dt>Оценка</dt>
+                <dt>{i18n.t("tc.drawer.assessment") as TranslationKey}</dt>
                 <dd><Badge tone={assessment.tone}>{assessment.label}</Badge></dd>
               {/if}
             </dl>
@@ -283,20 +285,20 @@
 
           <!-- ===== Обнаружение ===== -->
           <section>
-            <h3 class="section-title">Обнаружение</h3>
+            <h3 class="section-title">{i18n.t("tc.drawer.detection") as TranslationKey}</h3>
             {#if tool.detection.kind === "pending"}
-              <p class="muted">Ещё не проверялось.</p>
+              <p class="muted">{i18n.t("tc.drawer.not_checked_yet") as TranslationKey}</p>
             {:else if tool.detection.kind === "not_detected"}
-              <p class="muted">Установок не найдено.</p>
+              <p class="muted">{i18n.t("tc.drawer.no_installs") as TranslationKey}</p>
             {:else if tool.detection.kind === "detected"}
               <p class="muted">
-                Обнаружено установок: {tool.installs.length}. Вердикт объясняется уликами ниже.
+                {i18n.t("tc.drawer.detected_count", { n: tool.installs.length }) as TranslationKey}
               </p>
             {:else if tool.detection.kind === "failed"}
-              <p class="warn-text">Проверка не удалась: {tool.detection.reason || "причина неизвестна"}. Результат — «неизвестно», а не «отсутствует».</p>
+              <p class="warn-text">{i18n.t("tc.drawer.check_failed", { reason: tool.detection.reason || (i18n.t("tc.state.unknown") as TranslationKey) }) as TranslationKey}</p>
             {:else}
               <!-- Неизвестный kind не роняет UI (контракт §8.1) -->
-              <p class="muted">Неизвестный результат обнаружения.</p>
+              <p class="muted">{i18n.t("tc.drawer.unknown_detection") as TranslationKey}</p>
             {/if}
 
             {#if tool.installs.length > 0}
@@ -308,15 +310,15 @@
                       <span class="mono">
                         {inst.parsed_version || inst.raw_version || "?"}
                         {#if !inst.parsed_version && inst.raw_version}
-                          <span class="unparsed">(сырой вывод)</span>
+                          <span class="unparsed">{i18n.t("tc.drawer.raw_marker") as TranslationKey}</span>
                         {/if}
                       </span>
                       {#if tool.canonical_install === i}
-                        <Badge tone="cyan">каноническая</Badge>
+                        <Badge tone="cyan">{i18n.t("tc.drawer.canonical") as TranslationKey}</Badge>
                       {/if}
                       <Badge tone={scope.tone}>{scope.label}</Badge>
                     </div>
-                    <code class="path">{inst.location || "путь неизвестен"}</code>
+                    <code class="path">{inst.location || (i18n.t("tc.drawer.path_unknown") as TranslationKey)}</code>
                     <div class="install-meta">
                       <span class="evidence">{evidenceLabel(inst.evidence?.kind ?? "")}</span>
                       {#if probeLogHasContent(inst.probe_log)}
@@ -325,7 +327,7 @@
                           class="copy-btn"
                           onclick={() => copyText(probeLogText(inst.probe_log), `probe-${i}`)}
                         >
-                          {copiedKey === `probe-${i}` ? "Скопировано" : "Копировать лог"}
+                          {copiedKey === `probe-${i}` ? (i18n.t("tc.drawer.copied") as TranslationKey) : (i18n.t("tc.drawer.copy") as TranslationKey)}
                         </button>
                       {/if}
                     </div>
@@ -333,7 +335,7 @@
                       <!-- Полный лог пробы: единственная копия не усекается
                            CSS-эллипсисом — панель прокручивается целиком. -->
                       <details class="log-details">
-                        <summary>Полный лог пробы</summary>
+                        <summary>{i18n.t("tc.drawer.full_probe_log") as TranslationKey}</summary>
                         <pre class="log-lines">{probeLogText(inst.probe_log)}</pre>
                       </details>
                     {/if}
@@ -342,14 +344,14 @@
               </ul>
             {/if}
             {#if tool.duration_ms > 0}
-              <p class="muted">Длительность проверки: {(tool.duration_ms / 1000).toFixed(1)} с</p>
+              <p class="muted">{i18n.t("tc.drawer.duration", { n: (tool.duration_ms / 1000).toFixed(1) }) as TranslationKey}</p>
             {/if}
           </section>
 
           <!-- ===== Здоровье ===== -->
           {#if health}
             <section>
-              <h3 class="section-title">Здоровье</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.health") as TranslationKey}</h3>
               <p class="health-line"><Badge tone={health.tone} dot>{health.label}</Badge></p>
               {#if tool.health && tool.health.results.length > 0}
                 <ul class="checks">
@@ -365,12 +367,12 @@
                         <span class="check-label">{check.label}</span>
                         <span class="check-detail" title={logText}>{check.detail}</span>
                         {#if check.exit_code !== null && check.exit_code !== undefined}
-                          <span class="check-code">код {check.exit_code}</span>
+                          <span class="check-code">{check.exit_code}</span>
                         {/if}
                         {#if check.timed_out}
-                          <Badge tone="amber">таймаут</Badge>
+                          <Badge tone="amber">{i18n.t("tc.drawer.timeout") as TranslationKey}</Badge>
                         {/if}
-                        <span class="check-ms">{check.duration_ms} мс</span>
+                        <span class="check-ms">{check.duration_ms}ms</span>
                       </div>
                       <div class="check-log-row">
                         <code class="path">{(check.command ?? []).join(" ")}</code>
@@ -379,13 +381,13 @@
                           class="copy-btn"
                           onclick={() => copyText(logText, `health-${ci}`)}
                         >
-                          {copiedKey === `health-${ci}` ? "Скопировано" : "Копировать лог"}
+                          {copiedKey === `health-${ci}` ? (i18n.t("tc.drawer.copied") as TranslationKey) : (i18n.t("tc.drawer.copy") as TranslationKey)}
                         </button>
                       </div>
                       <!-- Полный лог проверки: stdout/stderr/код выхода/таймаут
                            целиком, без усечения в единственной копии. -->
                       <details class="log-details">
-                        <summary>Полный лог проверки</summary>
+                        <summary>{i18n.t("tc.drawer.full_health_log") as TranslationKey}</summary>
                         <pre class="log-lines">{logText}</pre>
                       </details>
                     </li>
@@ -398,13 +400,13 @@
           <!-- ===== PATH ===== -->
           {#if tool.path_findings.length > 0}
             <section>
-              <h3 class="section-title">PATH</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.path") as TranslationKey}</h3>
               <ul class="findings">
                 {#each tool.path_findings as f, i (i)}
                   <li class="finding">
                     <Icon name="alert" size={13} class="fail" />
                     <div>
-                      <code class="path">{f.entry || "(запись)"}</code>
+                      <code class="path">{f.entry || (i18n.t("tc.drawer.path_entry") as TranslationKey)}</code>
                       <p class="finding-detail">{f.detail}</p>
                     </div>
                   </li>
@@ -415,24 +417,24 @@
 
           <!-- ===== Зависимости ===== -->
           <section>
-            <h3 class="section-title">Зависимости</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.dependencies") as TranslationKey}</h3>
             <div class="chip-row">
               {#if def?.bundled_with}
-                <Badge tone="cyan">в комплекте с {def.bundled_with}</Badge>
+                <Badge tone="cyan">{i18n.t("tc.drawer.bundled_with", { tool: def.bundled_with }) as TranslationKey}</Badge>
               {/if}
               {#each def?.dependencies ?? [] as dep (dep)}
-                <Badge tone="neutral">требует {dep}</Badge>
+                <Badge tone="neutral">{i18n.t("tc.drawer.requires", { tool: dep }) as TranslationKey}</Badge>
               {/each}
               {#each def?.conflicts ?? [] as conflict (conflict)}
-                <Badge tone="red">конфликт с {conflict}</Badge>
+                <Badge tone="red">{i18n.t("tc.drawer.conflicts_with", { tool: conflict }) as TranslationKey}</Badge>
               {/each}
               {#if dependents.length > 0}
                 {#each dependents as dep (dep)}
-                  <Badge tone="violet">нужен для {dep}</Badge>
+                  <Badge tone="violet">{i18n.t("tc.drawer.needed_for", { tool: dep }) as TranslationKey}</Badge>
                 {/each}
               {/if}
               {#if !def?.bundled_with && (def?.dependencies ?? []).length === 0 && (def?.conflicts ?? []).length === 0 && dependents.length === 0}
-                <span class="muted">самодостаточен</span>
+                <span class="muted">{i18n.t("tc.drawer.self_sufficient") as TranslationKey}</span>
               {/if}
             </div>
           </section>
@@ -441,14 +443,14 @@
           {#if sourcesForOs.length > 0}
             <section>
               <h3 class="section-title">
-                Источники установки{os ? ` · ${platformName(os)}` : ""}
+                {i18n.t("tc.drawer.install_sources") as TranslationKey}{os ? ` · ${platformName(os)}` : ""}
               </h3>
               <ul class="sources">
                 {#each sourcesForOs as src (src.description)}
                   <li class="source">
-                    <span>{src.description}</span>
+                    <span>{i18n.t(src.description as TranslationKey)}</span>
                     <Badge tone={src.verified ? "lime" : "amber"}>
-                      {src.verified ? "контроль суммы" : "без контроля целостности"}
+                      {src.verified ? (i18n.t("tc.drawer.checksum") as TranslationKey) : (i18n.t("tc.drawer.no_checksum") as TranslationKey)}
                     </Badge>
                   </li>
                 {/each}
@@ -458,11 +460,11 @@
 
           {#if (def?.aliases && def.aliases.length > 0) || (def?.platform_availability && def.platform_availability.length > 0)}
             <section>
-              <h3 class="section-title">Каталог</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.catalog") as TranslationKey}</h3>
               <div class="chip-row">
                 {#if def?.aliases && def.aliases.length > 0}
                   {#each def.aliases as alias (alias)}
-                    <Badge tone="neutral">псевдоним: {alias}</Badge>
+                    <Badge tone="neutral">{i18n.t("tc.drawer.alias", { alias }) as TranslationKey}</Badge>
                   {/each}
                 {/if}
                 {#if def?.platform_availability && def.platform_availability.length > 0}
@@ -476,68 +478,68 @@
 
           {#if def?.docker}
             <section>
-              <h3 class="section-title">Docker</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.docker") as TranslationKey}</h3>
               <p class="docker-line">
-                <code class="mono-inline">{def.docker.image ?? "образ не указан"}</code>
-                {#if def.docker.notes}<span class="muted"> · {def.docker.notes}</span>{/if}
+                <code class="mono-inline">{def.docker.image ?? (i18n.t("tc.drawer.no_image") as TranslationKey)}</code>
+                {#if def.docker.notes}<span class="muted"> · {i18n.t(def.docker.notes as TranslationKey)}</span>{/if}
               </p>
             </section>
           {/if}
 
           <!-- ===== Служебное ===== -->
           <section>
-            <h3 class="section-title">Служебное</h3>
+            <h3 class="section-title">{i18n.t("tc.drawer.service") as TranslationKey}</h3>
             <dl class="kv">
               {#if def}
-                <dt>Размер загрузки</dt>
+                <dt>{i18n.t("tc.drawer.download_size") as TranslationKey}</dt>
                 <dd>{formatSizeMb(def.size_mb)}</dd>
               {/if}
               {#if def?.needs_admin}
-                <dt>Права</dt>
-                <dd><Badge tone="amber">требует прав администратора</Badge></dd>
+                <dt>{i18n.t("tc.drawer.permissions") as TranslationKey}</dt>
+                <dd><Badge tone="amber">{i18n.t("tc.drawer.needs_admin") as TranslationKey}</Badge></dd>
               {/if}
               {#if tool.capabilities.installable}
-                <dt>Установка</dt>
-                <dd><Badge tone="lime">поддерживается</Badge></dd>
+                <dt>{i18n.t("tc.drawer.installation") as TranslationKey}</dt>
+                <dd><Badge tone="lime">{i18n.t("tc.drawer.supported") as TranslationKey}</Badge></dd>
               {:else if tool.applicability.kind === "manual_only"}
-                <dt>Установка</dt>
-                <dd><Badge tone="violet">только вручную</Badge></dd>
+                <dt>{i18n.t("tc.drawer.installation") as TranslationKey}</dt>
+                <dd><Badge tone="violet">{i18n.t("tc.drawer.manual_only") as TranslationKey}</Badge></dd>
               {:else if tool.applicability.kind === "unsupported_on_platform"}
-                <dt>Установка</dt>
-                <dd><Badge tone="neutral">не поддерживается на этой ОС</Badge></dd>
+                <dt>{i18n.t("tc.drawer.installation") as TranslationKey}</dt>
+                <dd><Badge tone="neutral">{i18n.t("tc.drawer.unsupported_os") as TranslationKey}</Badge></dd>
               {:else if tool.state.kind === "docker_managed"}
-                <dt>Режим</dt>
-                <dd><Badge tone="blue">управляется Docker</Badge></dd>
+                <dt>{i18n.t("tc.drawer.mode") as TranslationKey}</dt>
+                <dd><Badge tone="blue">{i18n.t("tc.drawer.docker_managed") as TranslationKey}</Badge></dd>
               {/if}
             </dl>
           </section>
 
           {#if def?.notes}
             <section>
-              <h3 class="section-title">Примечания</h3>
-              <p class="notes">{def.notes}</p>
+              <h3 class="section-title">{i18n.t("tc.drawer.notes") as TranslationKey}</h3>
+              <p class="notes">{i18n.t(def.notes as TranslationKey)}</p>
             </section>
           {/if}
 
           {#if tool.state.kind === "manual_install" && def?.manual_install}
             <section>
-              <h3 class="section-title">Ручная установка</h3>
-              <p class="notes warn-text">{def.manual_install}</p>
+              <h3 class="section-title">{i18n.t("tc.drawer.manual_install") as TranslationKey}</h3>
+              <p class="notes warn-text">{i18n.t(def.manual_install as TranslationKey)}</p>
             </section>
           {/if}
 
           {#if def?.docs_url || def?.source_url}
             <section>
-              <h3 class="section-title">Ссылки</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.links") as TranslationKey}</h3>
               <div class="links">
                 {#if def?.docs_url}
                   <a href={def.docs_url} target="_blank" rel="noreferrer noopener">
-                    <Icon name="external" size={13} /> Документация
+                    <Icon name="external" size={13} /> {i18n.t("tc.drawer.documentation") as TranslationKey}
                   </a>
                 {/if}
                 {#if def?.source_url}
                   <a href={def.source_url} target="_blank" rel="noreferrer noopener">
-                    <Icon name="external" size={13} /> Исходный код
+                    <Icon name="external" size={13} /> {i18n.t("tc.drawer.source_code") as TranslationKey}
                   </a>
                 {/if}
               </div>
@@ -546,21 +548,21 @@
 
           <!-- ===== Журнал ===== -->
           <section>
-            <h3 class="section-title">Журнал операций</h3>
+            <h3 class="section-title">{i18n.t("tc.drawer.job_log") as TranslationKey}</h3>
             {#if jobLogLines.length > 0}
               <details class="log-details">
-                <summary>{jobLogLines.length} записей</summary>
+                <summary>{jobLogLines.length} {i18n.t("tc.drawer.entries") as TranslationKey}</summary>
                 <pre class="log-lines">{#each jobLogLines as line}{line.text}
 {/each}</pre>
               </details>
             {:else}
-              <p class="muted">Операций с этим инструментом в этой сессии не было.</p>
+              <p class="muted">{i18n.t("tc.drawer.no_operations") as TranslationKey}</p>
             {/if}
           </section>
 
           {#if tool.error}
             <section>
-              <h3 class="section-title">Ошибка последней проверки</h3>
+              <h3 class="section-title">{i18n.t("tc.drawer.last_error") as TranslationKey}</h3>
               <pre class="error-box">{tool.error}</pre>
             </section>
           {/if}
@@ -582,7 +584,7 @@
           {/if}
           {#if tool.capabilities.health_checkable && action === null}
             <Button variant="secondary" loading={busyRecheck} onclick={() => onrecheck(tool!.tool_id)}>
-              Проверить здоровье
+              {i18n.t("tc.op.health_check") as TranslationKey}
             </Button>
           {/if}
           <span class="spacer"></span>
@@ -590,10 +592,10 @@
             <Button
               variant="ghost"
               size="sm"
-              label="Запомнить эту стороннюю установку как наблюдаемую (не «установлено StackPilot»)"
+              label={i18n.t("tc.drawer.tracked") as TranslationKey}
               onclick={() => onadopt(tool!.tool_id)}
             >
-              Отслеживать
+              {i18n.t("tc.drawer.track") as TranslationKey}
             </Button>
           {/if}
         </footer>

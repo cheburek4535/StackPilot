@@ -1,0 +1,6 @@
+{
+  "name": "StackPilot",
+  "description": "Developer toolchain management and project workspace dashboard",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

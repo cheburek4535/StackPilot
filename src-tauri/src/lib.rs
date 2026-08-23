@@ -180,6 +180,7 @@ pub fn run() {
             modules::toolchain::commands::tcx_cancel_scan,
             modules::toolchain::commands::tcx_get_tool_details,
             modules::toolchain::commands::tcx_run_health_checks,
+            modules::toolchain::commands::tcx_uninstall_tool,
             modules::toolchain::commands::tcx_profile_resolve,
             // ToolchainManager: canonical job engine (tcx_*)
             modules::toolchain::commands::tcx_build_plan,

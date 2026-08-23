@@ -358,7 +358,13 @@ pub async fn piped_run(
 /// задания даже при отмене/таймауте.
 fn write_script(tool_id: &str, script: &str) -> Result<PathBuf, String> {
     let path = tracked_temp_file(&format!("{tool_id}-script"), ".ps1");
-    std::fs::write(&path, script).map_err(|e| format!("Не удалось записать PS-скрипт: {e}"))?;
+    // UTF-8 BOM (0xEF, 0xBB, 0xBF) is mandatory for PowerShell 5.1 to correctly
+    // parse UTF-8 scripts. Without it, it falls back to the system's ANSI codepage (e.g. CP-1251),
+    // which misinterprets some UTF-8 bytes (like the em-dash U+2014 'E2 80 94') as smart quotes (0x94 = ”),
+    // breaking the script syntax.
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(script.as_bytes());
+    std::fs::write(&path, &bytes).map_err(|e| format!("Не удалось записать PS-скрипт: {e}"))?;
     Ok(path)
 }
 
@@ -716,13 +722,16 @@ pub async fn run_elevated(
     let script = format!(
         r#"$out = {}
 $err = {}
-$args = {}
+$args_str = {}
 if (-not (Test-Path -LiteralPath {})) {{
   Write-Output "tc:error не найден: {}"
   Exit 2
 }}
 try {{
-  $p = Start-Process -FilePath {} -ArgumentList $args -Verb RunAs -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+  # Start-Process with -Verb RunAs does not support stream redirection.
+  $p = Start-Process -FilePath {} -ArgumentList $args_str -Verb RunAs -Wait -PassThru
+  New-Item -ItemType File -Path $out -Force | Out-Null
+  New-Item -ItemType File -Path $err -Force | Out-Null
 }} catch {{
   Write-Output "tc:error $($_.Exception.Message)"
   Exit 1

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
   // Результат резолвера Build Environment: сгруппированные секции
   // (обязательные / рекомендованные / опциональные / docker / ручные /
   // неподдерживаемые) + конфликты и предупреждения. Статусы инструментов —
@@ -41,24 +43,24 @@
   <div class="summary">
     <div class="summary-main">
       <span class="summary-title">
-        Профиль окружения
-        {#if resolving}<span class="resolving">пересчитывается…</span>{/if}
+        {i18n.t("tc.profile.env_profile") as TranslationKey}
+        {#if resolving}<span class="resolving">{i18n.t("tc.profile.recalculating") as TranslationKey}</span>{/if}
       </span>
       <span class="summary-meta">
-        {profile.required.length} обязательных · {totalSize > 0 ? formatSizeMb(totalSize) : "0 МБ"}
+        {profile.required.length} {i18n.t("tc.profile.required_count") as TranslationKey} {totalSize > 0 ? formatSizeMb(totalSize) : ("0 " + i18n.t("tc.time.mb"))}
         {#if profile.warnings.some((w) => w.code === "admin_required")}
-          · <span class="warn-text">нужны права администратора</span>
+          · <span class="warn-text">{i18n.t("tc.profile.admin_required") as TranslationKey}</span>
         {/if}
       </span>
     </div>
     <div class="readiness">
       {#if !hasSnapshot}
-        <Badge tone="neutral">готовность неизвестна — выполните скан</Badge>
+        <Badge tone="neutral">{i18n.t("tc.profile.no_data") as TranslationKey}</Badge>
       {:else if readiness.all_ready}
-        <Badge tone="lime" dot>окружение готово ({readiness.satisfied_count}/{readiness.required_total})</Badge>
+        <Badge tone="lime" dot>{i18n.t("tc.profile.env_ready", { satisfied: readiness.satisfied_count ?? 0, total: readiness.required_total ?? 0 }) as TranslationKey}</Badge>
       {:else}
         <Badge tone={readiness.satisfied_count === 0 ? "red" : "amber"} dot>
-          готово {readiness.satisfied_count}/{readiness.required_total}
+          {i18n.t("tc.profile.ready_count", { satisfied: readiness.satisfied_count ?? 0, total: readiness.required_total ?? 0 }) as TranslationKey}
         </Badge>
       {/if}
       <Button
@@ -68,7 +70,7 @@
         disabled={profile.required.length === 0}
         onclick={onreviewplan}
       >
-        Проверить план установки
+        {i18n.t("tc.profile.review_plan") as TranslationKey}
       </Button>
     </div>
   </div>
@@ -79,7 +81,7 @@
       {#each profile.conflicts as c (c.tool + c.conflicts_with)}
         <p class="alert alert-red">
           <Icon name="alert" size={14} />
-          Конфликт: «{c.tool}» конфликтует с «{c.conflicts_with}» (заявлено каталогом).
+          {i18n.t("tc.profile.conflict") as TranslationKey}{c.tool}{i18n.t("tc.profile.conflicts_with") as TranslationKey}{c.conflicts_with}{i18n.t("tc.profile.conflict_catalog") as TranslationKey}
         </p>
       {/each}
       {#each profile.warnings as w (w.code + w.message)}
@@ -93,8 +95,8 @@
 
   <!-- ===== Обязательные ===== -->
   {#if profile.required.length > 0}
-    <section aria-label="Обязательные инструменты">
-      <h4 class="group-title"><Badge tone="violet">{profile.required.length}</Badge> Обязательные</h4>
+    <section aria-label={i18n.t("tc.profile.required_tools") as TranslationKey}>
+      <h4 class="group-title"><Badge tone="violet">{profile.required.length}</Badge> {i18n.t("tc.profile.required") as TranslationKey}</h4>
       <ul class="items">
         {#each profile.required as t (t.tool_id)}
           {@const live = stateFor(t.tool_id)}
@@ -106,12 +108,12 @@
             </div>
             <span class="item-how">{t.source_description}</span>
             <div class="item-side">
-              {#if t.needs_admin}<Icon name="alert" size={12} class="admin-icon" /><span class="sr-only">нужны права администратора</span>{/if}
+              {#if t.needs_admin}<Icon name="alert" size={12} class="admin-icon" /><span class="sr-only">{i18n.t("tc.profile.admin_required") as TranslationKey}</span>{/if}
               <span class="item-size">{formatSizeMb(t.size_mb)}</span>
               {#if live}
                 <StateBadge state={live.state} withVersion />
               {:else}
-                <span class="no-state">нет данных</span>
+                <span class="no-state">{i18n.t("tc.profile.no_data") as TranslationKey}</span>
               {/if}
             </div>
           </li>
@@ -119,13 +121,13 @@
       </ul>
     </section>
   {:else}
-    <p class="muted-note">Выберите стек слева — профиль появится здесь.</p>
+    <p class="muted-note">{i18n.t("tc.profile.select_stack") as TranslationKey}</p>
   {/if}
 
   <!-- ===== Рекомендованные (честно пусто) ===== -->
   {#if profile.recommended.length > 0}
-    <section aria-label="Рекомендованные">
-      <h4 class="group-title"><Badge tone="cyan">{profile.recommended.length}</Badge> Рекомендованные</h4>
+    <section aria-label={i18n.t("tc.profile.recommended") as TranslationKey}>
+      <h4 class="group-title"><Badge tone="cyan">{profile.recommended.length}</Badge> {i18n.t("tc.profile.recommended") as TranslationKey}</h4>
       <ul class="items">
         {#each profile.recommended as t (t.tool_id)}
           <li class="item">
@@ -137,20 +139,20 @@
       </ul>
     </section>
   {:else if profile.required.length > 0}
-    <p class="reserved-note">Рекомендации появятся, когда каталог получит метаданные рекомендаций.</p>
+    <p class="reserved-note">{i18n.t("tc.profile.recommendations_note") as TranslationKey}</p>
   {/if}
 
   <!-- ===== Опциональные (docker с локальным выбором) ===== -->
   {#if profile.optional.length > 0}
-    <section aria-label="Опциональные">
-      <h4 class="group-title"><Badge tone="blue">{profile.optional.length}</Badge> Опциональные — Docker или локально</h4>
+    <section aria-label={i18n.t("tc.profile.optional") as TranslationKey}>
+      <h4 class="group-title"><Badge tone="blue">{profile.optional.length}</Badge> {i18n.t("tc.profile.optional") as TranslationKey}</h4>
       <ul class="items">
         {#each profile.optional as t (t.tool_id)}
           <li class="item">
             <TechIcon icon={t.icon} alt="" size="sm" />
             <div class="item-main">
               <span class="item-name">{t.display}</span>
-              <span class="item-reason">по умолчанию разворачивается контейнером проекта</span>
+              <span class="item-reason">{i18n.t("tc.profile.docker_expanded") as TranslationKey}</span>
             </div>
             <label class="opt-toggle">
               <input
@@ -158,7 +160,7 @@
                 checked={profile.local_alternatives.includes(t.tool_id)}
                 onchange={(e) => onlocaltoggle(t.tool_id, e.currentTarget.checked)}
               />
-              установить локально
+              {i18n.t("tc.profile.install_locally") as TranslationKey}
             </label>
           </li>
         {/each}
@@ -175,7 +177,7 @@
           <li class="item">
             <TechIcon icon={t.icon} alt="" size="sm" />
             <span class="item-name">{t.display}</span>
-            <span class="item-how">docker-compose проекта</span>
+            <span class="item-how">{i18n.t("tc.profile.docker_compose") as TranslationKey}</span>
           </li>
         {/each}
       </ul>
@@ -184,15 +186,15 @@
 
   <!-- ===== Только вручную ===== -->
   {#if profile.manual.length > 0}
-    <section aria-label="Устанавливаются вручную">
-      <h4 class="group-title"><Badge tone="amber">{profile.manual.length}</Badge> Установка вручную</h4>
+    <section aria-label={i18n.t("tc.profile.manual_install") as TranslationKey}>
+      <h4 class="group-title"><Badge tone="amber">{profile.manual.length}</Badge> {i18n.t("tc.profile.manual_tools") as TranslationKey}</h4>
       <ul class="items">
         {#each profile.manual as t (t.tool_id)}
           <li class="item">
             <TechIcon icon={t.icon} alt="" size="sm" />
             <div class="item-main">
               <span class="item-name">{t.display}</span>
-              <span class="item-reason">{t.reason || "движки и SDK не устанавливаются автоматически"}</span>
+              <span class="item-reason">{t.reason || (i18n.t("tc.profile.manual_reason") as TranslationKey)}</span>
             </div>
             <span class="item-how">{t.source_description}</span>
           </li>
@@ -204,13 +206,13 @@
   <!-- ===== Неподдерживаемые ===== -->
   {#if profile.unsupported.length > 0}
     <details class="collapsed-group">
-      <summary>Недоступно на этой ОС / вне каталога ({profile.unsupported.length})</summary>
+      <summary>{i18n.t("tc.profile.unsupported") as TranslationKey}{profile.unsupported.length})</summary>
       <ul class="items">
         {#each profile.unsupported as t (t.tool_id)}
           <li class="item">
             <TechIcon icon={t.icon} alt="" size="sm" />
             <span class="item-name">{t.display}</span>
-            <span class="item-how warn-text">{t.source_description || "нет источника для этой платформы"}</span>
+            <span class="item-how warn-text">{t.source_description || (i18n.t("tc.profile.no_source") as TranslationKey)}</span>
           </li>
         {/each}
       </ul>

@@ -9,45 +9,35 @@
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import Button from "./Button.svelte";
+  import { i18n } from "$lib/core/i18n.svelte";
+  import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   type Step = {
     icon: IconName;
-    title: string;
-    body: string[];
+    titleKey: string;
+    bodyKeys: string[];
   };
 
   const STEPS: Step[] = [
     {
       icon: "rocket",
-      title: `Welcome to ${APP_NAME}`,
-      body: [
-        `${APP_NAME} is a desktop workspace for launching and managing developer projects on this machine.`,
-        "It helps you analyze a project into a launch profile, run and track processes, configure your toolchain, and scaffold new projects with a guided wizard.",
-      ],
+      titleKey: "onboarding.step1_title",
+      bodyKeys: ["onboarding.step1_body1", "onboarding.step1_body2"],
     },
     {
       icon: "layers",
-      title: "Getting around",
-      body: [
-        "The sidebar is the single navigation: DevLauncher (analyze, profiles, processes), Project Creator, Toolchain, Workspace and Settings.",
-        "The active section is highlighted automatically, including sub-routes — Workspace and its pages, for example.",
-      ],
+      titleKey: "onboarding.step2_title",
+      bodyKeys: ["onboarding.step2_body1", "onboarding.step2_body2"],
     },
     {
       icon: "clock",
-      title: "What works today",
-      body: [
-        "Profiles, processes, environment checks and the project wizard are functional end-to-end.",
-        "Some screens are still being migrated into the new shell and keep their classic layout until the canonical sections land.",
-      ],
+      titleKey: "onboarding.step3_title",
+      bodyKeys: ["onboarding.step3_body1", "onboarding.step3_body2"],
     },
     {
       icon: "folder",
-      title: "Local by default",
-      body: [
-        "Profiles, settings and session state are stored on this machine. The wizard keeps a light draft in this browser's session storage only.",
-        "No account, no telemetry. You can reopen this tour any time from the sidebar footer.",
-      ],
+      titleKey: "onboarding.step4_title",
+      bodyKeys: ["onboarding.step4_body1", "onboarding.step4_body2"],
     },
   ];
 
@@ -72,10 +62,10 @@
         <div class="sp-ob-icon" aria-hidden="true">
           <Icon name={step.icon} size={26} />
         </div>
-        <h2 class="sp-ob-title">{step.title}</h2>
+        <h2 class="sp-ob-title">{i18n.t(step.titleKey as TranslationKey)}</h2>
         <div class="sp-ob-text">
-          {#each step.body as paragraph}
-            <p>{paragraph}</p>
+          {#each step.bodyKeys as bodyKey}
+            <p>{i18n.t(bodyKey as TranslationKey)}</p>
           {/each}
         </div>
       </div>
@@ -97,7 +87,7 @@
             skipOnboarding();
           }}
         >
-          Skip for now
+          {i18n.t("onboarding.skip") as TranslationKey}
         </Button>
         <div class="sp-ob-nav">
           {#if stepIndex > 0}
@@ -107,7 +97,7 @@
               icon="chevronLeft"
               onclick={() => stepIndex--}
             >
-              Back
+              {i18n.t("onboarding.back") as TranslationKey}
             </Button>
           {/if}
           {#if isLast}
@@ -117,7 +107,7 @@
               icon="check"
               onclick={() => completeOnboarding()}
             >
-              Done
+              {i18n.t("onboarding.done") as TranslationKey}
             </Button>
           {:else}
             <Button
@@ -126,7 +116,7 @@
               iconRight="chevronRight"
               onclick={() => stepIndex++}
             >
-              Next
+              {i18n.t("onboarding.next") as TranslationKey}
             </Button>
           {/if}
         </div>
@@ -136,8 +126,8 @@
 
       <button
         class="sp-ob-close"
-        aria-label="Close tour"
-        title="Close tour"
+        aria-label={i18n.t("onboarding.close") as TranslationKey}
+        title={i18n.t("onboarding.close") as TranslationKey}
         onclick={() => hideOnboarding()}
       >
         <Icon name="x" size={16} />
