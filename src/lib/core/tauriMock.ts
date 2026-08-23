@@ -31,6 +31,36 @@ export function initTauriMock() {
     }
   };
 
+  const defaultSettings = () => ({
+    vscode_path: "code",
+    browser_path: "",
+    terminal: "",
+    theme: "dark",
+    language: "ru",
+    auto_save_profiles: true,
+    preferred_apps: [{ name: "VS Code", path: "code", args: null }],
+    auto_save: true,
+    font_size: "md",
+    reduced_motion: false,
+    show_interface_hints: true,
+    accent_color: "violet",
+    restore_last_route: true,
+    confirm_before_reset: true,
+    personal: { name: "", username: "", email: "" },
+    ai: {
+      enabled: false,
+      provider: "openai",
+      base_url: "",
+      api_key: "",
+      model: "",
+      temperature: 0.7,
+      max_tokens: 2048,
+      timeout_secs: 30,
+      system_prompt: "",
+      page_context: true,
+    },
+  });
+
   // Event callbacks registry
   let callbackIdCounter = 1;
   const callbacks = new Map<number, (event: any) => void>();
@@ -248,35 +278,27 @@ export function initTauriMock() {
     // Core & Settings
     // ==========================================
     if (cmd === "get_settings") {
-      const settings = getStorage("settings", {
-        theme: "dark",
-        general: {
-          auto_scan_on_startup: true,
-          telemetry: false,
-          check_updates: true,
-          default_projects_dir: "~/Projects",
-        },
-      });
+      const settings = getStorage("settings", defaultSettings());
       return settings;
     }
 
     if (cmd === "update_settings") {
       setStorage("settings", args.settings);
-      return;
+      return args.settings;
     }
 
     if (cmd === "reset_settings") {
-      const def = {
-        theme: "dark",
-        general: {
-          auto_scan_on_startup: true,
-          telemetry: false,
-          check_updates: true,
-          default_projects_dir: "~/Projects",
-        },
-      };
+      const def = defaultSettings();
       setStorage("settings", def);
       return def;
+    }
+
+    if (cmd === "settings_check_path") {
+      return typeof args.path === "string" && args.path.trim().length > 0;
+    }
+
+    if (cmd === "get_app_data_dir") {
+      return "~/AppData/Roaming/StackPilot (mock)";
     }
 
     // ==========================================

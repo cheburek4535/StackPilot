@@ -6,6 +6,7 @@
   import { APP_NAME, APP_VERSION } from "$lib/core/app";
   import { NAV_GROUPS, isNavItemActive, isNavGroupActive } from "$lib/core/navigation";
   import { initTheme } from "$lib/core/theme";
+  import { getSettings } from "$lib/core/api";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
   import { i18n } from "$lib/core/i18n.svelte";
@@ -18,8 +19,13 @@
 
   let { children }: { children: Snippet } = $props();
 
+  let restoreRoute = $state(true);
+
   onMount(() => {
     initTheme();
+    getSettings()
+      .then((s) => (restoreRoute = s.restore_last_route))
+      .catch(() => {});
     // First-run detection — open the welcome tour unless already seen.
     if (get(onboarding).firstRun) showOnboarding();
   });
@@ -28,7 +34,7 @@
 
   // Remember the last visited route (UI-local, for restore-on-restart).
   $effect(() => {
-    rememberRoute(pathname);
+    if (restoreRoute) rememberRoute(pathname);
   });
 </script>
 

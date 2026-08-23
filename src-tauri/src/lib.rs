@@ -194,6 +194,8 @@ pub fn run() {
             core::settings::get_settings,
             core::settings::update_settings,
             core::settings::reset_settings,
+            core::settings::settings_check_path,
+            core::settings::get_app_data_dir,
             // Plugin commands
             #[cfg(feature = "plugins")]
             mini_ide::commands::get_completions,
