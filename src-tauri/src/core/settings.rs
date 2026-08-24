@@ -123,7 +123,8 @@ impl JsonSettingsService {
         s.ai.timeout_secs = s.ai.timeout_secs.clamp(5, 600);
         s.ai.system_prompt = s.ai.system_prompt.trim().to_string();
 
-        s.preferred_apps.retain(|a| !a.name.trim().is_empty() || !a.path.trim().is_empty());
+        s.preferred_apps
+            .retain(|a| !a.name.trim().is_empty() || !a.path.trim().is_empty());
         for app in &mut s.preferred_apps {
             app.name = app.name.trim().to_string();
             app.path = app.path.trim().to_string();
@@ -219,11 +220,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sp_settings_test_{}_{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("sp_settings_test_{}_{}", std::process::id(), name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir

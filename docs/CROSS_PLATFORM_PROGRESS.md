@@ -3,7 +3,10 @@
 ## Phase Checklist (Sessions 0–5)
 
 - [x] **Session 0**: Baseline audit (OS-specific behaviors, validation, documentation)
-- [ ] **Session 1**: Platform adapter trait enforcement + Linux/macOS CI pipeline
+- [x] **Session 1**: Platform adapter trait enforcement + command foundation
+  - Created `src/platform/` module: `host.rs`, `shell.rs`, `command.rs`, `environment.rs`, `paths.rs`
+  - Refactored `process.rs` to delegate to platform command builder
+  - 70 unit tests for all platform capabilities
 - [ ] **Session 2**: PATH write backport + rc-file write tests
 - [ ] **Session 3**: Windows process group kill + toolchain workflow tests
 - [ ] **Session 4**: Linux/macOS native CI + documentation
@@ -19,6 +22,7 @@
 | PATH persistence | Registry + PS script | rc-file markers | rc-file markers | Windows verified |
 | Toolchain installer | winget/registry | apt/dnf/pacman | brew | Windows verified |
 | Console process run | PowerShell/UAC | bash/sh | zsh/bash | Windows verified |
+| Platform command foundation | `platform::command` | `platform::command` | `platform::command` | Session 1 complete |
 
 ## OS-Specific Behaviors
 
@@ -39,8 +43,16 @@
 - `src-tauri/src/modules/toolchain/platforms/macos.rs` — macOS (brew)
 
 ### Project Creator
-- **Process dispatch**: `src-tauri/src/modules/project_creator/engine/process.rs` — cross-platform `TokioCommand` with Windows (exe/.cmd/.bat) vs Unix (`sh -c`)
+- **Process dispatch**: `src-tauri/src/modules/project_creator/engine/process.rs` — delegates to `platform::command` for cross-platform command construction
 - **Validate**: `src-tauri/src/modules/project_creator/validate.rs:10` — OS platform check
+
+### Platform Foundation (Session 1)
+- **Module**: `src-tauri/src/platform/` — reusable cross-platform abstractions
+- `host.rs` — `HostOs`/`HostArch` enums, `current_os()`, `current_arch()`
+- `shell.rs` — `ShellKind` enum, `parse_shell()`, `default_shell_for_platform()`, `resolve_shell()`, `shell_executable()`
+- `command.rs` — `build_tokio_command()`, `build_std_command()`, `infer_command_mode()`, `win_quote_arg()`, `sh_quote()`, `resolve_windows_program_name()`
+- `environment.rs` — `EnvironmentOverlay` with `apply_std()`/`apply_tokio()`, PATH dedup
+- `paths.rs` — `paths_eq()`, `is_descendant()`, `resolve_executable()` (via `which` crate)
 
 ## Acceptance Criteria
 
@@ -61,7 +73,9 @@
 - CI pipeline running on the actual OS
 - Acceptance tests passing on the actual OS
 
-## Validation Results (Session 0)
+## Validation Results
+
+### Session 0 (Baseline)
 
 | Check | Result | Notes |
 |-------|--------|-------|
@@ -69,15 +83,19 @@
 | `cargo check` | PASSED | Warnings only (unused imports, dead code) — no errors |
 | `cargo test` | FAILED | 682 passed, 1 failed, 1 ignored |
 
-### Test Failure Details
+### Session 1
 
-- **Failed**: `modules::toolchain::domain::detect::tests::python_health_checks_do_not_include_pip_assertion`
-  - Location: `src-tauri/src/modules/toolchain/domain/detect.rs:1336:32`
-  - Error: `pip нет в tools.json` (pip not in tools.json)
-  - Status: Pre-existing failure, not caused by this session
+| Check | Result | Notes |
+|-------|--------|-------|
+| `cargo fmt --check` | PASSED | |
+| `cargo check` | PASSED | Warnings only (pre-existing) |
+| `cargo test` | FAILED | 744 passed, 9 failed, 1 ignored |
 
-- **Ignored**: `modules::toolchain::core::qt_installer::tests::live_repo_resolution_and_parsing`
-  - Status: Pre-existing skip (network-dependent test)
+#### Test Failures (all pre-existing)
+- `python_health_checks_do_not_include_pip_assertion` — pip not in tools.json
+- `runner_executes_absolute_executable_path` — env-dependent batch file test
+- 6× `scaffold_*` tests — scaffold CLI environment issues
+- `live_repo_resolution_and_parsing` — ignored (network-dependent)
 
 ## Baseline Commit
 

@@ -22,10 +22,14 @@ repomix.config.js
 *.tmp
 
 
-devlauncher/
-workspace/
-settings/
-profiles/
-processes/
-analyze/
-assistant/
+# devlauncher/
+# workspace/
+# settings/
+# profiles/
+# processes/
+# analyze/
+# assistant/
+
+wizard_tree.json
+
+

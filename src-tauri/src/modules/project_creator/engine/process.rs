@@ -615,97 +615,46 @@ async fn check_triggers(
 // Кроссплатформенное построение команды
 // ============================================================================
 
-/// Кроссплатформенный запуск команды:
-///   - Windows: PowerShell-команды через `powershell -Command`; .cmd/.bat
-///     через `cmd /D /S /C` (CreateProcess не умеет запускать batch-файлы);
-///     обычные команды — напрямую (без cmd /C: он ломает вложенные кавычки
-///     в `node -e`, путях venv и Composer);
-///   - Unix: `sh -c` с sh_quote для каждого аргумента.
+/// Кроссплатформенное построение команды.
+///
+/// Delegates to [`crate::platform::command`] for platform-aware dispatch:
+///   - Windows: PowerShell via `powershell -Command`; .cmd/.bat via
+///     `cmd /D /C`; direct commands for everything else.
+///   - Unix: `sh -c` with sh-quoted arguments (preserves existing behavior).
 fn build_command(spec: &ProcessSpec) -> TokioCommand {
-    use std::env::consts::OS;
-    match OS {
-        "windows" => {
-            let command = &spec.command;
-            let is_powershell = command.starts_with("powershell")
-                || command.starts_with("pwsh")
-                || command.contains("Get-")
-                || command.contains("Set-")
-                || command.contains("Invoke-")
-                || command.contains("New-")
-                // Идемпотентные обёртки (git commit «коммитить только при
-                // изменениях») используют $? / $LASTEXITCODE — только PS.
-                || command.contains("$?")
-                || command.contains("$LASTEXITCODE");
+    use crate::platform::command::{build_tokio_command, infer_command_mode};
 
-            if is_powershell {
-                let mut ps_cmd = TokioCommand::new("powershell");
-                ps_cmd.arg("-Command");
-                ps_cmd.arg(command);
-                if !spec.args.is_empty() {
-                    ps_cmd.args(&spec.args);
-                }
-                ps_cmd
-            } else {
-                // Обычные команды запускаем напрямую. Batch-файлы
-                // npm/npx/composer разрешаются через .cmd/.bat в helper.
-                let program = windows_command_program(command);
-                if is_windows_batch(&program) {
-                    // БЕЗ /S: cmd /S при первом же кавычке-токене снимает
-                    // кавычки и режет команду по пробелу («C:\tools\abs
-                    // probe.cmd» → «C:\tools\abs»). Без /S строка из ровно
-                    // двух кавычек с пробелом внутри и именем исполняемого
-                    // файла сохраняет кавычки целиком (правило cmd).
-                    let mut shell = TokioCommand::new("cmd");
-                    shell
-                        .arg("/D")
-                        .arg("/C")
-                        .arg(windows_shell_line(&program, &spec.args));
-                    shell
-                } else {
-                    let mut win_cmd = TokioCommand::new(program);
-                    win_cmd.args(&spec.args);
-                    win_cmd
-                }
-            }
+    let mode = infer_command_mode(&spec.command, &spec.args, None);
+    // infer_command_mode only returns OS-compatible shells, so Ok is guaranteed.
+    let mut cmd = build_tokio_command(&spec.command, &spec.args, mode)
+        .expect("infer_command_mode must return a valid mode for the current OS");
+
+    // PowerShell heuristic: extra args appended after -Command <script>.
+    if crate::platform::command::is_powershell_command(&spec.command) && !spec.args.is_empty() {
+        // Re-build with args appended to the command string.
+        let mut full_script = spec.command.clone();
+        for arg in &spec.args {
+            full_script.push(' ');
+            full_script.push_str(arg);
         }
-        _ => {
-            let mut shell_cmd = String::from(&spec.command);
-            for arg in &spec.args {
-                shell_cmd.push(' ');
-                shell_cmd.push_str(&sh_quote(arg));
-            }
-            let mut unix_cmd = TokioCommand::new("sh");
-            unix_cmd.arg("-c");
-            unix_cmd.arg(shell_cmd);
-            unix_cmd
-        }
+        cmd = TokioCommand::new("powershell");
+        cmd.arg("-Command");
+        cmd.arg(&full_script);
     }
+
+    cmd
 }
 
-/// Параметр в командную строку cmd.exe: кавычки нужны при пробелах или
-/// cmd-метасимволах (включая % — cmd раскрывает %VAR% даже в кавычках,
-/// поэтому такие аргументы обязаны быть в кавычках и не содержать валидных
-/// %VAR% пар). Внутренние кавычки удваиваются (cmd-эскейп "" внутри строки).
-fn win_quote_arg(arg: &str) -> String {
-    let needs_quote = arg.is_empty()
-        || arg
-            .chars()
-            // `@` is valid in npm package names (`@nestjs/cli`, `create-vite@latest`).
-            // Do not quote it by itself: cmd can pass the quotes through to npm,
-            // producing EINVALIDPACKAGENAME for otherwise valid packages.
-            .any(|c| c.is_whitespace() || "&()[]{}<>^|%!\"".contains(c));
-    if !needs_quote {
-        arg.to_string()
-    } else {
-        format!("\"{}\"", arg.replace('"', "\"\""))
-    }
+// ============================================================================
+// Кроссплатформенные хелперы — делегируют в crate::platform
+// ============================================================================
+
+/// Параметр в командную строку cmd.exe (делегирует в platform::command).
+pub fn win_quote_arg(arg: &str) -> String {
+    crate::platform::command::win_quote_arg(arg)
 }
 
-/// Командная строка для `cmd /S /C`: каждый токен кавычкуется по
-/// необходимости, вся строка оборачивается во ВНЕШНИЕ кавычки — cmd снимает
-/// внешнюю пару, внутренние кавычки сохраняются. Без внешней обёртки
-/// команда-путь с пробелами ломается: cmd снимает первую кавычку и режет
-/// токен по пробелу («C:\Users\John» → «Doe\pip.exe» отдельным аргументом).
+/// Командная строка для `cmd /S /C` (обёртка с внешними кавычками).
 pub fn win_command_line(command: &str, args: &[String]) -> String {
     let mut line = win_quote_arg(command);
     for arg in args {
@@ -715,47 +664,19 @@ pub fn win_command_line(command: &str, args: &[String]) -> String {
     format!("\"{}\"", line)
 }
 
-/// Параметр для `sh -c`: одинарные кавычки с экранированием '\'' —
-/// защищает пробелы и метасимволы (&, ;, |, $, `, ", ...).
+/// Параметр для `sh -c` (делегирует в platform::command).
 pub fn sh_quote(arg: &str) -> String {
-    let needs_quote = arg.is_empty()
-        || arg
-            .chars()
-            .any(|c| c.is_whitespace() || "&;|<>()$`\\\"'*?[]~#!{}".contains(c));
-    if !needs_quote {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', "'\\''"))
-    }
+    crate::platform::command::sh_quote(arg)
 }
 
-/// Имя исполняемого файла для прямого запуска на Windows. npm-экосистема
-/// устанавливает эти команды как batch-файлы; CreateProcess не умеет
-/// запускать `.cmd/.bat` без cmd.exe, поэтому явно добавляем расширение.
-/// Пути и уже расширенные имена оставляем без изменений.
+/// Имя исполняемого файла для прямого запуска на Windows
+/// (делегирует в platform::command).
 pub fn windows_command_program(command: &str) -> String {
-    let trimmed = command.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.ends_with(".cmd")
-        || lower.ends_with(".bat")
-        || lower.ends_with(".exe")
-        || trimmed.contains('\\')
-        || trimmed.contains('/')
-    {
-        return trimmed.to_string();
-    }
-    match lower.as_str() {
-        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" => {
-            format!("{}.cmd", trimmed)
-        }
-        "composer" => "composer.bat".to_string(),
-        _ => trimmed.to_string(),
-    }
+    crate::platform::command::resolve_windows_program_name(command)
 }
 
 pub fn is_windows_batch(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
-    lower.ends_with(".cmd") || lower.ends_with(".bat")
+    crate::platform::paths::is_batch_file(command)
 }
 
 /// Безопасная строка для cmd /C: кавычки только вокруг отдельных токенов,
