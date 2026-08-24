@@ -1934,7 +1934,16 @@ function handleExecEvent(event: ExecutionEvent) {
     }
     if ("StepCompleted" in t) {
       const c = (t as Record<string, { status: StepStatus; duration_ms: number }>).StepCompleted;
-      if (c) entry.status = c.status;
+      if (c) {
+        entry.status = c.status;
+        if (typeof c.status === "object" && c.status !== null && "Failed" in c.status) {
+          const errMsg = (c.status as { Failed: { error: string } }).Failed.error;
+          if (errMsg) {
+            entry.logs = [...entry.logs.slice(-299), `ERROR: ${errMsg}`];
+            execLogs = [...execLogs.slice(-2999), `ERROR: ${errMsg}`];
+          }
+        }
+      }
     }
     if ("AllCompleted" in t) {
       const a = (t as Record<string, { result: { total_duration_ms: number; overall: unknown } }>).AllCompleted;

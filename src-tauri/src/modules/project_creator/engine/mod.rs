@@ -160,7 +160,7 @@ impl RecipeEngine for DefaultRecipeEngine {
         // compose_recipe (каталоги фреймворков/языков), предпросмотр (LayoutSummary)
         // и шаблонизацию (README, Docker). Никаких повторных эвристик.
         let layout = ProjectLayout::compute(&context);
-        let recipe = compose_recipe(&layout, &context, folder_name)?;
+        let recipe = compose_recipe(&layout, &context, folder_name, project_path)?;
         // context.project_name (если задан) будет использован внутри compose_recipe
         let steps = flatten_and_filter(&recipe, &context, project_path);
         // Явные предусловия: декларации рецепта сужаются до шагов, реально
@@ -567,6 +567,7 @@ fn compose_recipe(
     layout: &ProjectLayout,
     context: &WizardContext,
     folder_name: &str,
+    project_path: &Path,
 ) -> Result<Recipe, String> {
     // project_name может отличаться от folder_name (при auto-rename папки)
     let project_name = context.project_name.as_deref().unwrap_or(folder_name);
@@ -591,11 +592,7 @@ fn compose_recipe(
         }
     }
     let mut steps: Vec<Step> = Vec::new();
-    let project_path = context
-        .project_path
-        .as_ref()
-        .and_then(|p| p.to_str())
-        .unwrap_or(".");
+    let project_path = project_path.to_str().unwrap_or(".");
 
     steps.push(Step::CreateDirectory {
         id: "create_root".into(),
@@ -7402,7 +7399,7 @@ mod tests {
     }
 
     fn recipe_for(ctx: &WizardContext, folder_name: &str) -> Result<Recipe, String> {
-        compose_recipe(&ProjectLayout::compute(ctx), ctx, folder_name)
+        compose_recipe(&ProjectLayout::compute(ctx), ctx, folder_name, Path::new("."))
     }
 
     fn cmd_args(step: &Step) -> Vec<String> {
