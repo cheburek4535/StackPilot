@@ -408,6 +408,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::OpenApplication {
                         path: "devenv".into(),
                         args: Some(path.to_string_lossy().to_string()),
+                        args_list: None,
                     },
                 });
             }
@@ -466,6 +467,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                 action_type: ActionType::OpenApplication {
                     path: ide_name.into(),
                     args: Some(".".into()),
+                    args_list: None,
                 },
             });
         } else if !ide_fallback.is_empty() && which::which(ide_fallback).is_ok() {
@@ -476,6 +478,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                 action_type: ActionType::OpenApplication {
                     path: ide_fallback.into(),
                     args: Some(".".into()),
+                    args_list: None,
                 },
             });
         }

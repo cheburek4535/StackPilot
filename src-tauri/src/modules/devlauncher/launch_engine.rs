@@ -9,6 +9,10 @@ use std::time::Duration;
 use crate::modules::devlauncher::models::*;
 use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
+use crate::platform::host::current_os;
+use crate::platform::shell::{
+    default_shell_for_platform, is_windows_only_shell, parse_shell, resolve_shell, ShellKind,
+};
 
 pub trait LaunchEngine: Send + Sync {
     /// Executes a single action.
@@ -54,9 +58,16 @@ impl LaunchEngine for ProcessLaunchEngine {
             } => {
                 let dir_ref = working_dir.as_deref();
 
+                // RunCommand is treated as a shell command: existing profiles
+                // store a command string that may contain shell syntax
+                // (pipes, redirects, env vars). Use the platform default shell.
+                let resolved_shell = default_shell_for_platform();
+                let (shell_exe, shell_flag) =
+                    crate::platform::shell::shell_executable(resolved_shell);
+
                 match self.process_manager.spawn_and_track(
-                    "cmd",
-                    &["/C", command],
+                    shell_exe,
+                    &[shell_flag, command],
                     dir_ref,
                     &action.label,
                     session_id,
@@ -64,13 +75,13 @@ impl LaunchEngine for ProcessLaunchEngine {
                     Ok(tracked_proc) => Ok((
                         ActionStatus::Success {
                             message: format!(
-                                "Процесс запущен под контролем менеджера. ID: {}",
+                                "Process started under manager. ID: {}",
                                 tracked_proc.id
                             ),
                         },
                         Some(tracked_proc.id),
                     )),
-                    Err(e) => Err(format!("Менеджер не смог запустить команду: {}", e)),
+                    Err(e) => Err(format!("Manager failed to start command: {}", e)),
                 }
             }
 
@@ -84,12 +95,23 @@ impl LaunchEngine for ProcessLaunchEngine {
                 Err(e) => Err(format!("Failed to open browser: {}", e)),
             },
 
-            ActionType::OpenApplication { path, args } => {
+            ActionType::OpenApplication {
+                path,
+                args,
+                args_list,
+            } => {
                 let mut cmd = StdCommand::new(path);
                 cmd.stdout(Stdio::null()).stderr(Stdio::null());
-                if let Some(args_str) = args {
+
+                // Prefer structured args_list when present (handles quoted
+                // arguments correctly). Fall back to split_whitespace on the
+                // legacy string field for backward compatibility.
+                if let Some(list) = args_list {
+                    cmd.args(list);
+                } else if let Some(args_str) = args {
                     cmd.args(args_str.split_whitespace());
                 }
+
                 match cmd.spawn() {
                     Ok(_) => Ok((
                         ActionStatus::Success {
@@ -194,46 +216,65 @@ impl LaunchEngine for ProcessLaunchEngine {
             }
 
             ActionType::ExecuteScript { script, shell } => {
-                let shell_name = shell.as_deref().unwrap_or("cmd");
-                let flag = match shell_name {
-                    "cmd" => "/C",
-                    "powershell" | "pwsh" => "-Command",
-                    _ => "-c",
+                // Parse the shell string into a typed ShellKind.
+                let requested_shell = match shell {
+                    Some(s) => parse_shell(s).map_err(|e| {
+                        let os = current_os();
+                        format!(
+                            "Unsupported shell '{}': {}. Host OS: {}. \
+                             Valid values: sh, bash, zsh, cmd, powershell, pwsh.",
+                            s, e, os
+                        )
+                    })?,
+                    None => ShellKind::Default,
                 };
 
-                // 1. Запускаем скрипт под контролем менеджера, чтобы он появился в UI
+                // Validate that the resolved shell is available on this OS.
+                let resolved = resolve_shell(requested_shell);
+                if is_windows_only_shell(resolved) && cfg!(not(target_os = "windows")) {
+                    let os = current_os();
+                    return Err(format!(
+                        "Shell '{}' is only available on Windows, but current OS is {}. \
+                         Use a Unix-compatible shell (sh, bash, zsh) or omit the shell \
+                         parameter to use the platform default.",
+                        resolved, os
+                    ));
+                }
+
+                let (shell_exe, shell_flag) = crate::platform::shell::shell_executable(resolved);
+
                 let tracked_proc = self
                     .process_manager
-                    .spawn_and_track(shell_name, &[flag, script], None, &action.label, session_id)
-                    .map_err(|e| format!("Ошибка запуска скрипта: {}", e))?;
+                    .spawn_and_track(
+                        shell_exe,
+                        &[shell_flag, script],
+                        None,
+                        &action.label,
+                        session_id,
+                    )
+                    .map_err(|e| format!("Script launch error: {}", e))?;
 
                 let proc_id = tracked_proc.id;
 
-                // 2. Запускаем цикл неблокирующего ожидания (Polling)
                 loop {
-                    // Засыпаем на 500 миллисекунд, чтобы не перегружать процессор частыми запросами
                     thread::sleep(Duration::from_millis(500));
 
-                    // 3. Опрашиваем менеджер о состоянии нашего скрипта
                     match self.process_manager.refresh_status(&proc_id) {
                         Ok(ProcessStatus::Running) => {
-                            // Скрипт еще работает. Ничего не делаем, цикл идет на следующий круг
                             continue;
                         }
                         Ok(ProcessStatus::Exited(0)) => {
-                            // Скрипт успешно завершился! Выходим из цикла с успехом
                             return Ok((
                                 ActionStatus::Success {
-                                    message: format!("Скрипт успешно выполнен: {}", script),
+                                    message: format!("Script completed: {}", script),
                                 },
                                 Some(proc_id),
                             ));
                         }
                         Ok(ProcessStatus::Exited(code)) => {
-                            // Скрипт завершился, но с ошибкой
                             return Ok((
                                 ActionStatus::Failed {
-                                    error: format!("Скрипт завершился с кодом ошибки {}", code),
+                                    error: format!("Script exited with error code {}", code),
                                 },
                                 Some(proc_id),
                             ));
@@ -241,7 +282,7 @@ impl LaunchEngine for ProcessLaunchEngine {
                         Ok(ProcessStatus::Crashed) => {
                             return Ok((
                                 ActionStatus::Failed {
-                                    error: "Скрипт аварийно завершил работу (Crashed)".to_string(),
+                                    error: "Script crashed".to_string(),
                                 },
                                 Some(proc_id),
                             ));
@@ -249,15 +290,13 @@ impl LaunchEngine for ProcessLaunchEngine {
                         Ok(ProcessStatus::Killed) => {
                             return Ok((
                                 ActionStatus::Failed {
-                                    error: "Выполнение скрипта было принудительно остановлено"
-                                        .to_string(),
+                                    error: "Script was forcibly terminated".to_string(),
                                 },
                                 Some(proc_id),
                             ));
                         }
                         Err(e) => {
-                            // Произошла какая-то системная ошибка при проверке
-                            return Err(format!("Ошибка мониторинга скрипта: {}", e));
+                            return Err(format!("Script monitoring error: {}", e));
                         }
                     }
                 }
@@ -290,4 +329,143 @@ fn parse_http_url(raw: &str) -> Result<ParsedUrl, String> {
         None => (host_port.to_string(), 80),
     };
     Ok(ParsedUrl { host, port, path })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::host::{current_os, HostOs};
+
+    #[test]
+    fn runcommand_uses_platform_default_shell() {
+        let os = current_os();
+        let shell = default_shell_for_platform();
+        let (exe, _) = crate::platform::shell::shell_executable(shell);
+        match os {
+            HostOs::Windows => assert_eq!(exe, "cmd", "RunCommand should use cmd on Windows"),
+            HostOs::Linux | HostOs::Macos => {
+                assert_eq!(exe, "sh", "RunCommand should use sh on Unix")
+            }
+        }
+    }
+
+    #[test]
+    fn runcommand_does_not_name_cmd_on_unix() {
+        if cfg!(target_os = "windows") {
+            return;
+        }
+        let shell = default_shell_for_platform();
+        let (exe, _) = crate::platform::shell::shell_executable(shell);
+        assert_ne!(exe, "cmd", "RunCommand must not use cmd on Unix builds");
+    }
+
+    #[test]
+    fn execute_script_shell_none_resolves_to_default() {
+        let requested = ShellKind::Default;
+        let resolved = resolve_shell(requested);
+        let os = current_os();
+        match os {
+            HostOs::Windows => assert_eq!(resolved, ShellKind::Cmd),
+            HostOs::Linux | HostOs::Macos => assert_eq!(resolved, ShellKind::Sh),
+        }
+    }
+
+    #[test]
+    fn execute_script_legacy_shell_strings_parse_correctly() {
+        assert_eq!(
+            parse_shell("cmd").unwrap(),
+            ShellKind::Cmd,
+            "legacy 'cmd' should parse"
+        );
+        assert_eq!(
+            parse_shell("powershell").unwrap(),
+            ShellKind::PowerShell,
+            "legacy 'powershell' should parse"
+        );
+        assert_eq!(
+            parse_shell("pwsh").unwrap(),
+            ShellKind::Pwsh,
+            "legacy 'pwsh' should parse"
+        );
+        assert_eq!(
+            parse_shell("sh").unwrap(),
+            ShellKind::Sh,
+            "legacy 'sh' should parse"
+        );
+        assert_eq!(
+            parse_shell("bash").unwrap(),
+            ShellKind::Bash,
+            "legacy 'bash' should parse"
+        );
+        assert_eq!(
+            parse_shell("zsh").unwrap(),
+            ShellKind::Zsh,
+            "legacy 'zsh' should parse"
+        );
+    }
+
+    #[test]
+    fn execute_script_legacy_shell_case_insensitive() {
+        assert_eq!(parse_shell("CMD").unwrap(), ShellKind::Cmd);
+        assert_eq!(parse_shell("PowerShell").unwrap(), ShellKind::PowerShell);
+        assert_eq!(parse_shell("  Bash  ").unwrap(), ShellKind::Bash);
+    }
+
+    #[test]
+    fn execute_script_unsupported_shell_returns_error() {
+        let err = parse_shell("fish").unwrap_err();
+        assert!(err.to_string().contains("fish"));
+        let err = parse_shell("zsh-plus").unwrap_err();
+        assert_eq!(err.0, "zsh-plus");
+    }
+
+    #[test]
+    fn open_application_prefers_args_list_over_string() {
+        // Verify the model deserialization: args_list takes precedence
+        let json = r#"{"OpenApplication":{"path":"/usr/bin/app","args":"--foo --bar","args_list":["--foo","--bar"]}}"#;
+        let action: ActionType = serde_json::from_str(json).unwrap();
+        match action {
+            ActionType::OpenApplication {
+                args, args_list, ..
+            } => {
+                assert_eq!(args.as_deref(), Some("--foo --bar"));
+                let list = args_list.as_ref().unwrap();
+                assert_eq!(list.len(), 2);
+                assert_eq!(list[0], "--foo");
+                assert_eq!(list[1], "--bar");
+            }
+            _ => panic!("expected OpenApplication"),
+        }
+    }
+
+    #[test]
+    fn open_application_backward_compat_no_args_list() {
+        // Legacy serialized profiles omit args_list entirely
+        let json = r#"{"OpenApplication":{"path":"/usr/bin/app","args":"--foo"}}"#;
+        let action: ActionType = serde_json::from_str(json).unwrap();
+        match action {
+            ActionType::OpenApplication {
+                args, args_list, ..
+            } => {
+                assert_eq!(args.as_deref(), Some("--foo"));
+                assert_eq!(args_list, None);
+            }
+            _ => panic!("expected OpenApplication"),
+        }
+    }
+
+    #[test]
+    fn open_application_no_args_at_all() {
+        let json = r#"{"OpenApplication":{"path":"/usr/bin/app"}}"#;
+        let action: ActionType = serde_json::from_str(json).unwrap();
+        match action {
+            ActionType::OpenApplication {
+                args, args_list, ..
+            } => {
+                assert_eq!(args, None);
+                assert_eq!(args_list, None);
+            }
+            _ => panic!("expected OpenApplication"),
+        }
+    }
 }

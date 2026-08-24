@@ -8,7 +8,14 @@ pub enum ActionType {
     },
     OpenApplication {
         path: String,
+        #[serde(default)]
         args: Option<String>,
+        /// Structured argument list. When present, takes precedence over the
+        /// legacy `args` string (which uses `split_whitespace` and cannot
+        /// express quoted arguments). Front-end serialized profiles that lack
+        /// this field deserialize as `None` via `#[serde(default)]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args_list: Option<Vec<String>>,
     },
     OpenUrl {
         url: String,

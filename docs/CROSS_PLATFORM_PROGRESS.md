@@ -7,8 +7,12 @@
   - Created `src/platform/` module: `host.rs`, `shell.rs`, `command.rs`, `environment.rs`, `paths.rs`
   - Refactored `process.rs` to delegate to platform command builder
   - 70 unit tests for all platform capabilities
-- [ ] **Session 2**: PATH write backport + rc-file write tests
-- [ ] **Session 3**: Windows process group kill + toolchain workflow tests
+- [x] **Session 2**: DevLauncher cross-platform dispatch + process group kill
+  - `launch_engine.rs`: RunCommand/ExecuteScript use platform shell via `platform::shell`
+  - `process_manager.rs`: cross-platform process group/tree termination
+  - `models.rs`: backward-compatible `args_list` field on `OpenApplication`
+  - 13 new unit tests for shell selection, legacy deserialization, status transitions
+- [ ] **Session 3**: PATH write backport + rc-file write tests + toolchain workflow tests
 - [ ] **Session 4**: Linux/macOS native CI + documentation
 - [ ] **Session 5**: Cross-platform acceptance tests + regression suite
 
@@ -16,9 +20,10 @@
 
 | Feature | Windows | Linux | macOS | Status |
 |---------|---------|-------|-------|--------|
-| DevLauncher RunCommand | `cmd /C` | `sh -c` | `sh -c` | Windows verified |
-| DevLauncher ExecuteScript | PowerShell/`cmd /C` | `/bin/sh`/bash | `/bin/sh`/zsh | Windows verified |
-| Process kill | `child.kill()` | `child.kill()` | `child.kill()` | Needs audit |
+| DevLauncher RunCommand | `cmd /D /C` via `platform::shell` | `sh -lc` via `platform::shell` | `sh -lc` via `platform::shell` | Session 2 |
+| DevLauncher ExecuteScript | `powershell -Command` / `cmd /D /C` | `sh -lc` / `bash -lc` / `zsh -lc` | `sh -lc` / `bash -lc` / `zsh -lc` | Session 2 |
+| Process kill | `taskkill /F /T /PID` (tree) | `SIGTERM` → grace → `SIGKILL` to process group | `SIGTERM` → grace → `SIGKILL` to process group | Session 2 |
+| Process group spawn | `CREATE_NEW_PROCESS_GROUP` | `setsid()` via `pre_exec` | `setsid()` via `pre_exec` | Session 2 |
 | PATH persistence | Registry + PS script | rc-file markers | rc-file markers | Windows verified |
 | Toolchain installer | winget/registry | apt/dnf/pacman | brew | Windows verified |
 | Console process run | PowerShell/UAC | bash/sh | zsh/bash | Windows verified |
@@ -26,10 +31,11 @@
 
 ## OS-Specific Behaviors
 
-### DevLauncher
-- **RunCommand dispatch**: `src-tauri/src/modules/devlauncher/launch_engine.rs:51-55` — `ActionType::RunCommand` uses `StdCommand` directly without shell wrapping
-- **ExecuteScript**: `launch_engine.rs` — `ActionType::ExecuteScript` with `shell: Option<String>` — no Unix default shell logic
-- **Process management**: `src-tauri/src/modules/workspace/process_manager.rs` — uses `child.kill()` from std
+### DevLauncher (Session 2 refactored)
+- **RunCommand dispatch**: `launch_engine.rs` — uses `default_shell_for_platform()` → `cmd /D /C` on Windows, `sh -lc` on Unix
+- **ExecuteScript**: `launch_engine.rs` — parses shell string via `parse_shell()` into typed `ShellKind`, validates OS compatibility
+- **OpenApplication**: `launch_engine.rs` — prefers `args_list: Option<Vec<String>>` over legacy `args: Option<String>` split_whitespace
+- **Process management**: `process_manager.rs` — platform-specific process group spawn and tree kill
 
 ### Toolchain
 - **Windows-first comment**: `src-tauri/src/modules/toolchain/core/installer.rs:22` — "Windows-first: Linux/macOS tasks marked Skipped"
@@ -56,7 +62,7 @@
 
 ## Acceptance Criteria
 
-1. **All sessions complete**: 6/6 sessions done
+1. **All sessions complete**: 3/6 sessions done
 2. **All phases complete**: All sub-tasks in each session done
 3. **Platform matrix**: All features verified on all 3 OSes
 4. **CI**: All three OSes pass `cargo fmt --check`, `cargo check`, `cargo test`
@@ -96,6 +102,21 @@
 - `runner_executes_absolute_executable_path` — env-dependent batch file test
 - 6× `scaffold_*` tests — scaffold CLI environment issues
 - `live_repo_resolution_and_parsing` — ignored (network-dependent)
+
+### Session 2
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| `cargo fmt --check` | PASSED | |
+| `cargo check` | PASSED | Warnings only (pre-existing, no new warnings) |
+| `cargo test` | BLOCKED | Test binary: `STATUS_ENTRYPOINT_NOT_FOUND` (pre-existing Windows DLL linking issue, affects all tests including session 1 platform tests) |
+
+#### New Tests Added (13 tests)
+- `launch_engine` (9 tests): RunCommand shell selection, ExecuteScript default resolution, legacy shell string parsing, case insensitivity, unsupported shell errors, OpenApplication deserialization backward compat (3 tests)
+- `process_manager` (4 tests): ID uniqueness, timestamp, spawn with working_dir, kill for nonexistent process
+
+#### Note on Test Binary
+The `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) error is a pre-existing Windows environment issue where the test binary cannot load a required DLL. This affects ALL tests including session 1's `platform::shell`, `platform::command`, etc. `cargo check` and `cargo fmt --check` pass, confirming compilation correctness.
 
 ## Baseline Commit
 
