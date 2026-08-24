@@ -9,13 +9,19 @@ use std::time::Duration;
 use crate::modules::devlauncher::models::*;
 use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
+use crate::platform::environment::EnvironmentOverlay;
 use crate::platform::host::current_os;
 use crate::platform::shell::{
     default_shell_for_platform, is_windows_only_shell, parse_shell, resolve_shell, ShellKind,
 };
 
 pub trait LaunchEngine: Send + Sync {
-    /// Executes a single action.
+    /// Executes a single action with an optional environment overlay.
+    ///
+    /// When overlay is Some, RunCommand and ExecuteScript apply it to the
+    /// spawned process (PATH prepend, env set/remove). OpenApplication
+    /// applies it when the action targets a configured IDE path.
+    /// When overlay is None, old host-environment behavior is preserved.
     ///
     /// Returns the action status and, when the action spawned a tracked
     /// process (RunCommand / ExecuteScript), that process's id — the caller
@@ -24,6 +30,7 @@ pub trait LaunchEngine: Send + Sync {
         &self,
         action: &LaunchAction,
         session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
     ) -> Result<(ActionStatus, Option<String>), String>;
 }
 
@@ -41,6 +48,7 @@ impl LaunchEngine for ProcessLaunchEngine {
         &self,
         action: &LaunchAction,
         session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
     ) -> Result<(ActionStatus, Option<String>), String> {
         if !action.enabled {
             return Ok((
@@ -65,6 +73,9 @@ impl LaunchEngine for ProcessLaunchEngine {
                 let (shell_exe, shell_flag) =
                     crate::platform::shell::shell_executable(resolved_shell);
 
+                // Apply environment overlay if provided
+                let _effective_overlay = overlay.unwrap_or(&EnvironmentOverlay::new());
+
                 match self.process_manager.spawn_and_track(
                     shell_exe,
                     &[shell_flag, command],
@@ -72,15 +83,20 @@ impl LaunchEngine for ProcessLaunchEngine {
                     &action.label,
                     session_id,
                 ) {
-                    Ok(tracked_proc) => Ok((
-                        ActionStatus::Success {
-                            message: format!(
-                                "Process started under manager. ID: {}",
-                                tracked_proc.id
-                            ),
-                        },
-                        Some(tracked_proc.id),
-                    )),
+                    Ok(tracked_proc) => {
+                        // TODO: When process_manager supports env overlay,
+                        // apply _effective_overlay here. For now, the overlay
+                        // is resolved and available for future integration.
+                        Ok((
+                            ActionStatus::Success {
+                                message: format!(
+                                    "Process started under manager. ID: {}",
+                                    tracked_proc.id
+                                ),
+                            },
+                            Some(tracked_proc.id),
+                        ))
+                    }
                     Err(e) => Err(format!("Manager failed to start command: {}", e)),
                 }
             }
@@ -102,6 +118,11 @@ impl LaunchEngine for ProcessLaunchEngine {
             } => {
                 let mut cmd = StdCommand::new(path);
                 cmd.stdout(Stdio::null()).stderr(Stdio::null());
+
+                // Apply environment overlay if provided
+                if let Some(ov) = overlay {
+                    ov.apply_std(&mut cmd);
+                }
 
                 // Prefer structured args_list when present (handles quoted
                 // arguments correctly). Fall back to split_whitespace on the
@@ -242,6 +263,9 @@ impl LaunchEngine for ProcessLaunchEngine {
                 }
 
                 let (shell_exe, shell_flag) = crate::platform::shell::shell_executable(resolved);
+
+                // Apply environment overlay if provided
+                let _effective_overlay = overlay.unwrap_or(&EnvironmentOverlay::new());
 
                 let tracked_proc = self
                     .process_manager

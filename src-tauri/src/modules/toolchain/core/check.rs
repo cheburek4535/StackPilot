@@ -302,6 +302,7 @@ mod tests {
                 version_probes: vec![vec!["definitely-missing-tool-xyz".to_string()]],
                 known_paths: vec![],
                 registry_keys: vec![],
+                ..Default::default()
             },
             versions: Default::default(),
             sources: InstallSources {

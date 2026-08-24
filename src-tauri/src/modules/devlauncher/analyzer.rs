@@ -493,6 +493,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             description: format!("Auto-detected profile for {}", project_path),
             project_path: Some(project_path.to_string()),
             actions: launch_actions,
+            environment_binding_id: None,
         })
     }
 }

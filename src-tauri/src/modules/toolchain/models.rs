@@ -152,6 +152,29 @@ impl ToolDefinition {
             || !self.sources.linux.is_empty()
             || !self.sources.macos.is_empty()
     }
+
+    /// Возвращает эффективные правила детекции для указанной ОС.
+    /// Если platform_overrides содержит переопределение для os_name,
+    /// его поля заменяют соответствующие базовые. Остальные поля
+    /// наследуются из базовых detection rules.
+    pub fn effective_detection(&self, os_name: &str) -> DetectionRules {
+        let base = self.detection.clone();
+        let override_opt = match os_name {
+            "windows" => self.detection.platform_overrides.windows.as_ref(),
+            "linux" => self.detection.platform_overrides.linux.as_ref(),
+            "macos" => self.detection.platform_overrides.macos.as_ref(),
+            _ => None,
+        };
+        let Some(ovr) = override_opt else {
+            return base;
+        };
+        DetectionRules {
+            version_probes: ovr.version_probes.clone().unwrap_or(base.version_probes),
+            known_paths: ovr.known_paths.clone().unwrap_or(base.known_paths),
+            registry_keys: ovr.registry_keys.clone().unwrap_or(base.registry_keys),
+            ..Default::default()
+        }
+    }
 }
 
 /// Правила обнаружения инструмента на машине.
@@ -166,8 +189,54 @@ pub struct DetectionRules {
     #[serde(default)]
     pub known_paths: Vec<String>,
     /// Ключи реестра Windows (reg query), проверяются на существование.
+    /// Используются ТОЛЬКО на Windows; на Unix игнорируются.
     #[serde(default)]
     pub registry_keys: Vec<String>,
+    /// Платформенные переопределения детекции: если заданы,
+    /// используются вместо базовых правил для указанной ОС.
+    /// Позволяет не дублировать registry_keys в tools.json
+    /// для инструментов, которые работают и на Unix без реестра.
+    #[serde(default, skip_serializing_if = "PlatformDetectionOverrides::is_empty")]
+    pub platform_overrides: PlatformDetectionOverrides,
+}
+
+/// Платформенные переопределения: каждое поле — optional override
+/// поверх базовых DetectionRules. Пустая структура = ничего не
+/// переопределяется (legacy catalog остаётся валидным).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformDetectionOverrides {
+    /// Переопределения для Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<PlatformDetection>,
+    /// Переопределения для Linux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux: Option<PlatformDetection>,
+    /// Переопределения для macOS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<PlatformDetection>,
+}
+
+impl PlatformDetectionOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_none() && self.linux.is_none() && self.macos.is_none()
+    }
+}
+
+/// Platform-specific detection override: any field set replaces
+/// the corresponding field from the base DetectionRules.
+/// Only `Some(...)` fields override; `None` fields inherit from base.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformDetection {
+    /// Override version_probes (Some replaces base entirely).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_probes: Option<Vec<Vec<String>>>,
+    /// Override known_paths (Some replaces base entirely).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_paths: Option<Vec<String>>,
+    /// Override registry_keys (Some replaces base entirely; use
+    /// Some(vec![]) to explicitly clear Windows-only keys on Unix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_keys: Option<Vec<String>>,
 }
 
 /// Advisory-версии. min — «ниже этого работа проекта не гарантирована»,
@@ -734,4 +803,126 @@ pub struct InstalledToolInfo {
     /// Каталоги, добавленные в PATH этим инструментом
     #[serde(default)]
     pub path_entries: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_def() -> ToolDefinition {
+        ToolDefinition {
+            id: "test-tool".into(),
+            category: "utility".into(),
+            display: "Test".into(),
+            description: String::new(),
+            icon: None,
+            detection: DetectionRules {
+                version_probes: vec![vec!["tool".into(), "--version".into()]],
+                known_paths: vec!["/usr/local/bin/tool".into()],
+                registry_keys: vec!["HKLM\\Software\\Tool".into()],
+                platform_overrides: PlatformDetectionOverrides::default(),
+            },
+            versions: Default::default(),
+            sources: InstallSources::default(),
+            size_mb: 1,
+            needs_admin: false,
+            path_entries: vec![],
+            bundled_with: None,
+            health_checks: vec![],
+            notes: None,
+            manual_install: None,
+            extended: Default::default(),
+        }
+    }
+
+    #[test]
+    fn effective_detection_without_override_returns_base() {
+        let def = base_def();
+        let det = def.effective_detection("linux");
+        assert_eq!(det.version_probes, def.detection.version_probes);
+        assert_eq!(det.known_paths, def.detection.known_paths);
+        assert_eq!(det.registry_keys, def.detection.registry_keys);
+    }
+
+    #[test]
+    fn effective_detection_with_linux_override_replaces_version_probes() {
+        let mut def = base_def();
+        def.detection.platform_overrides.linux = Some(PlatformDetection {
+            version_probes: Some(vec![vec!["tool3".to_string(), "--version".to_string()]]),
+            known_paths: None,
+            registry_keys: None,
+        });
+        let det = def.effective_detection("linux");
+        assert_eq!(
+            det.version_probes,
+            vec![vec!["tool3".to_string(), "--version".to_string()]]
+        );
+        assert_eq!(det.known_paths, def.detection.known_paths);
+        assert_eq!(det.registry_keys, def.detection.registry_keys);
+    }
+
+    #[test]
+    fn effective_detection_with_macos_override_clears_registry_keys() {
+        let mut def = base_def();
+        def.detection.platform_overrides.macos = Some(PlatformDetection {
+            version_probes: None,
+            known_paths: None,
+            registry_keys: Some(vec![]),
+        });
+        let det = def.effective_detection("macos");
+        assert!(det.registry_keys.is_empty());
+        assert_eq!(det.version_probes, def.detection.version_probes);
+    }
+
+    #[test]
+    fn effective_detection_windows_override_inherits_base() {
+        let mut def = base_def();
+        def.detection.platform_overrides.windows = Some(PlatformDetection {
+            version_probes: None,
+            known_paths: Some(vec!["C:\\Tool\\bin".into()]),
+            registry_keys: None,
+        });
+        let det = def.effective_detection("windows");
+        assert_eq!(det.known_paths, vec!["C:\\Tool\\bin".to_string()]);
+        assert_eq!(det.version_probes, def.detection.version_probes);
+        assert_eq!(det.registry_keys, def.detection.registry_keys);
+    }
+
+    #[test]
+    fn effective_detection_unknown_os_returns_base() {
+        let mut def = base_def();
+        def.detection.platform_overrides.linux = Some(PlatformDetection {
+            version_probes: Some(vec![vec!["other".into()]]),
+            known_paths: None,
+            registry_keys: None,
+        });
+        let det = def.effective_detection("freebsd");
+        assert_eq!(det.version_probes, def.detection.version_probes);
+    }
+
+    #[test]
+    fn platform_detection_overrides_is_empty_by_default() {
+        let ovr = PlatformDetectionOverrides::default();
+        assert!(ovr.is_empty());
+    }
+
+    #[test]
+    fn platform_detection_overrides_not_empty_with_linux() {
+        let mut ovr = PlatformDetectionOverrides::default();
+        ovr.linux = Some(PlatformDetection::default());
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn effective_detection_linux_override_replaces_known_paths() {
+        let mut def = base_def();
+        def.detection.platform_overrides.linux = Some(PlatformDetection {
+            version_probes: None,
+            known_paths: Some(vec!["/opt/tool/bin".into()]),
+            registry_keys: Some(vec![]),
+        });
+        let det = def.effective_detection("linux");
+        assert_eq!(det.known_paths, vec!["/opt/tool/bin".to_string()]);
+        assert!(det.registry_keys.is_empty());
+    }
 }

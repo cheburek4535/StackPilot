@@ -157,6 +157,7 @@ mod tests {
                 ]],
                 known_paths: vec![],
                 registry_keys: vec![],
+                ..Default::default()
             },
             versions: Default::default(),
             sources: Default::default(),

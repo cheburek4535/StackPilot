@@ -46,6 +46,7 @@ pub fn get_demo_profile() -> LaunchProfile {
                 },
             },
         ],
+        environment_binding_id: None,
     }
 }
 
@@ -113,12 +114,17 @@ fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
 /// ExecuteScript опрашивает процесс до завершения). Поэтому здесь команда
 /// объявлена async и вся блокирующая работа уезжает в spawn_blocking —
 /// UI остаётся отзывчивым во время долгих ожиданий.
+///
+/// If `environment_binding_id` is provided, the binding is resolved into
+/// an EnvironmentOverlay and applied to the action. When absent, the
+/// host environment is used (backward compatible).
 #[tauri::command]
 pub async fn execute_action(
     state: State<'_, DevLauncherState>,
     workspace: State<'_, WorkspaceState>,
     action: LaunchAction,
     session_id: Option<String>,
+    environment_binding_id: Option<String>,
 ) -> Result<ActionStatus, String> {
     let engine = Arc::clone(&state.launch_engine);
     let mut action = action;
@@ -128,10 +134,41 @@ pub async fn execute_action(
     let session_id = session_id.or_else(|| workspace.session.get_session().map(|s| s.started_at));
     let session_id_for_link = session_id.clone();
 
-    let (status, proc_id) =
-        tauri::async_runtime::spawn_blocking(move || engine.execute_action(&action, session_id))
-            .await
-            .map_err(|e| format!("Action task failed: {e}"))??;
+    // Resolve environment overlay from binding if provided
+    let overlay = if let Some(ref binding_id) = environment_binding_id {
+        if let Some(ref svc) = state.binding_service {
+            match svc.get(binding_id) {
+                Ok(binding) => {
+                    let (ov, _diagnostics) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                Err(e) => {
+                    // Binding not found — log warning but continue with host env
+                    eprintln!(
+                        "Warning: environment binding '{}' not found: {}. Using host environment.",
+                        binding_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Clone overlay for the blocking task (EnvironmentOverlay is Clone)
+    let overlay_for_task = overlay.clone();
+
+    let (status, proc_id) = tauri::async_runtime::spawn_blocking(move || {
+        engine.execute_action(&action, session_id, overlay_for_task.as_ref())
+    })
+    .await
+    .map_err(|e| format!("Action task failed: {e}"))??;
 
     if let Some(proc_id) = proc_id {
         if session_id_for_link.is_some() {

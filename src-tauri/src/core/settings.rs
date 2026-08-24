@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
@@ -294,7 +294,7 @@ mod tests {
         let dir = temp_dir("atomic");
         let svc = JsonSettingsService::new(dir.clone());
         svc.get_settings().unwrap();
-        assert!(!Path::new(&dir.join("settings.json.tmp")).exists());
+        assert!(!std::path::Path::new(&dir.join("settings.json.tmp")).exists());
         assert!(svc.settings_path.exists());
         fs::remove_dir_all(dir).ok();
     }

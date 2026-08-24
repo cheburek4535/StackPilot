@@ -104,6 +104,7 @@ fn guard_context(
         git_init: false,
         vscode_config: false,
         answers: Default::default(),
+        environment_binding_id: None,
     }
 }
 

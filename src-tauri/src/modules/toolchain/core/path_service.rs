@@ -77,25 +77,106 @@ pub fn remove_dirs(dirs: &[String], removals: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Раскрывает %VAR% в строке через переменные текущего процесса.
+/// Раскрывает переменные окружения в строке.
+/// - Windows: %VAR% через текущее окружение процесса
+/// - Unix: $VAR, ${VAR} через текущее окружение, ~ через $HOME
 /// Неизвестная переменная остаётся как есть (и не крутит цикл).
 pub fn expand_env_vars(raw: &str) -> String {
-    let mut out = raw.to_string();
-    let mut guard = 0;
-    while let Some(start) = out.find('%') {
-        if guard > 10 {
-            break; // защита от причудливых данных
+    // Unix tilde expansion
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(rest) = raw.strip_prefix('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                let expanded = format!("{home}{rest}");
+                return expand_env_vars(&expanded);
+            }
         }
-        guard += 1;
-        let Some(end_rel) = out[start + 1..].find('%') else {
-            break;
-        };
-        let end = start + 1 + end_rel;
-        let name = &out[start + 1..end];
-        if let Ok(value) = std::env::var(name) {
-            out.replace_range(start..=end, &value);
+    }
+
+    // Windows %VAR% expansion
+    #[cfg(target_os = "windows")]
+    {
+        let mut out = raw.to_string();
+        let mut guard = 0;
+        while let Some(start) = out.find('%') {
+            if guard > 10 {
+                break; // защита от причудливых данных
+            }
+            guard += 1;
+            let Some(end_rel) = out[start + 1..].find('%') else {
+                break;
+            };
+            let end = start + 1 + end_rel;
+            let name = &out[start + 1..end];
+            if let Ok(value) = std::env::var(name) {
+                out.replace_range(start..=end, &value);
+            } else {
+                break;
+            }
+        }
+        return out;
+    }
+
+    // Unix $VAR and ${VAR} expansion
+    #[cfg(not(target_os = "windows"))]
+    {
+        expand_unix_vars(raw)
+    }
+}
+
+/// Expand $VAR and ${VAR} patterns using current environment (Unix only).
+#[cfg(not(target_os = "windows"))]
+fn expand_unix_vars(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if let Some(&'{') = chars.peek() {
+                chars.next(); // consume '{'
+                let mut name = String::new();
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        break;
+                    }
+                    name.push(ch);
+                }
+                if let Ok(val) = std::env::var(&name) {
+                    out.push_str(&val);
+                } else {
+                    out.push_str("${");
+                    out.push_str(&name);
+                    out.push('}');
+                }
+            } else {
+                let mut name = String::new();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphanumeric() || ch == '_' {
+                        name.push(ch);
+                    } else {
+                        if !name.is_empty() {
+                            if let Ok(val) = std::env::var(&name) {
+                                out.push_str(&val);
+                            } else {
+                                out.push('$');
+                                out.push_str(&name);
+                            }
+                            name.clear();
+                        }
+                        out.push(ch);
+                        break;
+                    }
+                }
+                if !name.is_empty() {
+                    if let Ok(val) = std::env::var(&name) {
+                        out.push_str(&val);
+                    } else {
+                        out.push('$');
+                        out.push_str(&name);
+                    }
+                }
+            }
         } else {
-            break;
+            out.push(c);
         }
     }
     out
@@ -332,5 +413,70 @@ mod tests {
             err.contains("абсолютным каталогом"),
             "относительная запись отклоняется: {err}"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_vars_unix_dollar_var() {
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(expand_env_vars("$HOME/bin"), format!("{home}/bin"));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_vars_unix_braced_var() {
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(expand_env_vars("${HOME}/bin"), format!("{home}/bin"));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_vars_unix_unknown_var_stays() {
+        assert_eq!(expand_env_vars("$NOPE_XYZ/bin"), "$NOPE_XYZ/bin");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_vars_unix_tilde() {
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(expand_env_vars("~/bin"), format!("{home}/bin"));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expand_env_vars_windows_percent_var() {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            assert_eq!(
+                expand_env_vars("%USERPROFILE%\\bin"),
+                format!("{home}\\bin")
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expand_env_vars_windows_unknown_var_stays() {
+        assert_eq!(expand_env_vars("%NOPE_XYZ%\\bin"), "%NOPE_XYZ%\\bin");
+    }
+
+    #[test]
+    fn merge_dirs_dedupes_across_platforms() {
+        let existing = vec!["/a".to_string(), "/b".to_string()];
+        let additions = vec!["/b".to_string(), "/c".to_string()];
+        let merged = merge_dirs(&existing, &additions);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0], "/a");
+        assert_eq!(merged[1], "/b");
+        assert_eq!(merged[2], "/c");
+    }
+
+    #[test]
+    fn remove_dirs_handles_nonexistent_entries() {
+        let dirs = vec!["/a".to_string(), "/b".to_string()];
+        let remaining = remove_dirs(&dirs, &["/z".to_string()]);
+        assert_eq!(remaining, dirs);
     }
 }

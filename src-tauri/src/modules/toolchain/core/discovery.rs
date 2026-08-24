@@ -85,8 +85,11 @@ pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String
 /// Пробует пробы версии по очереди, пока одна не ответит.
 /// Возвращает сырой вывод (например «node v22.12.0»), дальше
 /// его разбирает version.rs.
+/// Использует effective_detection для платформенных переопределений.
 async fn probe_version(def: &ToolDefinition) -> Option<String> {
-    for probe in &def.detection.version_probes {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    for probe in &det.version_probes {
         if probe.is_empty() {
             continue;
         }
@@ -97,26 +100,109 @@ async fn probe_version(def: &ToolDefinition) -> Option<String> {
     None
 }
 
-/// Расширяет %VAR% в путях из tools.json (%LOCALAPPDATA% и т.п.)
-/// и приводит к PathBuf. На не-Windows переменные просто остаются
-/// как есть — путь не существует, улика не срабатывает.
+/// Расширяет переменные окружения в путях из tools.json.
+/// Поддерживает:
+///   - Windows: %LOCALAPPDATA%, %APPDATA%, %ProgramFiles%, %USERPROFILE%
+///   - Unix: $VAR, ${VAR}, ~ (home directory)
+/// На не-Windows переменные вида %VAR% просто остаются как есть —
+/// путь не существует, улика не срабатывает.
 fn expand_env(raw: &str) -> PathBuf {
-    const VARS: [(&str, &str); 4] = [
-        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
-        ("%APPDATA%", "APPDATA"),
-        ("%ProgramFiles%", "ProgramFiles"),
-        ("%USERPROFILE%", "USERPROFILE"),
-    ];
-
     let mut expanded = raw.to_string();
-    for (pattern, var) in VARS {
-        if expanded.contains(pattern) {
-            if let Ok(value) = std::env::var(var) {
-                expanded = expanded.replace(pattern, &value);
+
+    // Unix tilde expansion
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(rest) = expanded.strip_prefix('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                expanded = format!("{home}{rest}");
             }
         }
     }
+
+    // Windows %VAR% expansion
+    #[cfg(target_os = "windows")]
+    {
+        const VARS: [(&str, &str); 4] = [
+            ("%LOCALAPPDATA%", "LOCALAPPDATA"),
+            ("%APPDATA%", "APPDATA"),
+            ("%ProgramFiles%", "ProgramFiles"),
+            ("%USERPROFILE%", "USERPROFILE"),
+        ];
+        for (pattern, var) in VARS {
+            if expanded.contains(pattern) {
+                if let Ok(value) = std::env::var(var) {
+                    expanded = expanded.replace(pattern, &value);
+                }
+            }
+        }
+    }
+
+    // Unix $VAR and ${VAR} expansion
+    #[cfg(not(target_os = "windows"))]
+    {
+        expanded = expand_unix_vars(&expanded);
+    }
+
     PathBuf::from(expanded)
+}
+
+/// Expand $VAR and ${VAR} patterns using current environment (Unix only).
+#[cfg(not(target_os = "windows"))]
+fn expand_unix_vars(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if let Some(&'{') = chars.peek() {
+                chars.next(); // consume '{'
+                let mut name = String::new();
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        break;
+                    }
+                    name.push(ch);
+                }
+                if let Ok(val) = std::env::var(&name) {
+                    out.push_str(&val);
+                } else {
+                    out.push_str("${");
+                    out.push_str(&name);
+                    out.push('}');
+                }
+            } else {
+                let mut name = String::new();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphanumeric() || ch == '_' {
+                        name.push(ch);
+                    } else {
+                        // Non-identifier char: not a variable name
+                        if !name.is_empty() {
+                            if let Ok(val) = std::env::var(&name) {
+                                out.push_str(&val);
+                            } else {
+                                out.push('$');
+                                out.push_str(&name);
+                            }
+                            name.clear();
+                        }
+                        out.push(ch);
+                        break;
+                    }
+                }
+                if !name.is_empty() {
+                    if let Ok(val) = std::env::var(&name) {
+                        out.push_str(&val);
+                    } else {
+                        out.push('$');
+                        out.push_str(&name);
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Простейший glob-поиск пути: поддерживает `*` внутри компонентов,
@@ -190,9 +276,11 @@ fn natural_key(name: &str) -> Vec<(u64, String)> {
 
 /// Есть ли на диске хотя бы один из известных путей установки
 /// (с учётом glob-шаблонов вида `PostgreSQL/*/bin`).
+/// Использует effective_detection для платформенных переопределений.
 fn known_path_found(def: &ToolDefinition) -> bool {
-    def.detection
-        .known_paths
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    det.known_paths
         .iter()
         .any(|p| glob_first(&expand_env(p)).is_some())
 }
@@ -205,17 +293,20 @@ fn known_path_found(def: &ToolDefinition) -> bool {
 ///
 /// Windows: бинарники имеют расширения (.exe, .cmd, .bat) — пробы
 /// из tools.json их не содержат, поэтому перебираем возможные.
+/// Использует effective_detection для платформенных переопределений.
 async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
     let exts: &[&str] = if cfg!(target_os = "windows") {
         &["", ".exe", ".cmd", ".bat"]
     } else {
         &[""]
     };
-    for known in &def.detection.known_paths {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    for known in &det.known_paths {
         let Some(dir) = glob_first(&expand_env(known)) else {
             continue;
         };
-        for probe in &def.detection.version_probes {
+        for probe in &det.version_probes {
             if probe.is_empty() {
                 continue;
             }
@@ -238,6 +329,7 @@ async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
 
 /// Отвечает ли reg.exe, что ключ реестра существует.
 /// На не-Windows reg.exe нет — команда падает, получаем false.
+/// Вызывается ТОЛЬКО с Windows; на других ОС never_registry_found.
 async fn registry_key_exists(key: &str) -> bool {
     let result = timeout(
         Duration::from_secs(PROBE_TIMEOUT_SECS),
@@ -247,8 +339,16 @@ async fn registry_key_exists(key: &str) -> bool {
     matches!(result, Ok(Ok(out)) if out.status.success())
 }
 
+/// Проверяет наличие ключей реестра, используя effective_detection.
+/// На не-Windows registry_keys всегда пустые — reg.exe не вызывается.
 async fn any_registry_found(def: &ToolDefinition) -> bool {
-    for key in &def.detection.registry_keys {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    // Registry checks are only meaningful on Windows.
+    if os != "windows" {
+        return false;
+    }
+    for key in &det.registry_keys {
         if registry_key_exists(key).await {
             return true;
         }
@@ -301,6 +401,9 @@ pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> To
 ///   4. нашёлся известный путь/реестр     → PathBroken (не в PATH);
 ///   5. ничего                            → Missing.
 pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+
     if let Some(raw) = probe_version(def).await {
         return apply_version_rules(def, &raw);
     }
@@ -313,7 +416,7 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
 
     // Бинарь в PATH есть, но ни одна проба не ответила:
     // установка сломана (dll потерялись, версия не поддерживается...)
-    for probe in &def.detection.version_probes {
+    for probe in &det.version_probes {
         if probe.is_empty() || is_shell_probe(&probe[0]) {
             continue;
         }
@@ -330,11 +433,10 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
 
     // Установка есть, но не в PATH — и проба оттуда не сработала.
     if known_path_found(def) || any_registry_found(def).await {
-        let footprint = def
-            .detection
+        let footprint = det
             .known_paths
             .first()
-            .or_else(|| def.detection.registry_keys.first())
+            .or_else(|| det.registry_keys.first())
             .cloned()
             .unwrap_or_default();
         return ToolStatus::PathBroken {
@@ -362,9 +464,11 @@ fn is_shell_probe(program: &str) -> bool {
 /// Первый из known_paths, который реально существует на диске
 /// (с учётом glob). Используется для записи в state.json после
 /// установки (путь установки сам инструмент не сообщает).
+/// Использует effective_detection для платформенных переопределений.
 pub(crate) fn installed_path(def: &ToolDefinition) -> Option<String> {
-    def.detection
-        .known_paths
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    det.known_paths
         .iter()
         .find_map(|p| glob_first(&expand_env(p)).map(|p| p.to_string_lossy().into_owned()))
 }
@@ -574,6 +678,99 @@ mod tests {
                     | ToolStatus::PathBroken { .. }
             ),
             "неожиданный статус kafka: {status:?}"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_unix_tilde_expansion() {
+        if let Ok(home) = std::env::var("HOME") {
+            let expanded = expand_env("~/bin");
+            assert_eq!(
+                expanded,
+                PathBuf::from(format!("{home}/bin")),
+                "tilde should expand to HOME"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_unix_dollar_var_expansion() {
+        if let Ok(home) = std::env::var("HOME") {
+            let expanded = expand_env("$HOME/bin");
+            assert_eq!(
+                expanded,
+                PathBuf::from(format!("{home}/bin")),
+                "$HOME should expand"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_unix_braced_var_expansion() {
+        if let Ok(home) = std::env::var("HOME") {
+            let expanded = expand_env("${HOME}/bin");
+            assert_eq!(
+                expanded,
+                PathBuf::from(format!("{home}/bin")),
+                "${HOME} should expand"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_env_unix_unknown_var_stays_literal() {
+        let expanded = expand_env("$TOTALLY_FAKE_VAR_XYZ/bin");
+        assert_eq!(
+            expanded,
+            PathBuf::from("$TOTALLY_FAKE_VAR_XYZ/bin"),
+            "unknown var should stay as-is"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expand_env_windows_userprofile() {
+        if let Ok(up) = std::env::var("USERPROFILE") {
+            let expanded = expand_env("%USERPROFILE%\\bin");
+            assert_eq!(
+                expanded,
+                PathBuf::from(format!("{up}\\bin")),
+                "%USERPROFILE% should expand"
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expand_env_windows_unknown_var_stays_literal() {
+        let expanded = expand_env("%TOTALLY_FAKE_XYZ%\\bin");
+        assert_eq!(
+            expanded,
+            PathBuf::from("%TOTALLY_FAKE_XYZ%\\bin"),
+            "unknown %VAR% stays literal on Windows"
+        );
+    }
+
+    #[test]
+    fn effective_detection_is_used_in_detect_tool() {
+        let mut d = def("node").clone();
+        d.detection.version_probes = vec![vec![
+            "cmd".into(),
+            "/c".into(),
+            "echo".into(),
+            "v99.0.0".into(),
+        ]];
+        d.detection.known_paths = vec![];
+        d.detection.registry_keys = vec![];
+        // effective_detection("windows") should use the override if present
+        let det = d.effective_detection("windows");
+        assert!(
+            !det.version_probes.is_empty(),
+            "effective_detection should return probes"
         );
     }
 }

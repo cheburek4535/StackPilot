@@ -22,7 +22,12 @@ impl PlatformAdapter for LinuxAdapter {
     }
 
     fn package_managers(&self) -> Vec<String> {
-        vec!["apt".to_string(), "dnf".to_string(), "pacman".to_string()]
+        vec![
+            "apt".to_string(),
+            "dnf".to_string(),
+            "pacman".to_string(),
+            "zypper".to_string(),
+        ]
     }
 
     fn path_separator(&self) -> String {

@@ -31,6 +31,10 @@ pub fn run() {
             std::fs::create_dir_all(data_dir.join("profiles"))
                 .expect("Failed to create profiles dir");
 
+            // Project environments directory
+            std::fs::create_dir_all(data_dir.join("project_environments"))
+                .expect("Failed to create project_environments dir");
+
             // === Plugins ===
             #[cfg(feature = "plugins")]
             {
@@ -56,6 +60,15 @@ pub fn run() {
                 ),
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
             );
+
+            // === ProjectEnvironment module ===
+            let project_env_state = modules::project_environment::ProjectEnvironmentState::new(
+                data_dir.join("project_environments"),
+            );
+
+            // Wire up binding service to DevLauncher
+            let devlauncher_state =
+                devlauncher_state.with_binding_service(project_env_state.binding_service.clone());
 
             // === ProjectCreator module ===
             let project_creator_state = modules::project_creator::ProjectCreatorState::new(
@@ -91,6 +104,7 @@ pub fn run() {
             app.manage(devlauncher_state);
             app.manage(workspace_state);
             app.manage(project_creator_state);
+            app.manage(project_env_state);
             app.manage(core::settings::SettingsState(settings_service));
 
             // Auto-track process errors in the session
@@ -197,6 +211,15 @@ pub fn run() {
             core::settings::reset_settings,
             core::settings::settings_check_path,
             core::settings::get_app_data_dir,
+            // ProjectEnvironment commands
+            modules::project_environment::commands::pe_list_bindings,
+            modules::project_environment::commands::pe_get_binding,
+            modules::project_environment::commands::pe_save_binding,
+            modules::project_environment::commands::pe_delete_binding,
+            modules::project_environment::commands::pe_find_binding_for_project,
+            modules::project_environment::commands::pe_validate_binding,
+            modules::project_environment::commands::pe_resolve_overlay,
+            modules::project_environment::commands::pe_create_binding,
             // Plugin commands
             #[cfg(feature = "plugins")]
             mini_ide::commands::get_completions,

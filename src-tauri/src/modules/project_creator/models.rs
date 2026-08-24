@@ -388,6 +388,11 @@ pub struct WizardContext {
     pub git_init: bool,
     pub vscode_config: bool,
     pub answers: std::collections::HashMap<String, Vec<String>>,
+    /// Optional environment binding ID. When set, the project creator
+    /// applies the binding's tool overrides and PATH entries to scaffold
+    /// and command execution. Absent/None uses host environment (backward compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_binding_id: Option<String>,
 }
 
 impl Default for WizardContext {
@@ -416,6 +421,7 @@ impl Default for WizardContext {
             git_init: false,
             vscode_config: false,
             answers: std::collections::HashMap::new(),
+            environment_binding_id: None,
         }
     }
 }

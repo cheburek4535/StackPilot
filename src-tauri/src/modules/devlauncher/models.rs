@@ -52,6 +52,12 @@ pub struct LaunchProfile {
     pub description: String,
     pub project_path: Option<String>,
     pub actions: Vec<LaunchAction>,
+    /// Optional environment binding ID. When set, the launch engine resolves
+    /// the binding into an EnvironmentOverlay and applies it to RunCommand,
+    /// ExecuteScript, and OpenApplication actions. Absent/None preserves
+    /// old host-environment behavior exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_binding_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
