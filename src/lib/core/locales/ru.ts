@@ -1334,6 +1334,7 @@ export default {
   "devl.toast_workspace_failed": "Не удалось установить проект: {err}",
   "devl.use_form": "Используйте форму выше для запуска процесса.",
   "devl.view_logs": "Просмотр логов",
+  "devl.visible_terminal": "Работает в нативном окне терминала",
   "size.bytes": "{n} Б",
   "size.kb": "{n} КБ",
   "size.mb": "{n} МБ",

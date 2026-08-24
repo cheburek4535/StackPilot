@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
 use crate::modules::workspace::models::*;
+use crate::platform::environment::EnvironmentOverlay;
 use crate::platform::host::{current_os, HostOs};
 
 pub const PROCESS_EVENT_OUTPUT: &str = "process-output";
@@ -31,6 +32,42 @@ pub trait ProcessManager: Send + Sync {
         label: &str,
         session_id: Option<String>,
     ) -> Result<TrackedProcess, String>;
+
+    /// Spawn a process with an environment overlay applied to the child
+    /// (PATH prepend, env set/remove). Used by the launch engine so that
+    /// environment bindings take effect on spawned processes.
+    fn spawn_and_track_with_overlay(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+    ) -> Result<TrackedProcess, String>;
+
+    /// Spawn a process in a new native terminal window. The process is
+    /// tracked by PID so it can be killed, but its output goes to the
+    /// terminal window rather than the app's log viewer.
+    fn spawn_visible(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+    ) -> Result<TrackedProcess, String>;
+
+    /// Launch a GUI application detached without capturing output. The
+    /// application opens in its own native window and is not tracked as a
+    /// managed process.
+    fn launch_detached(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+    ) -> Result<(), String>;
 
     fn list(&self) -> Vec<TrackedProcess>;
     fn kill(&self, id: &str) -> Result<(), String>;
@@ -132,6 +169,39 @@ impl OsProcessManager {
         cmd
     }
 
+    /// Build a Command for launching a GUI application detached.
+    ///
+    /// GUI apps (IDE, browser, Docker Desktop) should not have their stdout/
+    /// stderr piped or nulled in a way that breaks their native window.
+    /// On Windows they are launched via `start` semantics (Cmd::new + spawn
+    /// without console handles), on Unix via `open`/`xdg-open`/direct spawn.
+    fn build_detached_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        // Do not pipe stdout/stderr for GUI apps — let them inherit or
+        // detach naturally. Piping to null on Windows can break GUI init.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x00000008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            // DETACHED_PROCESS lets a GUI app run without a console;
+            // CREATE_NEW_PROCESS_GROUP keeps the tree killable.
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        }
+
+        if let Some(dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+
+        cmd
+    }
+
     /// Terminate a process tree on the current platform.
     ///
     /// Returns `Ok(true)` if the process was successfully terminated by us,
@@ -160,6 +230,225 @@ impl OsProcessManager {
                 },
             );
         }
+    }
+}
+
+// ============================================================================
+// Native terminal spawning (cross-platform)
+// ============================================================================
+
+/// Spawn a process in a new native terminal window so the user can see its
+/// output directly and interact with it.
+///
+/// The spawned terminal process is tracked by `self` so it appears in the
+/// app's process list and can be killed. The command itself runs inside the
+/// terminal; killing the tracked process kills the terminal (and its child
+/// tree on Windows via `taskkill /T`, on Unix via the process group).
+fn spawn_in_terminal(
+    manager: &OsProcessManager,
+    command: &str,
+    args: &[&str],
+    working_dir: Option<&str>,
+    label: &str,
+    session_id: Option<String>,
+    overlay: Option<&EnvironmentOverlay>,
+) -> Result<TrackedProcess, String> {
+    let (term_cmd, term_args) = build_terminal_command(command, args, working_dir)?;
+
+    // Reuse the tracked-spawn machinery so the terminal is listed and can be
+    // killed. The terminal's own stdout/stderr are piped (they're mostly the
+    // terminal's control channel); the real command output appears in the
+    // native window. The environment overlay is applied to the terminal
+    // process so env vars/PATH reach the inner command.
+    let term_args_refs: Vec<&str> = term_args.iter().map(|s| s.as_str()).collect();
+    match overlay {
+        Some(ov) => manager.spawn_and_track_visible_with_overlay(
+            &term_cmd,
+            &term_args_refs,
+            None,
+            label,
+            session_id,
+            ov,
+        ),
+        None => manager.spawn_and_track_visible(
+            &term_cmd,
+            &term_args_refs,
+            None,
+            label,
+            session_id,
+        ),
+    }
+}
+
+/// Build the OS-specific command that opens a terminal and runs the command.
+///
+/// - Windows: `cmd /C start "title" cmd /K "cd /d <dir> && <command>"` —
+///   opens a new visible console window that stays open (`/K`).
+/// - macOS: `osascript -e 'tell application "Terminal" to do script "<cmd>"'`.
+/// - Linux: try common terminal emulators (`gnome-terminal`, `konsole`,
+///   `x-terminal-emulator`, `xterm`, `alacritty`).
+fn build_terminal_command(
+    command: &str,
+    args: &[&str],
+    working_dir: Option<&str>,
+) -> Result<(String, Vec<String>), String> {
+    let joined = join_command(command, args);
+
+    // Build the inner command that runs in the terminal. We use `cd /d <dir>`
+    // on Windows and `cd <dir>` on Unix so the command runs in the project
+    // directory, then execute the command. The terminal stays open so the
+    // user sees the long-running process output.
+    let full_inner: String = match working_dir {
+        Some(dir) => {
+            let cd = if cfg!(target_os = "windows") {
+                format!("cd /d \"{}\"", dir)
+            } else {
+                format!("cd '{}'", dir.replace('\'', "'\\''"))
+            };
+            format!("{} && {}", cd, joined)
+        }
+        None => joined.clone(),
+    };
+
+    match current_os() {
+        HostOs::Windows => {
+            // Robust Windows terminal launch:
+            //   cmd /C start "DevLauncher" cmd /K "<temp_script.cmd>"
+            //
+            // We write the inner command (cd + command) to a temporary batch
+            // file and pass its path to `cmd /K`, avoiding the notoriously
+            // fragile quoting of nested cmd.exe arguments.
+            let script_path = write_temp_batch_script(&full_inner)?;
+            Ok((
+                "cmd".to_string(),
+                vec![
+                    "/C".to_string(),
+                    "start".to_string(),
+                    "\"DevLauncher\"".to_string(),
+                    "cmd".to_string(),
+                    "/K".to_string(),
+                    script_path,
+                ],
+            ))
+        }
+        HostOs::Macos => {
+            // Use AppleScript to run the command in a new Terminal window.
+            let escaped = full_inner.replace('\\', "\\\\").replace('"', "\\\"");
+            Ok((
+                "osascript".to_string(),
+                vec![
+                    "-e".to_string(),
+                    format!("tell application \"Terminal\" to do script \"{}\"", escaped),
+                ],
+            ))
+        }
+        HostOs::Linux => {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-lc", &full_inner]);
+            // Find an available terminal emulator.
+            let candidates = [
+                "gnome-terminal",
+                "konsole",
+                "x-terminal-emulator",
+                "xfce4-terminal",
+                "xterm",
+                "alacritty",
+                "kitty",
+            ];
+            for cand in candidates {
+                if which::which(cand).is_ok() {
+                    let term_args = match cand {
+                        "gnome-terminal" => vec![
+                            "--".to_string(),
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            format!(
+                                "cd '{}' && {}",
+                                working_dir.unwrap_or(".").replace('\'', "'\\''"),
+                                full_inner
+                            ),
+                        ],
+                        "konsole" => vec![
+                            "-e".to_string(),
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            full_inner.clone(),
+                        ],
+                        "x-terminal-emulator" | "xfce4-terminal" => vec![
+                            "-e".to_string(),
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            full_inner.clone(),
+                        ],
+                        "xterm" | "alacritty" | "kitty" => vec![
+                            "-e".to_string(),
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            full_inner.clone(),
+                        ],
+                        _ => vec![full_inner.clone()],
+                    };
+                    return Ok((cand.to_string(), term_args));
+                }
+            }
+            Err(
+                "No supported terminal emulator found on Linux. Install gnome-terminal, \
+                 konsole, xterm, or alacritty."
+                    .to_string(),
+            )
+        }
+    }
+}
+
+/// Write the inner command to a temporary `.cmd` batch file and return its
+/// path. Used on Windows so `cmd /K <file>` runs reliably without fragile
+/// nested quoting.
+#[cfg(target_os = "windows")]
+fn write_temp_batch_script(inner: &str) -> Result<String, String> {
+    use std::io::Write;
+
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("devlauncher_{}.cmd", std::process::id()));
+
+    let mut file = std::fs::File::create(&dir)
+        .map_err(|e| format!("Failed to create temp script: {}", e))?;
+    writeln!(file, "@echo off")
+        .and_then(|_| writeln!(file, "{}", inner))
+        .map_err(|e| format!("Failed to write temp script: {}", e))?;
+
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Non-Windows stub (never used on Unix/macOS — they use native terminals).
+#[cfg(not(target_os = "windows"))]
+fn write_temp_batch_script(_inner: &str) -> Result<String, String> {
+    Err("temp batch scripts are Windows-only".to_string())
+}
+
+/// Join a command and its args into a single shell string for terminal
+/// execution. Arguments are shell-quoted so spaces and special chars survive.
+fn join_command(command: &str, args: &[&str]) -> String {
+    let mut parts: Vec<String> = vec![quote_for_shell(command)];
+    for a in args {
+        parts.push(quote_for_shell(a));
+    }
+    parts.join(" ")
+}
+
+/// Shell-quote a single token. On Windows, wrap in double quotes if it
+/// contains spaces; on Unix, single-quote if it contains shell metacharacters.
+fn quote_for_shell(token: &str) -> String {
+    let needs_quote = token.is_empty()
+        || token
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'');
+    if !needs_quote {
+        return token.to_string();
+    }
+    if cfg!(target_os = "windows") {
+        format!("\"{}\"", token.replace('"', "\"\""))
+    } else {
+        format!("'{}'", token.replace('\'', "'\\''"))
     }
 }
 
@@ -293,66 +582,51 @@ impl ProcessManager for OsProcessManager {
         label: &str,
         session_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
-        let mut cmd = Self::build_command(command, args, working_dir);
+        self.spawn_and_track_inner(command, args, working_dir, label, session_id, None, false)
+    }
 
-        let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
-        let pid = child.id();
-        let id = generate_id();
-        let started_at = timestamp_now();
-
-        let info = TrackedProcess {
-            id: id.clone(),
-            pid,
-            label: label.to_string(),
-            status: ProcessStatus::Running,
-            started_at,
-            duration_secs: 0,
-            restarts: 0,
-            last_error: None,
+    fn spawn_and_track_with_overlay(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
             session_id,
-        };
+            Some(overlay),
+            false,
+        )
+    }
 
-        let stdout_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    fn spawn_visible(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+    ) -> Result<TrackedProcess, String> {
+        spawn_in_terminal(self, command, args, working_dir, label, session_id, overlay)
+    }
 
-        let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
-        let handle = handle_guard
-            .clone()
-            .expect("AppHandle must be set before spawning processes");
-
-        if let Some(stdout) = child.stdout.take() {
-            Self::spawn_reader_thread(
-                "stdout",
-                Box::new(stdout),
-                id.clone(),
-                stdout_buffer.clone(),
-                handle.clone(),
-            );
-        }
-
-        if let Some(stderr) = child.stderr.take() {
-            Self::spawn_reader_thread(
-                "stderr",
-                Box::new(stderr),
-                id.clone(),
-                stderr_buffer.clone(),
-                handle.clone(),
-            );
-        }
-
-        let entry = ActiveProcess {
-            info: info.clone(),
-            child: Some(child),
-            stdout_buffer,
-            stderr_buffer,
-        };
-
-        self.processes
-            .lock()
-            .expect("processes lock poisoned")
-            .push(entry);
-
-        Ok(info)
+    fn launch_detached(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+    ) -> Result<(), String> {
+        let mut cmd = Self::build_detached_command(command, args, working_dir);
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to launch '{}': {}", command, e))
     }
 
     fn list(&self) -> Vec<TrackedProcess> {
@@ -542,6 +816,121 @@ impl ProcessManager for OsProcessManager {
             stdout_lines: stdout,
             stderr_lines: stderr,
         })
+    }
+}
+
+impl OsProcessManager {
+    /// Shared spawn+track implementation. When `overlay` is `Some`, the
+    /// environment overlay (PATH prepend, env set/remove) is applied to the
+    /// child process.
+    fn spawn_and_track_inner(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        visible: bool,
+    ) -> Result<TrackedProcess, String> {
+        let mut cmd = Self::build_command(command, args, working_dir);
+
+        if let Some(ov) = overlay {
+            ov.apply_std(&mut cmd);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
+        let pid = child.id();
+        let id = generate_id();
+        let started_at = timestamp_now();
+
+        let info = TrackedProcess {
+            id: id.clone(),
+            pid,
+            label: label.to_string(),
+            status: ProcessStatus::Running,
+            started_at,
+            duration_secs: 0,
+            restarts: 0,
+            last_error: None,
+            session_id,
+            visible,
+        };
+
+        let stdout_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
+        let handle = handle_guard
+            .clone()
+            .expect("AppHandle must be set before spawning processes");
+
+        if let Some(stdout) = child.stdout.take() {
+            Self::spawn_reader_thread(
+                "stdout",
+                Box::new(stdout),
+                id.clone(),
+                stdout_buffer.clone(),
+                handle.clone(),
+            );
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            Self::spawn_reader_thread(
+                "stderr",
+                Box::new(stderr),
+                id.clone(),
+                stderr_buffer.clone(),
+                handle.clone(),
+            );
+        }
+
+        let entry = ActiveProcess {
+            info: info.clone(),
+            child: Some(child),
+            stdout_buffer,
+            stderr_buffer,
+        };
+
+        self.processes
+            .lock()
+            .expect("processes lock poisoned")
+            .push(entry);
+
+        Ok(info)
+    }
+
+    /// Spawn a tracked process that is shown in its own native terminal window.
+    fn spawn_and_track_visible(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(command, args, working_dir, label, session_id, None, true)
+    }
+
+    /// Spawn a tracked visible-terminal process with an environment overlay.
+    fn spawn_and_track_visible_with_overlay(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            Some(overlay),
+            true,
+        )
     }
 }
 

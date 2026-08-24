@@ -14,6 +14,8 @@ export type TrackedProcess = {
   restarts: number;
   last_error: string | null;
   session_id: string | null;
+  /** True if the process runs in its own native terminal window. */
+  visible?: boolean;
 };
 
 export type ProcessLogs = {

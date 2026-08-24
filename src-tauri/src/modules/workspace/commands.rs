@@ -57,6 +57,43 @@ pub fn get_process_logs(
     state.process_manager.get_logs(&id)
 }
 
+/// Spawn a process in a new native terminal window (visible to the user).
+#[tauri::command]
+pub fn spawn_process_visible(
+    state: State<'_, WorkspaceState>,
+    command: String,
+    args: Vec<String>,
+    working_dir: Option<String>,
+    label: String,
+) -> Result<TrackedProcess, String> {
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let session_id = state.session.get_session().map(|s| s.started_at.clone());
+    let proc = state.process_manager.spawn_visible(
+        &command,
+        &args_refs,
+        working_dir.as_deref(),
+        &label,
+        session_id,
+        None,
+    )?;
+    state.session.link_process(&proc.id);
+    Ok(proc)
+}
+
+/// Launch a GUI application detached (IDE, browser, Docker Desktop).
+#[tauri::command]
+pub fn launch_application_detached(
+    state: State<'_, WorkspaceState>,
+    command: String,
+    args: Vec<String>,
+    working_dir: Option<String>,
+) -> Result<(), String> {
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    state
+        .process_manager
+        .launch_detached(&command, &args_refs, working_dir.as_deref())
+}
+
 // ===== Project context commands =====
 
 #[tauri::command]

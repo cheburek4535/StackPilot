@@ -84,13 +84,16 @@ pub fn resolve_shell(shell: ShellKind) -> ShellKind {
 
 /// Returns the executable name and base flag for a resolved shell.
 ///
-/// `Cmd` → `("cmd", "/D")` — `/D` disables AutoRun; the caller adds `/C <script>`.
+/// `Cmd` → `("cmd", "/C")` — `/C` executes the following command string and
+/// exits. This must be a single argument: cmd.exe rejects combined flags
+/// like `/D /C` when passed as one quoted argument, so the caller builds
+/// `cmd /C <command>` with separate args.
 /// `PowerShell` → `("powershell", "-Command")`.
 /// `Pwsh` → `("pwsh", "-Command")`.
 /// Unix shells → `(name, "-lc")` — login flag for deterministic env.
 pub fn shell_executable(shell: ShellKind) -> (&'static str, &'static str) {
     match shell {
-        ShellKind::Cmd => ("cmd", "/D"),
+        ShellKind::Cmd => ("cmd", "/C"),
         ShellKind::PowerShell => ("powershell", "-Command"),
         ShellKind::Pwsh => ("pwsh", "-Command"),
         ShellKind::Sh => ("sh", "-lc"),
@@ -174,7 +177,7 @@ mod tests {
     fn shell_executable_returns_correct_pairs() {
         let (exe, flag) = shell_executable(ShellKind::Cmd);
         assert_eq!(exe, "cmd");
-        assert_eq!(flag, "/D");
+        assert_eq!(flag, "/C");
 
         let (exe, flag) = shell_executable(ShellKind::PowerShell);
         assert_eq!(exe, "powershell");

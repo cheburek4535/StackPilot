@@ -26,6 +26,7 @@ pub fn get_demo_profile() -> LaunchProfile {
                 action_type: ActionType::RunCommand {
                     command: "docker compose up -d".into(),
                     working_dir: None,
+                    persistent: Some(true),
                 },
             },
             LaunchAction {
@@ -35,6 +36,7 @@ pub fn get_demo_profile() -> LaunchProfile {
                 action_type: ActionType::RunCommand {
                     command: "npm run dev".into(),
                     working_dir: Some("./backend".into()),
+                    persistent: Some(true),
                 },
             },
             LaunchAction {
@@ -47,6 +49,7 @@ pub fn get_demo_profile() -> LaunchProfile {
             },
         ],
         environment_binding_id: None,
+        preferred_ide: Some(PreferredIde::Vscode),
     }
 }
 
@@ -187,4 +190,123 @@ pub async fn analyze_project(
     tauri::async_runtime::spawn_blocking(move || analyzer.analyze(&path))
         .await
         .map_err(|e| format!("Analyze task failed: {e}"))?
+}
+
+/// Launch the preferred IDE for a project. Returns true if the IDE was
+/// launched, false if no IDE is available.
+#[tauri::command]
+pub async fn launch_ide(
+    state: State<'_, DevLauncherState>,
+    ide: PreferredIde,
+    project_path: Option<String>,
+) -> Result<bool, String> {
+    let engine = Arc::clone(&state.launch_engine);
+    let path = project_path;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.launch_ide(&ide, path.as_deref(), None)
+    })
+    .await
+    .map_err(|e| format!("Launch IDE task failed: {e}"))?
+}
+
+/// Launch the preferred IDE for the current workspace project, then execute
+/// all enabled actions in the profile. This is the "Run Project" entry point.
+#[tauri::command]
+pub async fn run_profile(
+    state: State<'_, DevLauncherState>,
+    workspace: State<'_, WorkspaceState>,
+    profile: LaunchProfile,
+    session_id: Option<String>,
+    environment_binding_id: Option<String>,
+) -> Result<Vec<(String, ActionStatus)>, String> {
+    let engine = Arc::clone(&state.launch_engine);
+    let mut results: Vec<(String, ActionStatus)> = Vec::new();
+
+    // 1. Launch the preferred IDE first so the user sees it open immediately.
+    if let Some(ide) = &profile.preferred_ide {
+        let project_path = profile
+            .project_path
+            .clone()
+            .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+        let launched = engine
+            .launch_ide(ide, project_path.as_deref(), None)
+            .unwrap_or(false);
+        results.push((
+            format!("ide:{}", ide.cli_name()),
+            if launched {
+                ActionStatus::Success {
+                    message: format!("{} launched", ide.label()),
+                }
+            } else {
+                ActionStatus::Skipped {
+                    reason: format!("{} not found", ide.label()),
+                }
+            },
+        ));
+    }
+
+    // 2. Execute all enabled actions sequentially.
+    let session_id_for_link = session_id
+        .clone()
+        .or_else(|| workspace.session.get_session().map(|s| s.started_at));
+
+    // Resolve environment overlay once for all actions.
+    let overlay = if let Some(ref binding_id) = environment_binding_id {
+        if let Some(ref svc) = state.binding_service {
+            match svc.get(binding_id) {
+                Ok(binding) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: environment binding '{}' not found: {}. Using host environment.",
+                        binding_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    for action in &profile.actions {
+        if !action.enabled {
+            results.push((
+                action.id.clone(),
+                ActionStatus::Skipped {
+                    reason: format!("Action '{}' disabled", action.label),
+                },
+            ));
+            continue;
+        }
+
+        let mut action = action.clone();
+        let action_id = action.id.clone();
+        resolve_working_dir(&mut action, &workspace);
+        let ov = overlay.clone();
+        let session = session_id_for_link.clone();
+        let engine = Arc::clone(&engine);
+        let (status, proc_id) =
+            tauri::async_runtime::spawn_blocking(move || {
+                engine.execute_action(&action, session, ov.as_ref())
+            })
+            .await
+            .map_err(|e| format!("Action task failed: {e}"))??;
+
+        if let Some(proc_id) = proc_id {
+            if session_id_for_link.is_some() {
+                workspace.session.link_process(&proc_id);
+            }
+        }
+        results.push((action_id, status));
+    }
+
+    Ok(results)
 }

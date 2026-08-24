@@ -36,6 +36,9 @@ pub struct TrackedProcess {
     pub restarts: u32,
     pub last_error: Option<String>,
     pub session_id: Option<String>,
+    /// True if the process was spawned in its own native terminal window.
+    #[serde(default)]
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

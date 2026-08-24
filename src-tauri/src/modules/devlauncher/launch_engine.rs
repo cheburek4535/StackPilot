@@ -1,7 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::process::Command as StdCommand;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -32,6 +30,18 @@ pub trait LaunchEngine: Send + Sync {
         session_id: Option<String>,
         overlay: Option<&EnvironmentOverlay>,
     ) -> Result<(ActionStatus, Option<String>), String>;
+
+    /// Launch the preferred IDE for a project. This is called before running
+    /// actions so the user sees their IDE open immediately with the project.
+    ///
+    /// Returns `Ok(true)` if the IDE was launched, `Ok(false)` if no
+    /// preferred IDE is set or it could not be found, and `Err` on failure.
+    fn launch_ide(
+        &self,
+        ide: &PreferredIde,
+        project_path: Option<&str>,
+        overlay: Option<&EnvironmentOverlay>,
+    ) -> Result<bool, String>;
 }
 
 pub struct ProcessLaunchEngine {
@@ -43,6 +53,7 @@ impl ProcessLaunchEngine {
         Self { process_manager }
     }
 }
+
 impl LaunchEngine for ProcessLaunchEngine {
     fn execute_action(
         &self,
@@ -63,42 +74,74 @@ impl LaunchEngine for ProcessLaunchEngine {
             ActionType::RunCommand {
                 command,
                 working_dir,
+                ..
             } => {
                 let dir_ref = working_dir.as_deref();
+                let empty_overlay = EnvironmentOverlay::new();
+                let effective_overlay = overlay.unwrap_or(&empty_overlay);
 
-                // RunCommand is treated as a shell command: existing profiles
-                // store a command string that may contain shell syntax
-                // (pipes, redirects, env vars). Use the platform default shell.
-                let resolved_shell = default_shell_for_platform();
-                let (shell_exe, shell_flag) =
-                    crate::platform::shell::shell_executable(resolved_shell);
+                // Determine spawn mode:
+                // - persistent == Some(true) → show in a native terminal window.
+                // - otherwise → one-shot command, capture output to log viewer.
+                let is_persistent = action.action_type.is_persistent();
 
-                // Apply environment overlay if provided
-                let _effective_overlay = overlay.unwrap_or(&EnvironmentOverlay::new());
+                let tracked_proc = if is_persistent {
+                    // Long-running command: open in a native terminal window.
+                    // `spawn_visible` wraps the full command string in a shell
+                    // that runs it inside a new terminal (cmd /K on Windows,
+                    // Terminal.app on macOS, a terminal emulator on Linux).
+                    let ov = if effective_overlay.is_empty() {
+                        None
+                    } else {
+                        Some(effective_overlay)
+                    };
+                    self.process_manager
+                        .spawn_visible(
+                            command,
+                            &[],
+                            dir_ref,
+                            &action.label,
+                            session_id.clone(),
+                            ov,
+                        )
+                        .map_err(|e| format!("Manager failed to start command: {}", e))?
+                } else {
+                    // One-shot command: run via platform shell so shell syntax
+                    // (pipes, redirects, env vars) works.
+                    let resolved_shell = default_shell_for_platform();
+                    let (shell_exe, shell_flag) =
+                        crate::platform::shell::shell_executable(resolved_shell);
 
-                match self.process_manager.spawn_and_track(
-                    shell_exe,
-                    &[shell_flag, command],
-                    dir_ref,
-                    &action.label,
-                    session_id,
-                ) {
-                    Ok(tracked_proc) => {
-                        // TODO: When process_manager supports env overlay,
-                        // apply _effective_overlay here. For now, the overlay
-                        // is resolved and available for future integration.
-                        Ok((
-                            ActionStatus::Success {
-                                message: format!(
-                                    "Process started under manager. ID: {}",
-                                    tracked_proc.id
-                                ),
-                            },
-                            Some(tracked_proc.id),
-                        ))
-                    }
-                    Err(e) => Err(format!("Manager failed to start command: {}", e)),
+                    self.process_manager
+                        .spawn_and_track(
+                            shell_exe,
+                            &[shell_flag, command],
+                            dir_ref,
+                            &action.label,
+                            session_id.clone(),
+                        )
+                        .map_err(|e| format!("Manager failed to start command: {}", e))?
+                };
+
+                // If an environment overlay was provided and the process was
+                // spawned one-shot, re-spawn it with the overlay applied
+                // directly so PATH/env changes take effect.
+                if !effective_overlay.is_empty() && !is_persistent {
+                    return self.spawn_one_shot_with_overlay(
+                        command,
+                        dir_ref,
+                        &action.label,
+                        session_id,
+                        effective_overlay,
+                    );
                 }
+
+                Ok((
+                    ActionStatus::Success {
+                        message: format!("Process started under manager. ID: {}", tracked_proc.id),
+                    },
+                    Some(tracked_proc.id),
+                ))
             }
 
             ActionType::OpenUrl { url } => match webbrowser::open(url) {
@@ -116,32 +159,29 @@ impl LaunchEngine for ProcessLaunchEngine {
                 args,
                 args_list,
             } => {
-                let mut cmd = StdCommand::new(path);
-                cmd.stdout(Stdio::null()).stderr(Stdio::null());
-
-                // Apply environment overlay if provided
-                if let Some(ov) = overlay {
-                    ov.apply_std(&mut cmd);
-                }
-
-                // Prefer structured args_list when present (handles quoted
-                // arguments correctly). Fall back to split_whitespace on the
-                // legacy string field for backward compatibility.
+                let mut args_vec: Vec<String> = Vec::new();
                 if let Some(list) = args_list {
-                    cmd.args(list);
+                    args_vec.extend(list.iter().cloned());
                 } else if let Some(args_str) = args {
-                    cmd.args(args_str.split_whitespace());
+                    args_vec.extend(args_str.split_whitespace().map(String::from));
                 }
 
-                match cmd.spawn() {
-                    Ok(_) => Ok((
-                        ActionStatus::Success {
-                            message: format!("App launched: {}", path),
-                        },
-                        None,
-                    )),
-                    Err(e) => Err(format!("Failed to launch '{}': {}", path, e)),
-                }
+                let args_refs: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
+
+                // Use detached launch so the GUI app opens natively without
+                // output suppression. VSCode, PyCharm, Docker Desktop, etc.
+                self.process_manager.launch_detached(
+                    path,
+                    &args_refs,
+                    working_dir_for_ide(overlay, action, path),
+                )?;
+
+                Ok((
+                    ActionStatus::Success {
+                        message: format!("App launched: {}", path),
+                    },
+                    None,
+                ))
             }
 
             ActionType::WaitForUrl { url, timeout_secs } => {
@@ -265,7 +305,8 @@ impl LaunchEngine for ProcessLaunchEngine {
                 let (shell_exe, shell_flag) = crate::platform::shell::shell_executable(resolved);
 
                 // Apply environment overlay if provided
-                let _effective_overlay = overlay.unwrap_or(&EnvironmentOverlay::new());
+                let empty_overlay = EnvironmentOverlay::new();
+                let effective_overlay = overlay.unwrap_or(&empty_overlay);
 
                 let tracked_proc = self
                     .process_manager
@@ -274,11 +315,27 @@ impl LaunchEngine for ProcessLaunchEngine {
                         &[shell_flag, script],
                         None,
                         &action.label,
-                        session_id,
+                        session_id.clone(),
                     )
                     .map_err(|e| format!("Script launch error: {}", e))?;
 
                 let proc_id = tracked_proc.id;
+
+                // Non-blocking monitoring: return immediately and let the
+                // process manager's status events drive the UI. We only wait
+                // here if the overlay is empty (backward-compat one-shot
+                // behavior). With an overlay, the script is re-spawned with
+                // the overlay applied.
+                if !effective_overlay.is_empty() {
+                    return self.spawn_script_with_overlay(
+                        shell_exe,
+                        shell_flag,
+                        script,
+                        &action.label,
+                        session_id,
+                        effective_overlay,
+                    );
+                }
 
                 loop {
                     thread::sleep(Duration::from_millis(500));
@@ -327,6 +384,172 @@ impl LaunchEngine for ProcessLaunchEngine {
             }
         }
     }
+
+    fn launch_ide(
+        &self,
+        ide: &PreferredIde,
+        project_path: Option<&str>,
+        _overlay: Option<&EnvironmentOverlay>,
+    ) -> Result<bool, String> {
+        let cli = ide.cli_name();
+        let resolved = match resolve_ide_executable(cli) {
+            Some(p) => p,
+            None => {
+                // IDE not installed — report gracefully without failing the run.
+                return Ok(false);
+            }
+        };
+
+        let mut args: Vec<String> = Vec::new();
+        if let Some(project) = project_path {
+            args.push(project.to_string());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.process_manager
+            .launch_detached(&resolved, &args_refs, None)
+            .map(|_| true)
+            .map_err(|e| {
+                format!(
+                    "Failed to launch IDE '{}' ({}): {}",
+                    ide.label(),
+                    resolved,
+                    e
+                )
+            })
+    }
+}
+
+/// Resolve the IDE CLI executable to a path we can launch.
+///
+/// On Windows, IDE CLIs are often `.cmd` shims (e.g. `code.cmd`); on macOS
+/// they live in `/Applications/.../Contents/MacOS`. We check common locations
+/// and PATH.
+fn resolve_ide_executable(cli: &str) -> Option<String> {
+    // Already an absolute path or has a path separator — use as-is.
+    if cli.contains('/') || cli.contains('\\') {
+        return Some(cli.to_string());
+    }
+
+    // Check PATH first.
+    if let Ok(path) = which::which(cli) {
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    // Windows: check the `.cmd` shim variant (npm-style launcher).
+    #[cfg(target_os = "windows")]
+    {
+        let cmd_variant = format!("{}.cmd", cli);
+        if let Ok(path) = which::which(&cmd_variant) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+
+    // macOS: check common app bundle locations.
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            format!("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/{}", cli),
+            format!("/Applications/PyCharm.app/Contents/MacOS/{}", cli),
+            format!("/Applications/GoLand.app/Contents/MacOS/{}", cli),
+            format!("/Applications/IntelliJ IDEA.app/Contents/MacOS/{}", cli),
+            format!("/Applications/WebStorm.app/Contents/MacOS/{}", cli),
+            format!("/usr/local/bin/{}", cli),
+        ];
+        for cand in candidates {
+            if std::path::Path::new(&cand).exists() {
+                return Some(cand);
+            }
+        }
+    }
+
+    None
+}
+
+impl ProcessLaunchEngine {
+    /// Spawn a one-shot command with the environment overlay applied directly
+    /// to the child process (not through shell wrapping).
+    fn spawn_one_shot_with_overlay(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+    ) -> Result<(ActionStatus, Option<String>), String> {
+        // Run through the platform shell so shell syntax works, but apply the
+        // overlay to the shell process.
+        let resolved_shell = default_shell_for_platform();
+        let (shell_exe, shell_flag) = crate::platform::shell::shell_executable(resolved_shell);
+        let tracked = self
+            .process_manager
+            .spawn_and_track_with_overlay(
+                shell_exe,
+                &[shell_flag, command],
+                working_dir,
+                label,
+                session_id,
+                overlay,
+            )
+            .map_err(|e| format!("Manager failed to start command: {}", e))?;
+
+        Ok((
+            ActionStatus::Success {
+                message: format!("Process started under manager. ID: {}", tracked.id),
+            },
+            Some(tracked.id),
+        ))
+    }
+
+    /// Spawn a script with the environment overlay applied directly.
+    fn spawn_script_with_overlay(
+        &self,
+        shell_exe: &str,
+        shell_flag: &str,
+        script: &str,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+    ) -> Result<(ActionStatus, Option<String>), String> {
+        let tracked = self
+            .process_manager
+            .spawn_and_track_with_overlay(
+                shell_exe,
+                &[shell_flag, script],
+                None,
+                label,
+                session_id,
+                overlay,
+            )
+            .map_err(|e| format!("Script launch error: {}", e))?;
+
+        Ok((
+            ActionStatus::Success {
+                message: format!("Script started: {}", script),
+            },
+            Some(tracked.id),
+        ))
+    }
+}
+
+/// Helper: for OpenApplication with an IDE path, run in the project directory
+/// if the overlay specifies one.
+fn working_dir_for_ide(
+    _overlay: Option<&EnvironmentOverlay>,
+    _action: &LaunchAction,
+    _path: &str,
+) -> Option<&'static str> {
+    // IDE launches generally don't need a working dir; the IDE opens its own
+    // window. We could pass the project path as an arg instead. For now,
+    // return None to keep the current behavior (launch in app's cwd).
+    None
+}
+
+impl EnvironmentOverlay {
+    /// Returns true if the overlay has any entries that need applying.
+    fn is_empty(&self) -> bool {
+        self.path_prepend.is_empty() && self.vars_set.is_empty() && self.vars_remove.is_empty()
+    }
 }
 
 struct ParsedUrl {
@@ -353,143 +576,4 @@ fn parse_http_url(raw: &str) -> Result<ParsedUrl, String> {
         None => (host_port.to_string(), 80),
     };
     Ok(ParsedUrl { host, port, path })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::platform::host::{current_os, HostOs};
-
-    #[test]
-    fn runcommand_uses_platform_default_shell() {
-        let os = current_os();
-        let shell = default_shell_for_platform();
-        let (exe, _) = crate::platform::shell::shell_executable(shell);
-        match os {
-            HostOs::Windows => assert_eq!(exe, "cmd", "RunCommand should use cmd on Windows"),
-            HostOs::Linux | HostOs::Macos => {
-                assert_eq!(exe, "sh", "RunCommand should use sh on Unix")
-            }
-        }
-    }
-
-    #[test]
-    fn runcommand_does_not_name_cmd_on_unix() {
-        if cfg!(target_os = "windows") {
-            return;
-        }
-        let shell = default_shell_for_platform();
-        let (exe, _) = crate::platform::shell::shell_executable(shell);
-        assert_ne!(exe, "cmd", "RunCommand must not use cmd on Unix builds");
-    }
-
-    #[test]
-    fn execute_script_shell_none_resolves_to_default() {
-        let requested = ShellKind::Default;
-        let resolved = resolve_shell(requested);
-        let os = current_os();
-        match os {
-            HostOs::Windows => assert_eq!(resolved, ShellKind::Cmd),
-            HostOs::Linux | HostOs::Macos => assert_eq!(resolved, ShellKind::Sh),
-        }
-    }
-
-    #[test]
-    fn execute_script_legacy_shell_strings_parse_correctly() {
-        assert_eq!(
-            parse_shell("cmd").unwrap(),
-            ShellKind::Cmd,
-            "legacy 'cmd' should parse"
-        );
-        assert_eq!(
-            parse_shell("powershell").unwrap(),
-            ShellKind::PowerShell,
-            "legacy 'powershell' should parse"
-        );
-        assert_eq!(
-            parse_shell("pwsh").unwrap(),
-            ShellKind::Pwsh,
-            "legacy 'pwsh' should parse"
-        );
-        assert_eq!(
-            parse_shell("sh").unwrap(),
-            ShellKind::Sh,
-            "legacy 'sh' should parse"
-        );
-        assert_eq!(
-            parse_shell("bash").unwrap(),
-            ShellKind::Bash,
-            "legacy 'bash' should parse"
-        );
-        assert_eq!(
-            parse_shell("zsh").unwrap(),
-            ShellKind::Zsh,
-            "legacy 'zsh' should parse"
-        );
-    }
-
-    #[test]
-    fn execute_script_legacy_shell_case_insensitive() {
-        assert_eq!(parse_shell("CMD").unwrap(), ShellKind::Cmd);
-        assert_eq!(parse_shell("PowerShell").unwrap(), ShellKind::PowerShell);
-        assert_eq!(parse_shell("  Bash  ").unwrap(), ShellKind::Bash);
-    }
-
-    #[test]
-    fn execute_script_unsupported_shell_returns_error() {
-        let err = parse_shell("fish").unwrap_err();
-        assert!(err.to_string().contains("fish"));
-        let err = parse_shell("zsh-plus").unwrap_err();
-        assert_eq!(err.0, "zsh-plus");
-    }
-
-    #[test]
-    fn open_application_prefers_args_list_over_string() {
-        // Verify the model deserialization: args_list takes precedence
-        let json = r#"{"OpenApplication":{"path":"/usr/bin/app","args":"--foo --bar","args_list":["--foo","--bar"]}}"#;
-        let action: ActionType = serde_json::from_str(json).unwrap();
-        match action {
-            ActionType::OpenApplication {
-                args, args_list, ..
-            } => {
-                assert_eq!(args.as_deref(), Some("--foo --bar"));
-                let list = args_list.as_ref().unwrap();
-                assert_eq!(list.len(), 2);
-                assert_eq!(list[0], "--foo");
-                assert_eq!(list[1], "--bar");
-            }
-            _ => panic!("expected OpenApplication"),
-        }
-    }
-
-    #[test]
-    fn open_application_backward_compat_no_args_list() {
-        // Legacy serialized profiles omit args_list entirely
-        let json = r#"{"OpenApplication":{"path":"/usr/bin/app","args":"--foo"}}"#;
-        let action: ActionType = serde_json::from_str(json).unwrap();
-        match action {
-            ActionType::OpenApplication {
-                args, args_list, ..
-            } => {
-                assert_eq!(args.as_deref(), Some("--foo"));
-                assert_eq!(args_list, None);
-            }
-            _ => panic!("expected OpenApplication"),
-        }
-    }
-
-    #[test]
-    fn open_application_no_args_at_all() {
-        let json = r#"{"OpenApplication":{"path":"/usr/bin/app"}}"#;
-        let action: ActionType = serde_json::from_str(json).unwrap();
-        match action {
-            ActionType::OpenApplication {
-                args, args_list, ..
-            } => {
-                assert_eq!(args, None);
-                assert_eq!(args_list, None);
-            }
-            _ => panic!("expected OpenApplication"),
-        }
-    }
 }

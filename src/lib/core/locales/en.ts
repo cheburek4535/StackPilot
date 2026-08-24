@@ -1334,6 +1334,7 @@ export default {
   "devl.toast_workspace_failed": "Failed to set project: {err}",
   "devl.use_form": "Use the form above to start a process.",
   "devl.view_logs": "View logs",
+  "devl.visible_terminal": "Runs in a native terminal window",
   "size.bytes": "{n} B",
   "size.kb": "{n} KB",
   "size.mb": "{n} MB",

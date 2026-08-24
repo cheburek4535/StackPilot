@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { getProfile, getDemoProfile, executeAction, deleteProfile } from "$lib/modules/devlauncher/api";
+  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
   import type { LaunchProfile, ActionType, ActionStatus } from "$lib/modules/devlauncher/types";
   import { i18n } from "$lib/core/i18n.svelte";
@@ -82,22 +82,32 @@
     if (!profile || runningAll) return;
     runningAll = true;
     const results = new Map<string, string>();
-    for (const action of profile.actions) {
-      if (!action.enabled) continue;
-      currentAction = action.label;
-      try {
-        const result = await executeAction(action);
-        results.set(action.id, formatResult(result));
-      } catch (e) {
-        results.set(action.id, `✗ ${e}`);
+    try {
+      const profileResults = await runProfile(profile);
+      for (const [actionId, status] of profileResults) {
+        results.set(actionId, formatResult(status));
       }
-      // Показываем результат каждого действия сразу — профиль может идти
-      // долго (WaitForPort до 60с), пользователь видит прогресс, а не
-      // «зависшую» кнопку.
-      actionResults = new Map(results);
+    } catch (e) {
+      // Fallback: execute actions one by one so the user still sees results.
+      for (const action of profile.actions) {
+        if (!action.enabled) continue;
+        currentAction = action.label;
+        try {
+          const result = await executeAction(action);
+          results.set(action.id, formatResult(result));
+        } catch (err) {
+          results.set(action.id, `✗ ${err}`);
+        }
+        actionResults = new Map(results);
+      }
     }
+    actionResults = new Map(results);
     currentAction = null;
     runningAll = false;
+
+    // Navigate to the process manager so the user sees the running processes
+    // with their logs immediately.
+    goto("/devlauncher/processes");
   }
 
   async function retryFailed() {

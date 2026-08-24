@@ -1,6 +1,8 @@
 export type RunCommand = {
   command: string;
   working_dir: string | null;
+  /** When true, the command is long-running and opens in a native terminal. */
+  persistent?: boolean | null;
 };
 
 export type OpenApplication = {
@@ -48,11 +50,23 @@ export type LaunchAction = {
   action_type: ActionType;
 };
 
+export type PreferredIde =
+  | "Vscode"
+  | "Pycharm"
+  | "Goland"
+  | "Idea"
+  | "Webstorm"
+  | "Xcode"
+  | "VisualStudio"
+  | { Custom: string };
+
 export type LaunchProfile = {
   name: string;
   description: string;
   project_path: string | null;
   actions: LaunchAction[];
+  environment_binding_id?: string | null;
+  preferred_ide?: PreferredIde | null;
 };
 
 export type ActionStatus =

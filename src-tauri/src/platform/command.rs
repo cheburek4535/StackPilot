@@ -52,7 +52,7 @@ impl std::error::Error for CommandBuildError {}
 ///
 /// The command is constructed as `shell <flag> <script_text>` where `<script_text>`
 /// is the full script to run inside the shell. On Windows, batch files (`.cmd`/`.bat`)
-/// are always launched through `cmd /D /C`.
+/// are always launched through `cmd /C`.
 ///
 /// # Errors
 ///

@@ -41,6 +41,34 @@ export async function getProcessLogs(id: string): Promise<ProcessLogs> {
   return invoke("get_process_logs", { id });
 }
 
+/** Spawn a process in a new native terminal window. */
+export async function spawnProcessVisible(
+  command: string,
+  args: string[],
+  label: string,
+  workingDir?: string,
+): Promise<TrackedProcess> {
+  return invoke("spawn_process_visible", {
+    command,
+    args,
+    label,
+    workingDir: workingDir ?? null,
+  });
+}
+
+/** Launch a GUI application detached (IDE, browser, Docker Desktop). */
+export async function launchApplicationDetached(
+  command: string,
+  args: string[],
+  workingDir?: string,
+): Promise<void> {
+  return invoke("launch_application_detached", {
+    command,
+    args,
+    workingDir: workingDir ?? null,
+  });
+}
+
 // ===== Project context =====
 
 export async function setCurrentProject(

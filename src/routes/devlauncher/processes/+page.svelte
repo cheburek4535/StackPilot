@@ -344,6 +344,9 @@
                     {#if proc.status === "Running"}▶{:else}⬛{/if}
                   </span>
                   <strong class="proc-label">{proc.label}</strong>
+                  {#if proc.visible}
+                    <span class="visible-badge" title={i18n.t("devl.visible_terminal") as TranslationKey}>🖥</span>
+                  {/if}
                   <span class="status-badge {statusClass(proc.status)}">
                     {statusLabel(proc.status)}
                   </span>
@@ -646,6 +649,15 @@
   .status-badge.exited-err { background: rgba(251, 191, 36, 0.14); color: var(--sp-warning); }
   .status-badge.killed { background: rgba(248, 113, 113, 0.14); color: var(--sp-danger); }
   .status-badge.crashed { background: rgba(248, 113, 113, 0.2); color: var(--sp-danger); }
+
+  .visible-badge {
+    font-size: var(--sp-fs-xs);
+    background: rgba(96, 165, 250, 0.14);
+    color: var(--sp-blue);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--sp-radius-xs);
+    cursor: help;
+  }
 
   .proc-actions {
     display: flex;

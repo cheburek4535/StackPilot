@@ -1,4 +1,4 @@
-use crate::modules::devlauncher::models::*;
+﻿use crate::modules::devlauncher::models::*;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -62,6 +62,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         action_type: ActionType::RunCommand {
                             command: "docker compose up -d".into(),
                             working_dir: Some(cwd.clone()),
+                            persistent: None,
                         },
                     });
                     has_docker = true;
@@ -78,6 +79,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "docker build -t myapp .".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: None,
                     },
                 });
                 launch_actions.push(LaunchAction {
@@ -87,6 +89,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "docker run -p 8080:80 myapp".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 has_docker = true;
@@ -106,9 +109,9 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         || dev_deps.and_then(|d| d.get(pkg)).is_some()
                 };
 
-                // Выбираем ТОЛЬКО существующий npm-скрипт: "dev" → "start" →
-                // "serve" → первый из списка. Раньше тут подставлялся
-                // несуществующий "dev" вслепую — профиль падал с
+                // Р вЂ™РЎвЂ№Р В±Р С‘РЎР‚Р В°Р ВµР С Р СћР С›Р вЂєР В¬Р С™Р С› РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р С‘Р в„– npm-РЎРѓР С”РЎР‚Р С‘Р С—РЎвЂљ: "dev" РІвЂ вЂ™ "start" РІвЂ вЂ™
+                // "serve" РІвЂ вЂ™ Р С—Р ВµРЎР‚Р Р†РЎвЂ№Р в„– Р С‘Р В· РЎРѓР С—Р С‘РЎРѓР С”Р В°. Р В Р В°Р Р…РЎРЉРЎв‚¬Р Вµ РЎвЂљРЎС“РЎвЂљ Р С—Р С•Р Т‘РЎРѓРЎвЂљР В°Р Р†Р В»РЎРЏР В»РЎРѓРЎРЏ
+                // Р Р…Р ВµРЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р С‘Р в„– "dev" Р Р†РЎРѓР В»Р ВµР С—РЎС“РЎР‹ РІР‚вЂќ Р С—РЎР‚Р С•РЎвЂћР С‘Р В»РЎРЉ Р С—Р В°Р Т‘Р В°Р В» РЎРѓ
                 // "Missing script: dev"/"Missing script: nuxt".
                 let run_cmd: Option<String> = if has_dep("expo") {
                     Some("npx expo start".to_string())
@@ -128,14 +131,14 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         .or_else(|| scripts.as_object().and_then(|m| m.keys().next()).cloned());
                     match chosen {
                         Some(key) => Some(format!("npm run {}", key)),
-                        // Скриптов нет вообще: пробуем прямой запуск main
+                        // Р РЋР С”РЎР‚Р С‘Р С—РЎвЂљР С•Р Р† Р Р…Р ВµРЎвЂљ Р Р†Р С•Р С•Р В±РЎвЂ°Р Вµ: Р С—РЎР‚Р С•Р В±РЎС“Р ВµР С Р С—РЎР‚РЎРЏР СР С•Р в„– Р В·Р В°Р С—РЎС“РЎРѓР С” main
                         None => value
                             .get("main")
                             .and_then(|m| m.as_str())
                             .map(|main| format!("node {}", main)),
                     }
                 } else {
-                    // Секции scripts нет — main, если есть, иначе нечего запускать
+                    // Р РЋР ВµР С”РЎвЂ Р С‘Р С‘ scripts Р Р…Р ВµРЎвЂљ РІР‚вЂќ main, Р ВµРЎРѓР В»Р С‘ Р ВµРЎРѓРЎвЂљРЎРЉ, Р С‘Р Р…Р В°РЎвЂЎР Вµ Р Р…Р ВµРЎвЂЎР ВµР С–Р С• Р В·Р В°Р С—РЎС“РЎРѓР С”Р В°РЎвЂљРЎРЉ
                     value
                         .get("main")
                         .and_then(|m| m.as_str())
@@ -157,6 +160,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         action_type: ActionType::RunCommand {
                             command: run_cmd,
                             working_dir: Some(cwd.clone()),
+                            persistent: Some(true),
                         },
                     });
 
@@ -202,6 +206,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: cmd.into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 if has_tauri {
@@ -227,6 +232,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "go run .".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
             }
@@ -239,6 +245,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "pip install -r requirements.txt".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: None,
                     },
                 });
                 has_python_project = true;
@@ -252,6 +259,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "pip install -e .".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: None,
                     },
                 });
                 has_python_project = true;
@@ -265,6 +273,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "python main.py".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 has_python_project = true;
@@ -278,6 +287,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "python manage.py runserver".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 launch_actions.push(LaunchAction {
@@ -287,6 +297,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "python manage.py migrate".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: None,
                     },
                 });
                 has_python_project = true;
@@ -308,6 +319,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: cmd.into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 if is_spring {
@@ -340,6 +352,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: cmd.into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 if is_spring {
@@ -364,6 +377,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "bundle exec rails server".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 launch_actions.push(LaunchAction {
@@ -386,6 +400,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "dotnet run".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
                 launch_actions.push(LaunchAction {
@@ -395,6 +410,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "dotnet watch".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: Some(true),
                     },
                 });
             }
@@ -422,6 +438,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     action_type: ActionType::RunCommand {
                         command: "make".into(),
                         working_dir: Some(cwd.clone()),
+                        persistent: None,
                     },
                 });
             }
@@ -494,6 +511,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             project_path: Some(project_path.to_string()),
             actions: launch_actions,
             environment_binding_id: None,
+            preferred_ide: None,
         })
     }
 }
