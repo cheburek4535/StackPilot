@@ -175,6 +175,7 @@ pub fn run() {
             modules::project_creator::commands::submit_wizard_answer,
             modules::project_creator::commands::analyze_project_technologies,
             modules::project_creator::commands::preview_project_recipe,
+            modules::project_creator::commands::preview_project_files,
             modules::project_creator::commands::start_project_execution,
             modules::project_creator::commands::project_execution_snapshot,
             modules::project_creator::commands::check_project_folder_exists,

@@ -185,12 +185,75 @@ pub fn preview_project_recipe(
     Ok(state.engine.preview(&plan))
 }
 
+/// Предпросмотр файловой структуры проекта: дерево файлов с уровнями
+/// достоверности (certain/expected/unknown), содержимое файлов, которые
+/// создаём мы, и список удалаемых опциональных шагов.
+///
+/// Отличие от preview_project_recipe: НЕ вызывает validate_context —
+/// превью показывается до заполнения имени/пуля, на основе уже
+/// выбранных фреймворков и инструментов.
+///
+/// `removed_step_ids` — опциональные шаги, помеченные пользователем на
+/// удаление: они исключаются из плана ДО построения дерева, поэтому
+/// предпросмотр и генерация всегда совпадают (одна схема).
+#[tauri::command]
+pub fn preview_project_files(
+    state: State<'_, ProjectCreatorState>,
+    context: WizardContext,
+    project_path: String,
+    removed_step_ids: Vec<String>,
+) -> Result<ProjectFilePreview, String> {
+    let mut context = context;
+    // Без валидации — превью строится по текущему набору фреймворков/инструментов.
+    // Нормализуем минимально: project_type + project_name.
+    if context.project_type.is_none() {
+        context.project_type = Some("empty".into());
+    }
+    if context.project_name.is_none() || context.project_name.as_deref() == Some("") {
+        context.project_name = Some("preview".into());
+    }
+    let path = if project_path.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&project_path)
+    };
+    // Если plan() не удаётся (неполный контекст), строим пустой preview
+    // вместо ошибки — пользователь ещё не закончил выбор стека.
+    match state.engine.plan(&context, &path) {
+        Ok(plan) => match super::engine::apply_step_removals(plan, &removed_step_ids) {
+            Ok(plan) => Ok(super::engine::build_project_file_preview(&plan)),
+            Err(e) => Err(e),
+        },
+        Err(_e) => Ok(ProjectFilePreview {
+            files: Vec::new(),
+            layout: super::models::LayoutSummary {
+                class: "unknown".into(),
+                generated_directories: Vec::new(),
+                root_owner: None,
+                framework_placement: Vec::new(),
+            },
+            removable_step_ids: Vec::new(),
+            summary: super::models::ProjectPreviewSummary {
+                certain_count: 0,
+                expected_count: 0,
+                unknown_count: 0,
+                dir_count: 0,
+            },
+        }),
+    }
+}
+
+/// Запустить выполнение плана проекта. `removed_step_ids` — опциональные
+/// шаги (git_*, vscode_*, readme...), исключённые пользователем: они
+/// удаляются из плана ДО выполнения, генерация идёт по той же схеме,
+/// что показывал предпросмотр.
 #[tauri::command]
 pub async fn start_project_execution(
     app: tauri::AppHandle,
     state: State<'_, ProjectCreatorState>,
     context: WizardContext,
     project_path: String,
+    removed_step_ids: Vec<String>,
 ) -> Result<ExecutionPlan, String> {
     // Единый барьер перед выполнением: нормализация + правила стека +
     // целостность генерации. Контекст нормализуется in-place.
@@ -204,6 +267,7 @@ pub async fn start_project_execution(
     }
     let path = PathBuf::from(&project_path);
     let plan = state.engine.plan(&context, &path)?;
+    let plan = super::engine::apply_step_removals(plan, &removed_step_ids)?;
     let plan_clone = plan.clone();
     let engine = Arc::clone(&state.engine);
     let app_clone = app.clone();

@@ -105,7 +105,7 @@
     background: rgba(5, 6, 10, 0.6);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    animation: sp-fade-in 0.15s ease;
+    animation: sp-fade-in 0.2s ease;
   }
 
   .sp-modal {
@@ -117,7 +117,7 @@
     border: 1px solid var(--sp-border-strong);
     border-radius: var(--sp-radius-xl);
     box-shadow: var(--sp-shadow-3);
-    animation: sp-zoom-in 0.16s ease;
+    animation: sp-modal-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
     outline: none;
   }
 

@@ -693,6 +693,78 @@ pub struct StepPreview {
     pub file_policy: Option<FilePolicy>,
 }
 
+// ============================================================
+// Project File Preview — структура файлов для предпросмотра
+// ============================================================
+
+/// Уровень достоверности файла в предпросмотре проекта.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileCertainty {
+    /// Файл создаётся нами (WriteFile шаг) — содержимое точно известно.
+    Certain,
+    /// Файл создаётся внешним CLI-инструментом (scaffold/CLI) — он будет
+    /// создан гарантированно (стабильно у всех версий инструмента), но
+    /// точное содержимое зависит от версии CLI.
+    Expected,
+    /// Файл может появиться во время выполнения (build-артефакты,
+    /// версионные конфиги), но его наличие не гарантировано.
+    Unknown,
+}
+
+/// Один файл или директория в дереве предпросмотра проекта.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Относительный путь от корня проекта (например "docker-compose.yaml"
+    /// или "backend/src/main.py").
+    pub path: String,
+    /// Имя файла/папки (последний сегмент пути).
+    pub name: String,
+    /// true = директория, false = файл.
+    pub is_dir: bool,
+    /// Уровень достоверности.
+    pub certainty: FileCertainty,
+    /// Источник файла (например "StackPilot generator", "npm (create-next-app)",
+    /// "cargo (cargo init)", "npm install").
+    pub source: String,
+    /// Содержимое файла (только для Certain — WriteFile шагов).
+    /// Для Expected/Unknown = null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Предупреждение при открытии файла (для Expected/Unknown).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// Дочерние элементы (только для директорий).
+    #[serde(default)]
+    pub children: Vec<FileEntry>,
+}
+
+/// Полный результат предпросмотра файловой структуры проекта.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectFilePreview {
+    /// Корневые элементы дерева файлов.
+    pub files: Vec<FileEntry>,
+    /// Каноническая раскладка проекта (см. LayoutSummary).
+    pub layout: LayoutSummary,
+    /// Идентификаторы шагов, которые можно удалить (git_*, vscode_*, readme).
+    pub removable_step_ids: Vec<String>,
+    /// Краткая сводка: что будет создано.
+    pub summary: ProjectPreviewSummary,
+}
+
+/// Краткая сводка предпросмотра проекта.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectPreviewSummary {
+    /// Количество файлов, которые мы создаём (certain).
+    pub certain_count: usize,
+    /// Количество файлов от внешних инструментов (expected).
+    pub expected_count: usize,
+    /// Количество файлов, которые могут появиться (unknown).
+    pub unknown_count: usize,
+    /// Общее количество директорий.
+    pub dir_count: usize,
+}
+
 /// Куда именно фреймворк кладёт свои файлы (итог канонической раскладки).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameworkPlacement {

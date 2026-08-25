@@ -41,11 +41,7 @@
 <div class="sp-app">
   <header class="sp-topbar">
     <a href="/" class="sp-brand">
-      <span class="sp-brand-mark" aria-hidden="true">
-        <Icon name="rocket" size={16} />
-      </span>
-      <span class="sp-brand-name">{APP_NAME}</span>
-      <span class="sp-brand-version">{APP_VERSION}</span>
+      <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
     </a>
     <div class="sp-topbar-actions">
       <IconButton
@@ -176,6 +172,11 @@
     padding: 0.125rem var(--sp-2);
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-full);
+  }
+
+  .sp-brand-logo {
+    height: 30px;
+    width: auto;
   }
 
   .sp-topbar-actions {

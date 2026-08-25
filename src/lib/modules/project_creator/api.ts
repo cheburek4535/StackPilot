@@ -11,6 +11,7 @@ import type {
   WizardContext,
   StackIssue,
   StackRecommendations,
+  ProjectFilePreview,
 } from "./types";
 
 export function pingProjectCreator(): Promise<string> {
@@ -55,11 +56,23 @@ export function previewProjectRecipe(
   return invoke("preview_project_recipe", { context, projectPath });
 }
 
+/** Предпросмотр файловой структуры проекта: дерево файлов с уровнями
+ *  достоверности (certain/expected/unknown), содержимое файлов, которые
+ *  создаём мы, и список удалаемых опциональных шагов. */
+export function previewProjectFiles(
+  context: WizardContext,
+  projectPath: string,
+  removedStepIds: string[] = [],
+): Promise<ProjectFilePreview> {
+  return invoke("preview_project_files", { context, projectPath, removedStepIds });
+}
+
 export function startProjectExecution(
   context: WizardContext,
   projectPath: string,
+  removedStepIds: string[] = [],
 ): Promise<ExecutionPlan> {
-  return invoke("start_project_execution", { context, projectPath });
+  return invoke("start_project_execution", { context, projectPath, removedStepIds });
 }
 
 /** Снимок выполнения: работает ли оно и буфер событий (для восстановления вкладки) */

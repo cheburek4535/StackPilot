@@ -349,6 +349,50 @@ export type RecipePreview = {
   step_previews: StepPreview[];
   total_steps: number; will_execute_count: number;
   will_skip_count: number;
+  layout: LayoutSummary;
+};
+
+// ============================================================
+// Project File Preview — дерево файлов для предпросмотра
+// ============================================================
+
+export type FileCertainty = "certain" | "expected" | "unknown";
+
+export type FileEntry = {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  certainty: FileCertainty;
+  source: string;
+  content?: string;
+  warning?: string;
+  children: FileEntry[];
+};
+
+export type ProjectPreviewSummary = {
+  certain_count: number;
+  expected_count: number;
+  unknown_count: number;
+  dir_count: number;
+};
+
+export type ProjectFilePreview = {
+  files: FileEntry[];
+  layout: LayoutSummary;
+  removable_step_ids: string[];
+  summary: ProjectPreviewSummary;
+};
+
+export type LayoutSummary = {
+  class: string;
+  generated_directories: string[];
+  root_owner?: string;
+  framework_placement: FrameworkPlacement[];
+};
+
+export type FrameworkPlacement = {
+  framework: string;
+  directory: string;
 };
 
 export type StepPreview = {
