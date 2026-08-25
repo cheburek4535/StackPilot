@@ -30,8 +30,9 @@ import type {
   ProjectContext,
   TrackedProcess,
 } from "$lib/modules/workspace/types";
-import { saveProfile } from "$lib/modules/devlauncher/api";
+import { saveProfile, buildProfileFromContext } from "$lib/modules/devlauncher/api";
 import type { LaunchProfile } from "$lib/modules/devlauncher/types";
+import type { WizardContext } from "$lib/modules/project_creator/types";
 import { emitAppEvent } from "./events";
 import { addRecentProject } from "./recent";
 
@@ -181,4 +182,32 @@ export function confirmProcessStateChanged(
  */
 export function confirmToolchainInstallCompleted(): void {
   emitAppEvent({ type: "toolchain-install-completed", at: now() });
+}
+
+/**
+ * Builds a DevLauncher profile from WizardContext and saves it. This is the
+ * seamless integration point: after Project Creator finishes execution, the
+ * profile is ready in DevLauncher without filesystem analysis.
+ * Returns the saved profile on success.
+ */
+export async function confirmProjectCreatedWithProfile(
+  context: WizardContext,
+): Promise<LaunchProfile> {
+  const profile = await buildProfileFromContext(context);
+  const at = now();
+  emitAppEvent({
+    type: "profile-saved",
+    profileName: profile.name,
+    projectPath: profile.project_path,
+    at,
+  });
+  if (profile.project_path && profile.project_path.trim().length > 0) {
+    addRecentProject({
+      path: profile.project_path,
+      name: profile.name || projectNameFromPath(profile.project_path),
+      source: "created",
+      at,
+    });
+  }
+  return profile;
 }

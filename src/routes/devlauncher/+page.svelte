@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { goto } from "$app/navigation";
+  import { listen } from "@tauri-apps/api/event";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -19,11 +20,14 @@
     listProfiles,
     deleteProfile,
     executeAction,
+    startFileWatcher,
+    stopFileWatcher,
   } from "$lib/modules/devlauncher/api";
   import type {
     LaunchProfile,
     LaunchAction,
     ActionStatus,
+    FileChangeEvent,
   } from "$lib/modules/devlauncher/types";
   import {
     actionIcon,
@@ -46,6 +50,9 @@
   let deleting = $state(false);
   let launching = $state(false);
   let launchCurrent = $state<string | null>(null);
+  let watching = $state(false);
+  let lastChangedFile = $state<string | null>(null);
+  let unlistenFileWatch: (() => void) | null = null;
 
   const selectedProfile = $derived(
     profiles.find((p) => p.name === selectedName) ?? null,
@@ -64,6 +71,23 @@
 
   onMount(async () => {
     await Promise.all([loadProject(), loadProfiles()]);
+    // Listen for file change events from the backend watcher
+    unlistenFileWatch = await listen<FileChangeEvent>(
+      "devlauncher:file_changed",
+      (e) => {
+        lastChangedFile = e.payload.path;
+        // Auto-clear the notification after 4s
+        setTimeout(() => {
+          if (lastChangedFile === e.payload.path) {
+            lastChangedFile = null;
+          }
+        }, 4000);
+      },
+    );
+  });
+
+  onDestroy(() => {
+    unlistenFileWatch?.();
   });
 
   async function reload() {
@@ -107,7 +131,8 @@
 
   /** Запуск всего профиля: действия выполняются по очереди, результат
    *  каждого показывается сразу по завершении (бэкенд больше не блокирует
-   *  UI, но долгие WaitForPort/Delay всё равно идут последовательно). */
+   *  UI, но долгие WaitForPort/Delay всё равно идут последовательно).
+   *  После запуска включается file watcher для live-reload. */
   async function launchProfile(profile: LaunchProfile) {
     if (launching) return;
     launching = true;
@@ -134,6 +159,15 @@
     }
     launchCurrent = null;
     launching = false;
+    // Start file watcher for live-reload
+    if (profile.project_path) {
+      try {
+        await startFileWatcher(profile.project_path);
+        watching = true;
+      } catch {
+        // non-critical
+      }
+    }
   }
 
   async function openProjectInVSCode(path: string) {
@@ -183,6 +217,13 @@
       notifySuccess(i18n.t("devl.toast_deleted"), profile.name);
       if (selectedName === profile.name) selectedName = null;
       actionResults = new Map();
+      // Stop file watcher if this was the active project
+      if (watching && profile.project_path) {
+        try {
+          await stopFileWatcher();
+          watching = false;
+        } catch { /* non-critical */ }
+      }
       await loadProfiles();
     } catch (e) {
       notifyError(i18n.t("devl.toast_deleted"), i18n.t("devl.toast_delete_failed", { err: String(e) }));
@@ -327,6 +368,17 @@
               <p class="sp-launch-summary">
                 ✓ {launchSummary.ok} · ✗ {launchSummary.err} · — {launchSummary.skip}
               </p>
+            {/if}
+            {#if watching}
+              <div class="sp-watcher-status">
+                <span class="sp-watcher-dot"></span>
+                {i18n.t("devl.watching") as TranslationKey}
+              </div>
+            {/if}
+            {#if lastChangedFile}
+              <div class="sp-file-changed">
+                📄 {i18n.t("devl.file_changed", { path: lastChangedFile }) as TranslationKey}
+              </div>
             {/if}
 
             <div class="sp-actions sp-launch-actions">
@@ -620,5 +672,36 @@
 
   .sp-action-result.skip {
     color: var(--sp-warning);
+  }
+
+  .sp-watcher-status {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-success);
+    margin-top: var(--sp-2);
+  }
+
+  .sp-watcher-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--sp-success);
+    animation: sp-pulse 2s ease-in-out infinite;
+  }
+
+  .sp-file-changed {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-accent);
+    margin-top: var(--sp-1);
+    padding: var(--sp-1) var(--sp-2);
+    background: var(--sp-accent-soft);
+    border-radius: var(--sp-radius-sm);
+  }
+
+  @keyframes sp-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 </style>

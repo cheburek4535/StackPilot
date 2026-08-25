@@ -56,8 +56,13 @@ import type {
 } from "$lib/modules/toolchain/compat";
 import { statusKind, statusLabel, taskStateKind, taskStateLabel, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
+import Modal from "$lib/components/ui/Modal.svelte";
+import Button from "$lib/components/ui/Button.svelte";
 import { i18n } from "$lib/core/i18n.svelte";
 import type { TranslationKey } from "$lib/core/i18n.svelte";
+import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
+import { goto } from "$app/navigation";
+import { deleteProfile } from "$lib/modules/devlauncher/api";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -220,6 +225,12 @@ let envLocalInfra = $state<Set<string>>(new Set());
  *  (state.json toolchain). Панды окружения показывают их «уже готовыми»
  *  и предлагают «Связать с локальным» вместо повторной установки. */
 let installedTools = $state<Set<string>>(new Set());
+
+// ---- Integration: DevLauncher profile ----
+let devlProfileCreated = $state(false);
+let devlProfileName = $state<string | null>(null);
+let devlProfilePath = $state<string | null>(null);
+let devlConfirmCancel = $state(false);
 
 function startTick() {
   if (tickTimer) return;
@@ -1911,7 +1922,7 @@ function stepIsSuccess(st: StepStatus | undefined) { return !!st && typeof st ==
 function stepIsFailed(st: StepStatus | undefined) { return !!st && typeof st === "object" && "Failed" in st; }
 function stepIsSkipped(st: StepStatus | undefined) { return !!st && typeof st === "object" && "Skipped" in st; }
 
-function handleExecEvent(event: ExecutionEvent) {
+async function handleExecEvent(event: ExecutionEvent) {
   const idx = event.step_index;
 
   if (!execStatuses.has(idx)) {
@@ -1950,6 +1961,17 @@ function handleExecEvent(event: ExecutionEvent) {
       execOverallStatus = "done";
       execResult = { duration: a?.result?.total_duration_ms ?? 0, status: JSON.stringify(a?.result?.overall) };
       persistNow();
+      // Build DevLauncher profile from wizard context (seamless integration)
+      if (execPlan?.context) {
+        try {
+          const profile = await confirmProjectCreatedWithProfile(execPlan.context);
+          devlProfileCreated = true;
+          devlProfileName = profile.name;
+          devlProfilePath = profile.project_path;
+        } catch {
+          // Non-critical: profile creation failed, user can still use VS Code
+        }
+      }
     }
     if ("Error" in t) {
       const err = (t as Record<string, { message: string }>).Error;
@@ -1970,6 +1992,40 @@ function openInVSCode() {
 function cancelExecution() {
   execOverallStatus = "cancelled";
   persistNow();
+}
+
+// ---- DevLauncher integration dialog handlers ----
+function openDevLauncher() {
+  if (devlProfileName) {
+    goto(`/devlauncher/profiles/${encodeURIComponent(devlProfileName)}`);
+  }
+  devlProfileCreated = false;
+  devlProfileName = null;
+  devlProfilePath = null;
+}
+
+function dismissProfileOk() {
+  devlProfileCreated = false;
+  devlProfileName = null;
+  devlProfilePath = null;
+}
+
+function cancelProfile() {
+  devlConfirmCancel = true;
+}
+
+function confirmCancelProfile() {
+  if (devlProfileName) {
+    deleteProfile(devlProfileName).catch(() => {});
+  }
+  devlProfileCreated = false;
+  devlProfileName = null;
+  devlProfilePath = null;
+  devlConfirmCancel = false;
+}
+
+function dismissCancelConfirm() {
+  devlConfirmCancel = false;
 }
 
 function resetAll() {
@@ -2009,6 +2065,10 @@ function resetAll() {
   folderExists = false;
   phase = 0;
   mode = "constructor";
+  devlProfileCreated = false;
+  devlProfileName = null;
+  devlProfilePath = null;
+  devlConfirmCancel = false;
   clearCreateSession();
 }
 </script>
@@ -3217,6 +3277,60 @@ function resetAll() {
   {/if}
 </div>
 
+<!-- DevLauncher integration: profile created dialog -->
+<Modal
+  open={devlProfileCreated}
+  onclose={dismissProfileOk}
+  title={i18n.t("create.devl_dialog_title") as TranslationKey}
+  description={i18n.t("create.devl_dialog_desc") as TranslationKey}
+  size="md"
+  closeOnBackdrop={false}
+  closeOnEscape={false}
+>
+  {#snippet children()}
+    <p style="font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 0.5rem;">
+      {i18n.t("create.profile_added_to_devlauncher") as TranslationKey}
+    </p>
+    <p style="font-size: 0.85rem; color: var(--sp-text-3); margin: 0;">
+      {i18n.t("create.devl_dialog_hint") as TranslationKey}
+    </p>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="subtle" size="sm" onclick={dismissProfileOk}>
+      {i18n.t("create.devl_ok") as TranslationKey}
+    </Button>
+    <Button variant="danger" size="sm" onclick={cancelProfile}>
+      {i18n.t("create.devl_cancel") as TranslationKey}
+    </Button>
+    <Button variant="primary" size="sm" onclick={openDevLauncher}>
+      {i18n.t("create.open_devlauncher") as TranslationKey}
+    </Button>
+  {/snippet}
+</Modal>
+
+<!-- DevLauncher integration: cancel profile confirmation -->
+<Modal
+  open={devlConfirmCancel}
+  onclose={dismissCancelConfirm}
+  title={i18n.t("create.devl_cancel_title") as TranslationKey}
+  description={i18n.t("create.devl_cancel_desc") as TranslationKey}
+  size="sm"
+  closeOnBackdrop={false}
+  closeOnEscape={false}
+>
+  {#snippet children()}
+    <p style="font-size: 0.9rem; color: var(--sp-text-2); margin: 0;">{i18n.t("create.cancel_profile_confirm") as TranslationKey}</p>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="subtle" size="sm" onclick={dismissCancelConfirm}>
+      {i18n.t("create.devl_keep") as TranslationKey}
+    </Button>
+    <Button variant="danger" size="sm" onclick={confirmCancelProfile}>
+      {i18n.t("create.devl_delete") as TranslationKey}
+    </Button>
+  {/snippet}
+</Modal>
+
 <style>
 .wizard { max-width: 1100px; margin: 0 auto; padding: 2rem; }
 .muted { color: var(--sp-text-3); }
@@ -3723,6 +3837,8 @@ function resetAll() {
 .exec-finished p { margin: 0.3rem 0; }
 .exec-finished.error { color: var(--sp-danger); }
 .exec-plan-path { font-size: 0.85rem; color: var(--sp-text-3); }
+
+
 
 @media (max-width: 900px) {
   .builder { grid-template-columns: 1fr; }

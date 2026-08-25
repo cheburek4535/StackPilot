@@ -1,5 +1,6 @@
 use crate::modules::devlauncher::models::*;
 use crate::modules::devlauncher::DevLauncherState;
+use crate::modules::project_creator::models::WizardContext;
 use crate::modules::workspace::project::ProjectService;
 use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::WorkspaceState;
@@ -309,4 +310,55 @@ pub async fn run_profile(
     }
 
     Ok(results)
+}
+
+/// Builds a LaunchProfile from WizardContext and saves it. This is the
+/// integration entry point: Project Creator calls this after execution
+/// completes so the profile is ready in DevLauncher without filesystem
+/// analysis. If a profile with the same project_path already exists,
+/// it is updated in place (preserving the name) instead of creating
+/// a duplicate.
+#[tauri::command]
+pub fn build_profile_from_context(
+    state: State<'_, DevLauncherState>,
+    context: WizardContext,
+) -> Result<LaunchProfile, String> {
+    let mut profile = super::profile_builder::build_profile_from_context(&context);
+
+    // Check if a profile already exists for this project path
+    if let Some(ref path) = profile.project_path {
+        if let Some(existing) = state.profile_manager.find_by_project_path(path) {
+            // Update existing profile: keep its name, overwrite the rest
+            profile.name = existing.name;
+            state.profile_manager.save_profile(&profile)?;
+            return Ok(profile);
+        }
+    }
+
+    state.profile_manager.save_profile(&profile)?;
+    Ok(profile)
+}
+
+/// Start watching a project directory for source file changes.
+/// Emits `devlauncher:file_changed` events when source files are modified.
+#[tauri::command]
+pub fn start_file_watcher(
+    state: State<'_, DevLauncherState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    state.file_watcher.start(std::path::PathBuf::from(&path), app)
+}
+
+/// Stop watching the current project directory.
+#[tauri::command]
+pub fn stop_file_watcher(state: State<'_, DevLauncherState>) -> Result<(), String> {
+    state.file_watcher.stop();
+    Ok(())
+}
+
+/// Check if the file watcher is currently active.
+#[tauri::command]
+pub fn is_file_watching(state: State<'_, DevLauncherState>) -> bool {
+    state.file_watcher.is_watching()
 }

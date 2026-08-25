@@ -7,6 +7,8 @@ pub trait ProfileManager: Send + Sync {
     fn get_profile(&self, name: &str) -> Result<LaunchProfile, String>;
     fn save_profile(&self, profile: &LaunchProfile) -> Result<(), String>;
     fn delete_profile(&self, name: &str) -> Result<(), String>;
+    /// Find an existing profile whose project_path matches the given path.
+    fn find_by_project_path(&self, path: &str) -> Option<LaunchProfile>;
 }
 
 pub struct JsonProfileManager {
@@ -63,4 +65,22 @@ impl ProfileManager for JsonProfileManager {
         let path = self.profile_path(name);
         fs::remove_file(&path).map_err(|e| format!("Failed to delete profile '{}': {}", name, e))
     }
+
+    fn find_by_project_path(&self, path: &str) -> Option<LaunchProfile> {
+        let profiles = self.list_profiles().ok()?;
+        profiles.into_iter().find(|p| {
+            p.project_path
+                .as_deref()
+                .map(|pp| normalize_path(pp) == normalize_path(path))
+                .unwrap_or(false)
+        })
+    }
+}
+
+/// Normalize a path for comparison: convert backslashes to forward slashes
+/// and strip trailing separators.
+fn normalize_path(p: &str) -> String {
+    p.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
 }

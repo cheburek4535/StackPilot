@@ -1835,7 +1835,7 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/erl-*"
+        "C:/Program Files/erl-*/bin"
       ],
       "registry_keys": []
     },
@@ -1849,6 +1849,7 @@
           "kind": "Official",
           "id": "erlang-exe",
           "url": "https://github.com/erlang/otp/releases/download/OTP-29.0.5/otp_win64_29.0.5.exe",
+          "file_name": "otp_win64_29.0.5.exe",
           "args": [
             "/S",
             "/v\"/qn\""

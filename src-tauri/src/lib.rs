@@ -143,6 +143,10 @@ pub fn run() {
             modules::devlauncher::commands::analyze_project,
             modules::devlauncher::commands::launch_ide,
             modules::devlauncher::commands::run_profile,
+            modules::devlauncher::commands::build_profile_from_context,
+            modules::devlauncher::commands::start_file_watcher,
+            modules::devlauncher::commands::stop_file_watcher,
+            modules::devlauncher::commands::is_file_watching,
             // Workspace commands
             modules::workspace::commands::spawn_process,
             modules::workspace::commands::list_processes,

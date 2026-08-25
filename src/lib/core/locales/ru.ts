@@ -169,6 +169,12 @@ export default {
   "home.demo_title": "Демо-профиль (диагностика)",
   "home.demo_desc": "Демонстрационные данные бэкенда — не ваш проект.",
   "home.execute": "Выполнить",
+  "home.source_created": "создан",
+  "home.source_opened": "открыт",
+  "home.source_profile": "профиль",
+  "home.source_confirmed": "подтверждён",
+  "home.launch_profile": "Запустить",
+  "home.no_profiles": "Нет сохранённых профилей.",
 
   "onboarding.step1_title": "Добро пожаловать в StackPilot",
   "onboarding.step1_body1": "StackPilot — это десктопное рабочее пространство для запуска и управления проектами разработки на этом компьютере.",
@@ -551,7 +557,7 @@ export default {
   "tc.drawer.track": "Отслеживать",
 
   "tc.plan.validating": "Проверяем запрос…",
-  "tc.plan.refreshing": "Обновляем факты об инструментах (точечно)…",
+  "tc.plan.refreshing": "Обновляем данные об инструментах…",
   "tc.plan.preparing": "Готовим план…",
   "tc.plan.ready": "План готов",
   "tc.plan.title_install": "План установки · {n} инстр.",
@@ -1157,6 +1163,18 @@ export default {
   "create.not_enough_disk": "⚠ Недостаточно места на диске",
   "create.one_per_side": "По одному на сторону — выбор другого заменяет его. ✓ = активен.",
   "create.open_vscode": "Открыть в VS Code",
+  "create.profile_added_to_devlauncher": "Проект добавлен в DevLauncher для быстрого запуска",
+  "create.open_devlauncher": "Открыть DevLauncher",
+  "create.cancel_profile_confirm": "Вы уверены? Профиль запуска будет удалён.",
+  "create.devl_dialog_title": "DevLauncher",
+  "create.devl_dialog_desc": "DevLauncher позволяет управлять и запускать проекты в один клик — серверы, инструменты и мониторинг изменений файлов в реальном времени.",
+  "create.devl_dialog_hint": "Профиль запуска создан для этого проекта. Вы можете открыть его сейчас или позже из раздела DevLauncher.",
+  "create.devl_ok": "OK",
+  "create.devl_cancel": "Отменить",
+  "create.devl_cancel_title": "Удалить профиль?",
+  "create.devl_cancel_desc": "Это действие нельзя отменить.",
+  "create.devl_keep": "Оставить профиль",
+  "create.devl_delete": "Удалить профиль",
   "create.overwrite": "Перезаписать",
   "create.path_restart_hint": "💡 Установлены новые инструменты. Перезапустите терминалы и редакторы, чтобы обновить PATH.",
   "create.phase_elapsed_min": "{m} мин {s} с",
@@ -1263,6 +1281,8 @@ export default {
   "devl.label_ph": "Dev Server",
   "devl.launch": "Запустить {name}",
   "devl.launching": "Запуск…",
+  "devl.watching": "Отслеживание изменений",
+  "devl.file_changed": "Файл изменён: {path}",
   "devl.load_failed": "Не удалось загрузить DevLauncher",
   "devl.load_logs_failed": "Не удалось загрузить логи: {err}",
   "devl.load_processes_failed": "Не удалось загрузить процессы: {err}",
@@ -1461,12 +1481,15 @@ export default {
   "ws.up_one_level": "На уровень выше",
 
   // ---- toolchain extra (docker notes / manual install) ----
-  "tool.android.manual_install": "���������� Android Studio � developer.android.com/studio � ������ � ��� ����� Android SDK.",
-  "tool.grafana.docker_notes": "������������ ��������� ���������: ����������� ����� grafana/grafana-oss � ����������.",
-  "tool.kafka.docker_notes": "������������ ��������� ���������: ����������� ����� apache/kafka � ����������.",
-  "tool.mongodb.docker_notes": "������������ ��������� ���������: ��������� docker-compose �������.",
-  "tool.mysql.docker_notes": "������������ ��������� ���������: ����������� ����� mysql � ����������.",
-  "tool.postgresql.docker_notes": "������������ ��������� ���������: ��������� docker-compose �������.",
-  "tool.redis.docker_notes": "������������ ��������� ��������� �� Windows: ����������� ����� redis � ����������.",
-  "tool.xcodebuild.manual_install": "���������� Xcode ������� �� Mac App Store (������ macOS) � xcodebuild �������� ������ � ���."
+
+
+  "tool.android.manual_install": "Установите Android Studio с сайта developer.android.com/studio — Android SDK входит в комплект.",
+  "tool.grafana.docker_notes": "Альтернатива локальной установке: официальный образ grafana/grafana-oss в контейнере.",
+  "tool.kafka.docker_notes": "Альтернатива локальной установке: официальный образ apache/kafka в контейнере.",
+  "tool.mongodb.docker_notes": "Альтернатива локальной установке: контейнер проекта из docker-compose.",
+  "tool.mysql.docker_notes": "Альтернатива локальной установке: официальный образ mysql в контейнере.",
+  "tool.postgresql.docker_notes": "Альтернатива локальной установке: контейнер проекта из docker-compose.",
+  "tool.redis.docker_notes": "Альтернатива локальной установке в Windows: официальный образ redis в контейнере.",
+  "tool.xcodebuild.manual_install": "Установите Xcode вручную из Mac App Store (только для macOS) — xcodebuild входит в комплект."
+
 };

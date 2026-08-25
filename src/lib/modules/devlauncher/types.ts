@@ -73,3 +73,7 @@ export type ActionStatus =
   | { Success: { message: string } }
   | { Failed: { error: string } }
   | { Skipped: { reason: string } };
+
+export type FileChangeEvent = {
+  path: string;
+};
