@@ -38,7 +38,6 @@ export function initTauriMock() {
     theme: "dark",
     language: "ru",
     auto_save_profiles: true,
-    preferred_apps: [{ name: "VS Code", path: "code", args: null }],
     auto_save: true,
     font_size: "md",
     reduced_motion: false,
@@ -123,7 +122,7 @@ export function initTauriMock() {
   processLogs.set("proc-dev-server", {
     stdout: [
       "[Vite] VITE v6.0.3  ready in 145 ms",
-      "[Vite] ➜  Local:   http://localhost:3000/",
+      "[Vite] ➜  Local:   http://localhost:1420/",
       "[Vite] ➜  Network: use --host to expose",
       "[StackPilot] Services initialized successfully.",
     ],

@@ -1835,9 +1835,11 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/erl-*/bin"
+        "C:/Program Files/erl*/bin"
       ],
-      "registry_keys": []
+      "registry_keys": [
+        "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Erlang OTP"
+      ]
     },
     "versions": {
       "min": "25",
@@ -1892,7 +1894,7 @@
     "size_mb": 150,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\erl-*\\bin"
+      "C:\\Program Files\\erl*\\bin"
     ],
     "bundled_with": null,
     "health_checks": [],

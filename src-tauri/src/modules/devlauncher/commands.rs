@@ -1,3 +1,4 @@
+use crate::core::settings::SettingsState;
 use crate::modules::devlauncher::models::*;
 use crate::modules::devlauncher::DevLauncherState;
 use crate::modules::project_creator::models::WizardContext;
@@ -185,12 +186,16 @@ pub async fn execute_action(
 #[tauri::command]
 pub async fn analyze_project(
     state: State<'_, DevLauncherState>,
+    settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<LaunchProfile, String> {
     let analyzer = Arc::clone(&state.analyzer);
-    tauri::async_runtime::spawn_blocking(move || analyzer.analyze(&path))
-        .await
-        .map_err(|e| format!("Analyze task failed: {e}"))?
+    let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        analyzer.analyze(&path, vscode_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Analyze task failed: {e}"))?
 }
 
 /// Launch the preferred IDE for a project. Returns true if the IDE was
@@ -198,13 +203,15 @@ pub async fn analyze_project(
 #[tauri::command]
 pub async fn launch_ide(
     state: State<'_, DevLauncherState>,
+    settings: State<'_, SettingsState>,
     ide: PreferredIde,
     project_path: Option<String>,
 ) -> Result<bool, String> {
     let engine = Arc::clone(&state.launch_engine);
     let path = project_path;
+    let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     tauri::async_runtime::spawn_blocking(move || {
-        engine.launch_ide(&ide, path.as_deref(), None)
+        engine.launch_ide(&ide, path.as_deref(), None, vscode_path.as_deref())
     })
     .await
     .map_err(|e| format!("Launch IDE task failed: {e}"))?
@@ -216,6 +223,7 @@ pub async fn launch_ide(
 pub async fn run_profile(
     state: State<'_, DevLauncherState>,
     workspace: State<'_, WorkspaceState>,
+    settings: State<'_, SettingsState>,
     profile: LaunchProfile,
     session_id: Option<String>,
     environment_binding_id: Option<String>,
@@ -224,13 +232,19 @@ pub async fn run_profile(
     let mut results: Vec<(String, ActionStatus)> = Vec::new();
 
     // 1. Launch the preferred IDE first so the user sees it open immediately.
+    let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     if let Some(ide) = &profile.preferred_ide {
         let project_path = profile
             .project_path
             .clone()
             .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
         let launched = engine
-            .launch_ide(ide, project_path.as_deref(), None)
+            .launch_ide(
+                ide,
+                project_path.as_deref(),
+                None,
+                vscode_path.as_deref(),
+            )
             .unwrap_or(false);
         results.push((
             format!("ide:{}", ide.cli_name()),
@@ -290,16 +304,33 @@ pub async fn run_profile(
 
         let mut action = action.clone();
         let action_id = action.id.clone();
+        let action_label = action.label.clone();
         resolve_working_dir(&mut action, &workspace);
         let ov = overlay.clone();
         let session = session_id_for_link.clone();
         let engine = Arc::clone(&engine);
+        // A single failing action must not abort the rest of the profile:
+        // record its error as a Failed status and continue.
         let (status, proc_id) =
-            tauri::async_runtime::spawn_blocking(move || {
+            match tauri::async_runtime::spawn_blocking(move || {
                 engine.execute_action(&action, session, ov.as_ref())
             })
             .await
-            .map_err(|e| format!("Action task failed: {e}"))??;
+            {
+                Ok(Ok(res)) => res,
+                Ok(Err(err)) => (
+                    ActionStatus::Failed {
+                        error: format!("Action '{}' failed: {}", action_label, err),
+                    },
+                    None,
+                ),
+                Err(err) => (
+                    ActionStatus::Failed {
+                        error: format!("Action '{}' task crashed: {}", action_label, err),
+                    },
+                    None,
+                ),
+            };
 
         if let Some(proc_id) = proc_id {
             if session_id_for_link.is_some() {

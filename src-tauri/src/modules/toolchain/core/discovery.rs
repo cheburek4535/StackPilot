@@ -397,9 +397,11 @@ pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> To
 ///   1. ответила проба версии (PATH)      → Installed / UpdateAvailable;
 ///   2. ответила проба из known_paths     → Installed / UpdateAvailable
 ///      (инсталляция есть, но бинарь не в PATH — postgres и т.п.);
-///   3. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
-///   4. нашёлся известный путь/реестр     → PathBroken (не в PATH);
-///   5. ничего                            → Missing.
+///   3. прямой скан каталога установки    → Installed / UpdateAvailable
+///      (glob не совпал, но каталог на диске есть — erlang и т.п.);
+///   4. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
+///   5. нашёлся известный путь/реестр     → PathBroken (не в PATH);
+///   6. ничего                            → Missing.
 pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     let os = platforms::current_platform().os_name();
     let det = def.effective_detection(&os);
@@ -411,6 +413,14 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     // Установка найдена по известному пути, но бинарь не в PATH —
     // пробуем запустить его напрямую оттуда.
     if let Some(raw) = probe_version_at_known_paths(def).await {
+        return apply_version_rules(def, &raw);
+    }
+
+    // Прямой скан каталога установки: glob не совпал (например,
+    // erlang ставится в `erl15`, а паттерн был `erl-*`), но
+    // каталог на диске реален. Ищем подкаталоги по базовому имени
+    // из known_paths и пробуем запустить бинарник из каждого.
+    if let Some(raw) = probe_version_at_install_dirs(def).await {
         return apply_version_rules(def, &raw);
     }
 
@@ -448,6 +458,111 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     }
 
     ToolStatus::Missing
+}
+
+/// Прямой скан каталога установки: перечисляет подкаталоги базового
+/// каталога (например `C:/Program Files/`) и ищет в каждом `bin/`
+/// с бинарником тула. Отличается от `probe_version_at_known_paths`
+/// тем, что НЕ использует glob-шаблон из known_paths — он сканирует
+/// файловую систему напрямую. Это ловит случаи, когда glob не совпал
+/// (erlang ставится в `erl15`, а паттерн был `erl-*`).
+async fn probe_version_at_install_dirs(def: &ToolDefinition) -> Option<String> {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    let exts: &[&str] = if cfg!(target_os = "windows") {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+
+    for known in &det.known_paths {
+        // Извлекаем базовый каталог: из `C:/Program Files/erl*/bin`
+        // получаем `C:/Program Files`, а из `erl*` — текущий каталог.
+        let expanded = expand_env(known);
+        let expanded_str = expanded.to_string_lossy().into_owned();
+        let Some(parent) = parent_dir_with_wildcard(&expanded_str) else {
+            continue;
+        };
+        let Ok(entries) = std::fs::read_dir(&parent) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            // Проверяем, что имя каталога соответствует паттерну
+            // (без wildcard): `erl*` → начинается с `erl`.
+            if !matches_wildcard_prefix(&name, &expanded_str) {
+                continue;
+            }
+            let bin = path.join("bin");
+            if !bin.is_dir() {
+                continue;
+            }
+            for probe in &det.version_probes {
+                if probe.is_empty() {
+                    continue;
+                }
+                for ext in exts {
+                    let bin_path = bin.join(format!("{}{}", probe[0], ext));
+                    if !bin_path.is_file() {
+                        continue;
+                    }
+                    if let Some(out) =
+                        run_capture(&bin_path.to_string_lossy(), &probe[1..]).await
+                    {
+                        return Some(out);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Извлекает родительский каталог из пути с wildcard:
+/// `C:/Program Files/erl*/bin` → `C:/Program Files`
+/// `C:/Program Files/erl*`     → `C:/Program Files`
+/// Если wildcard в самом первом компоненте — возвращается корень.
+fn parent_dir_with_wildcard(path: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(path);
+    let mut components: Vec<std::path::Component> = p.components().collect();
+    // Ищем компонент с `*` и возвращаем всё до него.
+    for i in 0..components.len() {
+        let comp_str = components[i].as_os_str().to_string_lossy();
+        if comp_str.contains('*') {
+            // Всё до этого компонента — родитель.
+            let parent: std::path::PathBuf = components[..i]
+                .iter()
+                .map(|c| std::path::PathBuf::from(c.as_os_str()))
+                .collect();
+            return Some(parent);
+        }
+    }
+    // Нет wildcard — весь путь является родителем (ищем внутри).
+    Some(p.to_path_buf())
+}
+
+/// Проверяет, что имя файла соответствует паттерну с wildcard:
+/// `erl15` соответствует `C:/Program Files/erl*` (начинается с `erl`).
+/// `nodejs` НЕ соответствует `C:/Program Files/erl*`.
+fn matches_wildcard_prefix(name: &str, pattern: &str) -> bool {
+    // Извлекаем префикс до `*` из последнего компонента паттерна.
+    let p = std::path::Path::new(pattern);
+    let last = p
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let prefix: String = last.split('*').next().unwrap_or_default().to_string();
+    if prefix.is_empty() {
+        return true; // паттерн начинается с `*` — всё подходит
+    }
+    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
 }
 
 /// Пробы, которые запускают оболочку, а не сам инструмент

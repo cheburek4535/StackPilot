@@ -1511,7 +1511,17 @@ async fn try_install_source(
     // из tools.json (glob `PostgreSQL/*/bin` резолвится в конкретный
     // каталог) и обновляем PATH процесса — иначе verify не найдёт
     // свежеустановленный бинарник, хотя он стоит.
-    if !def.path_entries.is_empty() || matches!(exec, ExecutionKind::Archive) {
+    //
+    // PkgManager-источники (winget/brew/apt) сами управляют PATH:
+    // winget пишет в реестр, brew/apt ставят в стандартные каталоги.
+    // path_entries в tools.json — для Windows-инсталляторов; на
+    // Linux/macOS они содержат Windows-пути, которые не проходят
+    // проверку is_absolute_entry — пропускаем, чтобы не логировать
+    // ложные ошибки и не показывать обновление PATH в UI.
+    let is_pkg_manager = matches!(source.kind, InstallSourceKind::PkgManager);
+    if (!def.path_entries.is_empty() && !is_pkg_manager)
+        || matches!(exec, ExecutionKind::Archive)
+    {
         sink.emit(console::event(
             ToolchainEventType::TaskPhaseChanged {
                 phase: TaskPhase::UpdatingPath,

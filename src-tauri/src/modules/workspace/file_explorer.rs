@@ -22,7 +22,7 @@ pub trait FileExplorerService: Send + Sync {
     fn list_directory(&self, dir: &str) -> Result<Vec<FileEntry>, String>;
     fn read_file(&self, path: &str) -> Result<FileContent, String>;
     fn write_file(&self, path: &str, content: &str) -> Result<(), String>;
-    fn open_in_vscode(&self, path: &str) -> Result<(), String>;
+    fn open_in_vscode(&self, path: &str, vscode_path: Option<&str>) -> Result<(), String>;
     fn detect_language(&self, path: &str) -> String;
 }
 
@@ -118,17 +118,38 @@ impl FileExplorerService for DefaultFileExplorerService {
         fs::write(path, content).map_err(|e| format!("Failed to write '{}': {}", path, e))
     }
 
-    fn open_in_vscode(&self, path: &str) -> Result<(), String> {
+    fn open_in_vscode(&self, path: &str, vscode_path: Option<&str>) -> Result<(), String> {
+        let cli = vscode_path.unwrap_or("code");
+        // Resolve the CLI name to an absolute path using the shared
+        // cross-platform discovery (PATH, Windows App Paths registry, macOS
+        // bundles). A bare `code` fails on Windows whenever the app's PATH
+        // lacks the user's shell additions — resolution fixes that.
+        let resolved = crate::platform::ide::resolve_ide_executable(cli)
+            .ok_or_else(|| {
+                format!(
+                    "Failed to open VSCode: '{}' was not found on this system. \
+                     Make sure the path is correct in Settings → System.",
+                    cli
+                )
+            })?;
+
         let result = if cfg!(target_os = "windows") {
-            Command::new("cmd").args(["/C", "code", path]).spawn()
+            if crate::platform::paths::is_batch_file(&resolved) {
+                // `.cmd` shims must run through cmd.exe (CreateProcess cannot
+                // execute batch files directly).
+                let args = crate::platform::command::batch_shim_cmd_line(&resolved, &[path]);
+                Command::new("cmd").args(args).spawn()
+            } else {
+                Command::new(&resolved).arg(path).spawn()
+            }
         } else {
-            Command::new("code").arg(path).spawn()
+            Command::new(&resolved).arg(path).spawn()
         };
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(format!(
-                "Failed to open VSCode: {}. Make sure 'code' is in your PATH.",
-                e
+                "Failed to open VSCode ({}): {}. Make sure the path is correct in Settings → System.",
+                resolved, e
             )),
         }
     }

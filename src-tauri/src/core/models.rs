@@ -1,12 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreferredApp {
-    pub name: String,
-    pub path: String,
-    pub args: Option<String>,
-}
-
 /// AI provider preset (dead configuration — the AI layer itself is not
 /// implemented yet, but the connection contract is captured here).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +60,6 @@ pub struct AppSettings {
     pub theme: String,
     pub language: String,
     pub auto_save_profiles: bool,
-    pub preferred_apps: Vec<PreferredApp>,
 
     /// Persist settings immediately on every change (top-level switch).
     pub auto_save: bool,

@@ -175,9 +175,28 @@ impl OsProcessManager {
     /// stderr piped or nulled in a way that breaks their native window.
     /// On Windows they are launched via `start` semantics (Cmd::new + spawn
     /// without console handles), on Unix via `open`/`xdg-open`/direct spawn.
+    ///
+    /// Batch shims (`code.cmd`, `npm.cmd`) are wrapped in `cmd /C` because
+    /// CreateProcess cannot execute `.cmd`/`.bat` files directly — this was
+    /// the "VS Code not found" failure for OpenApplication actions whose
+    /// path is a bare CLI name like `code`.
     fn build_detached_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
-        let mut cmd = Command::new(command);
-        cmd.args(args);
+        let plan = crate::platform::command::resolve_spawn_plan(command);
+        let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
+            (
+                "cmd".to_string(),
+                crate::platform::command::batch_shim_cmd_line(&plan.program, args),
+            )
+        } else {
+            (
+                plan.program,
+                args.iter().map(|s| s.to_string()).collect(),
+            )
+        };
+        let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
+
+        let mut cmd = Command::new(spawn_program);
+        cmd.args(spawn_args_refs);
         // Do not pipe stdout/stderr for GUI apps — let them inherit or
         // detach naturally. Piping to null on Windows can break GUI init.
         #[cfg(target_os = "windows")]
@@ -298,6 +317,15 @@ fn build_terminal_command(
     // on Windows and `cd <dir>` on Unix so the command runs in the project
     // directory, then execute the command. The terminal stays open so the
     // user sees the long-running process output.
+    //
+    // On Windows the inner command is written into a `.cmd` batch file, so
+    // cmd metacharacters in the user command (&, |, %, <, >, ^, ") must be
+    // escaped or the script misbehaves.
+    let inner_cmd: String = if cfg!(target_os = "windows") {
+        batch_escape(&joined)
+    } else {
+        joined.clone()
+    };
     let full_inner: String = match working_dir {
         Some(dir) => {
             let cd = if cfg!(target_os = "windows") {
@@ -305,30 +333,25 @@ fn build_terminal_command(
             } else {
                 format!("cd '{}'", dir.replace('\'', "'\\''"))
             };
-            format!("{} && {}", cd, joined)
+            format!("{} && {}", cd, inner_cmd)
         }
-        None => joined.clone(),
+        None => inner_cmd.clone(),
     };
 
     match current_os() {
         HostOs::Windows => {
-            // Robust Windows terminal launch:
-            //   cmd /C start "DevLauncher" cmd /K "<temp_script.cmd>"
+            // Spawn `cmd /K <temp_script.cmd>` directly (no `start` wrapper).
+            // The batch script does `cd /d <dir> && <command>` and keeps the
+            // window open (`/K`). Because the tracked child IS the terminal,
+            // its exit status is accurate and `taskkill /T` can terminate the
+            // whole tree (cmd → npm → node) when the user stops the process.
             //
-            // We write the inner command (cd + command) to a temporary batch
-            // file and pass its path to `cmd /K`, avoiding the notoriously
-            // fragile quoting of nested cmd.exe arguments.
+            // A GUI parent has no console, so cmd.exe allocates a fresh
+            // console window automatically — no extra "start" needed.
             let script_path = write_temp_batch_script(&full_inner)?;
             Ok((
                 "cmd".to_string(),
-                vec![
-                    "/C".to_string(),
-                    "start".to_string(),
-                    "\"DevLauncher\"".to_string(),
-                    "cmd".to_string(),
-                    "/K".to_string(),
-                    script_path,
-                ],
+                vec!["/K".to_string(), script_path],
             ))
         }
         HostOs::Macos => {
@@ -345,15 +368,20 @@ fn build_terminal_command(
         HostOs::Linux => {
             let mut cmd = Command::new("sh");
             cmd.args(["-lc", &full_inner]);
-            // Find an available terminal emulator.
+            // Find an available terminal emulator. Non-daemonizing terminals
+            // (xterm, alacritty, kitty, konsole, xfce4-terminal) stay as the
+            // direct child so the tracked PID lives as long as the process;
+            // gnome-terminal/x-terminal-emulator daemonize and the wrapper
+            // exits immediately (terminal still opens, but tracking degrades
+            // to "exited").
             let candidates = [
-                "gnome-terminal",
-                "konsole",
-                "x-terminal-emulator",
-                "xfce4-terminal",
                 "xterm",
                 "alacritty",
                 "kitty",
+                "konsole",
+                "xfce4-terminal",
+                "gnome-terminal",
+                "x-terminal-emulator",
             ];
             for cand in candidates {
                 if which::which(cand).is_ok() {
@@ -402,13 +430,18 @@ fn build_terminal_command(
 
 /// Write the inner command to a temporary `.cmd` batch file and return its
 /// path. Used on Windows so `cmd /K <file>` runs reliably without fragile
-/// nested quoting.
+/// nested quoting. The file name is unique per invocation so concurrent
+/// terminal launches never overwrite each other.
 #[cfg(target_os = "windows")]
 fn write_temp_batch_script(inner: &str) -> Result<String, String> {
     use std::io::Write;
 
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let mut dir = std::env::temp_dir();
-    dir.push(format!("devlauncher_{}.cmd", std::process::id()));
+    dir.push(format!("devlauncher_{}_{}.cmd", std::process::id(), nanos));
 
     let mut file = std::fs::File::create(&dir)
         .map_err(|e| format!("Failed to create temp script: {}", e))?;
@@ -433,6 +466,31 @@ fn join_command(command: &str, args: &[&str]) -> String {
         parts.push(quote_for_shell(a));
     }
     parts.join(" ")
+}
+
+/// Escape a command line for use inside a `.cmd` batch file: `%` becomes
+/// `%%`, and `& | < > ^` are caret-escaped so the batch does not split or
+/// redirect. Quoted paths with spaces are preserved as-is.
+fn batch_escape(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut in_quotes = false;
+    for ch in cmd.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                out.push(ch);
+            }
+            '%' => {
+                out.push_str("%%");
+            }
+            '&' | '|' | '<' | '>' | '^' if !in_quotes => {
+                out.push('^');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Shell-quote a single token. On Windows, wrap in double quotes if it
@@ -833,7 +891,25 @@ impl OsProcessManager {
         overlay: Option<&EnvironmentOverlay>,
         visible: bool,
     ) -> Result<TrackedProcess, String> {
-        let mut cmd = Self::build_command(command, args, working_dir);
+        // Resolve the command on Windows: bare npm-ecosystem names become
+        // `.cmd` shims which must run through `cmd /C` (CreateProcess cannot
+        // execute batch files directly). This is why plain `Command::new("npm")`
+        // used to fail with "not found" even though npm is installed.
+        let plan = crate::platform::command::resolve_spawn_plan(command);
+        let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
+            (
+                "cmd".to_string(),
+                crate::platform::command::batch_shim_cmd_line(&plan.program, args),
+            )
+        } else {
+            (
+                plan.program,
+                args.iter().map(|s| s.to_string()).collect(),
+            )
+        };
+        let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
+
+        let mut cmd = Self::build_command(&spawn_program, &spawn_args_refs, working_dir);
 
         if let Some(ov) = overlay {
             ov.apply_std(&mut cmd);
@@ -965,6 +1041,16 @@ mod tests {
     fn timestamp_now_is_nonzero() {
         let ts: u64 = timestamp_now().parse().unwrap();
         assert!(ts > 0);
+    }
+
+    #[test]
+    fn batch_escape_protects_metacharacters() {
+        // Quoted text is untouched; & | < > ^ get caret-escaped; % is doubled.
+        assert_eq!(batch_escape(r#""C:\my dir\npm run dev""#), r#""C:\my dir\npm run dev""#);
+        assert_eq!(batch_escape("a & b | c"), "a ^& b ^| c");
+        assert_eq!(batch_escape("echo 100%"), "echo 100%%");
+        assert_eq!(batch_escape("a<b>c"), "a^<b^>c");
+        assert_eq!(batch_escape(r#"cmd /c "echo a & b""#), r#"cmd /c "echo a & b""#);
     }
 
     #[test]

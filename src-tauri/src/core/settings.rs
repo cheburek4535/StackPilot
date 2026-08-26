@@ -54,11 +54,6 @@ impl JsonSettingsService {
             theme: "dark".into(),
             language: "ru".into(),
             auto_save_profiles: true,
-            preferred_apps: vec![PreferredApp {
-                name: "VS Code".into(),
-                path: "code".into(),
-                args: None,
-            }],
             auto_save: true,
             font_size: "md".into(),
             reduced_motion: false,
@@ -122,16 +117,6 @@ impl JsonSettingsService {
         s.ai.max_tokens = s.ai.max_tokens.clamp(1, 128_000);
         s.ai.timeout_secs = s.ai.timeout_secs.clamp(5, 600);
         s.ai.system_prompt = s.ai.system_prompt.trim().to_string();
-
-        s.preferred_apps
-            .retain(|a| !a.name.trim().is_empty() || !a.path.trim().is_empty());
-        for app in &mut s.preferred_apps {
-            app.name = app.name.trim().to_string();
-            app.path = app.path.trim().to_string();
-            if let Some(args) = &app.args {
-                app.args = Some(args.trim().to_string());
-            }
-        }
 
         s
     }
@@ -197,14 +182,18 @@ pub fn reset_settings(state: State<'_, SettingsState>) -> Result<AppSettings, St
 }
 
 /// True when a file or directory exists at the given path (empty → false).
-/// Used by the UI to flag broken paths before they fail silently.
+/// Bare CLI names (e.g. `code`, `docker`) are validated through the shared
+/// executable resolver so the settings UI does not flag them as broken.
 #[tauri::command]
 pub fn settings_check_path(path: String) -> Result<bool, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Ok(false);
     }
-    Ok(std::fs::metadata(trimmed).is_ok())
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Ok(std::fs::metadata(trimmed).is_ok());
+    }
+    Ok(crate::platform::ide::resolve_ide_executable(trimmed).is_some())
 }
 
 /// The app data folder (contains settings.json and profiles).
@@ -277,15 +266,9 @@ mod tests {
         let svc = JsonSettingsService::new(dir.clone());
         let mut s = svc.get_settings().unwrap();
         s.theme = "light".into();
-        s.preferred_apps.push(PreferredApp {
-            name: "Custom".into(),
-            path: "/bin/x".into(),
-            args: None,
-        });
         svc.update_settings(&s).unwrap();
         let reset = svc.reset_to_defaults().unwrap();
         assert_eq!(reset.theme, "dark");
-        assert_eq!(reset.preferred_apps.len(), 1);
         fs::remove_dir_all(dir).ok();
     }
 

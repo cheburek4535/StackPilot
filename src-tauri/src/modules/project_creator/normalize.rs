@@ -180,7 +180,9 @@ mod tests {
         let errors = normalize_context(&t, &mut c);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(c.backend_languages, vec!["python"]);
-        assert_eq!(c.frontend_languages, vec!["typescript"]);
+        // TypeScript (category="both") is NOT auto-assigned to any side —
+        // the user must explicitly assign it, or frameworks determine the side.
+        assert!(c.frontend_languages.is_empty());
         assert_eq!(c.languages, vec!["python", "typescript"]);
     }
 

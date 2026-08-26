@@ -4,13 +4,22 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 pub trait ProjectAnalyzer: Send + Sync {
-    fn analyze(&self, project_path: &str) -> Result<LaunchProfile, String>;
+    fn analyze(&self, project_path: &str, vscode_path: Option<&str>) -> Result<LaunchProfile, String>;
+}
+
+/// Check if an IDE executable is available on the system.
+///
+/// Delegates to the shared cross-platform discovery in [`crate::platform::ide`]:
+/// PATH lookup (PATHEXT-aware), Windows `App Paths` registry and install
+/// dirs, macOS app bundles, Linux snap/flatpak locations.
+fn find_ide_executable(cli: &str) -> Option<String> {
+    crate::platform::ide::resolve_ide_executable(cli)
 }
 
 pub struct FsProjectAnalyzer;
 
 impl ProjectAnalyzer for FsProjectAnalyzer {
-    fn analyze(&self, project_path: &str) -> Result<LaunchProfile, String> {
+    fn analyze(&self, project_path: &str, vscode_path: Option<&str>) -> Result<LaunchProfile, String> {
         let mut launch_actions: Vec<LaunchAction> = Vec::new();
         let walker = WalkDir::new(project_path).follow_links(false).into_iter();
         let mut it = walker;
@@ -23,7 +32,6 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
         let mut has_go_project = false;
         let mut has_makefile = false;
         let mut has_sln = false;
-        let port_re = regex::Regex::new(r"--port\s+(\d+)").unwrap();
 
         while let Some(entry_result) = it.next() {
             let entry = match entry_result {
@@ -72,12 +80,15 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
 
             if filename == "Dockerfile" && !has_dockerfile {
                 has_dockerfile = true;
+                // Derive an image tag from the project folder so repeated
+                // runs build/run the same image instead of a generic "myapp".
+                let image_tag = docker_image_tag(project_path);
                 launch_actions.push(LaunchAction {
                     id: generate_id(),
                     label: "Build Docker image".into(),
                     enabled: !has_docker,
                     action_type: ActionType::RunCommand {
-                        command: "docker build -t myapp .".into(),
+                        command: format!("docker build -t {} .", image_tag),
                         working_dir: Some(cwd.clone()),
                         persistent: None,
                     },
@@ -87,7 +98,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     label: "Run Docker container".into(),
                     enabled: !has_docker,
                     action_type: ActionType::RunCommand {
-                        command: "docker run -p 8080:80 myapp".into(),
+                        command: format!("docker run -p 8080:80 {}", image_tag),
                         working_dir: Some(cwd.clone()),
                         persistent: Some(true),
                     },
@@ -109,10 +120,11 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                         || dev_deps.and_then(|d| d.get(pkg)).is_some()
                 };
 
-                // Р вЂ™РЎвЂ№Р В±Р С‘РЎР‚Р В°Р ВµР С Р СћР С›Р вЂєР В¬Р С™Р С› РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р С‘Р в„– npm-РЎРѓР С”РЎР‚Р С‘Р С—РЎвЂљ: "dev" РІвЂ вЂ™ "start" РІвЂ вЂ™
-                // "serve" РІвЂ вЂ™ Р С—Р ВµРЎР‚Р Р†РЎвЂ№Р в„– Р С‘Р В· РЎРѓР С—Р С‘РЎРѓР С”Р В°. Р В Р В°Р Р…РЎРЉРЎв‚¬Р Вµ РЎвЂљРЎС“РЎвЂљ Р С—Р С•Р Т‘РЎРѓРЎвЂљР В°Р Р†Р В»РЎРЏР В»РЎРѓРЎРЏ
-                // Р Р…Р ВµРЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р С‘Р в„– "dev" Р Р†РЎРѓР В»Р ВµР С—РЎС“РЎР‹ РІР‚вЂќ Р С—РЎР‚Р С•РЎвЂћР С‘Р В»РЎРЉ Р С—Р В°Р Т‘Р В°Р В» РЎРѓ
-                // "Missing script: dev"/"Missing script: nuxt".
+                // Pick the best npm script to run. Only script *names* are
+                // ever used — never `main` or a script's value — so the
+                // command can never become the garbage `npm run node --watch
+                // src/index.js` / `npm run nuxt ...` that older versions
+                // produced when they misinterpreted package.json.
                 let run_cmd: Option<String> = if has_dep("expo") {
                     Some("npx expo start".to_string())
                 } else if has_dep("@nestjs/core") {
@@ -123,39 +135,30 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                             .unwrap_or("npm run start:dev")
                             .to_string(),
                     )
-                } else if let Some(scripts) = scripts {
-                    let chosen = ["dev", "start", "serve"]
-                        .iter()
-                        .find(|k| scripts.get(*k).is_some())
-                        .map(|k| k.to_string())
-                        .or_else(|| scripts.as_object().and_then(|m| m.keys().next()).cloned());
-                    match chosen {
-                        Some(key) => Some(format!("npm run {}", key)),
-                        // Р РЋР С”РЎР‚Р С‘Р С—РЎвЂљР С•Р Р† Р Р…Р ВµРЎвЂљ Р Р†Р С•Р С•Р В±РЎвЂ°Р Вµ: Р С—РЎР‚Р С•Р В±РЎС“Р ВµР С Р С—РЎР‚РЎРЏР СР С•Р в„– Р В·Р В°Р С—РЎС“РЎРѓР С” main
-                        None => value
-                            .get("main")
-                            .and_then(|m| m.as_str())
-                            .map(|main| format!("node {}", main)),
-                    }
+                } else if let Some(run_script) = pick_npm_run_script(scripts) {
+                    Some(format!("npm run {}", run_script))
                 } else {
-                    // Р РЋР ВµР С”РЎвЂ Р С‘Р С‘ scripts Р Р…Р ВµРЎвЂљ РІР‚вЂќ main, Р ВµРЎРѓР В»Р С‘ Р ВµРЎРѓРЎвЂљРЎРЉ, Р С‘Р Р…Р В°РЎвЂЎР Вµ Р Р…Р ВµРЎвЂЎР ВµР С–Р С• Р В·Р В°Р С—РЎС“РЎРѓР С”Р В°РЎвЂљРЎРЉ
+                    // No usable scripts — fall back to a direct `node main.js`
+                    // launch only when `main` points at a JS entry file.
                     value
                         .get("main")
                         .and_then(|m| m.as_str())
+                        .filter(|main| {
+                            let lower = main.to_ascii_lowercase();
+                            lower.ends_with(".js")
+                                || lower.ends_with(".mjs")
+                                || lower.ends_with(".cjs")
+                        })
                         .map(|main| format!("node {}", main))
                 };
 
                 if let Some(run_cmd) = run_cmd {
-                    let mut port: u16 = 3000;
-                    if let Some(caps) = port_re.captures(&run_cmd) {
-                        if let Ok(p) = caps[1].parse() {
-                            port = p;
-                        }
-                    }
+                    let port = detect_dev_port(&run_cmd);
+                    let label = format!("Run Node.js project ({})", cwd_label(&cwd, project_path));
 
                     launch_actions.push(LaunchAction {
                         id: generate_id(),
-                        label: "Run Node.js project".into(),
+                        label,
                         enabled: true,
                         action_type: ActionType::RunCommand {
                             command: run_cmd,
@@ -462,21 +465,27 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
             });
         }
 
-        // IDE detection
+        // IDE detection — use the user-configured vscode_path when available
+        let effective_vscode = vscode_path.unwrap_or("code");
         let (ide_name, ide_label, ide_fallback, ide_fb_label) = if has_python_project {
             (
                 "pycharm",
                 "Open in PyCharm",
-                "code",
+                effective_vscode,
                 "Open in VS Code (PyCharm not found)",
             )
         } else if has_sln {
-            ("devenv", "Open in Visual Studio", "code", "Open in VS Code")
+            (
+                "devenv",
+                "Open in Visual Studio",
+                effective_vscode,
+                "Open in VS Code",
+            )
         } else {
-            ("code", "Open in VS Code", "", "")
+            (effective_vscode, "Open in VS Code", "", "")
         };
 
-        if which::which(ide_name).is_ok() {
+        if find_ide_executable(ide_name).is_some() {
             launch_actions.push(LaunchAction {
                 id: generate_id(),
                 label: ide_label.into(),
@@ -487,7 +496,7 @@ impl ProjectAnalyzer for FsProjectAnalyzer {
                     args_list: None,
                 },
             });
-        } else if !ide_fallback.is_empty() && which::which(ide_fallback).is_ok() {
+        } else if !ide_fallback.is_empty() && find_ide_executable(ide_fallback).is_some() {
             launch_actions.push(LaunchAction {
                 id: generate_id(),
                 label: ide_fb_label.into(),
@@ -523,4 +532,214 @@ fn generate_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("act_{}", nanos)
+}
+
+/// Pick the best `package.json` script name to run via `npm run <name>`.
+///
+/// Order of preference: `dev`, `start`, `serve`, `preview`, then any
+/// remaining script whose name is not a helper/utility (install, build,
+/// lint, test, …). Never returns a script that would produce a broken
+/// command line — only the script *name* is used, so `npm run node` /
+/// `npm run nuxt` garbage is impossible.
+fn pick_npm_run_script(scripts: Option<&serde_json::Value>) -> Option<String> {
+    let obj = scripts?.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+
+    for preferred in ["dev", "start", "serve", "preview", "debug"] {
+        if obj.contains_key(preferred) {
+            return Some(preferred.to_string());
+        }
+    }
+
+    // Fallback: first script that is not a lifecycle/utility helper.
+    const HELPER_SCRIPTS: &[&str] = &[
+        "install",
+        "postinstall",
+        "preinstall",
+        "prepare",
+        "prepublish",
+        "build",
+        "compile",
+        "clean",
+        "lint",
+        "test",
+        "test:unit",
+        "test:integration",
+        "e2e",
+        "typecheck",
+        "types",
+        "generate",
+        "format",
+        "check",
+        "analyze",
+        "audit",
+    ];
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    for key in &keys {
+        let lower = key.to_ascii_lowercase();
+        if lower.starts_with("dev") || lower.ends_with(":dev") {
+            return Some(key.to_string());
+        }
+    }
+    for key in &keys {
+        if !HELPER_SCRIPTS.contains(&key.as_str()) {
+            return Some(key.to_string());
+        }
+    }
+    // Everything is a helper — still prefer a runnable one over nothing.
+    obj.keys().next().cloned()
+}
+
+/// Detect the most likely dev-server port from a run command.
+///
+/// Understands `--port 3000`, `--port=3000`, `-p 3000` and `PORT=3000`
+/// conventions used across Node.js tooling (Vite, Next.js, Nuxt, Node
+/// `--env-file`, cross-env, …).
+fn detect_dev_port(run_cmd: &str) -> u16 {
+    for pattern in [
+        r"--port[= ](\d{2,5})",
+        r"-p[= ](\d{2,5})",
+        r"\bPORT[= ](\d{2,5})",
+        r"port\s*[:=]\s*(\d{2,5})",
+    ] {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(caps) = re.captures(run_cmd) {
+                if let Ok(p) = caps[1].parse::<u16>() {
+                    if p > 0 {
+                        return p;
+                    }
+                }
+            }
+        }
+    }
+    3000
+}
+
+/// Short label for the directory containing a manifest (used to make action
+/// labels unique in monorepos with backend/ + frontend/ package.json files).
+fn cwd_label(cwd: &str, project_path: &str) -> String {
+    let rel = std::path::Path::new(cwd)
+        .strip_prefix(project_path)
+        .unwrap_or(std::path::Path::new(cwd));
+    let name = rel
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("root");
+    name.to_string()
+}
+
+/// Build a safe Docker image tag from a project path's folder name.
+fn docker_image_tag(project_path: &str) -> String {
+    let name = std::path::Path::new(project_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("app");
+    let mut tag = String::with_capacity(name.len());
+    let mut last_was_sep = false;
+    for ch in name.chars() {
+        let sep = !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+        if sep {
+            if !last_was_sep && !tag.is_empty() {
+                tag.push('-');
+                last_was_sep = true;
+            }
+        } else {
+            tag.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        }
+    }
+    let tag = tag.trim_matches('-').to_string();
+    if tag.is_empty() {
+        "app".to_string()
+    } else {
+        tag
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scripts(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn pick_script_prefers_dev_start_serve() {
+        let s = scripts(json!({ "build": "nuxt build", "dev": "nuxt dev" }));
+        assert_eq!(pick_npm_run_script(Some(&serde_json::Value::Object(s))), Some("dev".into()));
+
+        let s = scripts(json!({ "serve": "vite --port 5173" }));
+        assert_eq!(pick_npm_run_script(Some(&serde_json::Value::Object(s))), Some("serve".into()));
+    }
+
+    #[test]
+    fn pick_script_never_misreads_values() {
+        // Regression: older code produced `npm run node --watch src/index.js`
+        // and `npm run nuxt ...` by misreading package.json. Script *names*
+        // must be used, never values.
+        let s = scripts(json!({
+            "start": "node src/index.js",
+            "dev": "node --watch src/index.js"
+        }));
+        let picked = pick_npm_run_script(Some(&serde_json::Value::Object(s))).unwrap();
+        assert!(picked == "dev" || picked == "start");
+
+        let s = scripts(json!({
+            "build": "nuxt build",
+            "generate": "nuxt generate",
+            "postinstall": "nuxt prepare"
+        }));
+        // No dev/start/serve/preview and only helper scripts remain:
+        // the fallback still returns the first (alphabetical) helper as a
+        // last resort — but never a script value like `nuxt build`.
+        let picked = pick_npm_run_script(Some(&serde_json::Value::Object(s)));
+        assert_eq!(picked, Some("build".into()));
+    }
+
+    #[test]
+    fn pick_script_skips_helpers() {
+        let s = scripts(json!({
+            "postinstall": "x",
+            "build": "y",
+            "generate": "z"
+        }));
+        // All three are helper scripts; "build" is first alphabetically and
+        // still returned as a last-resort runnable.
+        assert_eq!(pick_npm_run_script(Some(&serde_json::Value::Object(s))), Some("build".into()));
+    }
+
+    #[test]
+    fn pick_script_empty_is_none() {
+        assert_eq!(pick_npm_run_script(None), None);
+        let s = scripts(json!({}));
+        assert_eq!(pick_npm_run_script(Some(&serde_json::Value::Object(s))), None);
+    }
+
+    #[test]
+    fn port_detection_variants() {
+        assert_eq!(detect_dev_port("npm run dev -- --port 5173"), 5173);
+        assert_eq!(detect_dev_port("npm run dev -- --port=8080"), 8080);
+        assert_eq!(detect_dev_port("vite -p 4000"), 4000);
+        assert_eq!(detect_dev_port("cross-env PORT=5000 node index.js"), 5000);
+        assert_eq!(detect_dev_port("npm run dev"), 3000);
+    }
+
+    #[test]
+    fn docker_tag_sanitizes_folder_names() {
+        assert_eq!(docker_image_tag(r"C:\Users\Alex\Downloads\nuxtapp"), "nuxtapp");
+        assert_eq!(docker_image_tag("/home/user/My Project (Backend)"), "my-project-backend");
+        assert_eq!(docker_image_tag("..."), "app");
+    }
+
+    #[test]
+    fn cwd_label_uses_folder_name() {
+        assert_eq!(cwd_label(r"C:\proj\backend", r"C:\proj"), "backend");
+        assert_eq!(cwd_label(r"C:\proj", r"C:\proj"), "root");
+    }
 }

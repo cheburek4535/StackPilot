@@ -17,13 +17,12 @@
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import Button from "$lib/components/ui/Button.svelte";
-  import IconButton from "$lib/components/ui/IconButton.svelte";
   import Badge from "$lib/components/ui/Badge.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import LoadingState from "$lib/components/ui/LoadingState.svelte";
   import type { IconName } from "$lib/components/ui/icons";
 
-  type TabId = "general" | "system" | "display" | "behavior" | "apps" | "ai" | "about";
+  type TabId = "general" | "system" | "display" | "behavior" | "ai" | "about";
 
   let saved = $state<AppSettings | null>(null);
   let draft = $state<AppSettings | null>(null);
@@ -66,7 +65,6 @@
     { id: "system", label: i18n.t("settings.tabs.system"), icon: "terminal" },
     { id: "display", label: i18n.t("settings.tabs.display"), icon: "palette" },
     { id: "behavior", label: i18n.t("settings.tabs.behavior"), icon: "sliders" },
-    { id: "apps", label: i18n.t("settings.tabs.apps"), icon: "layers" },
     { id: "ai", label: i18n.t("settings.tabs.ai"), icon: "bot", badge: true },
     { id: "about", label: i18n.t("settings.tabs.about"), icon: "info" },
   ];
@@ -249,25 +247,6 @@
     } catch {
       notifyWarning(i18n.t("settings.system.open_failed"));
     }
-  }
-
-  function addApp(): void {
-    if (!draft) return;
-    draft.preferred_apps = [...draft.preferred_apps, { name: "", path: "", args: null }];
-    onAnyChange();
-  }
-
-  function removeApp(index: number): void {
-    if (!draft) return;
-    draft.preferred_apps = draft.preferred_apps.filter((_, i) => i !== index);
-    onAnyChange();
-  }
-
-  function updateApp(index: number, field: "name" | "path" | "args", value: string | null): void {
-    if (!draft) return;
-    const apps = [...draft.preferred_apps];
-    apps[index] = { ...apps[index], [field]: value };
-    draft.preferred_apps = apps;
   }
 
   function initials(): string {
@@ -706,50 +685,6 @@
         >
           <Button variant="danger" icon="trash" loading={saving} onclick={factoryReset}>
             {i18n.t("settings.danger.reset")}
-          </Button>
-        </Card>
-      </div>
-    {:else if activeTab === "apps"}
-      <div class="sp-tab-panel">
-        <Card
-          title={i18n.t("settings.section.apps")}
-          description={i18n.t("settings.apps.hint")}
-        >
-          {#if draft.preferred_apps.length === 0}
-            <p class="sp-hint apps-empty">{i18n.t("settings.apps.empty")}</p>
-          {:else}
-            {#each draft.preferred_apps as app, i}
-              <div class="app-row">
-                <input
-                  type="text"
-                  placeholder={i18n.t("settings.apps.name")}
-                  value={app.name}
-                  oninput={(e) => updateApp(i, "name", (e.currentTarget).value)}
-                />
-                <input
-                  type="text"
-                  placeholder={i18n.t("settings.apps.path")}
-                  value={app.path}
-                  oninput={(e) => updateApp(i, "path", (e.currentTarget).value)}
-                />
-                <input
-                  type="text"
-                  placeholder={i18n.t("settings.apps.args")}
-                  value={app.args ?? ""}
-                  oninput={(e) => updateApp(i, "args", (e.currentTarget).value || null)}
-                />
-                <IconButton
-                  icon="trash"
-                  variant="danger"
-                  size="sm"
-                  label={i18n.t("settings.apps.remove")}
-                  onclick={() => removeApp(i)}
-                />
-              </div>
-            {/each}
-          {/if}
-          <Button variant="secondary" size="sm" icon="plus" onclick={addApp}>
-            {i18n.t("settings.apps.add")}
           </Button>
         </Card>
       </div>
@@ -1394,11 +1329,6 @@
     min-width: 0;
   }
 
-  .apps-empty {
-    margin: 0;
-    padding: var(--sp-2) 0;
-  }
-
   .path-row {
     display: flex;
     align-items: center;
@@ -1512,22 +1442,6 @@
     font-weight: var(--sp-fw-medium);
   }
 
-  .app-row {
-    display: grid;
-    grid-template-columns: 1.2fr 1.6fr 1fr auto;
-    gap: var(--sp-2);
-    align-items: center;
-    padding: var(--sp-1) 0;
-  }
-
-  .app-row + .app-row {
-    border-top: 1px solid var(--sp-border-faint);
-  }
-
-  .app-row input {
-    min-width: 0;
-  }
-
   .danger-card {
     border-color: rgba(248, 113, 113, 0.35);
   }
@@ -1600,10 +1514,6 @@
     .field-ctrl {
       justify-content: flex-start;
       max-width: none;
-    }
-
-    .app-row {
-      grid-template-columns: 1fr;
     }
   }
 </style>

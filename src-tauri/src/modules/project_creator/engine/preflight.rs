@@ -509,10 +509,44 @@ echo 'PHP version: ' . $version . "\n";
 echo 'php.ini: ' . $ini . "\n";
 echo 'extension_dir: ' . $ext_dir . "\n";
 if (!extension_loaded('fileinfo')) {
+    $dll_names = ['fileinfo.dll', 'php_fileinfo.dll'];
+    $dll_found = '';
+    $search_dir = $ext_dir;
+    if ($search_dir !== 'unknown' && $search_dir !== '') {
+        foreach ($dll_names as $dll) {
+            $candidate = $search_dir . DIRECTORY_SEPARATOR . $dll;
+            if (is_file($candidate)) { $dll_found = $candidate; break; }
+        }
+        if ($dll_found === '' && !empty($ini) && $ini !== 'none') {
+            $ini_dir = dirname($ini);
+            foreach ($dll_names as $dll) {
+                $candidate = $ini_dir . DIRECTORY_SEPARATOR . 'ext' . DIRECTORY_SEPARATOR . $dll;
+                if (is_file($candidate)) { $dll_found = $candidate; break; }
+            }
+        }
+    }
+    $ini_line_exists = false;
+    if (!empty($ini) && $ini !== 'none' && is_file($ini)) {
+        $ini_content = file_get_contents($ini);
+        if (preg_match('/^\s*;?\s*extension\s*=\s*fileinfo\s*$/mi', $ini_content)) {
+            $ini_line_exists = true;
+        }
+    }
     fwrite(STDERR, "PHP error: extension fileinfo is not enabled.\n");
     fwrite(STDERR, 'php.ini: ' . $ini . "\n");
     fwrite(STDERR, 'extension_dir: ' . $ext_dir . "\n");
-    fwrite(STDERR, "Enable the extension in php.ini (extension=fileinfo) and retry — Composer downloads distributions through stream wrappers that require ext-fileinfo.\n");
+    if ($dll_found !== '') {
+        fwrite(STDERR, "Extension file found: " . $dll_found . "\n");
+    }
+    if ($ini_line_exists) {
+        fwrite(STDERR, "The line 'extension=fileinfo' exists in php.ini (likely commented out with ';'). Uncomment it and restart PHP.\n");
+        fwrite(STDERR, "Open php.ini and remove the ';' before 'extension=fileinfo'.\n");
+    } else {
+        fwrite(STDERR, "Add this line to php.ini (or uncomment it if present with ';'):\n");
+        fwrite(STDERR, "  extension=fileinfo\n");
+    }
+    fwrite(STDERR, "Required by Composer to download packages via stream wrappers.\n");
+    fwrite(STDERR, "Alternative: install Composer via 'php -d extension=fileinfo <path-to-composer.phar>' and retry.\n");
     exit(1);
 }
 echo "fileinfo: enabled\n";
@@ -553,6 +587,11 @@ exit(2);
 /// PHP (путь, версия, php.ini, extension_dir, fileinfo) и доступность
 /// Composer, печатает точную команду скаффолда. Abort: без обязательных
 /// предусловий каркас НЕ инициализируется.
+///
+/// Если fileinfo не загружен, скрипт проверяет, существует ли DLL расширения
+/// в extension_dir — если да, пытается загрузить через `-d extension=fileinfo`
+/// и предупреждает пользователя раскомментировать строку в php.ini. Если DLL
+/// не найдена — ошибка с инструкцией по установке.
 pub fn php_preflight_step(id: &str, label: &str, desc: &str, composer_package: &str) -> Step {
     let script = PHP_PREFLIGHT_SCRIPT.replace("__PACKAGE__", composer_package);
     Step::Command {
@@ -560,7 +599,7 @@ pub fn php_preflight_step(id: &str, label: &str, desc: &str, composer_package: &
         label: label.to_string(),
         description: desc.to_string(),
         command: "php".into(),
-        args: vec!["-r".into(), script],
+        args: vec!["-d".into(), "extension=fileinfo".into(), "-r".into(), script],
         working_dir: None,
         env: None,
         timeout_secs: Some(30),
@@ -782,8 +821,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(command, "php");
-                assert_eq!(args[0], "-r");
-                let script = &args[1];
+                assert_eq!(args[0], "-d");
+                assert_eq!(args[1], "extension=fileinfo");
+                assert_eq!(args[2], "-r");
+                let script = &args[3];
                 for needle in [
                     "PHP executable",
                     "PHP version",

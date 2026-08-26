@@ -769,7 +769,7 @@ const ELECTRON_OUTPUTS: &[ToolOutput] = &[
         "forge.config.js",
         false,
         FileCertainty::Expected,
-        Some("Config format may differ by create-electron-app version"),
+        Some("Config format may differ by create-electron-app version (forge.config.ts in newer versions)"),
     ),
     tool_out(
         "tsconfig.json",
@@ -5333,17 +5333,33 @@ fn composer_launch() -> (String, Vec<String>) {
         return ("composer".to_string(), Vec::new());
     }
     // Единый список каталогов discovery (тот же, что печатает PHP-префлайт
-    // в preflight.rs).
+    // в preflight.rs). PHP запускается с `-d extension=fileinfo` чтобы
+    // Composer мог скачивать пакеты через stream wrappers даже если
+    // расширение закомментировано в php.ini (но DLL доступна в extension_dir).
     for dir in preflight::COMPOSER_PHAR_DIRS {
         let phar = expand_env_path(dir).join("composer.phar");
         if phar.is_file() {
-            return ("php".to_string(), vec![phar.to_string_lossy().into_owned()]);
+            return (
+                "php".to_string(),
+                vec![
+                    "-d".to_string(),
+                    "extension=fileinfo".to_string(),
+                    phar.to_string_lossy().into_owned(),
+                ],
+            );
         }
     }
     // Ничего не нашли — честный fallback: php с абсолютным путём в Toolchain
     // store (ошибка установки будет явной, а не «Could not open input file»).
     let phar = expand_env_path("%LOCALAPPDATA%\\StackPilot\\tools\\php").join("composer.phar");
-    ("php".to_string(), vec![phar.to_string_lossy().into_owned()])
+    (
+        "php".to_string(),
+        vec![
+            "-d".to_string(),
+            "extension=fileinfo".to_string(),
+            phar.to_string_lossy().into_owned(),
+        ],
+    )
 }
 
 fn steps_for_framework_impl(
@@ -5948,14 +5964,16 @@ app.listen(PORT, () => {{
             // (main + renderer): собственный фронтенд, поэтому UI-компаньоны
             // (react/vue/svelte) рядом с electron не скаффолдятся отдельно
             // (см. compose_recipe — их UI уже встроен в каркас). Шаблон
-            // renderer'а фиксируется флагом --template (typescript —
-            // webpack+TS, vite — vanilla vite); CLI может задать вопрос про
-            // git-init — способность creates_project_and_may_prompt с явным
-            // ответом. Каркас собирается во ВРЕМЕННОЙ папке (temp+move):
-            // Forge init в непустом каталоге назначения падает (запрещено),
-            // стейджинг гарантирует пустой каталог. Пост-условие —
-            // package.json (без него шаг считается неуспешным).
-            let template = if has_typescript { "typescript" } else { "vite" };
+            // renderer'а фиксируется флагом --template: vite — современный
+            // шаблон на базе Vite (поддерживает TS и JS из коробки);
+            // старый webpack-based typescript-шаблон удалён из актуального
+            // Electron Forge (не указывает required Forge version → ошибка).
+            // CLI может задать вопрос про git-init — способность
+            // creates_project_and_may_prompt с явным ответом. Каркас
+            // собирается во ВРЕМЕННОЙ папке (temp+move): Forge init в
+            // непустом каталоге назначения падает (запрещено), стейджинг
+            // гарантирует пустой каталог. Пост-условие — package.json
+            // (без него шаг считается неуспешным).
             vec![scaffold_step(
                 "electron_init",
                 "Init Electron",
@@ -5965,7 +5983,7 @@ app.listen(PORT, () => {{
                     "create-electron-app",
                     SCAFFOLD_TARGET,
                     "--template",
-                    template,
+                    "vite",
                 ],
                 ScaffoldCapability::CreatesProjectAndMayPrompt,
                 "frontend",
@@ -13444,7 +13462,10 @@ mod tests {
                 "{fw_id}: php-префлайт обязан идти ДО composer create-project"
             );
             let check = &recipe.steps[idx(check_id)];
-            assert_eq!(cmd_args(check)[0], "-r", "префлайт — php -r скрипт");
+            let cargs = cmd_args(check);
+            assert_eq!(cargs[0], "-d", "префлайт — php -d extension=fileinfo -r скрипт");
+            assert_eq!(cargs[1], "extension=fileinfo");
+            assert_eq!(cargs[2], "-r", "префлайт — php -d extension=fileinfo -r скрипт");
             let scaffold = recipe.steps.iter().find(|s| s.id() == new_id).unwrap();
             if let Step::Generate {
                 generator_config, ..
@@ -14705,8 +14726,10 @@ mod tests {
         let preflight = find_step(&recipe, "laravel_php_check");
         let (cmd, args) = command_of(preflight);
         assert_eq!(cmd, "php");
-        assert_eq!(args[0], "-r");
-        assert!(args[1].contains("fileinfo"));
+        assert_eq!(args[0], "-d");
+        assert_eq!(args[1], "extension=fileinfo");
+        assert_eq!(args[2], "-r");
+        assert!(args[3].contains("fileinfo"));
         assert!(matches!(error_mode_of(preflight), ErrorMode::Abort));
 
         // Composer: create-project laravel/laravel в backend/ (temp+move, SkipIfExists).

@@ -183,10 +183,50 @@ pub fn resolve_windows_program_name(command: &str) -> String {
         return trimmed.to_string();
     }
     match lower.as_str() {
-        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" => format!("{trimmed}.cmd"),
+        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" | "turbo" | "nx" | "tsx"
+        | "nodemon" | "expo" | "next" | "nuxt" | "eslint" | "prettier" | "sass"
+        | "rimraf" | "cross-env" | "concurrently" | "wait-on" | "serve" | "webpack"
+        | "rollup" | "parcel" | "jest" | "vitest" | "mocha" | "ts-node" | "dotenv"
+        | "husky" | "lint-staged" | "stylelint" | "tailwindcss" | "postcss" => {
+            format!("{trimmed}.cmd")
+        }
         "composer" => "composer.bat".to_string(),
         _ => trimmed.to_string(),
     }
+}
+
+/// Resolve a bare command name to a real executable path when possible.
+///
+/// On Windows this first checks whether the name is a batch shim on PATH
+/// (e.g. `code.cmd`), which `CreateProcess` cannot run directly. Returns
+/// the resolved absolute path when found.
+pub fn resolve_program_path(program: &str) -> Option<String> {
+    let trimmed = program.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Some(trimmed.to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for candidate in [
+            format!("{}.cmd", trimmed),
+            format!("{}.bat", trimmed),
+            trimmed.to_string(),
+        ] {
+            if let Ok(path) = which::which(&candidate) {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(path) = which::which(trimmed) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 /// Resolve a program for direct execution on the given OS.
@@ -195,6 +235,96 @@ fn resolve_program_for_direct(program: &str, os: HostOs) -> String {
         HostOs::Windows => resolve_windows_program_name(program),
         HostOs::Linux | HostOs::Macos => program.trim().to_string(),
     }
+}
+
+/// Outcome of resolving a command for spawning: the program to actually
+/// launch plus how it must be invoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnPlan {
+    /// The executable to pass to `Command::new`.
+    pub program: String,
+    /// True when the program is a Windows batch shim (`.cmd`/`.bat`) that
+    /// must be launched through `cmd /C` because `CreateProcess` cannot
+    /// execute batch files directly.
+    pub batch_shim: bool,
+}
+
+/// Resolve an arbitrary command string into a spawnable [`SpawnPlan`].
+///
+/// - On Windows, bare npm-ecosystem names (`npm`, `npx`, `pnpm`, `yarn`,
+///   `vite`, `nest`, `composer`) are expanded to their `.cmd`/`.bat` shims
+///   and flagged as batch shims so the caller wraps them in `cmd /C`.
+/// - Any other bare name is resolved through PATH (PATHEXT-aware), so
+///   `code` → `code.cmd` or `cursor` → `Cursor.exe` also work.
+/// - Existing absolute paths pass through unchanged.
+/// - On Unix the program is passed through verbatim.
+pub fn resolve_spawn_plan(program: &str) -> SpawnPlan {
+    let os = current_os();
+    let trimmed = program.trim();
+    if trimmed.is_empty() {
+        return SpawnPlan {
+            program: program.to_string(),
+            batch_shim: false,
+        };
+    }
+
+    match os {
+        HostOs::Windows => {
+            // 1. Known npm-ecosystem shims and explicit paths.
+            let resolved = resolve_windows_program_name(trimmed);
+            let explicit_batch = is_batch_file(&resolved);
+
+            if explicit_batch {
+                return SpawnPlan {
+                    program: resolved,
+                    batch_shim: true,
+                };
+            }
+
+            // 2. PATH resolution: prefer a real `.exe` (e.g. `docker.exe`),
+            // otherwise fall back to `.cmd`/`.bat` shims (e.g. `code.cmd`).
+            if !trimmed.contains('/') && !trimmed.contains('\\') {
+                let lower = trimmed.to_ascii_lowercase();
+                if !lower.ends_with(".exe") && !lower.ends_with(".cmd") && !lower.ends_with(".bat")
+                {
+                    for candidate in [
+                        trimmed.to_string(),
+                        format!("{}.cmd", trimmed),
+                        format!("{}.bat", trimmed),
+                    ] {
+                        if let Ok(path) = which::which(&candidate) {
+                            let found = path.to_string_lossy().into_owned();
+                            let is_batch = is_batch_file(&found);
+                            return SpawnPlan {
+                                program: found,
+                                batch_shim: is_batch,
+                            };
+                        }
+                    }
+                }
+            }
+
+            SpawnPlan {
+                program: resolved,
+                batch_shim: false,
+            }
+        }
+        HostOs::Linux | HostOs::Macos => SpawnPlan {
+            program: trimmed.to_string(),
+            batch_shim: false,
+        },
+    }
+}
+
+/// Build the argv for launching a resolved batch shim through `cmd /C`:
+/// `cmd /C "<shim>" <quoted args...>`.
+pub fn batch_shim_cmd_line(program: &str, args: &[&str]) -> Vec<String> {
+    let mut line = win_quote_arg(program);
+    for arg in args {
+        line.push(' ');
+        line.push_str(&win_quote_arg(arg));
+    }
+    vec!["/C".to_string(), line]
 }
 
 /// Validate that a shell is available on the current OS.
@@ -510,6 +640,45 @@ mod tests {
         assert_eq!(resolve_windows_program_name("node"), "node");
         assert_eq!(resolve_windows_program_name("python"), "python");
         assert_eq!(resolve_windows_program_name("dotnet"), "dotnet");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn spawn_plan_expands_known_shims() {
+        let plan = resolve_spawn_plan("npm");
+        assert_eq!(plan.program, "npm.cmd");
+        assert!(plan.batch_shim);
+
+        let plan = resolve_spawn_plan("node");
+        assert!(!plan.batch_shim);
+
+        // Absolute paths and explicit extensions pass through.
+        let plan = resolve_spawn_plan(r"C:\Tools\script.cmd");
+        assert_eq!(plan.program, r"C:\Tools\script.cmd");
+        assert!(plan.batch_shim);
+
+        let plan = resolve_spawn_plan(r"C:\Tools\app.exe");
+        assert_eq!(plan.program, r"C:\Tools\app.exe");
+        assert!(!plan.batch_shim);
+    }
+
+    #[test]
+    fn spawn_plan_unix_passes_through() {
+        let plan = resolve_spawn_plan("npm");
+        assert_eq!(plan.program, "npm");
+        assert!(!plan.batch_shim);
+    }
+
+    #[test]
+    fn batch_shim_line_quotes_program_and_args() {
+        let v = batch_shim_cmd_line(
+            r"C:\Users\Me\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
+            &[r"C:\my project"],
+        );
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], "/C");
+        assert!(v[1].contains(r"C:\Users\Me\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd"));
+        assert!(v[1].contains(r#""C:\my project""#));
     }
 
     // ========================================================================

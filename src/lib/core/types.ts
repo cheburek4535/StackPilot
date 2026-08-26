@@ -1,9 +1,3 @@
-export type PreferredApp = {
-  name: string;
-  path: string;
-  args: string | null;
-};
-
 export type AiSettings = {
   enabled: boolean;
   provider: string;
@@ -30,7 +24,6 @@ export type AppSettings = {
   theme: string;
   language: string;
   auto_save_profiles: boolean;
-  preferred_apps: PreferredApp[];
 
   auto_save: boolean;
   font_size: string;

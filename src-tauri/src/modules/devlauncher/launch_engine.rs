@@ -34,6 +34,9 @@ pub trait LaunchEngine: Send + Sync {
     /// Launch the preferred IDE for a project. This is called before running
     /// actions so the user sees their IDE open immediately with the project.
     ///
+    /// `vscode_path` overrides the default "code" CLI name when the IDE is
+    /// VSCode, allowing the user to configure a custom path in Settings.
+    ///
     /// Returns `Ok(true)` if the IDE was launched, `Ok(false)` if no
     /// preferred IDE is set or it could not be found, and `Err` on failure.
     fn launch_ide(
@@ -41,6 +44,7 @@ pub trait LaunchEngine: Send + Sync {
         ide: &PreferredIde,
         project_path: Option<&str>,
         overlay: Option<&EnvironmentOverlay>,
+        vscode_path: Option<&str>,
     ) -> Result<bool, String>;
 }
 
@@ -85,6 +89,17 @@ impl LaunchEngine for ProcessLaunchEngine {
                 // - otherwise → one-shot command, capture output to log viewer.
                 let is_persistent = action.action_type.is_persistent();
 
+                // Preflight: `docker` commands fail with cryptic pipe errors
+                // when the daemon is not running. Check first and give an
+                // actionable message instead of a crashed process.
+                if let Err(msg) = preflight_check(command) {
+                    return Ok((ActionStatus::Failed { error: msg }, None));
+                }
+
+                // Spawn exactly once. When an environment overlay is present
+                // it is applied to that single child process — never spawn
+                // twice (the old code leaked a duplicate process for
+                // one-shot commands with an overlay).
                 let tracked_proc = if is_persistent {
                     // Long-running command: open in a native terminal window.
                     // `spawn_visible` wraps the full command string in a shell
@@ -105,6 +120,17 @@ impl LaunchEngine for ProcessLaunchEngine {
                             ov,
                         )
                         .map_err(|e| format!("Manager failed to start command: {}", e))?
+                } else if !effective_overlay.is_empty() {
+                    // One-shot command with env overlay: run through the
+                    // platform shell so shell syntax works, with PATH/env
+                    // applied directly to the child.
+                    return self.spawn_one_shot_with_overlay(
+                        command,
+                        dir_ref,
+                        &action.label,
+                        session_id,
+                        effective_overlay,
+                    );
                 } else {
                     // One-shot command: run via platform shell so shell syntax
                     // (pipes, redirects, env vars) works.
@@ -122,19 +148,6 @@ impl LaunchEngine for ProcessLaunchEngine {
                         )
                         .map_err(|e| format!("Manager failed to start command: {}", e))?
                 };
-
-                // If an environment overlay was provided and the process was
-                // spawned one-shot, re-spawn it with the overlay applied
-                // directly so PATH/env changes take effect.
-                if !effective_overlay.is_empty() && !is_persistent {
-                    return self.spawn_one_shot_with_overlay(
-                        command,
-                        dir_ref,
-                        &action.label,
-                        session_id,
-                        effective_overlay,
-                    );
-                }
 
                 Ok((
                     ActionStatus::Success {
@@ -166,19 +179,36 @@ impl LaunchEngine for ProcessLaunchEngine {
                     args_vec.extend(args_str.split_whitespace().map(String::from));
                 }
 
+                // Bare CLI names (`code`, `devenv`, `pycharm`) are resolved to
+                // an absolute path when possible. `launch_detached` itself
+                // also handles `.cmd` shims, but resolving here gives a
+                // precise error message when the IDE truly isn't installed.
+                let resolved_path = if path.contains('/') || path.contains('\\') {
+                    path.clone()
+                } else {
+                    match crate::platform::ide::resolve_ide_executable(path) {
+                        Some(p) => p,
+                        None => {
+                            return Err(format!(
+                                "Application '{}' not found on this system. \
+                                 Install it or use an absolute path in the action.",
+                                path
+                            ));
+                        }
+                    }
+                };
+
                 let args_refs: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
                 // Use detached launch so the GUI app opens natively without
                 // output suppression. VSCode, PyCharm, Docker Desktop, etc.
-                self.process_manager.launch_detached(
-                    path,
-                    &args_refs,
-                    working_dir_for_ide(overlay, action, path),
-                )?;
+                let ide_dir = working_dir_for_ide(overlay, action, &resolved_path);
+                self.process_manager
+                    .launch_detached(&resolved_path, &args_refs, ide_dir)?;
 
                 Ok((
                     ActionStatus::Success {
-                        message: format!("App launched: {}", path),
+                        message: format!("App launched: {}", resolved_path),
                     },
                     None,
                 ))
@@ -308,6 +338,18 @@ impl LaunchEngine for ProcessLaunchEngine {
                 let empty_overlay = EnvironmentOverlay::new();
                 let effective_overlay = overlay.unwrap_or(&empty_overlay);
 
+                // With an overlay, spawn exactly once with PATH/env applied.
+                if !effective_overlay.is_empty() {
+                    return self.spawn_script_with_overlay(
+                        shell_exe,
+                        shell_flag,
+                        script,
+                        &action.label,
+                        session_id,
+                        effective_overlay,
+                    );
+                }
+
                 let tracked_proc = self
                     .process_manager
                     .spawn_and_track(
@@ -320,22 +362,6 @@ impl LaunchEngine for ProcessLaunchEngine {
                     .map_err(|e| format!("Script launch error: {}", e))?;
 
                 let proc_id = tracked_proc.id;
-
-                // Non-blocking monitoring: return immediately and let the
-                // process manager's status events drive the UI. We only wait
-                // here if the overlay is empty (backward-compat one-shot
-                // behavior). With an overlay, the script is re-spawned with
-                // the overlay applied.
-                if !effective_overlay.is_empty() {
-                    return self.spawn_script_with_overlay(
-                        shell_exe,
-                        shell_flag,
-                        script,
-                        &action.label,
-                        session_id,
-                        effective_overlay,
-                    );
-                }
 
                 loop {
                     thread::sleep(Duration::from_millis(500));
@@ -390,9 +416,14 @@ impl LaunchEngine for ProcessLaunchEngine {
         ide: &PreferredIde,
         project_path: Option<&str>,
         _overlay: Option<&EnvironmentOverlay>,
+        vscode_path: Option<&str>,
     ) -> Result<bool, String> {
-        let cli = ide.cli_name();
-        let resolved = match resolve_ide_executable(cli) {
+        // For VSCode, use the user-configured path if provided
+        let cli = match ide {
+            PreferredIde::Vscode => vscode_path.unwrap_or("code"),
+            _ => ide.cli_name(),
+        };
+        let resolved = match crate::platform::ide::resolve_ide_executable(cli) {
             Some(p) => p,
             None => {
                 // IDE not installed — report gracefully without failing the run.
@@ -420,50 +451,53 @@ impl LaunchEngine for ProcessLaunchEngine {
     }
 }
 
-/// Resolve the IDE CLI executable to a path we can launch.
+/// Preflight check for commands that need a running service to be useful.
 ///
-/// On Windows, IDE CLIs are often `.cmd` shims (e.g. `code.cmd`); on macOS
-/// they live in `/Applications/.../Contents/MacOS`. We check common locations
-/// and PATH.
-fn resolve_ide_executable(cli: &str) -> Option<String> {
-    // Already an absolute path or has a path separator — use as-is.
-    if cli.contains('/') || cli.contains('\\') {
-        return Some(cli.to_string());
+/// `docker` commands currently fail with cryptic npipe errors when the
+/// Docker daemon is not running. Detect the two common failure modes and
+/// return a clear, actionable message instead of a "crashed" process.
+fn preflight_check(command: &str) -> Result<(), String> {
+    let trimmed = command.trim_start();
+    if !trimmed.starts_with("docker") {
+        return Ok(());
     }
 
-    // Check PATH first.
-    if let Ok(path) = which::which(cli) {
-        return Some(path.to_string_lossy().into_owned());
+    // Docker CLI must exist at all.
+    let docker_path = crate::platform::command::resolve_program_path("docker")
+        .unwrap_or_else(|| "docker".to_string());
+    let mut cmd = std::process::Command::new(&docker_path);
+    cmd.args(["version", "--format", "{{.Server.Version}}"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let Ok(mut child) = cmd.spawn() else {
+        return Err(
+            "Docker CLI was not found. Install Docker Desktop (or Docker Engine) \
+             and make sure it is available on PATH."
+                .to_string(),
+        );
+    };
+    let Ok(output) = child.wait_with_output() else {
+        return Err("Docker preflight check failed to complete.".to_string());
+    };
+
+    if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+        return Ok(());
     }
 
-    // Windows: check the `.cmd` shim variant (npm-style launcher).
-    #[cfg(target_os = "windows")]
-    {
-        let cmd_variant = format!("{}.cmd", cli);
-        if let Ok(path) = which::which(&cmd_variant) {
-            return Some(path.to_string_lossy().into_owned());
-        }
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("cannot connect") || lower.contains("pipe") || lower.contains("daemon") {
+        return Err(
+            "Docker daemon is not running. Start Docker Desktop and wait for the \
+             whale icon to show \"Docker Desktop is running\", then retry."
+                .to_string(),
+        );
     }
-
-    // macOS: check common app bundle locations.
-    #[cfg(target_os = "macos")]
-    {
-        let candidates = [
-            format!("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/{}", cli),
-            format!("/Applications/PyCharm.app/Contents/MacOS/{}", cli),
-            format!("/Applications/GoLand.app/Contents/MacOS/{}", cli),
-            format!("/Applications/IntelliJ IDEA.app/Contents/MacOS/{}", cli),
-            format!("/Applications/WebStorm.app/Contents/MacOS/{}", cli),
-            format!("/usr/local/bin/{}", cli),
-        ];
-        for cand in candidates {
-            if std::path::Path::new(&cand).exists() {
-                return Some(cand);
-            }
-        }
-    }
-
-    None
+    Err(format!(
+        "Docker is installed but not ready: {}",
+        stderr.trim()
+    ))
 }
 
 impl ProcessLaunchEngine {

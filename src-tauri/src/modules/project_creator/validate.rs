@@ -352,14 +352,27 @@ pub fn validate_stack(
     //    и наоборот).
     for fw in &selected {
         let side_ok = |lang: &str, side: &str| {
-            language_side(
-                tree,
-                backend_langs,
-                frontend_langs,
-                languages,
-                &selected,
-                lang,
-            ) == Some(side)
+            // Прямая проверка явных списков сторон: язык может стоять на
+            // обеих сторонах одновременно (full-stack TS: nest + react, или
+            // C#: MAUI на фронте + ASP.NET Core на бэке). language_side()
+            // возвращает "backend" при первом совпадении, что ломает
+            // валидацию MAUI (csharp в обоих списках → "backend" → MAUI
+            // не видит csharp на фронтенде).
+            let explicit = match side {
+                "backend" => backend_langs.iter().any(|l| l == lang),
+                "frontend" => frontend_langs.iter().any(|l| l == lang),
+                _ => false,
+            };
+            explicit
+                || language_side(
+                    tree,
+                    backend_langs,
+                    frontend_langs,
+                    languages,
+                    &selected,
+                    lang,
+                )
+                    == Some(side)
         };
         match fw.side.as_str() {
             "backend" => {
@@ -1441,5 +1454,43 @@ mod tests {
             issues.iter().any(|i| i.message.contains("несовместим")),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn maui_ok_with_csharp_on_both_sides() {
+        let t = tree();
+        // C# на обеих сторонах (MAUI на фронте + ASP.NET Core на бэке) —
+        // валидация должна видеть csharp на фронтенде для MAUI, несмотря
+        // на то что csharp есть и в backend_langs.
+        let issues = validate(
+            &t,
+            Some("desktop-app"),
+            Some("csharp"),
+            Some("csharp"),
+            &["maui", "aspnetcore"],
+            "windows",
+        );
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
+            "MAUI + ASP.NET Core с C# на обеих сторонах не должны блокироваться: {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn maui_alone_with_csharp_frontend() {
+        let t = tree();
+        // MAUI с C# только на фронтенде — валидна.
+        let issues = validate(
+            &t,
+            Some("mobile-app"),
+            None,
+            Some("csharp"),
+            &["maui"],
+            "windows",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
     }
 }

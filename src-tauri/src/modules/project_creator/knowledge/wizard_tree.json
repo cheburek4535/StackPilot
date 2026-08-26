@@ -398,7 +398,7 @@
       "label": "TypeScript",
       "icon": "typescript.svg",
       "color": "#3178C6",
-      "category": "frontend",
+      "category": "both",
       "knowledge_key": null
     },
     {
@@ -406,7 +406,7 @@
       "label": "JavaScript",
       "icon": "node.svg",
       "color": "#F7DF1E",
-      "category": "frontend",
+      "category": "both",
       "knowledge_key": null
     },
     {

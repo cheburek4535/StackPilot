@@ -19,5 +19,6 @@
 pub mod command;
 pub mod environment;
 pub mod host;
+pub mod ide;
 pub mod paths;
 pub mod shell;

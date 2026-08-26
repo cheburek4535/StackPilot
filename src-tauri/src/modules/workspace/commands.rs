@@ -1,3 +1,4 @@
+use crate::core::settings::SettingsState;
 use crate::modules::workspace::file_explorer;
 use crate::modules::workspace::file_explorer::FileExplorerService;
 use crate::modules::workspace::models::*;
@@ -196,8 +197,14 @@ pub fn write_file(
 }
 
 #[tauri::command]
-pub fn open_in_vscode(state: State<'_, WorkspaceState>, path: String) -> Result<(), String> {
-    state.file_explorer.open_in_vscode(&path)
+pub fn open_in_vscode(
+    state: State<'_, WorkspaceState>,
+    settings: State<'_, SettingsState>,
+    path: String,
+) -> Result<(), String> {
+    let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
+    let vscode_ref = vscode_path.as_deref();
+    state.file_explorer.open_in_vscode(&path, vscode_ref)
 }
 
 // ===== Problems commands =====
