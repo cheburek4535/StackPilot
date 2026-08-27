@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, onDestroy, tick } from "svelte";
+import type { Component } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -54,10 +55,8 @@ import type {
   ProjectRequirements,
   ToolRequirement,
 } from "$lib/modules/toolchain/compat";
-import { statusKind, statusLabel, taskStateKind, taskStateLabel, identityMatches } from "$lib/modules/toolchain/compat";
+import { statusKind, taskStateKind, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
-import Modal from "$lib/components/ui/Modal.svelte";
-import Button from "$lib/components/ui/Button.svelte";
 import ProjectPreview from "$lib/components/project-creator/ProjectPreview.svelte";
 import { i18n } from "$lib/core/i18n.svelte";
 import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -72,6 +71,14 @@ let hostOs = $state<string>("windows");
 let dropNotice = $state<string | null>(null);
 /** Показывать ли отдельные карточки заблокированных фреймворков внутри уровня. */
 let showUnavailable = $state<Record<string, boolean>>({});
+
+// ---- Ленивые секции страницы: вынесены из монолита и подгружаются
+// сразу после первого кадра (см. onMount) — первая загрузка не ждёт их. ----
+let AnalyzeMode = $state<Component<any> | null>(null);
+let PresetsMode = $state<Component<any> | null>(null);
+let EnvPanel = $state<Component<any> | null>(null);
+let ExecPanel = $state<Component<any> | null>(null);
+let DevlDialogs = $state<Component<any> | null>(null);
 
 // ---- Mode: Constructor | Templates | Analyze ----
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
@@ -496,6 +503,23 @@ onMount(async () => {
   // вместо замёрзшего экрана.
   await tick();
 
+  // Вынесенные секции подгружаем сразу после первого кадра: они не входят
+  // в бандл первой загрузки, но успевают загрузиться, пока пользователь
+  // дойдёт до фаз 5/6 или режимов presets/analyze.
+  void Promise.all([
+    import("$lib/components/project-creator/AnalyzeMode.svelte"),
+    import("$lib/components/project-creator/PresetsMode.svelte"),
+    import("$lib/components/project-creator/EnvironmentPanel.svelte"),
+    import("$lib/components/project-creator/ExecutionPanel.svelte"),
+    import("$lib/components/project-creator/DevLauncherDialogs.svelte"),
+  ]).then(([analyze, presets, env, exec, devl]) => {
+    AnalyzeMode = analyze.default;
+    PresetsMode = presets.default;
+    EnvPanel = env.default;
+    ExecPanel = exec.default;
+    DevlDialogs = devl.default;
+  });
+
   const saved = loadCreateSession();
   if (saved) {
     try {
@@ -547,11 +571,6 @@ onDestroy(() => {
   if (unlistenTcCheck) unlistenTcCheck();
   stopTick();
 });
-
-/** Иконка тула из wizard_tree по tool_id (для requirements/tasks окружения) */
-function toolIcon(toolId: string): string | null {
-  return tree?.tools.find((t) => t.id === toolId)?.icon ?? null;
-}
 
 // ----------------------------------------------------------
 // Фреймворки
@@ -1593,10 +1612,6 @@ function allMissingTools(): ToolRequirement[] {
   );
 }
 
-function selectedMissingTools(): ToolRequirement[] {
-  return allMissingTools().filter((r) => envSelectedIds.has(r.tool_id));
-}
-
 function toggleEnvTool(toolId: string) {
   const next = new Set(envSelectedIds);
   if (next.has(toolId)) next.delete(toolId);
@@ -1618,17 +1633,6 @@ async function refreshInstalledTools() {
   } catch {
     // стейт недоступен — считаем, что ничего не установлено
   }
-}
-
-/** Инструмент установлен локально: заявлен в общем стейте приложения
- *  (state.json) или только что подтверждён текущей проверкой окружения. */
-function isLocallyInstalled(toolId: string): boolean {
-  if (installedTools.has(toolId)) return true;
-  return (
-    envCheck?.requirements.some(
-      (r) => r.tool_id === toolId && statusKind(r.status) === "ok",
-    ) ?? false
-  );
 }
 
 /** Опциональный docker-инструмент (postgresql, redis, ...) пользователь
@@ -1750,32 +1754,6 @@ function handleInstallDone(plan: InstallPlan) {
   fetchNewSecrets();
 }
 
-function formatMb(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)}${i18n.t("create.format.gb")}`;
-  return `${mb}${i18n.t("create.format.mb")}`;
-}
-
-function downloadStatus(taskId: string): string {
-  const dl = envDownload.get(taskId);
-  if (!dl || dl.total <= 0) return "";
-  const percent = Math.min(100, Math.round((dl.received / dl.total) * 100));
-  return `${percent}% (${formatMb(Math.floor(dl.received / 1024 / 1024))} / ${formatMb(Math.floor(dl.total / 1024 / 1024))})`;
-}
-
-function dlPercent(taskId: string): number | null {
-  const dl = envDownload.get(taskId);
-  if (!dl || dl.total <= 0) return null;
-  return Math.min(100, Math.round((dl.received / dl.total) * 100));
-}
-
-function phaseElapsed(taskId: string): string {
-  const started = envPhaseStart.get(taskId);
-  if (!started) return "…";
-  const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
-  if (secs < 60) return i18n.t("create.phase_elapsed_secs", { secs });
-  return i18n.t("create.phase_elapsed_min", { m: Math.floor(secs / 60), s: secs % 60 });
-}
-
 async function recheckEnvironment() {
   envInstallDone = false;
   envPlan = null;
@@ -1800,11 +1778,6 @@ async function copySecret(key: string, value: string) {
   } catch {
     // ignore
   }
-}
-
-function secretToolName(toolId: string): string {
-  const req = envCheck?.requirements.find((r) => r.tool_id === toolId);
-  return req?.display ?? toolId;
 }
 
 async function cancelInstall() {
@@ -1958,95 +1931,6 @@ async function doCreateProject() {
     execOverallStatus = "error";
   }
 }
-
-/** README.md из плана выполнения (WriteFile-шаг "readme") — текст, который
- *  генератор реально записал в проект. Показывается в разделе «О проекте». */
-let aboutReadme = $derived.by<string | null>(() => {
-  const plan = execPlan;
-  if (!plan || !Array.isArray(plan.steps)) return null;
-  for (const step of plan.steps) {
-    if (step && typeof step === "object" && "WriteFile" in step) {
-      const w = (step as { WriteFile: { id: string; content: string } }).WriteFile;
-      if (w.id === "readme" && w.content) return w.content;
-    }
-  }
-  return null;
-});
-
-/** Лёгкий рендер markdown-подмножества (заголовки, код, списки, ссылки,
- *  жирный, инлайн-код, hr) — без внешних зависимостей. */
-function renderReadme(md: string): string {
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (s: string) =>
-    esc(s)
-      .replace(/`([^`]+)`/g, "<code class='about-ic'>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(
-        /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-        "<a href='$2' target='_blank' rel='noreferrer'>$1</a>",
-      );
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
-  const out: string[] = [];
-  let inCode = false;
-  let codeBuf: string[] = [];
-  let list: string[] | null = null;
-  const flushList = () => {
-    if (list) {
-      out.push(`<ul class="about-ul">${list.map((l) => `<li>${l}</li>`).join("")}</ul>`);
-      list = null;
-    }
-  };
-  for (const raw of lines) {
-    if (raw.trim().startsWith("```")) {
-      flushList();
-      if (inCode) {
-        out.push(`<pre class="about-code">${esc(codeBuf.join("\n"))}</pre>`);
-        codeBuf = [];
-        inCode = false;
-      } else {
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      codeBuf.push(raw);
-      continue;
-    }
-    const t = raw.trim();
-    if (!t) {
-      flushList();
-      continue;
-    }
-    const h = t.match(/^(#{1,4})\s+(.*)$/);
-    if (h) {
-      flushList();
-      const level = h[1].length;
-      out.push(`<h${level + 2} class="about-h${level}">${inline(h[2])}</h${level + 2}>`);
-      continue;
-    }
-    const li = t.match(/^[-*]\s+(.*)$/) || t.match(/^\d+[.)]\s+(.*)$/);
-    if (li) {
-      if (!list) list = [];
-      list.push(inline(li[1]));
-      continue;
-    }
-    flushList();
-    if (/^-{3,}$/.test(t)) {
-      out.push(`<hr class="about-hr" />`);
-      continue;
-    }
-    out.push(`<p class="about-p">${inline(t)}</p>`);
-  }
-  flushList();
-  if (inCode) out.push(`<pre class="about-code">${esc(codeBuf.join("\n"))}</pre>`);
-  return out.join("");
-}
-
-function stepIsRunning(st: StepStatus | undefined) { return st === "Running"; }
-function stepIsSuccess(st: StepStatus | undefined) { return !!st && typeof st === "object" && "Success" in st; }
-function stepIsFailed(st: StepStatus | undefined) { return !!st && typeof st === "object" && "Failed" in st; }
-function stepIsSkipped(st: StepStatus | undefined) { return !!st && typeof st === "object" && "Skipped" in st; }
 
 async function handleExecEvent(event: ExecutionEvent) {
   const idx = event.step_index;
@@ -2270,73 +2154,21 @@ function resetAll() {
     </div>
 
     {#if mode === "analyze"}
-      <div class="analysis-panel">
-        <p class="prompt">{i18n.t("create.analyze_title") as TranslationKey}</p>
-        <p class="hint">{i18n.t("create.analyze_desc") as TranslationKey}</p>
-        <button class="btn-primary" onclick={runAnalysis} disabled={analyzing}>
-          {analyzing ? (i18n.t("create.analyzing") as TranslationKey) : (i18n.t("create.select_folder") as TranslationKey)}
-        </button>
-        {#if analyzedPath}
-          <p class="analyzed-path">{i18n.t("create.selected", { path: analyzedPath }) as TranslationKey}</p>
-        {/if}
-        {#if analysisError}
-          <p class="error">{analysisError}</p>
-        {/if}
-        {#if analysisResult}
-          <div class="analysis-result">
-            <p class="analysis-summary">{analysisResult.summary}</p>
-            <div class="analysis-section">
-              <p class="section-title">{i18n.t("create.detected") as TranslationKey}</p>
-              <div class="tech-tags">
-                {#each analysisResult.detected_technologies as tech}
-                  <span class="tech-tag" class:certaion={tech.confidence === "Certain"}
-                                        class:likely={tech.confidence === "Likely"}
-                                        class:possible={tech.confidence === "Possible"}>
-                    {tech.name}{#if tech.version} ({tech.version}){/if}
-                  </span>
-                {/each}
-              </div>
-            </div>
-            <div class="analysis-section">
-              <p class="section-title">{i18n.t("create.hints") as TranslationKey}</p>
-              <div class="hint-tags">
-                {#each analysisResult.project_type_hints as hint}
-                  <span class="hint-tag">{hint}</span>
-                {/each}
-                {#if analysisResult.has_docker}<span class="hint-tag docker">Docker</span>{/if}
-                {#if analysisResult.has_git}<span class="hint-tag">Git</span>{/if}
-                {#if analysisResult.has_ci}<span class="hint-tag">CI</span>{/if}
-                {#if analysisResult.has_tests}<span class="hint-tag">Tests</span>{/if}
-              </div>
-            </div>
-            <button class="btn-primary" onclick={applyAnalysis}>
-              {i18n.t("create.use_detected") as TranslationKey}
-            </button>
-          </div>
-        {/if}
-      </div>
+      {#if AnalyzeMode}
+        <AnalyzeMode
+          {analyzing}
+          {analyzedPath}
+          {analysisError}
+          {analysisResult}
+          onrun={runAnalysis}
+          onapply={applyAnalysis}
+        />
+      {/if}
 
     {:else if mode === "presets"}
-      <p class="prompt">{i18n.t("create.templates_title") as TranslationKey}</p>
-      <p class="hint">{i18n.t("create.templates_desc") as TranslationKey}</p>
-      <div class="preset-grid">
-        {#each tree!.presets as p}
-          <div class="preset-card">
-            <TechIcon icon={p.icon} alt={i18n.t(p.label as TranslationKey)} size="xl" />
-            <h3>{i18n.t(p.label as TranslationKey)}</h3>
-            <p class="preset-desc">{i18n.t(p.description as TranslationKey)}</p>
-            <div class="preset-stack">
-              {#if p.stack.backend_lang}<span class="preset-chip">{p.stack.backend_lang}</span>{/if}
-              {#if p.stack.frontend_lang}<span class="preset-chip">{p.stack.frontend_lang}</span>{/if}
-              {#each p.stack.frameworks as fw}<span class="preset-chip">{fw}</span>{/each}
-              {#if p.stack.tools.length > 0}
-                <span class="preset-chip">{i18n.t("create.tools_count", { n: p.stack.tools.length }) as TranslationKey}</span>
-              {/if}
-            </div>
-            <button class="btn-primary preset-apply" onclick={() => applyPreset(p)}>{i18n.t("create.use_template") as TranslationKey}</button>
-          </div>
-        {/each}
-      </div>
+      {#if PresetsMode}
+        <PresetsMode {tree} onapply={applyPreset} />
+      {/if}
 
     {:else}
 
@@ -2345,311 +2177,41 @@ function resetAll() {
              Environment check & install
              ================================================================ -->
         {#if phase === 5}
-          <p class="prompt">{i18n.t("create.env_check") as TranslationKey}</p>
-          <p class="hint">{i18n.t("create.env_check_desc") as TranslationKey}</p>
-
-          {#if envChecking}
-            <p class="muted">{i18n.t("create.checking_tools") as TranslationKey}</p>
-            {#if envCheckProgress.length > 0}
-              <div class="env-progress-list">
-                {#each envCheckProgress as ev}
-                  <div class="env-progress-row">
-                    <span class="env-icon">{statusKind(ev.status) === "ok" ? "✅" : "🔍"}</span>
-                    <TechIcon icon={ev.icon ?? toolIcon(ev.tool_id)} alt={ev.display} size="sm" />
-                    <span class="env-name">{ev.display}</span>
-                    <span class="env-status muted">
-                      {statusKind(ev.status) === "ok"
-                        ? `✓ ${(ev.status as { Installed: { version: string } }).Installed.version}`
-                        : (i18n.t("create.checking") as TranslationKey)}
-                    </span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {:else if envCheck}
-            {@const missingAll = allMissingTools()}
-            {@const missingSelected = selectedMissingTools()}
-            {#if envInstallDone && envPlan}
-              <div class="env-summary">
-                <span>{i18n.t("create.installed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "success").length, y: envPlan.tasks.length }) as TranslationKey}</span>
-                <span>{i18n.t("create.failed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "failed").length }) as TranslationKey}</span>
-                {#if envErrors.length > 0}
-                  <span class="env-warn">{i18n.t("create.errors_count", { n: envErrors.length }) as TranslationKey}</span>
-                {/if}
-              </div>
-              <div class="env-install">
-                <p class="group-label">{i18n.t("create.install_finished") as TranslationKey}</p>
-                {#each envPlan.tasks as task}
-                  {@const st = envTaskStates.get(task.task_id) ?? task.state}
-                  <div class="env-row">
-                    <span class="env-icon">
-                      {#if taskStateKind(st) === "success"}✅
-                      {:else if taskStateKind(st) === "failed"}❌
-                      {:else if taskStateKind(st) === "skipped"}⏭️
-                      {:else}•{/if}
-                    </span>
-                    <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
-                    <span class="env-name">{task.display}</span>
-                    <span class="env-source">{task.size_mb} MB · {i18n.t(task.source_description as TranslationKey)}</span>
-                    <span
-                      class="env-status"
-                      class:ok={taskStateKind(st) === "success"}
-                      class:broken={taskStateKind(st) === "failed"}
-                      class:missing={taskStateKind(st) === "skipped"}
-                    >{taskStateLabel(st)}</span>
-                  </div>
-                {/each}
-                {#if envErrors.length > 0}
-                  <details class="exec-full-log">
-                    <summary>{i18n.t("create.env_errors", { n: envErrors.length }) as TranslationKey}</summary>
-                    <pre>{envErrors.join("\n")}</pre>
-                  </details>
-                {/if}
-                {#if envLogs.length > 0}
-                  <details class="exec-full-log">
-                    <summary>{i18n.t("create.log_lines", { n: envLogs.length }) as TranslationKey}</summary>
-                    <pre>{envLogs.join("\n")}</pre>
-                  </details>
-                {/if}
-              </div>
-              <div class="btn-row">
-                <button class="btn-back" onclick={() => (phase = 2)}>{i18n.t("create.back") as TranslationKey}</button>
-                <button class="btn-secondary" onclick={recheckEnvironment}>{i18n.t("create.recheck_env") as TranslationKey}</button>
-                <button class="btn-primary" onclick={doCreateProject}>{i18n.t("create.continue") as TranslationKey}</button>
-              </div>
-              {#if envRestartHint}
-                <p class="env-warn">{i18n.t("create.path_restart_hint") as TranslationKey}</p>
-              {/if}
-            {:else}
-            <div class="env-summary">
-              <span>{i18n.t("create.ready_count", { x: envCheck.requirements.filter((r) => statusKind(r.status) === "ok" || statusKind(r.status) === "manual").length, y: envCheck.requirements.length }) as TranslationKey}</span>
-              {#if missingAll.length > 0}
-                <span>{i18n.t("create.to_install", { x: missingSelected.length, y: missingAll.length }) as TranslationKey}</span>
-              {/if}
-              <span>{i18n.t("create.download_mb", { x: missingSelected.reduce((sum, r) => sum + r.size_mb, 0) }) as TranslationKey}</span>
-              <span>{i18n.t("create.free_space", { x: envCheck.free_space_mb }) as TranslationKey}</span>
-              {#if !envCheck.enough_space}
-                <span class="env-warn">{i18n.t("create.not_enough_disk") as TranslationKey}</span>
-              {/if}
-              {#if envCheck.needs_admin_any}
-                <span class="env-warn">{i18n.t("create.admin_maybe") as TranslationKey}</span>
-              {/if}
-            </div>
-
-            <div class="env-list">
-              {#each envCheck.requirements as req}
-                {@const kind = statusKind(req.status)}
-                <div
-                  class="env-row"
-                  class:ok={kind === "ok"}
-                  class:update={kind === "update"}
-                  class:broken={kind === "broken"}
-                  class:missing={kind === "missing"}
-                  class:manual={kind === "manual"}
-                >
-                  {#if kind === "ok"}
-                    <span class="env-select">✅</span>
-                  {:else if kind === "manual"}
-                    <span class="env-select manual-badge" title={i18n.t("create.manual_install") as TranslationKey}><TechIcon alt="" size="sm" /></span>
-                  {:else}
-                    <label class="env-select">
-                      <input
-                        type="checkbox"
-                        checked={envSelectedIds.has(req.tool_id)}
-                        onchange={() => toggleEnvTool(req.tool_id)}
-                      />
-                    </label>
-                  {/if}
-                  <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
-                  <span class="env-name">{req.display}</span>
-                  <span class="env-source">{i18n.t(req.source_description as TranslationKey)}</span>
-                  <span
-                    class="env-status"
-                    class:ok={kind === "ok"}
-                    class:update={kind === "update"}
-                    class:broken={kind === "broken"}
-                    class:missing={kind === "missing"}
-                    class:manual={kind === "manual"}
-                  >{statusLabel(req.status)}</span>
-                </div>
-              {/each}
-            </div>
-
-            {#if (envCheck.optional_requirements ?? []).length > 0 || envLocalInfra.size > 0}
-              <div class="env-optional" class:env-optional-local={envLocalInfra.size > 0}>
-                <p class="group-label">{i18n.t("create.docker_optional") as TranslationKey}</p>
-                <p class="hint">
-                  {i18n.t("create.docker_host_hint") as TranslationKey}
-                </p>
-                {#snippet infraToggle(toolId: string, onHost: boolean)}
-                  <span class="infra-toggle" role="group" aria-label={i18n.t("create.docker_host_aria") as TranslationKey}>
-                    <button
-                      class="infra-toggle-opt"
-                      class:active={!onHost}
-                      title={i18n.t("create.docker_compose_title") as TranslationKey}
-                      onclick={() => {
-                        if (onHost) revertLocalInfra(toolId);
-                      }}
-                    >
-                      {i18n.t("create.run_docker") as TranslationKey}
-                    </button>
-                    <button
-                      class="infra-toggle-opt"
-                      class:active={onHost}
-                      class:host={onHost}
-                      title={i18n.t("create.host_install_title") as TranslationKey}
-                      onclick={() => {
-                        if (!onHost) optInLocalInfra(toolId);
-                      }}
-                    >
-                      {i18n.t("create.use_host") as TranslationKey}
-                    </button>
-                  </span>
-                {/snippet}
-                {#each envCheck.optional_requirements ?? [] as req}
-                  {@const installedHere = isLocallyInstalled(req.tool_id)}
-                  <div class="env-row" class:ok={installedHere}>
-                    <span class="env-select"><TechIcon icon="docker.svg" alt={i18n.t("create.docker_badge") as TranslationKey} size="sm" /></span>
-                    <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
-                    <span class="env-name">{req.display}</span>
-                    <span class="env-source">
-                      {installedHere ? (i18n.t("create.running_local") as TranslationKey) : (i18n.t("create.running_docker") as TranslationKey)}
-                    </span>
-                    {#if installedHere}
-                      <span class="env-status ok">{i18n.t("create.installed_host") as TranslationKey}</span>
-                    {/if}
-                    {@render infraToggle(req.tool_id, false)}
-                  </div>
-                {/each}
-                {#each [...envLocalInfra] as toolId}
-                  {@const req = envCheck.requirements.find((r) => r.tool_id === toolId)}
-                  {@const installedHere = isLocallyInstalled(toolId)}
-                  <div class="env-row ok">
-                    <span class="env-select"><TechIcon icon="docker.svg" alt={i18n.t("create.docker_badge") as TranslationKey} size="sm" /></span>
-                    <span class="env-icon"><TechIcon icon={req?.icon ?? toolIcon(toolId)} alt={req?.display ?? toolId} size="sm" /></span>
-                    <span class="env-name">{req?.display ?? toolId}</span>
-                    <span class="env-source">
-                      {installedHere ? (i18n.t("create.running_local") as TranslationKey) : (i18n.t("create.local_pending") as TranslationKey)}
-                    </span>
-                    {#if installedHere}
-                      <span class="env-status ok">{i18n.t("create.installed_host") as TranslationKey}</span>
-                    {/if}
-                    {@render infraToggle(toolId, true)}
-                  </div>
-                {/each}
-              </div>
-            {/if}
-
-            {#if envPlan && envInstalling}
-              <div class="env-install">
-                <p class="group-label">{i18n.t("create.installing") as TranslationKey}</p>
-                {#each envPlan.tasks as task}
-                  {@const st = envTaskStates.get(task.task_id) ?? task.state}
-                  {@const kind = taskStateKind(st)}
-                  {@const running = kind === "running" && typeof st === "object" && "Running" in st}
-                  {@const downloading = running && st.Running.phase === "Downloading"}
-                  {@const pct = downloading ? dlPercent(task.task_id) : null}
-                  {@const dl = envDownload.get(task.task_id)}
-                  <div class="env-task">
-                    <div class="env-row">
-                      <span class="env-icon">
-                        {#if kind === "running"}⏳
-                        {:else if kind === "success"}✅
-                        {:else if kind === "failed"}❌
-                        {:else if kind === "skipped"}⏭️
-                        {:else}•{/if}
-                      </span>
-                      <TechIcon icon={task.icon ?? toolIcon(task.tool_id)} alt={task.display} size="sm" />
-                      <span class="env-name">{task.display}</span>
-                      <span class="env-source">{task.size_mb} MB · {i18n.t(task.source_description as TranslationKey)}</span>
-                      <span class="env-status">
-                        {#if running}
-                          {#if downloading && pct !== null && dl}
-                            {i18n.t("create.downloading", { pct, received: formatMb(Math.floor(dl.received / 1024 / 1024)), total: formatMb(Math.floor(dl.total / 1024 / 1024)) }) as TranslationKey}
-                          {:else}
-                            <span class="spin" aria-hidden="true"></span> {taskStateLabel(st)} · {phaseElapsed(task.task_id)}
-                          {/if}
-                        {:else}
-                          {taskStateLabel(st)}
-                        {/if}
-                      </span>
-                    </div>
-                    {#if downloading && pct !== null}
-                      <div class="dl-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-                        <div class="dl-fill" style="width: {pct}%"></div>
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-                {#if envLogs.length > 0}
-                  <details class="exec-full-log">
-                    <summary>{i18n.t("create.log_lines", { n: envLogs.length }) as TranslationKey}</summary>
-                    <pre>{envLogs.join("\n")}</pre>
-                  </details>
-                {/if}
-              </div>
-            {/if}
-
-            {#if envError}
-              <p class="error">{envError}</p>
-            {/if}
-
-            <div class="btn-row">
-              <button class="btn-back" onclick={() => (phase = 2)} disabled={envInstalling}>{i18n.t("create.back") as TranslationKey}</button>
-              {#if envInstalling}
-                <button class="btn-secondary" onclick={cancelInstall}>{i18n.t("create.abort") as TranslationKey}</button>
-              {:else if missingAll.length > 0}
-                <button class="btn-primary" onclick={startInstall} disabled={missingSelected.length === 0}>
-                  {i18n.t("create.install_selected", { n: missingSelected.length }) as TranslationKey}
-                </button>
-                {#if missingSelected.length < missingAll.length}
-                  <button class="btn-secondary" onclick={selectAllEnvTools}>{i18n.t("create.select_all", { n: missingAll.length }) as TranslationKey}</button>
-                {/if}
-                <button class="btn-secondary" onclick={doCreateProject}>{i18n.t("create.continue_anyway") as TranslationKey}</button>
-              {:else}
-                <button class="btn-primary" onclick={doCreateProject}>{i18n.t("create.create_project") as TranslationKey}</button>
-              {/if}
-            </div>
-
-            {#if envRestartHint}
-              <p class="env-warn">
-                {i18n.t("create.path_restart_hint") as TranslationKey}
-              </p>
-            {/if}
-            {/if}
-          {:else}
-            <p class="error">
-              {envError
-                ? (i18n.t("create.env_check_failed", { err: envError }) as TranslationKey)
-                : (i18n.t("create.env_not_checked") as TranslationKey)}
-            </p>
-            <div class="btn-row">
-              <button class="btn-back" onclick={back}>{i18n.t("create.back") as TranslationKey}</button>
-              <button class="btn-primary" onclick={() => runEnvironmentCheck()}>
-                {envError ? (i18n.t("create.retry") as TranslationKey) : (i18n.t("create.check_env") as TranslationKey)}
-              </button>
-            </div>
-          {/if}
-
-          {#if newSecrets}
-            <div class="conflict-overlay" onclick={() => { newSecrets = null; }}>
-              <div class="conflict-dialog" onclick={(e) => e.stopPropagation()}>
-                <h3>{i18n.t("create.generated_passwords") as TranslationKey}</h3>
-                <p class="hint">{i18n.t("create.save_passwords_hint") as TranslationKey}</p>
-                {#each Object.entries(newSecrets) as [toolId, value]}
-                  <div class="secret-row">
-                    <span class="secret-name">{secretToolName(toolId)}</span>
-                    <code class="secret-value">{value}</code>
-                    <button class="btn-secondary" onclick={() => copySecret(toolId, value)}>
-                      {secretCopied === toolId ? (i18n.t("create.copied") as TranslationKey) : (i18n.t("create.copy") as TranslationKey)}
-                    </button>
-                  </div>
-                {/each}
-                <div class="btn-row">
-                  <button class="btn-primary" onclick={() => { newSecrets = null; }}>{i18n.t("create.got_it") as TranslationKey}</button>
-                </div>
-              </div>
-            </div>
+          {#if EnvPanel}
+            <EnvPanel
+              {tree}
+              {envCheck}
+              {envChecking}
+              {envCheckProgress}
+              {envSelectedIds}
+              {envLocalInfra}
+              {envPlan}
+              {envInstalling}
+              {envInstallDone}
+              {envErrors}
+              {envLogs}
+              {envTaskStates}
+              {envRestartHint}
+              {envDownload}
+              {envPhaseStart}
+              {envError}
+              {newSecrets}
+              {secretCopied}
+              {installedTools}
+              ontoggleEnvTool={toggleEnvTool}
+              onselectAll={selectAllEnvTools}
+              onoptInLocalInfra={optInLocalInfra}
+              onrevertLocalInfra={revertLocalInfra}
+              onstartInstall={startInstall}
+              oncancelInstall={cancelInstall}
+              onrecheck={recheckEnvironment}
+              oncheck={() => runEnvironmentCheck()}
+              oncontinue={doCreateProject}
+              onback={back}
+              onbackReview={() => (phase = 2)}
+              oncopySecret={copySecret}
+              ondismissSecrets={() => (newSecrets = null)}
+            />
           {/if}
         {/if}
 
@@ -2657,99 +2219,21 @@ function resetAll() {
              Execution
              ================================================================ -->
         {#if phase === 6}
-          <p class="prompt">{i18n.t("create.generating") as TranslationKey}</p>
-
-          <div class="exec-steps">
-            {#each [...execStatuses.entries()] as [idx, entry]}
-              <div class="exec-step"
-                   class:running={stepIsRunning(entry.status)}
-                   class:success={stepIsSuccess(entry.status)}
-                   class:failed={stepIsFailed(entry.status)}
-                   class:skipped={stepIsSkipped(entry.status)}>
-                <div class="exec-icon">
-                  {#if stepIsRunning(entry.status)}
-                    ⏳
-                  {:else if stepIsSuccess(entry.status)}
-                    ✅
-                  {:else if stepIsFailed(entry.status)}
-                    ❌
-                  {:else if stepIsSkipped(entry.status)}
-                    ⏭️
-                  {:else}
-                    ⏳
-                  {/if}
-                </div>
-                <div class="exec-detail">
-                  <p class="exec-name">{entry.name}</p>
-                  {#if entry.logs.length > 0}
-                    <pre class="exec-log">{entry.logs.join("\n")}</pre>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-
-          {#if execLogs.length > 0}
-            <details class="exec-full-log">
-              <summary>{i18n.t("create.full_log", { n: execLogs.length }) as TranslationKey}</summary>
-              <pre>{execLogs.join("\n")}</pre>
-            </details>
-          {/if}
-
-          {#if execOverallStatus === "running"}
-            <div class="btn-row">
-              <button class="btn-secondary" onclick={cancelExecution}>{i18n.t("create.cancel") as TranslationKey}</button>
-            </div>
-          {:else if execOverallStatus === "done"}
-            <div class="exec-finished">
-              <p>{i18n.t("create.generated_ms", { x: execResult?.duration ?? 0 }) as TranslationKey}</p>
-              <p class="exec-plan-path">{i18n.t("create.location", { path: execPlan?.project_path ?? execProjectPath ?? "" }) as TranslationKey}</p>
-            </div>
-
-            <div class="about-project-section">
-              <h4 class="about-title">{i18n.t("create.preview.about_title") as TranslationKey}</h4>
-              {#if aboutReadme}
-                <div class="about-markdown">{@html renderReadme(aboutReadme)}</div>
-              {:else}
-                <p class="about-hint">{i18n.t("create.preview.about_readme") as TranslationKey}</p>
-              {/if}
-              <div class="about-stats">
-                <span class="about-stat">
-                  <span class="about-stat-num">{execPlan?.steps?.length ?? 0}</span>
-                  <span class="about-stat-label">{i18n.t("create.preview.tab_steps") as TranslationKey}</span>
-                </span>
-                <span class="about-stat">
-                  <span class="about-stat-num">{execStatuses.size}</span>
-                  <span class="about-stat-label">{i18n.t("create.preview.files_our") as TranslationKey}</span>
-                </span>
-              </div>
-            </div>
-
-            <div class="btn-row">
-              <button class="btn-secondary" onclick={openInVSCode}>{i18n.t("create.open_vscode") as TranslationKey}</button>
-              <button class="btn-primary" onclick={resetAll}>{i18n.t("create.create_another") as TranslationKey}</button>
-            </div>
-
-            {#if execPlan}
-              <button
-                class="devl-chip"
-                class:missing={!devlProfileExists}
-                onclick={reopenDevlDialog}
-                title={devlProfileExists
-                  ? (i18n.t("create.devl_chip_open") as TranslationKey)
-                  : (i18n.t("create.devl_chip_add") as TranslationKey)}
-              >
-                <span class="devl-chip-icon">{devlProfileExists ? "→" : "+"}</span>
-                <span class="devl-chip-label">DevLauncher</span>
-              </button>
-            {/if}
-          {:else if execOverallStatus === "error" || execOverallStatus === "cancelled"}
-            <div class="exec-finished error">
-              <p>{execOverallStatus === "cancelled" ? (i18n.t("create.cancelled") as TranslationKey) : (i18n.t("create.exec_error", { err: execError ?? "" }) as TranslationKey)}</p>
-            </div>
-            <div class="btn-row">
-              <button class="btn-primary" onclick={resetAll}>{i18n.t("create.start_over") as TranslationKey}</button>
-            </div>
+          {#if ExecPanel}
+            <ExecPanel
+              {execPlan}
+              {execProjectPath}
+              {execStatuses}
+              {execOverallStatus}
+              {execResult}
+              {execError}
+              {execLogs}
+              {devlProfileExists}
+              oncancel={cancelExecution}
+              onreset={resetAll}
+              onopenvscode={openInVSCode}
+              onreopendevl={reopenDevlDialog}
+            />
           {/if}
         {/if}
       {:else}
@@ -3507,59 +2991,18 @@ function resetAll() {
   {/if}
 </div>
 
-<!-- DevLauncher integration: profile created dialog -->
-<Modal
-  open={devlProfileCreated}
-  onclose={dismissProfileOk}
-  title={i18n.t("create.devl_dialog_title") as TranslationKey}
-  description={i18n.t("create.devl_dialog_desc") as TranslationKey}
-  size="md"
-  closeOnBackdrop={false}
-  closeOnEscape={false}
->
-  {#snippet children()}
-    <p style="font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 0.5rem;">
-      {i18n.t("create.profile_added_to_devlauncher") as TranslationKey}
-    </p>
-    <p style="font-size: 0.85rem; color: var(--sp-text-3); margin: 0;">
-      {i18n.t("create.devl_dialog_hint") as TranslationKey}
-    </p>
-  {/snippet}
-  {#snippet footer()}
-    <Button variant="subtle" size="sm" onclick={dismissProfileOk}>
-      {i18n.t("create.devl_ok") as TranslationKey}
-    </Button>
-    <Button variant="danger" size="sm" onclick={cancelProfile}>
-      {i18n.t("create.devl_cancel") as TranslationKey}
-    </Button>
-    <Button variant="primary" size="sm" onclick={openDevLauncher}>
-      {i18n.t("create.open_devlauncher") as TranslationKey}
-    </Button>
-  {/snippet}
-</Modal>
-
-<!-- DevLauncher integration: cancel profile confirmation -->
-<Modal
-  open={devlConfirmCancel}
-  onclose={dismissCancelConfirm}
-  title={i18n.t("create.devl_cancel_title") as TranslationKey}
-  description={i18n.t("create.devl_cancel_desc") as TranslationKey}
-  size="sm"
-  closeOnBackdrop={false}
-  closeOnEscape={false}
->
-  {#snippet children()}
-    <p style="font-size: 0.9rem; color: var(--sp-text-2); margin: 0;">{i18n.t("create.cancel_profile_confirm") as TranslationKey}</p>
-  {/snippet}
-  {#snippet footer()}
-    <Button variant="subtle" size="sm" onclick={dismissCancelConfirm}>
-      {i18n.t("create.devl_keep") as TranslationKey}
-    </Button>
-    <Button variant="danger" size="sm" onclick={confirmCancelProfile}>
-      {i18n.t("create.devl_delete") as TranslationKey}
-    </Button>
-  {/snippet}
-</Modal>
+<!-- DevLauncher integration: dialogs (profile created / cancel profile) -->
+{#if DevlDialogs}
+  <DevlDialogs
+    created={devlProfileCreated}
+    confirmCancel={devlConfirmCancel}
+    onopen={openDevLauncher}
+    onclose={dismissProfileOk}
+    oncancel={cancelProfile}
+    onconfirmcancel={confirmCancelProfile}
+    ondismisscancel={dismissCancelConfirm}
+  />
+{/if}
 
 <style>
 .wizard { max-width: 1100px; margin: 0 auto; padding: 2rem; }
@@ -3956,188 +3399,11 @@ function resetAll() {
 .conflict-dialog { background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 12px; padding: 1.5rem; max-width: 480px; width: 90%; }
 .conflict-dialog h3 { margin: 0 0 0.75rem; color: var(--sp-warning); }
 .conflict-dialog p { font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 1.25rem; line-height: 1.4; }
-.conflict-dialog code { color: var(--sp-accent-strong); }
 .conflict-actions { display: flex; flex-direction: column; gap: 0.6rem; }
 .conflict-actions button { width: 100%; text-align: center; }
-.secret-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
-.secret-name { flex: 0 0 110px; font-size: 0.85rem; color: var(--sp-text-2); font-weight: 600; }
-.secret-value { flex: 1; font-family: Consolas, monospace; font-size: 0.85rem; background: var(--sp-bg-2); border: 1px solid var(--sp-border-strong); border-radius: 6px; padding: 0.4rem 0.6rem; color: var(--sp-accent-strong); overflow-x: auto; white-space: nowrap; user-select: all; }
-.secret-row .btn-secondary { flex: 0 0 auto; }
-
-/* ---- Шаблоны ---- */
-.preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.9rem; }
-.preset-card { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.1rem; border: 1px solid var(--sp-border-strong); border-radius: 12px; background: var(--sp-bg-1); text-align: center; color: var(--sp-text-1); }
-.preset-card:hover { border-color: var(--sp-accent-strong); }
-.preset-card h3 { margin: 0; font-size: 1rem; }
-.preset-desc { font-size: 0.8rem; color: var(--sp-text-3); margin: 0; }
-.preset-stack { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center; min-height: 1.4rem; }
-.preset-chip { font-size: 0.72rem; background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.15rem 0.5rem; border-radius: 10px; }
-.preset-apply { width: 100%; }
-
-/* ---- Анализ ---- */
-.analysis-panel { margin-bottom: 2rem; }
-.analysis-summary { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
-.analysis-section { margin: 0.75rem 0; }
-.section-title { font-weight: 600; font-size: 0.9rem; color: var(--sp-text-2); margin-bottom: 0.3rem; }
-.tech-tags, .hint-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.tech-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-accent-soft); color: var(--sp-text-2); }
-.tech-tag.certaion { background: rgba(163, 230, 53, 0.2); color: #fff; }
-.tech-tag.likely { background: var(--sp-accent-soft); }
-.tech-tag.possible { background: var(--sp-bg-2); }
-.hint-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-bg-2); color: var(--sp-text-3); }
-.hint-tag.docker { background: rgba(34, 211, 238, 0.15); color: var(--sp-info); }
-.analyzed-path { font-size: 0.85rem; color: var(--sp-accent-strong); margin-top: 0.3rem; }
 
 /* ---- Окружение ---- */
-.env-summary { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; padding: 0.75rem 1rem; border: 1px solid var(--sp-border-strong); border-radius: 10px; background: var(--sp-bg-1); margin-bottom: 1rem; font-size: 0.85rem; color: var(--sp-text-2); }
 .env-warn { color: var(--sp-warning); font-weight: 600; }
-.env-list { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
-.env-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: var(--sp-bg-1); border-left: 3px solid var(--sp-border-strong); }
-.env-row.ok { border-left-color: var(--sp-success); }
-.env-row.update { border-left-color: var(--sp-warning); }
-.env-row.broken { border-left-color: var(--sp-danger); }
-.env-row.missing { border-left-color: var(--sp-danger); opacity: 0.8; }
-.env-row.manual { border-left-color: var(--sp-warning); }
-.env-optional { margin-bottom: 1rem; padding: 0.75rem 1rem; border: 1px dashed var(--sp-danger); border-radius: 10px; background: rgba(231, 76, 60, 0.06); }
-.env-optional .group-label { color: var(--sp-danger); margin: 0 0 0.35rem; }
-.env-optional .env-row { background: rgba(248, 113, 113, 0.08); }
-.env-optional .env-row.ok { border-left-color: var(--sp-success); background: rgba(163, 230, 53, 0.08); }
-.env-optional-local { border-color: var(--sp-success); background: rgba(0, 184, 148, 0.06); }
-.env-optional-local .group-label { color: var(--sp-success); }
-.infra-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0;
-  flex: 0 0 auto;
-  border: 1px solid var(--sp-border-strong);
-  border-radius: 999px;
-  overflow: hidden;
-  background: var(--sp-bg-1);
-}
-.infra-toggle-opt {
-  border: none;
-  background: transparent;
-  color: var(--sp-text-3);
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.3rem 0.75rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s, color 0.15s;
-}
-.infra-toggle-opt:hover { color: var(--sp-text-1); background: rgba(108, 92, 231, 0.12); }
-.infra-toggle-opt.active { background: var(--sp-accent-strong); color: #fff; }
-.infra-toggle-opt.active.host { background: var(--sp-success); }
-.env-select { min-width: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.env-select input { accent-color: var(--sp-accent-strong); cursor: pointer; width: 15px; height: 15px; }
-.manual-badge { cursor: help; font-size: 0.95rem; }
-.env-icon { min-width: 20px; font-size: 0.95rem; }
-.env-name { font-weight: 600; font-size: 0.9rem; flex: 0 0 auto; }
-.env-source { font-size: 0.75rem; color: var(--sp-text-3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.env-status { font-size: 0.8rem; font-weight: 600; flex: 0 0 auto; }
-.env-status.ok { color: var(--sp-success); }
-.env-status.update { color: var(--sp-warning); }
-.env-status.broken { color: var(--sp-danger); }
-.env-status.missing { color: var(--sp-danger); }
-.env-status.manual { color: var(--sp-warning); }
-.env-install { margin-top: 0.5rem; }
-.env-progress-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.75rem; }
-.env-progress-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
-.env-progress-row .env-status { margin-left: auto; }
-.env-task { display: flex; flex-direction: column; gap: 0.2rem; }
-.dl-bar { height: 6px; border-radius: 3px; background: var(--sp-bg-3); overflow: hidden; margin-left: 1.9rem; margin-right: 0.4rem; }
-.dl-fill { height: 100%; background: linear-gradient(90deg, var(--sp-blue), var(--sp-accent)); border-radius: 3px; transition: width 0.3s ease; }
-.spin { display: inline-block; width: 0.8rem; height: 0.8rem; border: 2px solid var(--sp-border-strong); border-top-color: var(--sp-blue); border-radius: 50%; animation: tc-spin 0.8s linear infinite; vertical-align: -2px; margin-right: 0.3rem; }
-@keyframes tc-spin { to { transform: rotate(360deg); } }
-
-/* ---- Исполнение ---- */
-.exec-steps { display: flex; flex-direction: column; gap: 0.5rem; margin: 1rem 0; }
-.exec-step { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.5rem; border-radius: 6px; background: var(--sp-bg-1); }
-.exec-step.running { border-left: 3px solid var(--sp-accent-strong); }
-.exec-step.success { border-left: 3px solid var(--sp-success); }
-.exec-step.failed { border-left: 3px solid var(--sp-danger); }
-.exec-step.skipped { border-left: 3px solid var(--sp-text-3); opacity: 0.6; }
-.exec-icon { font-size: 1.1rem; min-width: 24px; }
-.exec-detail { flex: 1; min-width: 0; }
-.exec-name { font-weight: 600; margin: 0; font-size: 0.9rem; }
-.exec-log { font-size: 0.75rem; color: var(--sp-text-3); background: var(--sp-bg-2); padding: 0.3rem; border-radius: 4px; max-height: 80px; overflow-y: auto; margin: 0.3rem 0 0; white-space: pre-wrap; word-break: break-all; }
-.exec-full-log { margin: 1rem 0; }
-.exec-full-log summary { cursor: pointer; color: var(--sp-text-3); font-size: 0.85rem; }
-.exec-full-log pre { font-size: 0.75rem; background: var(--sp-bg-2); padding: 0.5rem; border-radius: 6px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
-.exec-finished { margin: 1rem 0; }
-.exec-finished p { margin: 0.3rem 0; }
-.exec-finished.error { color: var(--sp-danger); }
-.exec-plan-path { font-size: 0.85rem; color: var(--sp-text-3); }
-/* Маленькая кнопка DevLauncher на финальной странице */
-.devl-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-top: 1rem;
-  padding: 0.35rem 0.8rem;
-  border: 1px solid var(--sp-border-strong);
-  border-radius: 999px;
-  background: var(--sp-bg-1);
-  color: var(--sp-text-2);
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-}
-.devl-chip:hover { border-color: var(--sp-accent-strong); color: #fff; }
-.devl-chip.missing { border-style: dashed; }
-.devl-chip-icon { font-weight: 700; line-height: 1; }
-.devl-chip-label { font-weight: 600; }
-.about-project-section { border: 1px solid var(--sp-border-strong); border-radius: 10px; padding: 1rem; margin: 1rem 0; background: var(--sp-bg-1); }
-.about-title { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; color: var(--sp-text-1); }
-.about-hint { margin: 0 0 0.75rem; font-size: 0.8rem; color: var(--sp-text-3); }
-.about-stats { display: flex; gap: 1.5rem; }
-.about-stat { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
-.about-stat-num { font-size: 1.5rem; font-weight: 700; color: var(--sp-accent-strong); }
-.about-stat-label { font-size: 0.7rem; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-.about-markdown {
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 0.75rem 1rem;
-  margin: 0 0 0.75rem;
-  background: var(--sp-bg-2);
-  border: 1px solid var(--sp-border);
-  border-radius: 8px;
-  font-size: 0.85rem;
-  line-height: 1.55;
-  color: var(--sp-text-1);
-}
-.about-markdown :global(.about-h2) { margin: 0.8rem 0 0.4rem; font-size: 1.05rem; font-weight: 700; color: var(--sp-accent-strong); }
-.about-markdown :global(.about-h3) { margin: 0.6rem 0 0.3rem; font-size: 0.95rem; font-weight: 600; color: var(--sp-text-1); }
-.about-markdown :global(.about-h4) { margin: 0.5rem 0 0.25rem; font-size: 0.88rem; font-weight: 600; color: var(--sp-text-1); }
-.about-markdown :global(.about-h5) { margin: 0.5rem 0 0.25rem; font-size: 0.85rem; font-weight: 600; color: var(--sp-text-2); }
-.about-markdown :global(.about-h2:first-child) { margin-top: 0; }
-.about-markdown :global(.about-p) { margin: 0.35rem 0; }
-.about-markdown :global(.about-ul) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.about-markdown :global(.about-ul li) { margin: 0.15rem 0; }
-.about-markdown :global(.about-ic) {
-  font-family: var(--sp-font-mono);
-  font-size: 0.78em;
-  padding: 0.1em 0.35em;
-  background: var(--sp-bg-1);
-  border: 1px solid var(--sp-border);
-  border-radius: 4px;
-  color: var(--sp-accent-strong);
-}
-.about-markdown :global(.about-code) {
-  margin: 0.5rem 0;
-  padding: 0.5rem 0.75rem;
-  background: var(--sp-bg-1);
-  border: 1px solid var(--sp-border);
-  border-radius: 6px;
-  font-family: var(--sp-font-mono);
-  font-size: 0.78rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--sp-text-2);
-}
-.about-markdown :global(.about-hr) { border: none; border-top: 1px solid var(--sp-border); margin: 0.75rem 0; }
-.about-markdown :global(a) { color: var(--sp-accent-strong); }
-
 
 
 @keyframes skeleton-pulse {
