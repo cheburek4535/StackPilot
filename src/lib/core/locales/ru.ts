@@ -1524,6 +1524,8 @@ export default {
   "create.preview.source_runtime": "Среда выполнения",
   "create.preview.about_title": "Об этом проекте",
   "create.preview.about_readme": "Содержимое README.md появится здесь после генерации.",
+  "create.preview.files_by_stackpilot": "файлов, сгенерированных StackPilot",
+  "create.preview.files_total": "всего файлов",
   "create.preview.select_stack": "Выберите фреймворки и инструменты, чтобы увидеть структуру проекта",
   "create.preview.select_stack_hint": "Дерево файлов появится здесь после выбора стека.",
 
@@ -1546,6 +1548,8 @@ export default {
   "roadmap.item.env_isolation.desc": "Фича разделения виртуальных окружений для контроля версий ПО разработки от проекта к проекту",
   "roadmap.item.tech_expansion.title": "Расширение технологий",
   "roadmap.item.tech_expansion.desc": "Добавление поддержки новых языков, фреймворков и инструментов",
+  "roadmap.item.localization.title": "Расширение локализации",
+  "roadmap.item.localization.desc": "Добавление новых языков интерфейса и перевод документации",
   "roadmap.item.cli_service.title": "CLI-сервис",
   "roadmap.item.cli_service.desc": "Полноценный CLI-сервис для использования StackPilot из терминала",
   "roadmap.item.plugin_system.title": "Система плагинов",

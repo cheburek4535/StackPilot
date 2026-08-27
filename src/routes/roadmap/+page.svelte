@@ -16,6 +16,7 @@
     { id: "ai_assistant", status: "in_progress", icon: "bot" },
     { id: "env_isolation", status: "planned", icon: "shield" },
     { id: "tech_expansion", status: "in_progress", icon: "layers" },
+    { id: "localization", status: "planned", icon: "glob" },
     { id: "cli_service", status: "planned", icon: "terminal" },
     { id: "plugin_system", status: "planned", icon: "store" },
     { id: "bug_fixes", status: "in_progress", icon: "refresh" },
@@ -100,6 +101,8 @@
                 <span class="sp-icon">🧩</span>
               {:else if item.icon === "refresh"}
                 <span class="sp-icon">🔧</span>
+              {:else if item.icon === "glob"}
+                <span class="sp-icon">🌐</span>
               {/if}
             </div>
             <div class="sp-roadmap-content">

@@ -43,6 +43,36 @@
     return null;
   });
 
+  /** Файловые артефакты плана: сколько файлов пишет StackPilot
+   *  (WriteFile/RenderTemplate/Generate) и сколько всего артефактов создаёт
+   *  план (файлы + каталоги). Считается рекурсивно через Parallel-шаги. */
+  let fileStats = $derived.by<{ generated: number; total: number }>(() => {
+    const plan = execPlan;
+    if (!plan || !Array.isArray(plan.steps)) return { generated: 0, total: 0 };
+    const count = (steps: unknown[]): { generated: number; total: number } => {
+      let generated = 0;
+      let total = 0;
+      for (const step of steps) {
+        if (!step || typeof step !== "object") continue;
+        const s = step as Record<string, unknown>;
+        if ("Parallel" in s && Array.isArray((s.Parallel as { steps?: unknown[] }).steps)) {
+          const sub = count((s.Parallel as { steps: unknown[] }).steps);
+          generated += sub.generated;
+          total += sub.total;
+          continue;
+        }
+        if ("WriteFile" in s || "RenderTemplate" in s || "Generate" in s) {
+          generated++;
+          total++;
+        } else if ("CreateDirectory" in s) {
+          total++;
+        }
+      }
+      return { generated, total };
+    };
+    return count(plan.steps);
+  });
+
   /** Лёгкий рендер markdown-подмножества (заголовки, код, списки, ссылки,
    *  жирный, инлайн-код, hr) — без внешних зависимостей. */
   function renderReadme(md: string): string {
@@ -181,8 +211,12 @@
         <span class="about-stat-label">{i18n.t("create.preview.tab_steps") as TranslationKey}</span>
       </span>
       <span class="about-stat">
-        <span class="about-stat-num">{execStatuses.size}</span>
-        <span class="about-stat-label">{i18n.t("create.preview.files_our") as TranslationKey}</span>
+        <span class="about-stat-num">{fileStats.generated}</span>
+        <span class="about-stat-label">{i18n.t("create.preview.files_by_stackpilot") as TranslationKey}</span>
+      </span>
+      <span class="about-stat">
+        <span class="about-stat-num">{fileStats.total}</span>
+        <span class="about-stat-label">{i18n.t("create.preview.files_total") as TranslationKey}</span>
       </span>
     </div>
   </div>
@@ -260,7 +294,7 @@
   .about-stat-num { font-size: 1.5rem; font-weight: 700; color: var(--sp-accent-strong); }
   .about-stat-label { font-size: 0.7rem; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
   .about-markdown {
-    max-height: 320px;
+    max-height: 480px;
     overflow-y: auto;
     padding: 0.75rem 1rem;
     margin: 0 0 0.75rem;

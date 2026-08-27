@@ -334,8 +334,10 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
   const num = (v: unknown): number => (typeof v === "number" ? v : 0);
 
-  mode = (["constructor", "presets", "analyze"] as const).includes(s.mode as never)
-    ? (s.mode as "constructor" | "presets" | "analyze")
+  // Анализ скрыт (см. кнопку в шапке): сохранённый режим "analyze"
+  // безопасно приводим к конструктору, чтобы не показывать пустую вкладку.
+  mode = (["constructor", "presets"] as const).includes(s.mode as never)
+    ? (s.mode as "constructor" | "presets")
     : "constructor";
   phase = num(s.phase);
   restoredTypeId = str(s.typeId) || null;
@@ -506,14 +508,14 @@ onMount(async () => {
   // Вынесенные секции подгружаем сразу после первого кадра: они не входят
   // в бандл первой загрузки, но успевают загрузиться, пока пользователь
   // дойдёт до фаз 5/6 или режимов presets/analyze.
+  // Анализ (AnalyzeMode) сейчас не используется и НЕ подгружается —
+  // чтобы вернуть, раскомментируйте строку ниже и кнопку в шапке.
   void Promise.all([
-    import("$lib/components/project-creator/AnalyzeMode.svelte"),
     import("$lib/components/project-creator/PresetsMode.svelte"),
     import("$lib/components/project-creator/EnvironmentPanel.svelte"),
     import("$lib/components/project-creator/ExecutionPanel.svelte"),
     import("$lib/components/project-creator/DevLauncherDialogs.svelte"),
-  ]).then(([analyze, presets, env, exec, devl]) => {
-    AnalyzeMode = analyze.default;
+  ]).then(([presets, env, exec, devl]) => {
     PresetsMode = presets.default;
     EnvPanel = env.default;
     ExecPanel = exec.default;
@@ -2150,7 +2152,9 @@ function resetAll() {
     <div class="mode-switch">
       <button class="mode-btn" class:active={mode === "constructor"} onclick={() => { mode = "constructor"; }}>{i18n.t("create.mode.constructor") as TranslationKey}</button>
       <button class="mode-btn" class:active={mode === "presets"} onclick={() => { mode = "presets"; }}>{i18n.t("create.mode.templates") as TranslationKey}</button>
-      <button class="mode-btn" class:active={mode === "analyze"} onclick={() => { mode = "analyze"; }}>{i18n.t("create.mode.analyze") as TranslationKey}</button>
+      <!-- Анализ временно скрыт: чтобы вернуть — раскомментируйте кнопку и
+           строку AnalyzeMode в Promise.all в onMount. -->
+      <!-- <button class="mode-btn" class:active={mode === "analyze"} onclick={() => { mode = "analyze"; }}>{i18n.t("create.mode.analyze") as TranslationKey}</button> -->
     </div>
 
     {#if mode === "analyze"}
@@ -3005,7 +3009,7 @@ function resetAll() {
 {/if}
 
 <style>
-.wizard { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+.wizard { max-width: 1280px; margin: 0 auto; padding: 2rem; }
 .muted { color: var(--sp-text-3); }
 .error { color: var(--sp-danger); }
 .mode-switch { display: flex; gap: 0; margin-bottom: 1.5rem; border-radius: 8px; overflow: hidden; border: 1px solid var(--sp-border-strong); width: fit-content; }
@@ -3123,8 +3127,8 @@ function resetAll() {
 .grayscale:hover { border-color: var(--sp-border-strong); background: var(--sp-bg-1); }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: var(--sp-text-3); }
-.type-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-.fw-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); grid-auto-rows: 1fr; align-items: stretch; }
+.type-grid { grid-template-columns: repeat(4, 1fr); }
+.fw-grid { grid-template-columns: repeat(4, 1fr); grid-auto-rows: 1fr; align-items: stretch; }
 .fw-grid .card { min-height: 200px; height: 100%; box-sizing: border-box; }
 .fw-grid .card p { flex: 1; }
 .unavailable-summary { min-height: 200px; display: flex; flex-direction: column; justify-content: center; gap: 0.5rem; padding: 1rem; border: 1px dashed var(--sp-border-strong); border-radius: 10px; background: var(--sp-bg-1); color: var(--sp-text-2); cursor: pointer; text-align: center; }
@@ -3277,10 +3281,21 @@ function resetAll() {
 .lang-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
 @media (max-width: 900px) { .lang-sides { grid-template-columns: 1fr; } }
 .lang-side-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: var(--sp-text-1); }
-.lang-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-bottom: 0; }
+.lang-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 0; }
 
 /* ---- Инструменты ---- */
-.tool-group { margin-bottom: 1.25rem; }
+.tool-group {
+  margin-bottom: 1.5rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--sp-border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.tool-group:first-child {
+  border-top: none;
+  padding-top: 0;
+}
 .tool-cat-title {
   display: flex;
   align-items: center;
@@ -3310,33 +3325,34 @@ function resetAll() {
   font-weight: 600;
   margin-left: 0.1rem;
 }
-.tool-menu { display: flex; flex-direction: column; gap: 0.45rem; }
+.tool-menu { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
 .tool-item {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   width: 100%;
+  min-width: 0;
   background: var(--sp-bg-2);
   border: 1px solid var(--sp-border-strong);
   border-radius: 9px;
-  padding: 0.55rem 0.8rem;
+  padding: 0.6rem 0.8rem;
   cursor: pointer;
   text-align: left;
   color: var(--sp-text-1);
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
 }
-.tool-item:hover { border-color: var(--sp-accent-strong); background: var(--sp-bg-2); }
+.tool-item:hover { border-color: var(--sp-accent-strong); background: var(--sp-bg-2); transform: translateY(-1px); }
 .tool-item.selected { border-color: var(--sp-accent-strong); background: var(--sp-accent-soft); box-shadow: inset 0 0 0 1px var(--sp-accent-strong); }
 .tool-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .tool-item-name { font-size: 0.88rem; font-weight: 600; }
 .tool-item-desc { font-size: 0.74rem; color: var(--sp-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-item-badges { display: flex; align-items: center; gap: 0.35rem; flex: 0 0 auto; }
+.tool-item-badges { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; flex: 0 0 auto; flex-wrap: wrap; }
 .tool-item-badge { font-size: 0.68rem; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; }
 .tool-item-badge.docker { color: var(--sp-info); background: rgba(34, 211, 238, 0.12); border: 1px solid rgba(34, 211, 238, 0.35); }
 .tool-item-badge.conflict { color: var(--sp-danger); background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.35); }
 .tool-item-badge.rec { color: var(--sp-warning); background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35); }
 .tool-item-check { color: var(--sp-accent-strong); font-weight: 700; font-size: 0.95rem; }
-.group-label { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; color: var(--sp-text-2); text-transform: capitalize; }
+.group-label { font-size: 0.85rem; font-weight: 600; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
 .tooltip { position: fixed; background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.8rem; max-width: 240px; z-index: 999; pointer-events: none; color: var(--sp-text-2); }
 .tooltip strong { color: #fff; }
 .tt-req, .tt-conf, .tt-docker { margin: 0.2rem 0; font-size: 0.75rem; }
@@ -3450,10 +3466,20 @@ function resetAll() {
 }
 .skeleton-sidebar { padding-top: 2rem; }
 
+@media (max-width: 1100px) {
+  .type-grid, .fw-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 1080px) {
+  .tool-menu { grid-template-columns: 1fr; }
+}
 @media (max-width: 900px) {
   .builder { grid-template-columns: 1fr; }
   .builder-context { position: static; }
   .skeleton-builder { grid-template-columns: 1fr; }
   .skeleton-sidebar { display: none; }
+  .type-grid, .fw-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .type-grid, .fw-grid { grid-template-columns: 1fr; }
 }
 </style>
