@@ -45,6 +45,7 @@ pub fn glob_all(pattern: &Path) -> Vec<PathBuf> {
 }
 
 /// Шаг рекурсивного сопоставления: head-компонента + хвост.
+/// Сравнение имён на Windows НЕЧУВСТВИТЕЛЬНО К РЕГИСТРУ (NTFS).
 fn glob_step(base: PathBuf, comps: &[String]) -> Vec<PathBuf> {
     let Some((head, rest)) = comps.split_first() else {
         return if base.exists() {
@@ -65,7 +66,9 @@ fn glob_step(base: PathBuf, comps: &[String]) -> Vec<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
-                    name.starts_with(&prefix) && name.ends_with(&suffix) && p.is_dir()
+                    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
+                        && name.to_ascii_lowercase().ends_with(&suffix.to_ascii_lowercase())
+                        && p.is_dir()
                 })
                 .collect();
             // Новейшие версии первыми (естественно-числовой порядок).
@@ -150,6 +153,46 @@ fn dir_on_path(dir: &Path, process_entries: &[String]) -> bool {
 // ------------------------------------------------------------
 // Детальное обнаружение
 // ------------------------------------------------------------
+
+/// Читает строковое значение InstallLocation из ключа реестра Windows.
+/// NSIS/MSI установщики записывают реальный путь установки в ключ удаления.
+/// Возвращает None, если: не Windows, reg.exe недоступен, ключ не найден,
+/// или значение не является строкой (REG_SZ).
+async fn read_registry_install_location(key: &str) -> Option<String> {
+    let output = probe::run_probe(
+        "reg",
+        &[
+            "query".to_string(),
+            key.to_string(),
+            "/v".to_string(),
+            "InstallLocation".to_string(),
+        ],
+        probe::PROBE_TIMEOUT,
+    )
+    .await;
+
+    if !output.success {
+        return None;
+    }
+
+    // Формат вывода reg query:
+    //   HKLM\...\erlang
+    //       InstallLocation    REG_SZ    C:\Program Files\erlang\
+    for line in output.stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_ascii_lowercase().starts_with("installlocation")
+            && trimmed.contains("REG_SZ")
+        {
+            if let Some(pos) = trimmed.find("REG_SZ") {
+                let val = trimmed[pos + 6..].trim();
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
 
 /// Бинарь есть в PATH, но молчит: улика PathBroken с местом находки.
 #[derive(Debug, Clone)]
@@ -293,8 +336,45 @@ pub async fn detect_detailed(
     }
 
     // --- 3. Реестр (Windows; на других ОС reg отсутствует — чистый промах) ---
+    // NSIS/MSI установщики записывают InstallLocation в ключ удаления —
+    // это единственный способ узнать реальный путь, когда пользователь
+    // выбрал нестандартный каталог. Пробуем прочитать InstallLocation и
+    // запустить бинарник оттуда; если не удалось — честный след «ключ
+    // существует» (Footprint).
     if result.installs.is_empty() {
         for key in &def.detection.registry_keys {
+            // Шаг A: читаем InstallLocation из ключа реестра.
+            let install_location = read_registry_install_location(key).await;
+            if let Some(loc) = install_location {
+                let install_path = PathBuf::from(loc.trim_end_matches('\\'));
+                // Пробуем bin/ подкаталог, затем сам каталог установки.
+                for candidate in [
+                    Some(install_path.join("bin")),
+                    Some(install_path.clone()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if candidate.is_dir() {
+                        let probe = probe_known_dir(def, &candidate, process_entries).await;
+                        if probe.install.raw_version.is_empty()
+                            && probe.broken_executable.is_none()
+                        {
+                            continue; // бинарь не найден или не отвечает — пробуем дальше
+                        }
+                        if probe.broken_executable.is_some() {
+                            result.broken_known_path = probe.broken_executable;
+                        }
+                        result.installs.push(probe.install);
+                        break;
+                    }
+                }
+                if !result.installs.is_empty() {
+                    break;
+                }
+            }
+
+            // Шаг B: fallback — просто проверяем наличие ключа (Footprint).
             let started = Instant::now();
             let out = probe::run_probe(
                 "reg",

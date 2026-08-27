@@ -25,9 +25,7 @@
   import EnvironmentHero from "$lib/modules/toolchain/components/EnvironmentHero.svelte";
   import JobCenter from "$lib/modules/toolchain/components/JobCenter.svelte";
   import ToolDetailDrawer from "$lib/modules/toolchain/components/ToolDetailDrawer.svelte";
-  import BuildEnvironmentMode from "$lib/modules/toolchain/components/BuildEnvironmentMode.svelte";
-  import ManageEverythingMode from "$lib/modules/toolchain/components/ManageEverythingMode.svelte";
-  import MarketplaceMode from "$lib/modules/toolchain/components/MarketplaceMode.svelte";
+  import type { Component } from "svelte";
   import PlanReviewModal, {
     type PlanRequest,
   } from "$lib/modules/toolchain/components/PlanReviewModal.svelte";
@@ -36,6 +34,36 @@
     platformName,
   } from "$lib/modules/toolchain/format";
   import { defaultCatalogFilters } from "$lib/modules/toolchain/filters";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let ManageEverythingMode = $state<Component<any>>(null as any);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let BuildEnvironmentMode = $state<Component<any>>(null as any);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let MarketplaceMode = $state<Component<any>>(null as any);
+
+  const loaded = $state<Record<string, boolean>>({});
+
+  async function loadMode(id: string): Promise<void> {
+    if (loaded[id]) return;
+    loaded[id] = true;
+    if (id === "manage_everything") {
+      const m = await import("$lib/modules/toolchain/components/ManageEverythingMode.svelte");
+      ManageEverythingMode = m.default;
+    } else if (id === "build_environment") {
+      const m = await import("$lib/modules/toolchain/components/BuildEnvironmentMode.svelte");
+      BuildEnvironmentMode = m.default;
+    } else if (id === "tool_marketplace") {
+      const m = await import("$lib/modules/toolchain/components/MarketplaceMode.svelte");
+      MarketplaceMode = m.default;
+    }
+  }
+
+  loadMode(toolchain.mode);
+
+  $effect(() => {
+    loadMode(toolchain.mode);
+  });
 
   let planRequest = $state<PlanRequest | null>(null);
   let busyRecheck = $state(false);
@@ -240,23 +268,29 @@
     </span>
   </div>
 
-  <!-- ===== Содержимое режима (все ветки живут: выбор не теряется) ===== -->
+  <!-- ===== Содержимое режима (ленивый монтаж через dynamic import) ===== -->
   <div class="mode-pane" hidden={toolchain.mode !== "build_environment"}>
-    <Card padding="md">
-      <BuildEnvironmentMode liveStateById={liveStateById} onplan={openPlan} onopenmanage={() => switchMode("manage_everything")} />
-    </Card>
+    {#if BuildEnvironmentMode}
+      <Card padding="md">
+        <BuildEnvironmentMode liveStateById={liveStateById} onplan={openPlan} onopenmanage={() => switchMode("manage_everything")} />
+      </Card>
+    {/if}
   </div>
   <div class="mode-pane" hidden={toolchain.mode !== "manage_everything"}>
-    <ManageEverythingMode
-      onplan={(op, id) => openPlan(op, [id])}
-      onrecheck={(id) => recheck(id)}
-    />
+    {#if ManageEverythingMode}
+      <ManageEverythingMode
+        onplan={(op: CardPlanOp, id: string) => openPlan(op, [id])}
+        onrecheck={(id: string) => recheck(id)}
+      />
+    {/if}
   </div>
   <div class="mode-pane" hidden={toolchain.mode !== "tool_marketplace"}>
-    <MarketplaceMode
-      onplan={(op, id) => openPlan(op as CardPlanOp, [id])}
-      ondetails={(id) => toolchain.selectTool(id)}
-    />
+    {#if MarketplaceMode}
+      <MarketplaceMode
+        onplan={(op: string, id: string) => openPlan(op as CardPlanOp, [id])}
+        ondetails={(id: string) => toolchain.selectTool(id)}
+      />
+    {/if}
   </div>
 
 

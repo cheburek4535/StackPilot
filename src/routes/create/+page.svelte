@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount, onDestroy } from "svelte";
+import { onMount, onDestroy, tick } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -491,6 +491,11 @@ async function reSyncLiveSessions() {
 }
 
 onMount(async () => {
+  // Даём первому кадру (скелетон) отрисоваться, прежде чем запускать
+  // тяжёлые вычисления — пользователь сразу видит анимацию загрузки
+  // вместо замёрзшего экрана.
+  await tick();
+
   const saved = loadCreateSession();
   if (saved) {
     try {
@@ -499,6 +504,9 @@ onMount(async () => {
       console.error("[create] failed to restore session:", e);
     }
   }
+  // Ещё один tick чтобы снапшот отрисовался перед IPC-вызовами.
+  await tick();
+
   // Дерево и ОС независимы — грузим параллельно, не блокируя друг друга.
   await Promise.allSettled([
     (async () => {
@@ -2219,7 +2227,36 @@ function resetAll() {
   <h1>{i18n.t("create.title") as TranslationKey}</h1>
 
   {#if status === "loading"}
-    <p class="muted">{i18n.t("create.init") as TranslationKey}</p>
+    <div class="skeleton-wrap" aria-busy="true" aria-label={i18n.t("create.init") as TranslationKey}>
+      <div class="skeleton-header">
+        <div class="skeleton-bar skeleton-bar--title"></div>
+      </div>
+      <div class="skeleton-mode-switch">
+        <div class="skeleton-pill"></div>
+        <div class="skeleton-pill"></div>
+        <div class="skeleton-pill"></div>
+      </div>
+      <div class="skeleton-builder">
+        <div class="skeleton-phases">
+          <div class="skeleton-phase"></div>
+          <div class="skeleton-phase"></div>
+          <div class="skeleton-phase"></div>
+        </div>
+        <div class="skeleton-content">
+          <div class="skeleton-bar skeleton-bar--subtitle"></div>
+          <div class="skeleton-grid">
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+          </div>
+        </div>
+        <div class="skeleton-sidebar">
+          <div class="skeleton-bar skeleton-bar--sidebar"></div>
+          <div class="skeleton-bar skeleton-bar--sidebar-short"></div>
+        </div>
+      </div>
+    </div>
   {:else if status === "error"}
     <p class="error">{i18n.t("create.init_failed") as TranslationKey}</p>
   {:else if status === "empty"}
@@ -4103,8 +4140,54 @@ function resetAll() {
 
 
 
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.35; }
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton-wrap { animation: skeleton-pulse 1.6s ease-in-out infinite; }
+.skeleton-header { margin-bottom: 1.2rem; }
+.skeleton-bar {
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--sp-bg-3) 25%, var(--sp-bg-2) 50%, var(--sp-bg-3) 75%);
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+.skeleton-bar--title { width: 320px; height: 22px; margin-bottom: 0.6rem; }
+.skeleton-bar--subtitle { width: 220px; height: 16px; margin-bottom: 1rem; }
+.skeleton-bar--sidebar { width: 100%; margin-bottom: 0.8rem; }
+.skeleton-bar--sidebar-short { width: 60%; }
+.skeleton-mode-switch { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+.skeleton-pill {
+  width: 110px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--sp-bg-3);
+}
+.skeleton-builder { display: grid; grid-template-columns: 180px 1fr 260px; gap: 1.5rem; }
+.skeleton-phases { display: flex; flex-direction: column; gap: 0.6rem; }
+.skeleton-phase {
+  height: 36px;
+  border-radius: 8px;
+  background: var(--sp-bg-3);
+}
+.skeleton-content { min-width: 0; }
+.skeleton-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.8rem; }
+.skeleton-card {
+  height: 120px;
+  border-radius: 12px;
+  background: var(--sp-bg-3);
+}
+.skeleton-sidebar { padding-top: 2rem; }
+
 @media (max-width: 900px) {
   .builder { grid-template-columns: 1fr; }
   .builder-context { position: static; }
+  .skeleton-builder { grid-template-columns: 1fr; }
+  .skeleton-sidebar { display: none; }
 }
 </style>

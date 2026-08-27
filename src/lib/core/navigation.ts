@@ -139,6 +139,19 @@ export const NAV_GROUPS: NavGroup[] = [
       },
     ],
   },
+  {
+    id: "roadmap",
+    label: null,
+    items: [
+      {
+        id: "roadmap",
+        label: "nav.roadmap",
+        href: "/roadmap",
+        icon: "map",
+        match: exact(["/roadmap"]),
+      },
+    ],
+  },
 ];
 
 export function isNavItemActive(item: NavItem, pathname: string): boolean {

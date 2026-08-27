@@ -557,22 +557,39 @@ try {{
                                 ],
                             })
                         }
-                        // Прочие (exe): запуск напрямую.
-                        _ => {
-                            let mut args = source.args.clone();
-                            args.extend(dynamic);
-                            // NSIS-инсталлятор Erlang/OTP: без /S в неинтерактивной
-                            // сессии падает с кодом 1; /v"/qn" передаёт флаги
-                            // тихой установки внутреннему MSI. Оба флага
-                            // принудительные, даже если их забыли в tools.json.
-                            if source.id == "erlang-exe" {
-                                if !args.iter().any(|a| a == "/S") {
-                                    args.insert(0, "/S".to_string());
-                                }
-                                if !args.iter().any(|a| a.starts_with("/v")) {
-                                    args.push(r#"/v"/qn""#.to_string());
-                                }
-                            }
+                // Прочие (exe): запуск напрямую.
+                _ => {
+                    let mut args = source.args.clone();
+                    args.extend(dynamic);
+                    // NSIS-инсталлятор Erlang/OTP: без /S в неинтерактивной
+                    // сессии падает с кодом 1; /v"/qn" передаёт флаги
+                    // тихой установки внутреннему MSI. Оба флага
+                    // принудительные, даже если их забыли в tools.json.
+                    //
+                    // Дополнительно: /D=path (последний аргумент!) принудительно
+                    // задаёт каталог установки. NSIS использует сохранённый путь
+                    // из реестра, если пользователь ранее выбирал другой каталог —
+                    // это приводит к тому, что known_paths/glob не совпадает и
+                    // бинарник не добавляется в PATH. /D=path гарантирует
+                    // предсказуемое место установки.
+                    if source.id == "erlang-exe" {
+                        if !args.iter().any(|a| a == "/S") {
+                            args.insert(0, "/S".to_string());
+                        }
+                        if !args.iter().any(|a| a.starts_with("/v")) {
+                            args.push(r#"/v"/qn""#.to_string());
+                        }
+                        // Принудительный каталог: берём из install_dir источника
+                        // или дефолт C:\Program Files\erlang.
+                        if !args.iter().any(|a| a.starts_with("/D=")) {
+                            let install_dir = source
+                                .install_dir
+                                .as_deref()
+                                .unwrap_or("C:\\Program Files\\erlang");
+                            let expanded = path_service::expand_env_vars(install_dir);
+                            args.push(format!("/D={expanded}"));
+                        }
+                    }
                             Ok(InstallCommand {
                                 program: path.to_string_lossy().into_owned(),
                                 args,
@@ -1556,6 +1573,24 @@ async fn try_install_source(
             // PATH не критичен для установки — логируем и продолжаем.
             eprintln!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
         }
+
+        // NSIS-инсталлятор Erlang/OTP: после установки добавляем реальный
+        // путь bin/ в PATH. Это покрывает случай, когда:
+        // 1. Пользователь previously chose нестандартный путь → NSIS запомнил
+        //    его и установил туда → glob в path_entries не совпал.
+        // 2. /D=path установил в предсказуемое место, но path_entries ещё
+        //    не обновлён в реестре пользователя.
+        // Читаем InstallLocation из реестра — это единственный надёжный
+        // способ узнать реальный путь NSIS/MSI установщика.
+        if def.id == "erlang" {
+            if let Some(reg_bin) = discovery::registry_install_bin_path(def).await {
+                if let Err(e) = path_service::add_to_user_path(&[reg_bin.clone()]).await {
+                    eprintln!(
+                        "[toolchain] не удалось добавить реестровый путь {reg_bin} в PATH для {tool_id}: {e}"
+                    );
+                }
+            }
+        }
     }
     if let Err(e) = path_service::sync_process_path().await {
         eprintln!("[toolchain] не удалось обновить PATH процесса: {e}");
@@ -1850,6 +1885,9 @@ mod tests {
         // падает с кодом 1, а /v"/qn" передаёт флаги тихой установки
         // внутреннему MSI. Оба флага добавляются принудительно, даже
         // если их забыли в tools.json.
+        // Дополнительно: /D=path (последний аргумент!) принудительно
+        // задаёт каталог установки, чтобы NSIS не использовал сохранённый
+        // из реестра путь (пользователь previously chose нестандартный).
         let source = InstallSource {
             kind: InstallSourceKind::Official,
             id: "erlang-exe".to_string(),
@@ -1871,7 +1909,16 @@ mod tests {
             "нет /v флага для внутреннего MSI: {:?}",
             cmd.args
         );
-        assert_eq!(cmd.args.last().unwrap(), r#"/v"/qn""#);
+        // /D=path — последний аргумент, принудительно задаёт каталог
+        let d_arg = cmd.args.iter().find(|a| a.starts_with("/D="));
+        assert!(d_arg.is_some(), "нет /D= для каталога установки: {:?}", cmd.args);
+        // /D=path должен быть ПОСЛЕДНИМ аргументом (требование NSIS)
+        assert_eq!(
+            cmd.args.last().unwrap(),
+            d_arg.unwrap(),
+            "/D= должен быть последним аргументом NSIS: {:?}",
+            cmd.args
+        );
 
         // /S и /v уже в tools.json — не должно быть дублей.
         let source = InstallSource {
@@ -1890,6 +1937,8 @@ mod tests {
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.args.iter().filter(|a| *a == "/S").count(), 1);
         assert_eq!(cmd.args.iter().filter(|a| a.starts_with("/v")).count(), 1);
+        // /D= добавляется даже когда /S и /v уже есть
+        assert!(cmd.args.iter().any(|a| a.starts_with("/D=")));
     }
 
     #[cfg(target_os = "windows")]

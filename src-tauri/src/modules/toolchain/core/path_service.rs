@@ -204,13 +204,29 @@ fn resolve_path_entry(raw: &str) -> String {
 /// Валидация: в PATH уходят ТОЛЬКО абсолютные каталоги (после раскрытия
 /// %VAR% и glob). Относительная запись — мусор в реестре/rc-файле:
 /// она отклоняется с ошибкой, а не молча пишется.
+///
+/// Записи, содержащие wildcards (`*`) после раскрытия glob, также
+/// отклоняются — Windows не понимает wildcard в PATH. Если glob не
+/// совпал (каталог не найден), запись не добавляется, чтобы не
+/// засорять PATH мусором вида `C:\Program Files\erl*\bin`.
 pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
     let platform = platforms::current_platform();
     let existing = platform.read_user_path().await.unwrap_or_default();
     let mut resolved: Vec<String> = Vec::new();
     for raw in dirs {
         let entry = resolve_path_entry(raw);
-        if !entry.trim().is_empty() && !is_absolute_entry(&entry) {
+        if entry.trim().is_empty() {
+            continue;
+        }
+        if entry.contains('*') {
+            // Wildcard не раскрылся (glob не совпал) — пропускаем,
+            // чтобы не засорять PATH строкой вида `C:\erl*\bin`.
+            eprintln!(
+                "[toolchain] пропуск wildcard-записи PATH: {raw} → {entry} (glob не совпал)"
+            );
+            continue;
+        }
+        if !is_absolute_entry(&entry) {
             return Err(format!(
                 "Запись PATH «{raw}» не является абсолютным каталогом — PATH не изменён"
             ));

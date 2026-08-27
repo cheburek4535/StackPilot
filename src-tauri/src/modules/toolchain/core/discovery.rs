@@ -212,6 +212,10 @@ fn expand_unix_vars(input: &str) -> String {
 /// прежний вариант брал первый по порядку файловой системы и мог
 /// выбрать PostgreSQL/10 вместо 17. Возвращает None, если ни один
 /// вариант не существует.
+///
+/// На Windows сравнение имён НЕЧУВСТВИТЕЛЬНО К РЕГИСТРУ: файловая
+/// система NTFS регистронезависима, и каталог `Erlang OTP` обязан
+/// совпадать с шаблоном `erl*`.
 pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
     let mut current = PathBuf::new();
     for component in pattern.components() {
@@ -228,7 +232,9 @@ pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
-                    name.starts_with(&prefix) && name.ends_with(&suffix) && p.is_dir()
+                    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
+                        && name.to_ascii_lowercase().ends_with(&suffix.to_ascii_lowercase())
+                        && p.is_dir()
                 })
                 .collect();
             // Самый «свежий» кандидат: максимум по естественно-числовому ключу.
@@ -339,6 +345,49 @@ async fn registry_key_exists(key: &str) -> bool {
     matches!(result, Ok(Ok(out)) if out.status.success())
 }
 
+/// Читает строковое значение из ключа реестра Windows.
+/// Возвращает None, если: не Windows, reg.exe недоступен, ключ не найден,
+/// или значение не является строкой (REG_SZ).
+/// Используется для чтения InstallLocation из ключей удаления NSIS/MSI
+/// установщиков — это единственный надёжный способ узнать реальный путь
+/// установки, когда пользователь выбрал нестандартный каталог.
+async fn registry_read_string(key: &str, value_name: &str) -> Option<String> {
+    let output = timeout(
+        Duration::from_secs(PROBE_TIMEOUT_SECS),
+        TokioCommand::new("reg")
+            .args(["query", key, "/v", value_name])
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Формат вывода reg query:
+    //   HKLM\...\erlang
+    //       InstallLocation    REG_SZ    C:\Program Files\erlang\
+    // Ищем строку с именем значения и извлекаем REG_SZ путь.
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_ascii_lowercase().starts_with(&value_name.to_ascii_lowercase())
+            && trimmed.contains("REG_SZ")
+        {
+            // Всё после "REG_SZ" — значение (с ведущим пробелом).
+            if let Some(pos) = trimmed.find("REG_SZ") {
+                let val = trimmed[pos + 6..].trim();
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Проверяет наличие ключей реестра, используя effective_detection.
 /// На не-Windows registry_keys всегда пустые — reg.exe не вызывается.
 async fn any_registry_found(def: &ToolDefinition) -> bool {
@@ -354,6 +403,74 @@ async fn any_registry_found(def: &ToolDefinition) -> bool {
         }
     }
     false
+}
+
+/// Ищет реальный путь установки через ключи реестра Windows.
+/// NSIS/MSI установщики записывают InstallLocation в ключ удаления:
+///   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<name>
+/// или
+///   HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<name>
+/// Возвращает каталог bin инструмента, если найден.
+/// Используется как запасной вариант, когда known_paths/glob не сработали
+/// (пользователь chose нестандартный путь, NSIS запомнил старый путь и т.п.).
+async fn probe_version_at_registry_path(def: &ToolDefinition) -> Option<String> {
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    let exts: &[&str] = if cfg!(target_os = "windows") {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+
+    if os != "windows" {
+        return None;
+    }
+
+    for key in &det.registry_keys {
+        // Пробуем читать InstallLocation из ключа.
+        if let Some(install_dir) = registry_read_string(key, "InstallLocation").await {
+            let install_path = PathBuf::from(install_dir.trim_end_matches('\\'));
+            // Пробуем bin/ подкаталог.
+            let bin = install_path.join("bin");
+            if bin.is_dir() {
+                for probe in &det.version_probes {
+                    if probe.is_empty() {
+                        continue;
+                    }
+                    for ext in exts {
+                        let bin_path = bin.join(format!("{}{}", probe[0], ext));
+                        if !bin_path.is_file() {
+                            continue;
+                        }
+                        if let Some(out) =
+                            run_capture(&bin_path.to_string_lossy(), &probe[1..]).await
+                        {
+                            return Some(out);
+                        }
+                    }
+                }
+            }
+            // Если bin/ нет, пробуем сам каталог установки (некоторые
+            // установщики кладут бинарники прямо в корень).
+            for probe in &det.version_probes {
+                if probe.is_empty() {
+                    continue;
+                }
+                for ext in exts {
+                    let bin_path = install_path.join(format!("{}{}", probe[0], ext));
+                    if !bin_path.is_file() {
+                        continue;
+                    }
+                    if let Some(out) =
+                        run_capture(&bin_path.to_string_lossy(), &probe[1..]).await
+                    {
+                        return Some(out);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 // ------------------------------------------------------------
@@ -399,9 +516,11 @@ pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> To
 ///      (инсталляция есть, но бинарь не в PATH — postgres и т.п.);
 ///   3. прямой скан каталога установки    → Installed / UpdateAvailable
 ///      (glob не совпал, но каталог на диске есть — erlang и т.п.);
-///   4. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
-///   5. нашёлся известный путь/реестр     → PathBroken (не в PATH);
-///   6. ничего                            → Missing.
+///   4. чтение пути из реестра (InstallLocation) → Installed / UpdateAvailable
+///      (NSIS/MSI установщик записал путь, но known_paths не совпал);
+///   5. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
+///   6. нашёлся известный путь/реестр     → PathBroken (не в PATH);
+///   7. ничего                            → Missing.
 pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     let os = platforms::current_platform().os_name();
     let det = def.effective_detection(&os);
@@ -421,6 +540,14 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     // каталог на диске реален. Ищем подкаталоги по базовому имени
     // из known_paths и пробуем запустить бинарник из каждого.
     if let Some(raw) = probe_version_at_install_dirs(def).await {
+        return apply_version_rules(def, &raw);
+    }
+
+    // Чтение реального пути установки из реестра: NSIS/MSI установщики
+    // записывают InstallLocation в ключ удаления. Это ловит случай,
+    // когда пользователь chose нестандартный путь, а known_paths/glob
+    // покрывает только стандартные каталоги.
+    if let Some(raw) = probe_version_at_registry_path(def).await {
         return apply_version_rules(def, &raw);
     }
 
@@ -549,16 +676,20 @@ fn parent_dir_with_wildcard(path: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Проверяет, что имя файла соответствует паттерну с wildcard:
-/// `erl15` соответствует `C:/Program Files/erl*` (начинается с `erl`).
+/// `erl15` соответствует `C:/Program Files/erl*/bin` (начинается с `erl`).
 /// `nodejs` НЕ соответствует `C:/Program Files/erl*`.
 fn matches_wildcard_prefix(name: &str, pattern: &str) -> bool {
-    // Извлекаем префикс до `*` из последнего компонента паттерна.
+    // Ищем компонент пути, содержащий `*`, среди ВСЕХ компонентов
+    // (а не только последний — file_name() вернёт `bin`, а не `erl*`).
     let p = std::path::Path::new(pattern);
-    let last = p
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let prefix: String = last.split('*').next().unwrap_or_default().to_string();
+    let Some(wildcard_comp) = p
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .find(|comp| comp.contains('*'))
+    else {
+        return true; // нет wildcard — любой каталог подходит
+    };
+    let prefix: String = wildcard_comp.split('*').next().unwrap_or_default().to_string();
     if prefix.is_empty() {
         return true; // паттерн начинается с `*` — всё подходит
     }
@@ -586,6 +717,42 @@ pub(crate) fn installed_path(def: &ToolDefinition) -> Option<String> {
     det.known_paths
         .iter()
         .find_map(|p| glob_first(&expand_env(p)).map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// Читает реальный путь установки из реестра Windows (InstallLocation).
+/// Используется установщиком для добавления каталога bin в PATH после
+/// NSIS/MSI установки, когда known_paths/glob не покрывают нестандартный
+/// путь пользователя. Возвращает Some(bin_path) если:
+///   - ключ реестра содержит InstallLocation,
+///   - по этому пути есть подкаталог bin с бинарником тула.
+pub(crate) async fn registry_install_bin_path(def: &ToolDefinition) -> Option<String> {
+    let os = platforms::current_platform().os_name();
+    if os != "windows" {
+        return None;
+    }
+    let det = def.effective_detection(&os);
+    let exts: &[&str] = &["", ".exe", ".cmd", ".bat"];
+
+    for key in &det.registry_keys {
+        if let Some(install_dir) = registry_read_string(key, "InstallLocation").await {
+            let install_path = PathBuf::from(install_dir.trim_end_matches('\\'));
+            let bin = install_path.join("bin");
+            if bin.is_dir() {
+                // Проверяем, что в bin реально есть бинарник тула.
+                for probe in &det.version_probes {
+                    if probe.is_empty() {
+                        continue;
+                    }
+                    for ext in exts {
+                        if bin.join(format!("{}{}", probe[0], ext)).is_file() {
+                            return Some(bin.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 // ============================================================

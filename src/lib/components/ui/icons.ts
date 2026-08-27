@@ -124,6 +124,11 @@ export const ICON_PATHS = {
     "M9 20v-6h6v6",
     "M4 9.5a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0",
   ],
+  map: [
+    "M3 7l6-3 6 3 6-3v13l-6 3-6-3-6 3z",
+    "M9 4v13",
+    "M15 7v13",
+  ],
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

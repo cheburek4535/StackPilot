@@ -1835,10 +1835,14 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/erl*/bin"
+        "C:/Program Files/erl*/bin",
+        "/usr/lib/erlang/bin",
+        "/usr/local/opt/erlang/bin",
+        "/opt/homebrew/opt/erlang/bin"
       ],
       "registry_keys": [
-        "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Erlang OTP"
+        "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\erlang",
+        "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\erlang"
       ]
     },
     "versions": {
@@ -1857,7 +1861,8 @@
             "/v\"/qn\""
           ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "install_dir": "C:/Program Files/erlang"
         },
         {
           "kind": "PkgManager",
@@ -1894,10 +1899,20 @@
     "size_mb": 150,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\erl*\\bin"
+      "C:\\Program Files\\erlang\\bin"
     ],
     "bundled_with": null,
-    "health_checks": [],
+    "health_checks": [
+      {
+        "label": "erl",
+        "command": [
+          "erl",
+          "-noshell",
+          "-eval",
+          "io:format(\"~s\",[erlang:system_info(otp_release)]),halt()."
+        ]
+      }
+    ],
     "notes": "tool.erlang.notes"
   },
   {
