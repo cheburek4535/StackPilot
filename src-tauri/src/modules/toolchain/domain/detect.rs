@@ -66,8 +66,11 @@ fn glob_step(base: PathBuf, comps: &[String]) -> Vec<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
-                    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
-                        && name.to_ascii_lowercase().ends_with(&suffix.to_ascii_lowercase())
+                    name.to_ascii_lowercase()
+                        .starts_with(&prefix.to_ascii_lowercase())
+                        && name
+                            .to_ascii_lowercase()
+                            .ends_with(&suffix.to_ascii_lowercase())
                         && p.is_dir()
                 })
                 .collect();
@@ -180,8 +183,7 @@ async fn read_registry_install_location(key: &str) -> Option<String> {
     //       InstallLocation    REG_SZ    C:\Program Files\erlang\
     for line in output.stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.to_ascii_lowercase().starts_with("installlocation")
-            && trimmed.contains("REG_SZ")
+        if trimmed.to_ascii_lowercase().starts_with("installlocation") && trimmed.contains("REG_SZ")
         {
             if let Some(pos) = trimmed.find("REG_SZ") {
                 let val = trimmed[pos + 6..].trim();
@@ -348,17 +350,13 @@ pub async fn detect_detailed(
             if let Some(loc) = install_location {
                 let install_path = PathBuf::from(loc.trim_end_matches('\\'));
                 // Пробуем bin/ подкаталог, затем сам каталог установки.
-                for candidate in [
-                    Some(install_path.join("bin")),
-                    Some(install_path.clone()),
-                ]
-                .into_iter()
-                .flatten()
+                for candidate in [Some(install_path.join("bin")), Some(install_path.clone())]
+                    .into_iter()
+                    .flatten()
                 {
                     if candidate.is_dir() {
                         let probe = probe_known_dir(def, &candidate, process_entries).await;
-                        if probe.install.raw_version.is_empty()
-                            && probe.broken_executable.is_none()
+                        if probe.install.raw_version.is_empty() && probe.broken_executable.is_none()
                         {
                             continue; // бинарь не найден или не отвечает — пробуем дальше
                         }

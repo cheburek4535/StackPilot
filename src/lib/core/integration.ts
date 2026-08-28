@@ -145,7 +145,7 @@ export async function killProcessConfirmed(id: string): Promise<void> {
   emitAppEvent({
     type: "process-state-changed",
     processId: id,
-    status: "Killed",
+    status: "killed",
     at: now(),
   });
 }

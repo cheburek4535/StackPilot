@@ -145,27 +145,58 @@ pub fn open_project_from_path(state: State<'_, WorkspaceState>, path: String) ->
 /// Сессия автоматически завершается, когда все привязанные к ней процессы
 /// завершились (в т.ч. с ошибкой) — таймер не должен тикать вечно.
 /// Сессия без процессов живёт, пока проект открыт.
-fn auto_end_session_if_idle(state: &WorkspaceState) {
+/// Also checks active orchestrator runs — a session with active runs stays alive.
+fn auto_end_session_if_idle(
+    state: &WorkspaceState,
+    orchestrator: &crate::modules::devlauncher::orchestrator::RunOrchestrator,
+) {
+    let current_session = state.session.get_session();
+    let session_started = current_session.as_ref().map(|s| s.started_at.clone());
     let linked = state.session.get_linked_processes();
-    if linked.is_empty() {
-        return;
-    }
+
+    // Orchestrator-spawned processes carry the session id on TrackedProcess;
+    // treat them as session processes too so the timer waits for them.
     let procs = state.process_manager.list();
-    let all_done = linked.iter().all(|id| {
+    let session_procs: Vec<String> = if let Some(ref started) = session_started {
         procs
             .iter()
-            .find(|p| &p.id == id)
+            .filter(|p| p.session_id.as_deref() == Some(started.as_str()))
+            .map(|p| p.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let relevant: Vec<&String> = linked.iter().chain(session_procs.iter()).collect();
+    if relevant.is_empty() {
+        // Even with no linked processes, stay alive if there are active orchestrator runs
+        if !orchestrator.list_active_runs().is_empty() {
+            return;
+        }
+        return;
+    }
+    let all_done = relevant.iter().all(|id| {
+        procs
+            .iter()
+            .find(|p| &p.id == *id)
             .map(|p| p.status != ProcessStatus::Running)
             .unwrap_or(true)
     });
     if all_done {
+        // Also check orchestrator runs
+        if !orchestrator.list_active_runs().is_empty() {
+            return;
+        }
         state.session.end_session();
     }
 }
 
 #[tauri::command]
-pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo> {
-    auto_end_session_if_idle(&state);
+pub fn get_session_info(
+    state: State<'_, WorkspaceState>,
+    devlauncher: State<'_, crate::modules::devlauncher::DevLauncherState>,
+) -> Option<SessionInfo> {
+    auto_end_session_if_idle(&state, &devlauncher.orchestrator);
     state.session.get_session()
 }
 
@@ -223,8 +254,11 @@ pub fn clear_problems(state: State<'_, WorkspaceState>) {
 
 // other
 #[tauri::command]
-pub fn get_workspace_overview(state: State<'_, WorkspaceState>) -> OverviewData {
-    auto_end_session_if_idle(&state);
+pub fn get_workspace_overview(
+    state: State<'_, WorkspaceState>,
+    devlauncher: State<'_, crate::modules::devlauncher::DevLauncherState>,
+) -> OverviewData {
+    auto_end_session_if_idle(&state, &devlauncher.orchestrator);
     let processes = state.process_manager.list();
     let session_started = state
         .session

@@ -52,14 +52,30 @@ pub fn run() {
             let process_manager: Arc<dyn modules::workspace::process_manager::ProcessManager> =
                 Arc::new(os_pm);
             let workspace_state = modules::workspace::WorkspaceState::new(process_manager.clone());
+
+            // === ProcessSupervisor (background monitor, bounded logs) ===
+            let process_supervisor =
+                Arc::new(modules::workspace::process_supervisor::ProcessSupervisor::new());
+            process_supervisor.set_app_handle(app.handle().clone());
+            process_supervisor.start();
+            app.manage(process_supervisor);
+
             // === DevLauncher module ===
             let devlauncher_state = modules::devlauncher::DevLauncherState::new(
                 data_dir.join("profiles"),
                 Arc::new(
-                    modules::devlauncher::launch_engine::ProcessLaunchEngine::new(process_manager),
+                    modules::devlauncher::launch_engine::ProcessLaunchEngine::new(
+                        process_manager.clone(),
+                    ),
                 ),
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
+                process_manager.clone(),
             );
+
+            // Wire AppHandle into orchestrator for event emission
+            devlauncher_state
+                .orchestrator
+                .set_app_handle(app.handle().clone());
 
             // === ProjectEnvironment module ===
             let project_env_state = modules::project_environment::ProjectEnvironmentState::new(
@@ -114,11 +130,7 @@ pub fn run() {
                     modules::workspace::models::ProcessStatusEvent,
                 >(event.payload())
                 {
-                    let is_error = match &payload.status {
-                        modules::workspace::models::ProcessStatus::Crashed => true,
-                        modules::workspace::models::ProcessStatus::Exited(c) if *c != 0 => true,
-                        _ => false,
-                    };
+                    let is_error = payload.status.is_error();
                     if is_error {
                         if let Some(session) =
                             handle.try_state::<modules::workspace::WorkspaceState>()
@@ -141,12 +153,40 @@ pub fn run() {
             modules::devlauncher::commands::delete_profile,
             modules::devlauncher::commands::execute_action,
             modules::devlauncher::commands::analyze_project,
+            modules::devlauncher::commands::analyze_project_v2,
             modules::devlauncher::commands::launch_ide,
             modules::devlauncher::commands::run_profile,
             modules::devlauncher::commands::build_profile_from_context,
+            modules::devlauncher::commands::build_profile_v2_from_context,
             modules::devlauncher::commands::start_file_watcher,
             modules::devlauncher::commands::stop_file_watcher,
             modules::devlauncher::commands::is_file_watching,
+            // V2 profile persistence commands
+            modules::devlauncher::commands::list_profiles_v2,
+            modules::devlauncher::commands::profile_load_diagnostics,
+            modules::devlauncher::commands::get_profile_v2,
+            modules::devlauncher::commands::save_profile_v2,
+            modules::devlauncher::commands::delete_profile_v2,
+            modules::devlauncher::commands::delete_profile_by_id,
+            modules::devlauncher::commands::migrate_profiles,
+            // V2 Orchestrator commands
+            modules::devlauncher::commands::validate_profile_v2,
+            modules::devlauncher::commands::create_run,
+            modules::devlauncher::commands::start_run,
+            modules::devlauncher::commands::cancel_run,
+            modules::devlauncher::commands::get_run,
+            modules::devlauncher::commands::list_active_runs,
+            modules::devlauncher::commands::run_profile_v2,
+            // V2 Run process management
+            modules::devlauncher::commands::stop_run_processes,
+            modules::devlauncher::commands::get_run_logs,
+            modules::devlauncher::commands::get_step_logs,
+            modules::devlauncher::commands::list_all_runs,
+            // Platform integration commands
+            modules::devlauncher::commands::detect_project_profile,
+            modules::devlauncher::commands::get_platform_capabilities,
+            modules::devlauncher::commands::resolve_application,
+            modules::devlauncher::commands::resolve_terminal,
             // Workspace commands
             modules::workspace::commands::spawn_process,
             modules::workspace::commands::list_processes,

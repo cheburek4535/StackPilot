@@ -232,8 +232,11 @@ pub fn glob_first(pattern: &Path) -> Option<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
-                    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
-                        && name.to_ascii_lowercase().ends_with(&suffix.to_ascii_lowercase())
+                    name.to_ascii_lowercase()
+                        .starts_with(&prefix.to_ascii_lowercase())
+                        && name
+                            .to_ascii_lowercase()
+                            .ends_with(&suffix.to_ascii_lowercase())
                         && p.is_dir()
                 })
                 .collect();
@@ -373,7 +376,9 @@ async fn registry_read_string(key: &str, value_name: &str) -> Option<String> {
     // Ищем строку с именем значения и извлекаем REG_SZ путь.
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.to_ascii_lowercase().starts_with(&value_name.to_ascii_lowercase())
+        if trimmed
+            .to_ascii_lowercase()
+            .starts_with(&value_name.to_ascii_lowercase())
             && trimmed.contains("REG_SZ")
         {
             // Всё после "REG_SZ" — значение (с ведущим пробелом).
@@ -461,9 +466,7 @@ async fn probe_version_at_registry_path(def: &ToolDefinition) -> Option<String> 
                     if !bin_path.is_file() {
                         continue;
                     }
-                    if let Some(out) =
-                        run_capture(&bin_path.to_string_lossy(), &probe[1..]).await
-                    {
+                    if let Some(out) = run_capture(&bin_path.to_string_lossy(), &probe[1..]).await {
                         return Some(out);
                     }
                 }
@@ -640,9 +643,7 @@ async fn probe_version_at_install_dirs(def: &ToolDefinition) -> Option<String> {
                     if !bin_path.is_file() {
                         continue;
                     }
-                    if let Some(out) =
-                        run_capture(&bin_path.to_string_lossy(), &probe[1..]).await
-                    {
+                    if let Some(out) = run_capture(&bin_path.to_string_lossy(), &probe[1..]).await {
                         return Some(out);
                     }
                 }
@@ -689,11 +690,16 @@ fn matches_wildcard_prefix(name: &str, pattern: &str) -> bool {
     else {
         return true; // нет wildcard — любой каталог подходит
     };
-    let prefix: String = wildcard_comp.split('*').next().unwrap_or_default().to_string();
+    let prefix: String = wildcard_comp
+        .split('*')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     if prefix.is_empty() {
         return true; // паттерн начинается с `*` — всё подходит
     }
-    name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
+    name.to_ascii_lowercase()
+        .starts_with(&prefix.to_ascii_lowercase())
 }
 
 /// Пробы, которые запускают оболочку, а не сам инструмент

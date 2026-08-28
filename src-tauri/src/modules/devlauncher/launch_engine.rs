@@ -102,9 +102,14 @@ impl LaunchEngine for ProcessLaunchEngine {
                 // one-shot commands with an overlay).
                 let tracked_proc = if is_persistent {
                     // Long-running command: open in a native terminal window.
-                    // `spawn_visible` wraps the full command string in a shell
-                    // that runs it inside a new terminal (cmd /K on Windows,
-                    // Terminal.app on macOS, a terminal emulator on Linux).
+                    // The command string is resolved into a spawnable
+                    // program + args first (shell-wrapped when needed), then
+                    // the terminal plan runs it inside a new native terminal
+                    // (Windows Terminal / cmd on Windows, Terminal.app on
+                    // macOS, a terminal emulator on Linux).
+                    let (program, args) =
+                        crate::platform::command_resolver::resolve_command_target(command);
+                    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                     let ov = if effective_overlay.is_empty() {
                         None
                     } else {
@@ -112,8 +117,8 @@ impl LaunchEngine for ProcessLaunchEngine {
                     };
                     self.process_manager
                         .spawn_visible(
-                            command,
-                            &[],
+                            &program,
+                            &args_refs,
                             dir_ref,
                             &action.label,
                             session_id.clone(),
@@ -367,7 +372,9 @@ impl LaunchEngine for ProcessLaunchEngine {
                     thread::sleep(Duration::from_millis(500));
 
                     match self.process_manager.refresh_status(&proc_id) {
-                        Ok(ProcessStatus::Running) => {
+                        Ok(ProcessStatus::Running)
+                        | Ok(ProcessStatus::Starting)
+                        | Ok(ProcessStatus::Ready) => {
                             continue;
                         }
                         Ok(ProcessStatus::Exited(0)) => {
@@ -386,10 +393,19 @@ impl LaunchEngine for ProcessLaunchEngine {
                                 Some(proc_id),
                             ));
                         }
+                        Ok(ProcessStatus::ExitedWithError(code)) => {
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: format!("Script exited with error code {}", code),
+                                },
+                                Some(proc_id),
+                            ));
+                        }
                         Ok(ProcessStatus::Crashed) => {
                             return Ok((
                                 ActionStatus::Failed {
-                                    error: "Script crashed".to_string(),
+                                    error: "Script crashed (signal or abnormal termination)"
+                                        .to_string(),
                                 },
                                 Some(proc_id),
                             ));
@@ -398,6 +414,30 @@ impl LaunchEngine for ProcessLaunchEngine {
                             return Ok((
                                 ActionStatus::Failed {
                                     error: "Script was forcibly terminated".to_string(),
+                                },
+                                Some(proc_id),
+                            ));
+                        }
+                        Ok(ProcessStatus::TimedOut) => {
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: "Script timed out".to_string(),
+                                },
+                                Some(proc_id),
+                            ));
+                        }
+                        Ok(ProcessStatus::Cancelled) => {
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: "Script was cancelled".to_string(),
+                                },
+                                Some(proc_id),
+                            ));
+                        }
+                        Ok(ProcessStatus::ExternalLaunchAccepted) | Ok(ProcessStatus::Unknown) => {
+                            return Ok((
+                                ActionStatus::Failed {
+                                    error: "Script has untrackable status".to_string(),
                                 },
                                 Some(proc_id),
                             ));
@@ -453,51 +493,25 @@ impl LaunchEngine for ProcessLaunchEngine {
 
 /// Preflight check for commands that need a running service to be useful.
 ///
-/// `docker` commands currently fail with cryptic npipe errors when the
-/// Docker daemon is not running. Detect the two common failure modes and
-/// return a clear, actionable message instead of a "crashed" process.
+/// Delegates to the platform Docker service for structured diagnostics.
 fn preflight_check(command: &str) -> Result<(), String> {
     let trimmed = command.trim_start();
     if !trimmed.starts_with("docker") {
         return Ok(());
     }
 
-    // Docker CLI must exist at all.
-    let docker_path = crate::platform::command::resolve_program_path("docker")
-        .unwrap_or_else(|| "docker".to_string());
-    let mut cmd = std::process::Command::new(&docker_path);
-    cmd.args(["version", "--format", "{{.Server.Version}}"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    let Ok(mut child) = cmd.spawn() else {
-        return Err(
-            "Docker CLI was not found. Install Docker Desktop (or Docker Engine) \
-             and make sure it is available on PATH."
-                .to_string(),
-        );
-    };
-    let Ok(output) = child.wait_with_output() else {
-        return Err("Docker preflight check failed to complete.".to_string());
-    };
-
-    if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
-        return Ok(());
+    match crate::platform::docker_service::DockerService::preflight_for_command(command) {
+        Ok(()) => Ok(()),
+        Err(diag) => Err(format!(
+            "{}: {}{}",
+            diag.status,
+            diag.message,
+            diag.suggested_action
+                .as_ref()
+                .map(|a| format!("\n{}", a))
+                .unwrap_or_default()
+        )),
     }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let lower = stderr.to_ascii_lowercase();
-    if lower.contains("cannot connect") || lower.contains("pipe") || lower.contains("daemon") {
-        return Err(
-            "Docker daemon is not running. Start Docker Desktop and wait for the \
-             whale icon to show \"Docker Desktop is running\", then retry."
-                .to_string(),
-        );
-    }
-    Err(format!(
-        "Docker is installed but not ready: {}",
-        stderr.trim()
-    ))
 }
 
 impl ProcessLaunchEngine {
@@ -579,13 +593,6 @@ fn working_dir_for_ide(
     None
 }
 
-impl EnvironmentOverlay {
-    /// Returns true if the overlay has any entries that need applying.
-    fn is_empty(&self) -> bool {
-        self.path_prepend.is_empty() && self.vars_set.is_empty() && self.vars_remove.is_empty()
-    }
-}
-
 struct ParsedUrl {
     host: String,
     port: u16,
@@ -593,21 +600,11 @@ struct ParsedUrl {
 }
 
 fn parse_http_url(raw: &str) -> Result<ParsedUrl, String> {
-    let without_proto = raw
-        .strip_prefix("http://")
-        .or_else(|| raw.strip_prefix("https://"))
-        .unwrap_or(raw);
-    let (host_port, path) = match without_proto.split_once('/') {
-        Some((hp, p)) => (hp, format!("/{}", p)),
-        None => (without_proto, "/".to_string()),
-    };
-    let (host, port) = match host_port.split_once(':') {
-        Some((h, p)) => (
-            h.to_string(),
-            p.parse::<u16>()
-                .map_err(|_| format!("Invalid port in URL: {}", raw))?,
-        ),
-        None => (host_port.to_string(), 80),
-    };
-    Ok(ParsedUrl { host, port, path })
+    let parsed = crate::platform::readiness::ParsedTarget::parse(raw)
+        .map_err(|e| format!("URL parse error: {}", e))?;
+    Ok(ParsedUrl {
+        host: parsed.host,
+        port: parsed.port,
+        path: parsed.path,
+    })
 }

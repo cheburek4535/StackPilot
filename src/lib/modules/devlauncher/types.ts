@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// Legacy types — kept for backward compatibility. DO NOT REMOVE.
+// ---------------------------------------------------------------------------
+
 export type RunCommand = {
   command: string;
   working_dir: string | null;
@@ -67,6 +71,10 @@ export type LaunchProfile = {
   actions: LaunchAction[];
   environment_binding_id?: string | null;
   preferred_ide?: PreferredIde | null;
+  /** Present on V2 profiles returned by the backend. */
+  schema_version?: string;
+  /** Present on V2 profiles returned by the backend. */
+  id?: string;
 };
 
 export type ActionStatus =
@@ -77,3 +85,301 @@ export type ActionStatus =
 export type FileChangeEvent = {
   path: string;
 };
+
+// ---------------------------------------------------------------------------
+// V2 types — consumed by the orchestrator run-oriented lifecycle.
+// These mirror the Rust models in devlauncher/models.rs.
+// ---------------------------------------------------------------------------
+
+export type StepKind =
+  | { type: "run_command"; command: string }
+  | { type: "run_script"; script: string; shell?: string | null }
+  | { type: "open_application"; path: string; args?: string[] | null }
+  | { type: "open_url"; url: string }
+  | { type: "wait_for_port"; host: string; port: number }
+  | { type: "wait_for_url"; url: string }
+  | { type: "wait_for_docker" }
+  | { type: "delay"; seconds: number }
+  | { type: "open_terminal"; command: string }
+  | { type: "open_folder"; path: string };
+
+export type Visibility = "captured" | "visible_terminal" | "detached";
+export type ExecutionMode = "one_shot" | "long_running";
+export type FailurePolicy = "stop_run" | "skip_dependents" | "warn_and_continue";
+
+export type LaunchStep = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  kind: StepKind;
+  depends_on: string[];
+  working_directory?: string | null;
+  visibility?: Visibility | null;
+  execution_mode?: ExecutionMode | null;
+  failure_policy?: FailurePolicy | null;
+  timeout?: number | null;
+  metadata?: Record<string, string> | null;
+};
+
+export type LaunchProfileV2 = {
+  schema_version: string;
+  id: string;
+  name: string;
+  description: string;
+  project_root?: string | null;
+  steps: LaunchStep[];
+  environment_binding_id?: string | null;
+  preferred_ide?: PreferredIde | null;
+};
+
+// ---------------------------------------------------------------------------
+// Run lifecycle types
+// ---------------------------------------------------------------------------
+
+export type RunStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "partial_success";
+
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled"
+  | "retrying";
+
+export type StepExecutionState = {
+  step_id: string;
+  status: StepStatus;
+  process_id?: string | null;
+  error?: string | null;
+  retries_remaining?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type LaunchRun = {
+  run_id: string;
+  profile_id: string;
+  profile_name: string;
+  status: RunStatus;
+  steps: StepExecutionState[];
+  created_at: string;
+  finished_at?: string | null;
+  cancelled: boolean;
+  diagnostics: Diagnostic[];
+};
+
+// ---------------------------------------------------------------------------
+// Process types (V2)
+// ---------------------------------------------------------------------------
+
+export type ProcessStatus =
+  | "starting"
+  | "running"
+  | "ready"
+  | { exited: number }
+  | { exited_with_error: number }
+  | "crashed"
+  | "killed"
+  | "timed_out"
+  | "cancelled"
+  | "external_launch_accepted"
+  | "unknown";
+
+export type ProcessTrackingQuality =
+  | "exact"
+  | "terminal_wrapper"
+  | "approximate"
+  | "detached";
+
+export type ManagedProcess = {
+  id: string;
+  pid: number;
+  label: string;
+  status: ProcessStatus;
+  started_at: string;
+  duration_secs: number;
+  restarts: number;
+  last_error?: string | null;
+  session_id?: string | null;
+  visible: boolean;
+  tracking_quality?: ProcessTrackingQuality | null;
+};
+
+// ---------------------------------------------------------------------------
+// Diagnostic types
+// ---------------------------------------------------------------------------
+
+export type DiagnosticSeverity = "info" | "warning" | "error";
+export type LogSource = "process" | "orchestrator" | "preflight" | "readiness" | "user";
+
+export type Diagnostic = {
+  run_id: string;
+  step_id?: string | null;
+  source: LogSource;
+  severity: DiagnosticSeverity;
+  message: string;
+  timestamp: string;
+};
+
+// ---------------------------------------------------------------------------
+// Log types
+// ---------------------------------------------------------------------------
+
+export type RunLogs = {
+  run_id: string;
+  stdout: string[];
+  stderr: string[];
+};
+
+export type StepLogs = {
+  run_id: string;
+  step_id: string;
+  process_id: string;
+  stdout: string[];
+  stderr: string[];
+};
+
+// ---------------------------------------------------------------------------
+// Event payloads (from backend events)
+// ---------------------------------------------------------------------------
+
+export type RunStatusPayload = {
+  run_id: string;
+  status: RunStatus;
+};
+
+export type StepStatusPayload = {
+  run_id: string;
+  step: StepExecutionState;
+};
+
+export type ProcessStartedPayload = {
+  run_id: string;
+  step_id: string;
+  process: ManagedProcess;
+};
+
+// ---------------------------------------------------------------------------
+// V2 helpers
+// ---------------------------------------------------------------------------
+
+/** Check if a profile returned by the backend is a V2 profile. */
+export function isV2Profile(profile: LaunchProfile): boolean {
+  return profile.schema_version === "2";
+}
+
+/** Derive a StepKind display icon. */
+export function stepKindIcon(kind: StepKind): string {
+  switch (kind.type) {
+    case "run_command": return "▶";
+    case "run_script": return "📜";
+    case "open_application": return "⬛";
+    case "open_url": return "🌐";
+    case "wait_for_port": return "🔌";
+    case "wait_for_url": return "⏳";
+    case "wait_for_docker": return "🐳";
+    case "delay": return "⏱";
+    case "open_terminal": return "🖥";
+    case "open_folder": return "📁";
+    default: return "?";
+  }
+}
+
+/** Derive a StepKind display label. */
+export function stepKindLabel(kind: StepKind): string {
+  switch (kind.type) {
+    case "run_command": return "Command";
+    case "run_script": return "Script";
+    case "open_application": return "Application";
+    case "open_url": return "URL";
+    case "wait_for_port": return "Wait for port";
+    case "wait_for_url": return "Wait for URL";
+    case "wait_for_docker": return "Wait for Docker";
+    case "delay": return "Delay";
+    case "open_terminal": return "Terminal";
+    case "open_folder": return "Folder";
+    default: return "Unknown";
+  }
+}
+
+/** Derive a StepKind summary text. */
+export function stepKindSummary(kind: StepKind): string {
+  switch (kind.type) {
+    case "run_command": return kind.command;
+    case "run_script": return kind.script;
+    case "open_application": return kind.path;
+    case "open_url": return kind.url;
+    case "wait_for_port": return `${kind.host}:${kind.port}`;
+    case "wait_for_url": return kind.url;
+    case "wait_for_docker": return "daemon";
+    case "delay": return `${kind.seconds}s`;
+    case "open_terminal": return kind.command || "plain terminal";
+    case "open_folder": return kind.path;
+    default: return "";
+  }
+}
+
+/** Map StepStatus to a CSS class name. */
+export function stepStatusClass(status: StepStatus): string {
+  switch (status) {
+    case "pending": return "step-pending";
+    case "running": return "step-running";
+    case "succeeded": return "step-succeeded";
+    case "failed": return "step-failed";
+    case "skipped": return "step-skipped";
+    case "cancelled": return "step-cancelled";
+    case "retrying": return "step-retrying";
+    default: return "";
+  }
+}
+
+/** Map RunStatus to a CSS class name. */
+export function runStatusClass(status: RunStatus): string {
+  switch (status) {
+    case "pending": return "run-pending";
+    case "running": return "run-running";
+    case "succeeded": return "run-succeeded";
+    case "failed": return "run-failed";
+    case "cancelled": return "run-cancelled";
+    case "partial_success": return "run-partial";
+    default: return "";
+  }
+}
+
+/** Map ProcessTrackingQuality to a human-readable label. */
+export function trackingQualityLabel(q: ProcessTrackingQuality | null | undefined): string {
+  switch (q) {
+    case "exact": return "Exact PID tracking";
+    case "terminal_wrapper": return "Terminal wrapper (inner PID not tracked)";
+    case "approximate": return "Approximate (process may have been replaced)";
+    case "detached": return "Detached (no PID tracking)";
+    default: return "Unknown tracking quality";
+  }
+}
+
+/** Map DiagnosticSeverity to a CSS class name. */
+export function diagnosticClass(severity: DiagnosticSeverity): string {
+  switch (severity) {
+    case "info": return "diag-info";
+    case "warning": return "diag-warning";
+    case "error": return "diag-error";
+    default: return "";
+  }
+}
+
+/** Check if a run is in a terminal state (completed or cancelled). */
+export function isRunTerminal(status: RunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "partial_success";
+}
+
+/** Check if a step is in a terminal state. */
+export function isStepTerminal(status: StepStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "skipped" || status === "cancelled";
+}

@@ -599,7 +599,12 @@ pub fn php_preflight_step(id: &str, label: &str, desc: &str, composer_package: &
         label: label.to_string(),
         description: desc.to_string(),
         command: "php".into(),
-        args: vec!["-d".into(), "extension=fileinfo".into(), "-r".into(), script],
+        args: vec![
+            "-d".into(),
+            "extension=fileinfo".into(),
+            "-r".into(),
+            script,
+        ],
         working_dir: None,
         env: None,
         timeout_secs: Some(30),

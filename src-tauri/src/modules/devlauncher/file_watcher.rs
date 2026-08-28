@@ -29,9 +29,8 @@ const SKIP_DIRS: &[&str] = &[
 
 /// File extensions considered "source" (trigger restart).
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "svelte", "vue", "html", "css", "scss",
-    "rs", "go", "py", "java", "kt", "rb", "cs", "swift",
-    "toml", "yaml", "yml", "json",
+    "ts", "tsx", "js", "jsx", "svelte", "vue", "html", "css", "scss", "rs", "go", "py", "java",
+    "kt", "rb", "cs", "swift", "toml", "yaml", "yml", "json",
 ];
 
 impl FileWatcher {
@@ -46,11 +45,7 @@ impl FileWatcher {
     /// Start watching `path`. Emits `devlauncher:file_changed` events via
     /// the Tauri app handle. Only the most recently changed file is reported
     /// (debounced internally by notify).
-    pub fn start(
-        &self,
-        path: PathBuf,
-        app: tauri::AppHandle,
-    ) -> Result<(), String> {
+    pub fn start(&self, path: PathBuf, app: tauri::AppHandle) -> Result<(), String> {
         self.stop();
 
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| {

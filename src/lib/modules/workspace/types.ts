@@ -1,8 +1,17 @@
+// ProcessStatus matches the backend serde representation (snake_case,
+// externally tagged struct variants).
 export type ProcessStatus =
-  | "Running"
-  | { Exited: number }
-  | "Killed"
-  | "Crashed";
+  | "starting"
+  | "running"
+  | "ready"
+  | { exited: number }
+  | { exited_with_error: number }
+  | "crashed"
+  | "killed"
+  | "timed_out"
+  | "cancelled"
+  | "external_launch_accepted"
+  | "unknown";
 
 export type TrackedProcess = {
   id: string;
@@ -16,6 +25,16 @@ export type TrackedProcess = {
   session_id: string | null;
   /** True if the process runs in its own native terminal window. */
   visible?: boolean;
+  /** The orchestrator run this process belongs to. */
+  run_id?: string | null;
+  /** The orchestrator step that spawned this process. */
+  step_id?: string | null;
+  /** The full command line this process was launched with. */
+  command?: string | null;
+  /** The working directory the process was launched in. */
+  working_dir?: string | null;
+  /** Tracking quality: exact, terminal_wrapper, approximate, or detached. */
+  tracking_quality?: string | null;
 };
 
 export type ProcessLogs = {

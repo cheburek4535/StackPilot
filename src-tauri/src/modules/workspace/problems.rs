@@ -43,28 +43,38 @@ impl ProblemsService for DefaultProblemsService {
                 _ => false,
             };
             if is_error {
+                let status_str = format!("{:?}", p.status);
                 let problem = Problem {
                     process_id: p.id.clone(),
                     process_label: p.label.clone(),
-                    status: format!("{:?}", p.status),
+                    status: status_str.clone(),
                     error_message: p.last_error.clone(),
                     severity: ProblemSeverity::Error,
                 };
-                problems.push(problem.clone());
-                self.storage
-                    .lock()
-                    .expect("storage lock poisoned")
-                    .push(problem);
+
+                // Deduplicate: skip if a problem with the same process_id and status already exists
+                let mut storage = self.storage.lock().expect("storage lock poisoned");
+                let already_exists = storage.iter().any(|existing| {
+                    existing.process_id == problem.process_id && existing.status == problem.status
+                });
+                if !already_exists {
+                    problems.push(problem.clone());
+                    storage.push(problem);
+                }
             }
         }
         problems
     }
 
     fn add_problem(&self, problem: Problem) {
-        self.storage
-            .lock()
-            .expect("storage lock poisoned")
-            .push(problem);
+        let mut storage = self.storage.lock().expect("storage lock poisoned");
+        // Deduplicate by process_id + status
+        let already_exists = storage.iter().any(|existing| {
+            existing.process_id == problem.process_id && existing.status == problem.status
+        });
+        if !already_exists {
+            storage.push(problem);
+        }
     }
 
     fn get_all(&self) -> Vec<Problem> {
@@ -86,5 +96,156 @@ impl DefaultProblemsService {
         Self {
             storage: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::workspace::models::TrackedProcess;
+
+    fn make_running_process(id: &str) -> TrackedProcess {
+        TrackedProcess {
+            id: id.to_string(),
+            pid: 1000,
+            label: format!("proc-{}", id),
+            status: ProcessStatus::Running,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_secs: 0,
+            restarts: 0,
+            last_error: None,
+            session_id: None,
+            visible: false,
+            run_id: None,
+            step_id: None,
+            command: None,
+            working_dir: None,
+            tracking_quality: None,
+        }
+    }
+
+    fn make_crashed_process(id: &str) -> TrackedProcess {
+        TrackedProcess {
+            id: id.to_string(),
+            pid: 1000,
+            label: format!("proc-{}", id),
+            status: ProcessStatus::Crashed,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_secs: 0,
+            restarts: 0,
+            last_error: Some("segfault".to_string()),
+            session_id: None,
+            visible: false,
+            run_id: None,
+            step_id: None,
+            command: None,
+            working_dir: None,
+            tracking_quality: None,
+        }
+    }
+
+    fn make_error_process(id: &str, code: i32) -> TrackedProcess {
+        TrackedProcess {
+            id: id.to_string(),
+            pid: 1000,
+            label: format!("proc-{}", id),
+            status: ProcessStatus::ExitedWithError(code),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_secs: 0,
+            restarts: 0,
+            last_error: Some(format!("exit code {}", code)),
+            session_id: None,
+            visible: false,
+            run_id: None,
+            step_id: None,
+            command: None,
+            working_dir: None,
+            tracking_quality: None,
+        }
+    }
+
+    #[test]
+    fn test_collect_from_processes_no_duplicates_on_repeated_call() {
+        let service = DefaultProblemsService::new();
+        let processes = vec![make_crashed_process("p1")];
+
+        // First call — should create 1 problem
+        let problems = service.collect_from_processes(&processes);
+        assert_eq!(problems.len(), 1);
+
+        // Second call with same process — should NOT create duplicates
+        let problems = service.collect_from_processes(&processes);
+        assert_eq!(problems.len(), 0);
+
+        // Storage should have exactly 1 problem
+        assert_eq!(service.get_all().len(), 1);
+    }
+
+    #[test]
+    fn test_different_processes_are_not_deduplicated() {
+        let service = DefaultProblemsService::new();
+        let processes = vec![make_crashed_process("p1"), make_crashed_process("p2")];
+
+        let problems = service.collect_from_processes(&processes);
+        assert_eq!(problems.len(), 2);
+        assert_eq!(service.get_all().len(), 2);
+    }
+
+    #[test]
+    fn test_same_process_different_status_not_deduplicated() {
+        let service = DefaultProblemsService::new();
+
+        // Create a process that changes status
+        let mut proc1 = make_crashed_process("p1");
+        let problems1 = service.collect_from_processes(&[proc1.clone()]);
+        assert_eq!(problems1.len(), 1);
+
+        // Same process but different status (e.g. restarted then crashed again with different status)
+        proc1.status = ProcessStatus::ExitedWithError(1);
+        proc1.last_error = Some("exit code 1".to_string());
+        let problems2 = service.collect_from_processes(&[proc1]);
+        // Different status — should create a new problem
+        assert_eq!(problems2.len(), 1);
+        assert_eq!(service.get_all().len(), 2);
+    }
+
+    #[test]
+    fn test_add_problem_deduplication() {
+        let service = DefaultProblemsService::new();
+        let problem = Problem {
+            process_id: "p1".to_string(),
+            process_label: "test".to_string(),
+            status: "Crashed".to_string(),
+            error_message: Some("segfault".to_string()),
+            severity: ProblemSeverity::Error,
+        };
+
+        service.add_problem(problem.clone());
+        assert_eq!(service.get_all().len(), 1);
+
+        // Add same problem again — should be deduplicated
+        service.add_problem(problem);
+        assert_eq!(service.get_all().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_removes_all_problems() {
+        let service = DefaultProblemsService::new();
+        let processes = vec![make_crashed_process("p1"), make_error_process("p2", 1)];
+        service.collect_from_processes(&processes);
+        assert_eq!(service.get_all().len(), 2);
+
+        service.clear();
+        assert!(service.get_all().is_empty());
+    }
+
+    #[test]
+    fn test_running_processes_not_added_as_problems() {
+        let service = DefaultProblemsService::new();
+        let processes = vec![make_running_process("p1")];
+
+        let problems = service.collect_from_processes(&processes);
+        assert!(problems.is_empty());
+        assert!(service.get_all().is_empty());
     }
 }

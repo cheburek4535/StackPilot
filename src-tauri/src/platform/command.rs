@@ -183,11 +183,11 @@ pub fn resolve_windows_program_name(command: &str) -> String {
         return trimmed.to_string();
     }
     match lower.as_str() {
-        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" | "turbo" | "nx" | "tsx"
-        | "nodemon" | "expo" | "next" | "nuxt" | "eslint" | "prettier" | "sass"
-        | "rimraf" | "cross-env" | "concurrently" | "wait-on" | "serve" | "webpack"
-        | "rollup" | "parcel" | "jest" | "vitest" | "mocha" | "ts-node" | "dotenv"
-        | "husky" | "lint-staged" | "stylelint" | "tailwindcss" | "postcss" => {
+        "npx" | "npm" | "pnpm" | "yarn" | "vite" | "nest" | "turbo" | "nx" | "tsx" | "nodemon"
+        | "expo" | "next" | "nuxt" | "eslint" | "prettier" | "sass" | "rimraf" | "cross-env"
+        | "concurrently" | "wait-on" | "serve" | "webpack" | "rollup" | "parcel" | "jest"
+        | "vitest" | "mocha" | "ts-node" | "dotenv" | "husky" | "lint-staged" | "stylelint"
+        | "tailwindcss" | "postcss" => {
             format!("{trimmed}.cmd")
         }
         "composer" => "composer.bat".to_string(),

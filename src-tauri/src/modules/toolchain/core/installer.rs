@@ -1536,9 +1536,7 @@ async fn try_install_source(
     // проверку is_absolute_entry — пропускаем, чтобы не логировать
     // ложные ошибки и не показывать обновление PATH в UI.
     let is_pkg_manager = matches!(source.kind, InstallSourceKind::PkgManager);
-    if (!def.path_entries.is_empty() && !is_pkg_manager)
-        || matches!(exec, ExecutionKind::Archive)
-    {
+    if (!def.path_entries.is_empty() && !is_pkg_manager) || matches!(exec, ExecutionKind::Archive) {
         sink.emit(console::event(
             ToolchainEventType::TaskPhaseChanged {
                 phase: TaskPhase::UpdatingPath,
@@ -1911,7 +1909,11 @@ mod tests {
         );
         // /D=path — последний аргумент, принудительно задаёт каталог
         let d_arg = cmd.args.iter().find(|a| a.starts_with("/D="));
-        assert!(d_arg.is_some(), "нет /D= для каталога установки: {:?}", cmd.args);
+        assert!(
+            d_arg.is_some(),
+            "нет /D= для каталога установки: {:?}",
+            cmd.args
+        );
         // /D=path должен быть ПОСЛЕДНИМ аргументом (требование NSIS)
         assert_eq!(
             cmd.args.last().unwrap(),

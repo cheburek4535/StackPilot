@@ -6,6 +6,7 @@ pub mod models;
 pub mod overview;
 pub mod problems;
 pub mod process_manager;
+pub mod process_supervisor;
 pub mod project;
 pub mod runtime;
 pub mod session;

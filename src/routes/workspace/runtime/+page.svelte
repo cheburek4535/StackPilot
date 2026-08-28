@@ -24,6 +24,7 @@
     statusIcon,
     formatDuration,
     formatStarted,
+    isProcessRunning,
   } from "$lib/modules/workspace/status";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
   import { i18n } from "$lib/core/i18n.svelte";
@@ -210,7 +211,7 @@
                     <Icon name={statusIcon(p.status)} size={15} />
                   </span>
                   <strong class="sp-proc-label">{p.label}</strong>
-                  <Badge tone={statusTone(p.status)} dot={p.status === "Running"}>
+                  <Badge tone={statusTone(p.status)} dot={isProcessRunning(p.status)}>
                     {statusLabel(p.status)}
                   </Badge>
                 </div>
@@ -224,7 +225,18 @@
                     <span class="sp-sep">·</span>
                     <span class="sp-restarts">{i18n.t("devl.restarts", { n: p.restarts }) as TranslationKey}</span>
                   {/if}
+                  {#if p.run_id}
+                    <span class="sp-sep">·</span>
+                    <span class="sp-run-badge">run #{p.run_id.slice(0, 8)}</span>
+                  {/if}
+                  {#if p.visible}
+                    <span class="sp-sep">·</span>
+                    <span>{i18n.t("devl.visible_terminal") as TranslationKey}</span>
+                  {/if}
                 </div>
+                {#if p.command}
+                  <div class="sp-proc-command">{p.command}</div>
+                {/if}
                 {#if p.last_error}
                   <div class="sp-proc-error">{p.last_error}</div>
                 {/if}
@@ -249,7 +261,7 @@
                   size="sm"
                   variant="danger"
                   icon="x"
-                  disabled={p.status !== "Running"}
+                  disabled={!isProcessRunning(p.status)}
                   onclick={() => handleKill(p.id)}
                 >
                   {i18n.t("devl.kill") as TranslationKey}
@@ -399,6 +411,21 @@
     word-break: break-all;
     max-height: 4rem;
     overflow-y: auto;
+  }
+
+  .sp-run-badge {
+    color: var(--sp-violet);
+  }
+
+  .sp-proc-command {
+    margin-top: var(--sp-1);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    font-family: var(--sp-font-mono);
+    background: var(--sp-code-bg);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+    word-break: break-all;
   }
 
   .sp-proc-actions {

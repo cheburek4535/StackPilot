@@ -36,3 +36,5 @@ walkdir = "2"
 which = "8"
 chrono = "0.4"
 notify = "7"
+uuid = { version = "1", features = ["v4"] }
+url = "2"

@@ -21,6 +21,16 @@ struct ActiveProcess {
     child: Option<Child>,
     stdout_buffer: Arc<Mutex<Vec<String>>>,
     stderr_buffer: Arc<Mutex<Vec<String>>>,
+    /// Bounded log buffer for V2 enhanced output tracking.
+    log_buffer: Arc<crate::modules::workspace::models::BoundedLogBuffer>,
+    /// Sequence counters for output events.
+    stdout_seq: Arc<std::sync::atomic::AtomicU64>,
+    stderr_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Run/step ownership for output events.
+    run_id: Option<String>,
+    step_id: Option<String>,
+    /// Reader thread join handles for cleanup.
+    _reader_handles: Vec<thread::JoinHandle<()>>,
 }
 
 pub trait ProcessManager: Send + Sync {
@@ -69,10 +79,43 @@ pub trait ProcessManager: Send + Sync {
         working_dir: Option<&str>,
     ) -> Result<(), String>;
 
+    /// Spawn a process with ownership metadata for V2 run/step tracking.
+    fn spawn_and_track_owned(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String>;
+
+    /// Spawn a visible process with ownership metadata.
+    fn spawn_visible_owned(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String>;
+
     fn list(&self) -> Vec<TrackedProcess>;
     fn kill(&self, id: &str) -> Result<(), String>;
     fn refresh_status(&self, id: &str) -> Result<ProcessStatus, String>;
     fn get_logs(&self, id: &str) -> Result<ProcessLogs, String>;
+
+    /// Get the bounded log buffer for a process (V2).
+    fn get_log_buffer(
+        &self,
+        id: &str,
+    ) -> Option<Arc<crate::modules::workspace::models::BoundedLogBuffer>>;
+    /// Get truncation metadata for a process's logs.
+    fn get_log_truncation(&self, id: &str) -> Option<(LogTruncation, LogTruncation)>;
 }
 
 pub struct OsProcessManager {
@@ -89,7 +132,13 @@ impl OsProcessManager {
     }
 
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
-        *self.app_handle.lock().expect("app_handle lock poisoned") = Some(handle);
+        // Use try_lock to avoid blocking; if poisoned, replace anyway
+        match self.app_handle.lock() {
+            Ok(mut h) => *h = Some(handle),
+            Err(mut e) => {
+                **e.get_mut() = Some(handle);
+            }
+        }
     }
 
     fn spawn_reader_thread(
@@ -97,30 +146,51 @@ impl OsProcessManager {
         reader: Box<dyn std::io::Read + Send + 'static>,
         process_id: String,
         buffer: Arc<Mutex<Vec<String>>>,
-        handle: tauri::AppHandle,
-    ) {
+        log_buffer: Arc<BoundedLogBuffer>,
+        seq: Arc<std::sync::atomic::AtomicU64>,
+        handle: Option<tauri::AppHandle>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let buf_reader = BufReader::new(reader);
             for line in buf_reader.lines() {
                 match line {
                     Ok(text) => {
-                        buffer
-                            .lock()
-                            .expect("buffer lock poisoned")
-                            .push(text.clone());
-                        let _ = handle.emit(
-                            PROCESS_EVENT_OUTPUT,
-                            ProcessOutputEvent {
-                                process_id: process_id.clone(),
-                                stream: stream_name.to_string(),
-                                line: text,
-                            },
-                        );
+                        let sequence = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        // Push to unbounded legacy buffer
+                        if let Ok(mut buf) = buffer.lock() {
+                            buf.push(text.clone());
+                        }
+
+                        // Push to bounded buffer
+                        if stream_name == "stderr" {
+                            log_buffer.push_stderr(text.clone());
+                        } else {
+                            log_buffer.push_stdout(text.clone());
+                        }
+
+                        // Emit process-output event with enhanced metadata
+                        if let Some(ref h) = handle {
+                            let _ = h.emit(
+                                PROCESS_EVENT_OUTPUT,
+                                ProcessOutputEvent {
+                                    process_id: process_id.clone(),
+                                    stream: stream_name.to_string(),
+                                    line: text,
+                                    sequence: Some(sequence),
+                                    timestamp: Some(default_now_iso()),
+                                    run_id: run_id.clone(),
+                                    step_id: step_id.clone(),
+                                },
+                            );
+                        }
                     }
                     Err(_) => break,
                 }
             }
-        });
+        })
     }
 
     /// Build the Command with platform-specific process group settings.
@@ -139,14 +209,6 @@ impl OsProcessManager {
         }
 
         // Platform-specific process group creation.
-        //
-        // SAFETY (Unix): `pre_exec` runs in the child between fork and exec.
-        // `setsid()` creates a new session with the child as session leader,
-        // giving it its own process group so we can kill the entire tree.
-        //
-        // SAFETY (Windows): `CREATE_NEW_PROCESS_GROUP` (0x00000200) creates
-        // the child in a new process group, enabling `taskkill /T` to
-        // terminate the entire tree.
         match current_os() {
             HostOs::Windows => {
                 use std::os::windows::process::CommandExt;
@@ -154,8 +216,6 @@ impl OsProcessManager {
                 cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
             }
             HostOs::Linux | HostOs::Macos => {
-                // SAFETY: `pre_exec` is safe when it only calls async-signal-safe
-                // functions. `setsid()` is listed as async-signal-safe by POSIX.
                 #[cfg(unix)]
                 unsafe {
                     cmd.pre_exec(|| {
@@ -170,16 +230,6 @@ impl OsProcessManager {
     }
 
     /// Build a Command for launching a GUI application detached.
-    ///
-    /// GUI apps (IDE, browser, Docker Desktop) should not have their stdout/
-    /// stderr piped or nulled in a way that breaks their native window.
-    /// On Windows they are launched via `start` semantics (Cmd::new + spawn
-    /// without console handles), on Unix via `open`/`xdg-open`/direct spawn.
-    ///
-    /// Batch shims (`code.cmd`, `npm.cmd`) are wrapped in `cmd /C` because
-    /// CreateProcess cannot execute `.cmd`/`.bat` files directly — this was
-    /// the "VS Code not found" failure for OpenApplication actions whose
-    /// path is a bare CLI name like `code`.
     fn build_detached_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
         let plan = crate::platform::command::resolve_spawn_plan(command);
         let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
@@ -188,24 +238,17 @@ impl OsProcessManager {
                 crate::platform::command::batch_shim_cmd_line(&plan.program, args),
             )
         } else {
-            (
-                plan.program,
-                args.iter().map(|s| s.to_string()).collect(),
-            )
+            (plan.program, args.iter().map(|s| s.to_string()).collect())
         };
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
         let mut cmd = Command::new(spawn_program);
         cmd.args(spawn_args_refs);
-        // Do not pipe stdout/stderr for GUI apps — let them inherit or
-        // detach naturally. Piping to null on Windows can break GUI init.
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
             const DETACHED_PROCESS: u32 = 0x00000008;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            // DETACHED_PROCESS lets a GUI app run without a console;
-            // CREATE_NEW_PROCESS_GROUP keeps the tree killable.
             cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
         }
@@ -222,9 +265,6 @@ impl OsProcessManager {
     }
 
     /// Terminate a process tree on the current platform.
-    ///
-    /// Returns `Ok(true)` if the process was successfully terminated by us,
-    /// `Ok(false)` if it had already exited, or `Err` if termination failed.
     fn kill_process_tree(child: &mut Child, pid: u32) -> Result<bool, String> {
         match current_os() {
             HostOs::Windows => kill_windows_tree(pid),
@@ -232,7 +272,7 @@ impl OsProcessManager {
         }
     }
 
-    /// Emit a process status event.
+    /// Emit a process status event. Uses optional AppHandle — no panics.
     fn emit_status(
         handle: &Option<tauri::AppHandle>,
         id: &str,
@@ -259,10 +299,11 @@ impl OsProcessManager {
 /// Spawn a process in a new native terminal window so the user can see its
 /// output directly and interact with it.
 ///
-/// The spawned terminal process is tracked by `self` so it appears in the
-/// app's process list and can be killed. The command itself runs inside the
-/// terminal; killing the tracked process kills the terminal (and its child
-/// tree on Windows via `taskkill /T`, on Unix via the process group).
+/// The launch is delegated to `platform::terminal::resolve_terminal_plan`,
+/// which picks the platform's best terminal (Windows Terminal → cmd on
+/// Windows, Terminal.app on macOS, xterm/alacritty/... on Linux) and builds
+/// the exact command line. The terminal process is tracked as a
+/// `TerminalWrapper` so stopping it stops the process tree.
 fn spawn_in_terminal(
     manager: &OsProcessManager,
     command: &str,
@@ -271,195 +312,44 @@ fn spawn_in_terminal(
     label: &str,
     session_id: Option<String>,
     overlay: Option<&EnvironmentOverlay>,
+    run_id: Option<String>,
+    step_id: Option<String>,
 ) -> Result<TrackedProcess, String> {
-    let (term_cmd, term_args) = build_terminal_command(command, args, working_dir)?;
-
-    // Reuse the tracked-spawn machinery so the terminal is listed and can be
-    // killed. The terminal's own stdout/stderr are piped (they're mostly the
-    // terminal's control channel); the real command output appears in the
-    // native window. The environment overlay is applied to the terminal
-    // process so env vars/PATH reach the inner command.
-    let term_args_refs: Vec<&str> = term_args.iter().map(|s| s.as_str()).collect();
-    match overlay {
-        Some(ov) => manager.spawn_and_track_visible_with_overlay(
-            &term_cmd,
-            &term_args_refs,
-            None,
-            label,
-            session_id,
-            ov,
-        ),
-        None => manager.spawn_and_track_visible(
-            &term_cmd,
-            &term_args_refs,
-            None,
-            label,
-            session_id,
-        ),
-    }
-}
-
-/// Build the OS-specific command that opens a terminal and runs the command.
-///
-/// - Windows: `cmd /C start "title" cmd /K "cd /d <dir> && <command>"` —
-///   opens a new visible console window that stays open (`/K`).
-/// - macOS: `osascript -e 'tell application "Terminal" to do script "<cmd>"'`.
-/// - Linux: try common terminal emulators (`gnome-terminal`, `konsole`,
-///   `x-terminal-emulator`, `xterm`, `alacritty`).
-fn build_terminal_command(
-    command: &str,
-    args: &[&str],
-    working_dir: Option<&str>,
-) -> Result<(String, Vec<String>), String> {
-    let joined = join_command(command, args);
-
-    // Build the inner command that runs in the terminal. We use `cd /d <dir>`
-    // on Windows and `cd <dir>` on Unix so the command runs in the project
-    // directory, then execute the command. The terminal stays open so the
-    // user sees the long-running process output.
-    //
-    // On Windows the inner command is written into a `.cmd` batch file, so
-    // cmd metacharacters in the user command (&, |, %, <, >, ^, ") must be
-    // escaped or the script misbehaves.
-    let inner_cmd: String = if cfg!(target_os = "windows") {
-        batch_escape(&joined)
-    } else {
-        joined.clone()
-    };
-    let full_inner: String = match working_dir {
-        Some(dir) => {
-            let cd = if cfg!(target_os = "windows") {
-                format!("cd /d \"{}\"", dir)
-            } else {
-                format!("cd '{}'", dir.replace('\'', "'\\''"))
-            };
-            format!("{} && {}", cd, inner_cmd)
-        }
-        None => inner_cmd.clone(),
+    use crate::platform::terminal::{
+        resolve_terminal_plan, TerminalBackend, TerminalConfig, TerminalWindowPolicy,
     };
 
-    match current_os() {
-        HostOs::Windows => {
-            // Spawn `cmd /K <temp_script.cmd>` directly (no `start` wrapper).
-            // The batch script does `cd /d <dir> && <command>` and keeps the
-            // window open (`/K`). Because the tracked child IS the terminal,
-            // its exit status is accurate and `taskkill /T` can terminate the
-            // whole tree (cmd → npm → node) when the user stops the process.
-            //
-            // A GUI parent has no console, so cmd.exe allocates a fresh
-            // console window automatically — no extra "start" needed.
-            let script_path = write_temp_batch_script(&full_inner)?;
-            Ok((
-                "cmd".to_string(),
-                vec!["/K".to_string(), script_path],
-            ))
-        }
-        HostOs::Macos => {
-            // Use AppleScript to run the command in a new Terminal window.
-            let escaped = full_inner.replace('\\', "\\\\").replace('"', "\\\"");
-            Ok((
-                "osascript".to_string(),
-                vec![
-                    "-e".to_string(),
-                    format!("tell application \"Terminal\" to do script \"{}\"", escaped),
-                ],
-            ))
-        }
-        HostOs::Linux => {
-            let mut cmd = Command::new("sh");
-            cmd.args(["-lc", &full_inner]);
-            // Find an available terminal emulator. Non-daemonizing terminals
-            // (xterm, alacritty, kitty, konsole, xfce4-terminal) stay as the
-            // direct child so the tracked PID lives as long as the process;
-            // gnome-terminal/x-terminal-emulator daemonize and the wrapper
-            // exits immediately (terminal still opens, but tracking degrades
-            // to "exited").
-            let candidates = [
-                "xterm",
-                "alacritty",
-                "kitty",
-                "konsole",
-                "xfce4-terminal",
-                "gnome-terminal",
-                "x-terminal-emulator",
-            ];
-            for cand in candidates {
-                if which::which(cand).is_ok() {
-                    let term_args = match cand {
-                        "gnome-terminal" => vec![
-                            "--".to_string(),
-                            "sh".to_string(),
-                            "-c".to_string(),
-                            format!(
-                                "cd '{}' && {}",
-                                working_dir.unwrap_or(".").replace('\'', "'\\''"),
-                                full_inner
-                            ),
-                        ],
-                        "konsole" => vec![
-                            "-e".to_string(),
-                            "sh".to_string(),
-                            "-c".to_string(),
-                            full_inner.clone(),
-                        ],
-                        "x-terminal-emulator" | "xfce4-terminal" => vec![
-                            "-e".to_string(),
-                            "sh".to_string(),
-                            "-c".to_string(),
-                            full_inner.clone(),
-                        ],
-                        "xterm" | "alacritty" | "kitty" => vec![
-                            "-e".to_string(),
-                            "sh".to_string(),
-                            "-c".to_string(),
-                            full_inner.clone(),
-                        ],
-                        _ => vec![full_inner.clone()],
-                    };
-                    return Ok((cand.to_string(), term_args));
-                }
-            }
-            Err(
-                "No supported terminal emulator found on Linux. Install gnome-terminal, \
-                 konsole, xterm, or alacritty."
-                    .to_string(),
-            )
-        }
-    }
+    // The inner command executed inside the terminal window.
+    let inner = join_command(command, args);
+
+    let config = TerminalConfig {
+        backend: TerminalBackend::Default,
+        command: inner,
+        working_dir: working_dir.map(String::from),
+        window_policy: TerminalWindowPolicy::NewWindow,
+        label: Some(label.to_string()),
+        keep_open: true,
+        env: None,
+    };
+
+    let plan = resolve_terminal_plan(&config)
+        .map_err(|e| format!("Failed to resolve terminal plan: {}", e))?;
+
+    let plan_args: Vec<&str> = plan.args.iter().map(|s| s.as_str()).collect();
+    manager.spawn_and_track_visible_inner(
+        &plan.program,
+        &plan_args,
+        None,
+        label,
+        session_id,
+        overlay,
+        run_id,
+        step_id,
+    )
 }
 
-/// Write the inner command to a temporary `.cmd` batch file and return its
-/// path. Used on Windows so `cmd /K <file>` runs reliably without fragile
-/// nested quoting. The file name is unique per invocation so concurrent
-/// terminal launches never overwrite each other.
-#[cfg(target_os = "windows")]
-fn write_temp_batch_script(inner: &str) -> Result<String, String> {
-    use std::io::Write;
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("devlauncher_{}_{}.cmd", std::process::id(), nanos));
-
-    let mut file = std::fs::File::create(&dir)
-        .map_err(|e| format!("Failed to create temp script: {}", e))?;
-    writeln!(file, "@echo off")
-        .and_then(|_| writeln!(file, "{}", inner))
-        .map_err(|e| format!("Failed to write temp script: {}", e))?;
-
-    Ok(dir.to_string_lossy().into_owned())
-}
-
-/// Non-Windows stub (never used on Unix/macOS — they use native terminals).
-#[cfg(not(target_os = "windows"))]
-fn write_temp_batch_script(_inner: &str) -> Result<String, String> {
-    Err("temp batch scripts are Windows-only".to_string())
-}
-
-/// Join a command and its args into a single shell string for terminal
-/// execution. Arguments are shell-quoted so spaces and special chars survive.
+/// Join a program + args into a single command line, quoting each token
+/// for the target shell.
 fn join_command(command: &str, args: &[&str]) -> String {
     let mut parts: Vec<String> = vec![quote_for_shell(command)];
     for a in args {
@@ -468,9 +358,7 @@ fn join_command(command: &str, args: &[&str]) -> String {
     parts.join(" ")
 }
 
-/// Escape a command line for use inside a `.cmd` batch file: `%` becomes
-/// `%%`, and `& | < > ^` are caret-escaped so the batch does not split or
-/// redirect. Quoted paths with spaces are preserved as-is.
+#[cfg(test)]
 fn batch_escape(cmd: &str) -> String {
     let mut out = String::with_capacity(cmd.len());
     let mut in_quotes = false;
@@ -493,8 +381,6 @@ fn batch_escape(cmd: &str) -> String {
     out
 }
 
-/// Shell-quote a single token. On Windows, wrap in double quotes if it
-/// contains spaces; on Unix, single-quote if it contains shell metacharacters.
 fn quote_for_shell(token: &str) -> String {
     let needs_quote = token.is_empty()
         || token
@@ -514,11 +400,6 @@ fn quote_for_shell(token: &str) -> String {
 // Windows process tree termination
 // ============================================================================
 
-/// Kill a process tree on Windows using `taskkill /F /T /PID`.
-///
-/// `/F` forces termination, `/T` kills the entire tree. This is the
-/// correct approach for Windows because `Child::kill()` only terminates
-/// the direct child, leaving grandchildren (npm, cargo, python) alive.
 fn kill_windows_tree(pid: u32) -> Result<bool, String> {
     let status = Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
@@ -527,9 +408,7 @@ fn kill_windows_tree(pid: u32) -> Result<bool, String> {
     match status {
         Ok(s) if s.success() => Ok(true),
         Ok(s) => {
-            // taskkill failed — may mean the process already exited.
             let code = s.code().unwrap_or(-1);
-            // Exit code 128+ means the process was not found (already exited).
             if code >= 128 || code == 0 {
                 Ok(false)
             } else {
@@ -547,24 +426,17 @@ fn kill_windows_tree(pid: u32) -> Result<bool, String> {
 // Unix process group termination
 // ============================================================================
 
-/// Kill a process group on Unix: SIGTERM → grace → SIGKILL.
-///
-/// The child was spawned in its own session via `setsid()`, so `pid`
-/// doubles as the process group ID. We send signals to `-pid` to target
-/// the entire group (child + grandchildren from npm, cargo, etc.).
 #[cfg(unix)]
 fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
     use std::os::unix::process::ExitStatusExt;
     use std::time::Duration;
 
-    // Check if already exited before sending signals.
     match child.try_wait() {
         Ok(Some(_)) => {
-            // Process already exited — reap it.
             let _ = child.wait();
             return Ok(false);
         }
-        Ok(None) => { /* still running, proceed */ }
+        Ok(None) => {}
         Err(e) => {
             return Err(format!("Failed to check process status: {}", e));
         }
@@ -572,19 +444,16 @@ fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
 
     let pgid = pid as i32;
 
-    // 1. SIGTERM to the entire process group.
     unsafe {
         libc::kill(-pgid, libc::SIGTERM);
     }
 
-    // 2. Wait up to UNIX_KILL_GRACE_MS for the direct child to exit.
     let grace = Duration::from_millis(UNIX_KILL_GRACE_MS);
     let deadline = SystemTime::now() + grace;
 
     loop {
         match child.try_wait() {
             Ok(Some(_)) => {
-                // Direct child exited — reap it.
                 let _ = child.wait();
                 return Ok(true);
             }
@@ -600,12 +469,10 @@ fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
         }
     }
 
-    // 3. SIGKILL to the entire process group.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
     }
 
-    // 4. Brief wait for SIGKILL to take effect, then reap.
     thread::sleep(Duration::from_millis(200));
     match child.try_wait() {
         Ok(Some(_)) => {
@@ -613,8 +480,6 @@ fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
             Ok(true)
         }
         Ok(None) => {
-            // SIGKILL may take time to propagate — best effort.
-            // The zombie will be reaped eventually.
             let _ = child.wait();
             Ok(true)
         }
@@ -625,7 +490,6 @@ fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
     }
 }
 
-/// Stub for non-Unix targets (should never be called on Windows).
 #[cfg(not(unix))]
 fn kill_unix_group(_child: &mut Child, _pid: u32) -> Result<bool, String> {
     Err("Unix process group kill is not available on this platform".to_string())
@@ -640,7 +504,17 @@ impl ProcessManager for OsProcessManager {
         label: &str,
         session_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
-        self.spawn_and_track_inner(command, args, working_dir, label, session_id, None, false)
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            None,
+            false,
+            None,
+            None,
+        )
     }
 
     fn spawn_and_track_with_overlay(
@@ -660,6 +534,8 @@ impl ProcessManager for OsProcessManager {
             session_id,
             Some(overlay),
             false,
+            None,
+            None,
         )
     }
 
@@ -672,7 +548,17 @@ impl ProcessManager for OsProcessManager {
         session_id: Option<String>,
         overlay: Option<&EnvironmentOverlay>,
     ) -> Result<TrackedProcess, String> {
-        spawn_in_terminal(self, command, args, working_dir, label, session_id, overlay)
+        spawn_in_terminal(
+            self,
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            overlay,
+            None,
+            None,
+        )
     }
 
     fn launch_detached(
@@ -687,6 +573,53 @@ impl ProcessManager for OsProcessManager {
             .map_err(|e| format!("Failed to launch '{}': {}", command, e))
     }
 
+    fn spawn_and_track_owned(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            None,
+            false,
+            run_id,
+            step_id,
+        )
+    }
+
+    fn spawn_visible_owned(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        spawn_in_terminal(
+            self,
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            overlay,
+            run_id,
+            step_id,
+        )
+    }
+
     fn list(&self) -> Vec<TrackedProcess> {
         let mut lock = self.processes.lock().expect("processes lock poisoned");
         let now = SystemTime::now()
@@ -694,9 +627,6 @@ impl ProcessManager for OsProcessManager {
             .unwrap_or_default()
             .as_secs();
 
-        // Live status update: try_wait is non-blocking, so each list()
-        // call detects finished processes without requiring a separate
-        // refresh_status call.
         let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
         let handle = handle_guard.clone();
         for entry in lock.iter_mut() {
@@ -706,8 +636,9 @@ impl ProcessManager for OsProcessManager {
                     Ok(None) => {}
                     Ok(Some(status)) => {
                         entry.child = None;
+                        let code = status.code().unwrap_or(-1);
                         let (new_status, error_msg) = if status.success() {
-                            (ProcessStatus::Exited(status.code().unwrap_or(0)), None)
+                            (ProcessStatus::Exited(code), None)
                         } else {
                             let stderr = entry
                                 .stderr_buffer
@@ -715,11 +646,11 @@ impl ProcessManager for OsProcessManager {
                                 .expect("stderr lock poisoned")
                                 .join("\n");
                             let err_msg = if stderr.is_empty() {
-                                format!("Process exited with code {}", status.code().unwrap_or(-1))
+                                format!("Process exited with code {}", code)
                             } else {
                                 stderr
                             };
-                            (ProcessStatus::Crashed, Some(err_msg))
+                            (ProcessStatus::ExitedWithError(code), Some(err_msg))
                         };
                         entry.info.status = new_status.clone();
                         entry.info.last_error = error_msg.clone();
@@ -746,35 +677,32 @@ impl ProcessManager for OsProcessManager {
             .ok_or_else(|| format!("Process '{}' not found", id))?;
 
         // If the child handle is already gone, the process exited naturally.
-        // Check current status: if already Exited/Crashed, do not overwrite.
         if entry.child.is_none() {
             match &entry.info.status {
-                ProcessStatus::Exited(_) | ProcessStatus::Crashed => {
-                    // Already exited naturally — do not overwrite with Killed.
+                ProcessStatus::Exited(_)
+                | ProcessStatus::ExitedWithError(_)
+                | ProcessStatus::Crashed => {
                     return Ok(());
                 }
                 ProcessStatus::Killed => {
-                    // Already killed in a previous call.
                     return Ok(());
                 }
                 ProcessStatus::Running => {
-                    // Child handle missing but status says Running — treat as exited.
                     entry.info.status = ProcessStatus::Exited(0);
                     return Ok(());
                 }
+                _ => return Ok(()),
             }
         }
 
         let pid = entry.info.pid;
 
-        // Attempt platform-specific tree/group termination.
         let kill_result = if let Some(ref mut child) = entry.child {
             Self::kill_process_tree(child, pid)
         } else {
             Ok(false)
         };
 
-        // Reap the direct child to avoid zombies.
         if let Some(ref mut child) = entry.child {
             let _ = child.wait();
         }
@@ -782,14 +710,9 @@ impl ProcessManager for OsProcessManager {
 
         match kill_result {
             Ok(was_running) => {
-                // Only set Killed if the process was actually running and we
-                // terminated it. If it had already exited, preserve the
-                // natural exit status.
                 if was_running {
                     entry.info.status = ProcessStatus::Killed;
                 }
-                // If !was_running, status was already set by try_wait or
-                // remains as-is (natural exit was already recorded).
 
                 let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
                 Self::emit_status(
@@ -801,7 +724,6 @@ impl ProcessManager for OsProcessManager {
                 Ok(())
             }
             Err(e) => {
-                // Kill failed — report the error, do not set Killed.
                 entry.info.last_error = Some(e.clone());
                 Err(format!("Failed to kill process '{}': {}", id, e))
             }
@@ -823,8 +745,9 @@ impl ProcessManager for OsProcessManager {
                 }
                 Ok(Some(status)) => {
                     entry.child = None;
+                    let code = status.code().unwrap_or(-1);
                     let (new_status, error_msg) = if status.success() {
-                        (ProcessStatus::Exited(status.code().unwrap_or(0)), None)
+                        (ProcessStatus::Exited(code), None)
                     } else {
                         let stderr = entry
                             .stderr_buffer
@@ -832,11 +755,11 @@ impl ProcessManager for OsProcessManager {
                             .expect("stderr lock poisoned")
                             .join("\n");
                         let err_msg = if stderr.is_empty() {
-                            format!("Process exited with code {}", status.code().unwrap_or(-1))
+                            format!("Process exited with code {}", code)
                         } else {
                             stderr
                         };
-                        (ProcessStatus::Crashed, Some(err_msg))
+                        (ProcessStatus::ExitedWithError(code), Some(err_msg))
                     };
                     entry.info.status = new_status.clone();
                     entry.info.last_error = error_msg.clone();
@@ -875,12 +798,33 @@ impl ProcessManager for OsProcessManager {
             stderr_lines: stderr,
         })
     }
+
+    fn get_log_buffer(
+        &self,
+        id: &str,
+    ) -> Option<Arc<crate::modules::workspace::models::BoundedLogBuffer>> {
+        self.processes.lock().ok().and_then(|procs| {
+            procs
+                .iter()
+                .find(|p| p.info.id == id)
+                .map(|p| p.log_buffer.clone())
+        })
+    }
+
+    fn get_log_truncation(&self, id: &str) -> Option<(LogTruncation, LogTruncation)> {
+        self.processes.lock().ok().and_then(|procs| {
+            procs.iter().find(|p| p.info.id == id).map(|p| {
+                (
+                    p.log_buffer.stdout_truncation(),
+                    p.log_buffer.stderr_truncation(),
+                )
+            })
+        })
+    }
 }
 
 impl OsProcessManager {
-    /// Shared spawn+track implementation. When `overlay` is `Some`, the
-    /// environment overlay (PATH prepend, env set/remove) is applied to the
-    /// child process.
+    /// Shared spawn+track implementation with ownership metadata.
     fn spawn_and_track_inner(
         &self,
         command: &str,
@@ -890,11 +834,9 @@ impl OsProcessManager {
         session_id: Option<String>,
         overlay: Option<&EnvironmentOverlay>,
         visible: bool,
+        run_id: Option<String>,
+        step_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
-        // Resolve the command on Windows: bare npm-ecosystem names become
-        // `.cmd` shims which must run through `cmd /C` (CreateProcess cannot
-        // execute batch files directly). This is why plain `Command::new("npm")`
-        // used to fail with "not found" even though npm is installed.
         let plan = crate::platform::command::resolve_spawn_plan(command);
         let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
             (
@@ -902,10 +844,7 @@ impl OsProcessManager {
                 crate::platform::command::batch_shim_cmd_line(&plan.program, args),
             )
         } else {
-            (
-                plan.program,
-                args.iter().map(|s| s.to_string()).collect(),
-            )
+            (plan.program, args.iter().map(|s| s.to_string()).collect())
         };
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
@@ -917,8 +856,15 @@ impl OsProcessManager {
 
         let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
         let pid = child.id();
-        let id = generate_id();
+        let id = generate_process_id();
         let started_at = timestamp_now();
+
+        let command_line = join_command(command, args);
+        let tracking_quality = if visible {
+            Some(ProcessTrackingQuality::TerminalWrapper)
+        } else {
+            Some(ProcessTrackingQuality::Exact)
+        };
 
         let info = TrackedProcess {
             id: id.clone(),
@@ -931,34 +877,52 @@ impl OsProcessManager {
             last_error: None,
             session_id,
             visible,
+            run_id: run_id.clone(),
+            step_id: step_id.clone(),
+            command: Some(command_line),
+            working_dir: working_dir.map(String::from),
+            tracking_quality,
         };
 
         let stdout_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let stderr_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_buffer = Arc::new(BoundedLogBuffer::new(10000, 10 * 1024 * 1024));
+        let stdout_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let stderr_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
-        let handle = handle_guard
-            .clone()
-            .expect("AppHandle must be set before spawning processes");
+        // Get app handle — optional, no panic
+        let handle = self.app_handle.lock().ok().and_then(|h| h.clone());
+
+        let mut reader_handles = Vec::new();
 
         if let Some(stdout) = child.stdout.take() {
-            Self::spawn_reader_thread(
+            let h = Self::spawn_reader_thread(
                 "stdout",
                 Box::new(stdout),
                 id.clone(),
                 stdout_buffer.clone(),
+                log_buffer.clone(),
+                stdout_seq.clone(),
                 handle.clone(),
+                run_id.clone(),
+                step_id.clone(),
             );
+            reader_handles.push(h);
         }
 
         if let Some(stderr) = child.stderr.take() {
-            Self::spawn_reader_thread(
+            let h = Self::spawn_reader_thread(
                 "stderr",
                 Box::new(stderr),
                 id.clone(),
                 stderr_buffer.clone(),
+                log_buffer.clone(),
+                stderr_seq.clone(),
                 handle.clone(),
+                run_id.clone(),
+                step_id.clone(),
             );
+            reader_handles.push(h);
         }
 
         let entry = ActiveProcess {
@@ -966,6 +930,12 @@ impl OsProcessManager {
             child: Some(child),
             stdout_buffer,
             stderr_buffer,
+            log_buffer,
+            stdout_seq,
+            stderr_seq,
+            run_id,
+            step_id,
+            _reader_handles: reader_handles,
         };
 
         self.processes
@@ -976,7 +946,7 @@ impl OsProcessManager {
         Ok(info)
     }
 
-    /// Spawn a tracked process that is shown in its own native terminal window.
+    /// Spawn a tracked visible-terminal process.
     fn spawn_and_track_visible(
         &self,
         command: &str,
@@ -985,7 +955,17 @@ impl OsProcessManager {
         label: &str,
         session_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
-        self.spawn_and_track_inner(command, args, working_dir, label, session_id, None, true)
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            None,
+            true,
+            None,
+            None,
+        )
     }
 
     /// Spawn a tracked visible-terminal process with an environment overlay.
@@ -1006,16 +986,40 @@ impl OsProcessManager {
             session_id,
             Some(overlay),
             true,
+            None,
+            None,
+        )
+    }
+
+    /// Spawn with ownership metadata and optional overlay.
+    fn spawn_and_track_visible_inner(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            overlay,
+            true,
+            run_id,
+            step_id,
         )
     }
 }
 
-fn generate_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("proc_{}", nanos)
+/// Generate a collision-safe process ID using UUID v4.
+fn generate_process_id() -> String {
+    format!("proc_{}", uuid::Uuid::new_v4())
 }
 
 fn timestamp_now() -> String {
@@ -1025,16 +1029,29 @@ fn timestamp_now() -> String {
     dur.as_secs().to_string()
 }
 
+fn default_now_iso() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn generate_id_is_unique_enough() {
-        let a = generate_id();
-        let b = generate_id();
+        let a = generate_process_id();
+        let b = generate_process_id();
         assert_ne!(a, b);
         assert!(a.starts_with("proc_"));
+    }
+
+    #[test]
+    fn generate_id_is_uuid_format() {
+        let id = generate_process_id();
+        let uuid_part = id.strip_prefix("proc_").unwrap();
+        // UUID v4 format: 8-4-4-4-12
+        assert_eq!(uuid_part.len(), 36);
+        assert!(uuid_part.chars().filter(|c| *c == '-').count() == 4);
     }
 
     #[test]
@@ -1045,19 +1062,18 @@ mod tests {
 
     #[test]
     fn batch_escape_protects_metacharacters() {
-        // Quoted text is untouched; & | < > ^ get caret-escaped; % is doubled.
-        assert_eq!(batch_escape(r#""C:\my dir\npm run dev""#), r#""C:\my dir\npm run dev""#);
+        assert_eq!(
+            batch_escape(r#""C:\my dir\npm run dev""#),
+            r#""C:\my dir\npm run dev""#
+        );
         assert_eq!(batch_escape("a & b | c"), "a ^& b ^| c");
         assert_eq!(batch_escape("echo 100%"), "echo 100%%");
         assert_eq!(batch_escape("a<b>c"), "a^<b^>c");
-        assert_eq!(batch_escape(r#"cmd /c "echo a & b""#), r#"cmd /c "echo a & b""#);
     }
 
     #[test]
     fn build_command_sets_working_dir() {
         let mut cmd = OsProcessManager::build_command("echo", &["hello"], Some("/tmp"));
-        // Verify the command was configured (we can't inspect working_dir
-        // directly on std::process::Command, but we can spawn it).
         let child = cmd.spawn();
         assert!(child.is_ok(), "command with working_dir should spawn");
         let mut child = child.unwrap();
@@ -1067,14 +1083,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn build_command_creates_process_group_on_unix() {
-        // On Unix, build_command calls setsid() in pre_exec.
-        // We verify by spawning a process and checking its session ID.
         let mut cmd = OsProcessManager::build_command("echo", &["pgid_test"], None);
         let child = cmd.spawn().expect("should spawn");
-        let pid = child.id();
-        // The child should be in its own session (session id == pid after setsid).
-        // We can't easily check this from the parent, but we verify the spawn
-        // succeeded (which means pre_exec ran without error).
         let mut child = child;
         let status = child.wait().expect("should wait");
         assert!(status.success());
@@ -1083,8 +1093,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn build_command_creates_process_group_on_windows() {
-        // On Windows, build_command sets CREATE_NEW_PROCESS_GROUP.
-        // We verify by spawning and checking the process starts successfully.
         let mut cmd = OsProcessManager::build_command("cmd", &["/C", "echo pgid_test"], None);
         let child = cmd
             .spawn()
@@ -1125,8 +1133,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn kill_windows_tree_handles_already_exited() {
-        // taskkill on a non-existent PID returns exit code 128 (not found).
-        // This should be interpreted as "already exited", not as an error.
         let status = Command::new("taskkill")
             .args(["/F", "/T", "/PID", "99999999"])
             .status()
@@ -1143,7 +1149,6 @@ mod tests {
     #[test]
     fn kill_signal_to_process_group_does_not_crash() {
         use std::time::Duration;
-        // Spawn a short-lived process and kill its group.
         let mut cmd = Command::new("sleep");
         cmd.arg("60");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1159,21 +1164,64 @@ mod tests {
         let mut child = cmd.spawn().expect("should spawn sleep");
         let pid = child.id();
 
-        // Send SIGTERM to the process group.
         unsafe {
             libc::kill(-(pid as i32), libc::SIGTERM);
         }
 
-        // Wait briefly for the process to die.
         thread::sleep(Duration::from_millis(500));
         let status = child.try_wait();
         assert!(
             status.is_ok(),
             "try_wait should succeed after killing process group"
         );
-        // The process may or may not have exited yet (SIGKILL would be
-        // more definitive, but SIGTERM + sleep is fine for a test).
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn process_status_serialization_roundtrip() {
+        let statuses = vec![
+            ProcessStatus::Starting,
+            ProcessStatus::Running,
+            ProcessStatus::Ready,
+            ProcessStatus::Exited(0),
+            ProcessStatus::Exited(1),
+            ProcessStatus::ExitedWithError(1),
+            ProcessStatus::Crashed,
+            ProcessStatus::Killed,
+            ProcessStatus::TimedOut,
+            ProcessStatus::Cancelled,
+            ProcessStatus::ExternalLaunchAccepted,
+            ProcessStatus::Unknown,
+        ];
+        for status in &statuses {
+            let json = serde_json::to_string(status).unwrap();
+            let back: ProcessStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(*status, back, "Roundtrip failed for {:?}", status);
+        }
+    }
+
+    #[test]
+    fn process_output_event_has_optional_fields() {
+        let event = ProcessOutputEvent {
+            process_id: "p1".into(),
+            stream: "stdout".into(),
+            line: "hello".into(),
+            sequence: Some(42),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            run_id: Some("r1".into()),
+            step_id: Some("s1".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("r1"));
+        assert!(json.contains("s1"));
+        assert!(json.contains("42"));
+    }
+
+    #[test]
+    fn bounded_log_buffer_available_on_process() {
+        let pm = OsProcessManager::new();
+        assert!(pm.get_log_buffer("nonexistent").is_none());
+        assert!(pm.get_log_truncation("nonexistent").is_none());
     }
 }

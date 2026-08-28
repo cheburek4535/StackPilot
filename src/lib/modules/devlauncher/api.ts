@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { LaunchProfile, LaunchAction, ActionStatus, PreferredIde } from "./types";
+import type {
+  LaunchProfile,
+  LaunchProfileV2,
+  LaunchAction,
+  ActionStatus,
+  PreferredIde,
+  LaunchRun,
+  RunLogs,
+  StepLogs,
+} from "./types";
 import type { WizardContext } from "$lib/modules/project_creator/types";
 
 export async function ping(): Promise<string> {
@@ -81,4 +90,84 @@ export async function stopFileWatcher(): Promise<void> {
 /** Check if file watcher is active. */
 export async function isFileWatching(): Promise<boolean> {
   return invoke("is_file_watching");
+}
+
+// ---------------------------------------------------------------------------
+// V2 Orchestrator API
+// ---------------------------------------------------------------------------
+
+/** Create a new run from a V2 profile. The run starts in Pending status. */
+export async function createRun(profile: LaunchProfileV2): Promise<LaunchRun> {
+  return invoke("create_run", { profile });
+}
+
+/** Start async execution of a Pending run. */
+export async function startRun(runId: string): Promise<void> {
+  return invoke("start_run", { runId });
+}
+
+/** Cancel a running or pending run. Idempotent after terminal state. */
+export async function cancelRun(runId: string): Promise<void> {
+  return invoke("cancel_run", { runId });
+}
+
+/** Get the current state of a run by ID. */
+export async function getRun(runId: string): Promise<LaunchRun> {
+  return invoke("get_run", { runId });
+}
+
+/** List all active (Pending or Running) runs. */
+export async function listActiveRuns(): Promise<LaunchRun[]> {
+  return invoke("list_active_runs");
+}
+
+/** Kill all running processes associated with a run. */
+export async function stopRunProcesses(runId: string): Promise<string[]> {
+  return invoke("stop_run_processes", { runId });
+}
+
+/** Get combined logs for all processes in a run. */
+export async function getRunLogs(runId: string): Promise<RunLogs> {
+  return invoke("get_run_logs", { runId });
+}
+
+/** Get logs for a specific step's process within a run. */
+export async function getStepLogs(runId: string, stepId: string): Promise<StepLogs> {
+  return invoke("get_step_logs", { runId, stepId });
+}
+
+/** List all runs including completed ones (history/audit). */
+export async function listAllRuns(): Promise<LaunchRun[]> {
+  return invoke("list_all_runs");
+}
+
+// ---------------------------------------------------------------------------
+// V2 Profile persistence API
+// ---------------------------------------------------------------------------
+
+/** List all V2 profiles. */
+export async function listProfilesV2(): Promise<LaunchProfile[]> {
+  return invoke("list_profiles_v2");
+}
+
+/** Get a V2 profile by name. */
+export async function getProfileV2(name: string): Promise<LaunchProfile> {
+  return invoke("get_profile_v2", { name });
+}
+
+/** Save a V2 profile. */
+export async function saveProfileV2(profile: LaunchProfile): Promise<void> {
+  return invoke("save_profile_v2", { profile });
+}
+
+/** Delete a V2 profile by name. */
+export async function deleteProfileV2(name: string): Promise<void> {
+  return invoke("delete_profile_v2", { name });
+}
+
+/** Build a V2 profile from wizard context. */
+export async function buildProfileV2FromContext(
+  context: WizardContext,
+): Promise<LaunchProfile> {
+  return invoke("build_profile_v2_from_context", { context });
 }

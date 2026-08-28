@@ -124,14 +124,13 @@ impl FileExplorerService for DefaultFileExplorerService {
         // cross-platform discovery (PATH, Windows App Paths registry, macOS
         // bundles). A bare `code` fails on Windows whenever the app's PATH
         // lacks the user's shell additions — resolution fixes that.
-        let resolved = crate::platform::ide::resolve_ide_executable(cli)
-            .ok_or_else(|| {
-                format!(
-                    "Failed to open VSCode: '{}' was not found on this system. \
+        let resolved = crate::platform::ide::resolve_ide_executable(cli).ok_or_else(|| {
+            format!(
+                "Failed to open VSCode: '{}' was not found on this system. \
                      Make sure the path is correct in Settings → System.",
-                    cli
-                )
-            })?;
+                cli
+            )
+        })?;
 
         let result = if cfg!(target_os = "windows") {
             if crate::platform::paths::is_batch_file(&resolved) {

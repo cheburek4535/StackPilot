@@ -1,4 +1,4 @@
-﻿pub mod content;
+pub mod content;
 pub mod executor;
 pub mod paths;
 pub mod preflight;
@@ -790,7 +790,12 @@ const FLUTTER_OUTPUTS: &[ToolOutput] = &[
     tool_out("pubspec.yaml", false, FileCertainty::Expected, None),
     tool_out("lib", true, FileCertainty::Expected, None),
     tool_out("test", true, FileCertainty::Expected, None),
-    tool_out("analysis_options.yaml", false, FileCertainty::Expected, None),
+    tool_out(
+        "analysis_options.yaml",
+        false,
+        FileCertainty::Expected,
+        None,
+    ),
     tool_out("android", true, FileCertainty::Expected, None),
     tool_out("ios", true, FileCertainty::Expected, None),
     tool_out(
@@ -827,12 +832,8 @@ const FLUTTER_OUTPUTS: &[ToolOutput] = &[
 
 /// django-admin startproject (внутренняя папка = имя проекта, добавляется
 /// отдельно — см. build_project_file_preview).
-const DJANGO_OUTPUTS: &[ToolOutput] = &[tool_out(
-    "manage.py",
-    false,
-    FileCertainty::Expected,
-    None,
-)];
+const DJANGO_OUTPUTS: &[ToolOutput] =
+    &[tool_out("manage.py", false, FileCertainty::Expected, None)];
 
 /// composer create-project (laravel/symfony).
 const COMPOSER_OUTPUTS: &[ToolOutput] = &[
@@ -920,8 +921,18 @@ const MAVEN_OUTPUTS: &[ToolOutput] = &[
 /// dotnet new console (имя .csproj = имя проекта, добавляется отдельно).
 const DOTNET_OUTPUTS: &[ToolOutput] = &[
     tool_out("Program.cs", false, FileCertainty::Expected, None),
-    tool_out("obj", true, FileCertainty::Unknown, Some("Created on the first build")),
-    tool_out("bin", true, FileCertainty::Unknown, Some("Created on the first build")),
+    tool_out(
+        "obj",
+        true,
+        FileCertainty::Unknown,
+        Some("Created on the first build"),
+    ),
+    tool_out(
+        "bin",
+        true,
+        FileCertainty::Unknown,
+        Some("Created on the first build"),
+    ),
 ];
 
 /// zig init.
@@ -939,10 +950,20 @@ const ZIG_OUTPUTS: &[ToolOutput] = &[
 /// tauri init (@tauri-apps/cli или cargo tauri init).
 const TAURI_OUTPUTS: &[ToolOutput] = &[
     tool_out("src-tauri", true, FileCertainty::Expected, None),
-    tool_out("src-tauri/tauri.conf.json", false, FileCertainty::Expected, None),
+    tool_out(
+        "src-tauri/tauri.conf.json",
+        false,
+        FileCertainty::Expected,
+        None,
+    ),
     tool_out("src-tauri/Cargo.toml", false, FileCertainty::Expected, None),
     tool_out("src-tauri/build.rs", false, FileCertainty::Expected, None),
-    tool_out("src-tauri/src/main.rs", false, FileCertainty::Expected, None),
+    tool_out(
+        "src-tauri/src/main.rs",
+        false,
+        FileCertainty::Expected,
+        None,
+    ),
     tool_out("src-tauri/icons", true, FileCertainty::Expected, None),
     tool_out(
         "src-tauri/capabilities",
@@ -1045,9 +1066,7 @@ fn rel_workdir(plan: &ExecutionPlan, working_dir: Option<&str>) -> String {
         };
     }
     // Относительный путь (некоторые шаги указывают working_dir относительно корня).
-    wd.replace('\\', "/")
-        .trim_start_matches('/')
-        .to_string()
+    wd.replace('\\', "/").trim_start_matches('/').to_string()
 }
 
 /// npm install в каталоге — гарантированный выход npm.
@@ -1262,9 +1281,7 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                             .collect()
                     })
                     .unwrap_or_default();
-                if let Some((tool, tool_outputs)) =
-                    tool_known_outputs(generator_id, &cmd, &args)
-                {
+                if let Some((tool, tool_outputs)) = tool_known_outputs(generator_id, &cmd, &args) {
                     insert_tool_outputs(
                         &mut root_entries,
                         &base,
@@ -1297,7 +1314,11 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                 }
             }
             Step::Command {
-                id, command, args, working_dir, ..
+                id,
+                command,
+                args,
+                working_dir,
+                ..
             } => {
                 if is_removable_step(id) {
                     if !removable_ids.contains(id) {
@@ -1350,10 +1371,7 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                         FileCertainty::Expected,
                         "python -m venv".into(),
                         None,
-                        Some(
-                            "Created by python -m venv — contains the virtual environment"
-                                .into(),
-                        ),
+                        Some("Created by python -m venv — contains the virtual environment".into()),
                         &mut expected_count,
                     );
                 }
@@ -1398,9 +1416,7 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                 }
                 // Известные стабильные выходы CLI-команд (nest, django…)
                 // + маркер «… other files».
-                if let Some((tool, tool_outputs)) =
-                    tool_known_outputs("", command, args)
-                {
+                if let Some((tool, tool_outputs)) = tool_known_outputs("", command, args) {
                     insert_tool_outputs(
                         &mut root_entries,
                         &wd,
@@ -1434,7 +1450,13 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                             inner_warn.clone(),
                             &mut expected_count,
                         );
-                        for inner_file in ["__init__.py", "settings.py", "urls.py", "asgi.py", "wsgi.py"] {
+                        for inner_file in [
+                            "__init__.py",
+                            "settings.py",
+                            "urls.py",
+                            "asgi.py",
+                            "wsgi.py",
+                        ] {
                             insert_entry(
                                 &mut root_entries,
                                 &join_path(&inner, inner_file),
@@ -1614,8 +1636,7 @@ fn insert_entry_recursive(
             // Certain (наши файлы) никогда не понижается и перекрывает
             // предупреждения внешних источников. Expected не понижается
             // до Unknown (вторая вставка не ухудшает честность).
-            if certainty == FileCertainty::Certain && existing.certainty != FileCertainty::Certain
-            {
+            if certainty == FileCertainty::Certain && existing.certainty != FileCertainty::Certain {
                 existing.certainty = FileCertainty::Certain;
                 existing.source = source;
                 existing.warning = None;
@@ -1650,8 +1671,16 @@ fn insert_entry_recursive(
             },
             name: part.to_string(),
             is_dir: !is_last || is_dir,
-            certainty: if is_last { certainty.clone() } else { FileCertainty::Certain },
-            source: if is_last { source.clone() } else { "StackPilot generator".into() },
+            certainty: if is_last {
+                certainty.clone()
+            } else {
+                FileCertainty::Certain
+            },
+            source: if is_last {
+                source.clone()
+            } else {
+                "StackPilot generator".into()
+            },
             content: if is_last { content.clone() } else { None },
             warning: if is_last { warning.clone() } else { None },
             children: Vec::new(),
@@ -5979,12 +6008,7 @@ app.listen(PORT, () => {{
                 "Init Electron",
                 "Create Electron app with electron-forge",
                 "npx",
-                vec![
-                    "create-electron-app",
-                    SCAFFOLD_TARGET,
-                    "--template",
-                    "vite",
-                ],
+                vec!["create-electron-app", SCAFFOLD_TARGET, "--template", "vite"],
                 ScaffoldCapability::CreatesProjectAndMayPrompt,
                 "frontend",
                 ScaffoldExtras::default()
@@ -8573,7 +8597,12 @@ mod tests {
     }
 
     fn recipe_for(ctx: &WizardContext, folder_name: &str) -> Result<Recipe, String> {
-        compose_recipe(&ProjectLayout::compute(ctx), ctx, folder_name, Path::new("."))
+        compose_recipe(
+            &ProjectLayout::compute(ctx),
+            ctx,
+            folder_name,
+            Path::new("."),
+        )
     }
 
     fn cmd_args(step: &Step) -> Vec<String> {
@@ -13463,9 +13492,15 @@ mod tests {
             );
             let check = &recipe.steps[idx(check_id)];
             let cargs = cmd_args(check);
-            assert_eq!(cargs[0], "-d", "префлайт — php -d extension=fileinfo -r скрипт");
+            assert_eq!(
+                cargs[0], "-d",
+                "префлайт — php -d extension=fileinfo -r скрипт"
+            );
             assert_eq!(cargs[1], "extension=fileinfo");
-            assert_eq!(cargs[2], "-r", "префлайт — php -d extension=fileinfo -r скрипт");
+            assert_eq!(
+                cargs[2], "-r",
+                "префлайт — php -d extension=fileinfo -r скрипт"
+            );
             let scaffold = recipe.steps.iter().find(|s| s.id() == new_id).unwrap();
             if let Step::Generate {
                 generator_config, ..

@@ -19,48 +19,89 @@ export type StatusTone =
   | "amber"
   | "red";
 
+function isExited(status: ProcessStatus): status is { exited: number } {
+  return typeof status === "object" && "exited" in status;
+}
+
+function isExitedWithError(status: ProcessStatus): status is {
+  exited_with_error: number;
+} {
+  return typeof status === "object" && "exited_with_error" in status;
+}
+
 export function statusLabel(status: ProcessStatus): string {
-  if (status === "Running") return i18n.t("stat.running") as TranslationKey;
-  if (status === "Killed") return i18n.t("stat.killed") as TranslationKey;
-  if (status === "Crashed") return i18n.t("stat.crashed") as TranslationKey;
-  if (typeof status === "object" && "Exited" in status) {
-    return status.Exited === 0
+  if (status === "starting") return i18n.t("devl.status_starting") as TranslationKey;
+  if (status === "running") return i18n.t("devl.status_running") as TranslationKey;
+  if (status === "ready") return i18n.t("devl.status_ready") as TranslationKey;
+  if (status === "killed") return i18n.t("devl.status_killed") as TranslationKey;
+  if (status === "crashed") return i18n.t("devl.status_crashed") as TranslationKey;
+  if (status === "timed_out") return i18n.t("devl.status_timed_out") as TranslationKey;
+  if (status === "cancelled") return i18n.t("devl.status_cancelled") as TranslationKey;
+  if (status === "external_launch_accepted")
+    return i18n.t("devl.status_external") as TranslationKey;
+  if (status === "unknown") return i18n.t("devl.status_unknown") as TranslationKey;
+  if (isExited(status)) {
+    return status.exited === 0
       ? (i18n.t("stat.success") as TranslationKey)
-      : (i18n.t("stat.exited", { code: status.Exited }) as TranslationKey);
+      : (i18n.t("stat.exited", { code: status.exited }) as TranslationKey);
   }
-  return i18n.t("stat.unknown") as TranslationKey;
+  if (isExitedWithError(status)) {
+    return i18n.t("stat.exited", {
+      code: status.exited_with_error,
+    }) as TranslationKey;
+  }
+  return i18n.t("devl.status_unknown") as TranslationKey;
 }
 
 export function statusTone(status: ProcessStatus): StatusTone {
-  if (status === "Running") return "lime";
-  if (status === "Killed") return "red";
-  if (status === "Crashed") return "red";
-  if (typeof status === "object" && "Exited" in status) {
-    return status.Exited === 0 ? "blue" : "amber";
+  if (status === "running" || status === "starting") return "lime";
+  if (status === "ready") return "cyan";
+  if (status === "killed") return "red";
+  if (status === "crashed") return "red";
+  if (status === "timed_out") return "amber";
+  if (status === "cancelled") return "violet";
+  if (isExited(status)) {
+    return status.exited === 0 ? "blue" : "amber";
   }
+  if (isExitedWithError(status)) return "amber";
   return "neutral";
 }
 
 export function statusIcon(
   status: ProcessStatus,
 ): "play" | "check" | "x" | "alert" {
-  if (status === "Running") return "play";
-  if (status === "Killed") return "x";
-  if (status === "Crashed") return "alert";
-  if (typeof status === "object" && "Exited" in status) {
-    return status.Exited === 0 ? "check" : "alert";
+  if (status === "running" || status === "starting") return "play";
+  if (status === "ready") return "play";
+  if (status === "killed") return "x";
+  if (status === "crashed") return "alert";
+  if (status === "timed_out") return "alert";
+  if (isExited(status)) {
+    return status.exited === 0 ? "check" : "alert";
   }
+  if (isExitedWithError(status)) return "alert";
   return "x";
 }
 
 /** True when the process is in a failed/failed-exit state (derived from real status). */
 export function isProcessFailed(status: ProcessStatus): boolean {
-  if (status === "Crashed") return true;
-  if (status === "Killed") return true;
-  if (typeof status === "object" && "Exited" in status) {
-    return status.Exited !== 0;
+  if (status === "crashed") return true;
+  if (status === "killed") return true;
+  if (status === "timed_out") return true;
+  if (isExited(status)) {
+    return status.exited !== 0;
   }
+  if (isExitedWithError(status)) return true;
   return false;
+}
+
+/** True when the process is still running (non-terminal, non-exited). */
+export function isProcessRunning(status: ProcessStatus): boolean {
+  return (
+    status === "starting" ||
+    status === "running" ||
+    status === "ready" ||
+    status === "external_launch_accepted"
+  );
 }
 
 export function formatDuration(secs: number): string {

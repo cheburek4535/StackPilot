@@ -10,7 +10,7 @@
   import { workspaceContext } from "$lib/modules/workspace/context";
   import { listProcesses } from "$lib/modules/workspace/api";
   import type { TrackedProcess } from "$lib/modules/workspace/types";
-  import { statusLabel, formatStarted } from "$lib/modules/workspace/status";
+  import { statusLabel, formatStarted, isProcessFailed } from "$lib/modules/workspace/status";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
 
@@ -44,13 +44,7 @@
   // get_problems command has no frontend wrapper — contract E).
   const problems = $derived(
     processes.filter((p) => {
-      if (p.status === "Crashed") return true;
-      if (
-        typeof p.status === "object" &&
-        "Exited" in p.status &&
-        p.status.Exited !== 0
-      )
-        return true;
+      if (isProcessFailed(p.status)) return true;
       if (p.last_error) return true;
       return false;
     }),
@@ -58,9 +52,14 @@
 
   function problemReason(p: TrackedProcess): string {
     if (p.last_error) return p.last_error;
-    if (p.status === "Crashed") return i18n.t("ws.reason_crashed");
-    if (typeof p.status === "object" && "Exited" in p.status) {
-      return i18n.t("ws.reason_exited", { code: p.status.Exited });
+    if (p.status === "crashed") return i18n.t("ws.reason_crashed");
+    if (p.status === "timed_out") return i18n.t("devl.status_timed_out");
+    if (p.status === "killed") return i18n.t("devl.status_killed");
+    if (typeof p.status === "object" && "exited" in p.status) {
+      return i18n.t("ws.reason_exited", { code: p.status.exited });
+    }
+    if (typeof p.status === "object" && "exited_with_error" in p.status) {
+      return i18n.t("ws.reason_exited", { code: p.status.exited_with_error });
     }
     return i18n.t("ws.reason_error");
   }

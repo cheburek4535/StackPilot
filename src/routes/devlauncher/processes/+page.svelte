@@ -236,25 +236,53 @@
   }
 
   function statusLabel(status: ProcessStatus): string {
-    if (status === "Running") return i18n.t("devl.status_running");
-    if (status === "Killed") return i18n.t("devl.status_killed");
-    if (status === "Crashed") return i18n.t("devl.status_crashed");
-    if (typeof status === "object" && "Exited" in status) {
-      const code = (status as { Exited: number }).Exited;
+    if (status === "starting") return i18n.t("devl.status_starting");
+    if (status === "running") return i18n.t("devl.status_running");
+    if (status === "ready") return i18n.t("devl.status_ready");
+    if (status === "killed") return i18n.t("devl.status_killed");
+    if (status === "crashed") return i18n.t("devl.status_crashed");
+    if (status === "timed_out") return i18n.t("devl.status_timed_out");
+    if (status === "cancelled") return i18n.t("devl.status_cancelled");
+    if (status === "external_launch_accepted") return i18n.t("devl.status_external");
+    if (status === "unknown") return i18n.t("devl.status_unknown");
+    if (typeof status === "object" && "exited" in status) {
+      const code = (status as { exited: number }).exited;
       return code === 0 ? "Success" : i18n.t("devl.status_failed", { code });
+    }
+    if (typeof status === "object" && "exited_with_error" in status) {
+      const code = (status as { exited_with_error: number }).exited_with_error;
+      return i18n.t("devl.status_failed", { code });
     }
     return i18n.t("devl.status_unknown");
   }
 
   function statusClass(status: ProcessStatus): string {
-    if (status === "Running") return "running";
-    if (status === "Killed") return "killed";
-    if (status === "Crashed") return "crashed";
-    if (typeof status === "object" && "Exited" in status) {
-      const code = (status as { Exited: number }).Exited;
+    if (status === "starting") return "starting";
+    if (status === "running") return "running";
+    if (status === "ready") return "ready";
+    if (status === "killed") return "killed";
+    if (status === "crashed") return "crashed";
+    if (status === "timed_out") return "timed-out";
+    if (status === "cancelled") return "cancelled";
+    if (status === "external_launch_accepted") return "external";
+    if (status === "unknown") return "";
+    if (typeof status === "object" && "exited" in status) {
+      const code = (status as { exited: number }).exited;
       return code === 0 ? "exited-ok" : "exited-err";
     }
+    if (typeof status === "object" && "exited_with_error" in status) {
+      return "exited-err";
+    }
     return "";
+  }
+
+  function isRunning(status: ProcessStatus): boolean {
+    return (
+      status === "starting" ||
+      status === "running" ||
+      status === "ready" ||
+      status === "external_launch_accepted"
+    );
   }
 
   function formatDuration(secs: number): string {
@@ -336,16 +364,23 @@
     {:else}
       <div class="process-list">
         {#each processes as proc (proc.id)}
-          <div class="process-card" class:exited={proc.status !== "Running"}>
+          <div class="process-card" class:exited={!isRunning(proc.status)}>
             <div class="card-top">
               <div class="proc-main">
                 <div class="proc-label-row">
                   <span class="proc-icon">
-                    {#if proc.status === "Running"}▶{:else}⬛{/if}
+                    {#if isRunning(proc.status)}▶{:else}⬛{/if}
                   </span>
                   <strong class="proc-label">{proc.label}</strong>
                   {#if proc.visible}
                     <span class="visible-badge" title={i18n.t("devl.visible_terminal") as TranslationKey}>🖥</span>
+                  {/if}
+                  {#if proc.tracking_quality === "terminal_wrapper"}
+                    <span class="tracking-badge" title="PID points to terminal wrapper, not the inner command">⚠ track</span>
+                  {:else if proc.tracking_quality === "detached"}
+                    <span class="tracking-badge" title="Process launched detached, no PID tracking">⊘ detached</span>
+                  {:else if proc.tracking_quality === "approximate"}
+                    <span class="tracking-badge" title="PID was the process but may have been replaced">~ approx</span>
                   {/if}
                   <span class="status-badge {statusClass(proc.status)}">
                     {statusLabel(proc.status)}
@@ -362,6 +397,22 @@
                     <span class="meta-item restart-count">{i18n.t("devl.restarts", { n: proc.restarts }) as TranslationKey}</span>
                   {/if}
                 </div>
+                {#if proc.command}
+                  <div class="proc-command">{proc.command}</div>
+                {/if}
+                {#if proc.run_id}
+                  <div class="proc-run-meta">
+                    <span class="meta-item">run {proc.run_id.slice(0, 8)}</span>
+                    {#if proc.step_id}
+                      <span class="meta-item sep">·</span>
+                      <span class="meta-item">step {proc.step_id}</span>
+                    {/if}
+                    {#if proc.working_dir}
+                      <span class="meta-item sep">·</span>
+                      <span class="meta-item proc-cwd">{proc.working_dir}</span>
+                    {/if}
+                  </div>
+                {/if}
                 {#if proc.last_error}
                   <div class="proc-error">{proc.last_error}</div>
                 {/if}
@@ -376,7 +427,7 @@
                 <button
                   class="action-btn kill"
                   onclick={() => handleKill(proc.id)}
-                  disabled={proc.status !== "Running"}
+                  disabled={!isRunning(proc.status)}
                   title={i18n.t("devl.kill_process") as TranslationKey}
                 >
                   {i18n.t("devl.kill") as TranslationKey}
@@ -634,6 +685,32 @@
     overflow-y: auto;
   }
 
+  .proc-command {
+    margin-top: 0.35rem;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    font-family: var(--sp-font-mono);
+    background: var(--sp-code-bg);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--sp-radius-xs);
+    word-break: break-all;
+  }
+
+  .proc-run-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+    font-size: var(--sp-fs-2xs);
+    color: var(--sp-text-3);
+    flex-wrap: wrap;
+  }
+
+  .proc-cwd {
+    font-family: var(--sp-font-mono);
+    word-break: break-all;
+  }
+
   .status-badge {
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-bold);
@@ -645,10 +722,15 @@
   }
 
   .status-badge.running { background: rgba(163, 230, 53, 0.14); color: var(--sp-success); }
+  .status-badge.starting { background: rgba(96, 165, 250, 0.14); color: var(--sp-blue); }
+  .status-badge.ready { background: rgba(34, 211, 238, 0.14); color: var(--sp-cyan); }
   .status-badge.exited-ok { background: rgba(96, 165, 250, 0.14); color: var(--sp-blue); }
   .status-badge.exited-err { background: rgba(251, 191, 36, 0.14); color: var(--sp-warning); }
   .status-badge.killed { background: rgba(248, 113, 113, 0.14); color: var(--sp-danger); }
   .status-badge.crashed { background: rgba(248, 113, 113, 0.2); color: var(--sp-danger); }
+  .status-badge.timed-out { background: rgba(251, 191, 36, 0.14); color: var(--sp-warning); }
+  .status-badge.cancelled { background: rgba(139, 92, 246, 0.14); color: var(--sp-violet); }
+  .status-badge.external { background: rgba(34, 211, 238, 0.14); color: var(--sp-cyan); }
 
   .visible-badge {
     font-size: var(--sp-fs-xs);
@@ -657,6 +739,16 @@
     padding: 0.05rem 0.35rem;
     border-radius: var(--sp-radius-xs);
     cursor: help;
+  }
+
+  .tracking-badge {
+    font-size: var(--sp-fs-2xs);
+    background: rgba(251, 191, 36, 0.14);
+    color: var(--sp-warning);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--sp-radius-xs);
+    cursor: help;
+    white-space: nowrap;
   }
 
   .proc-actions {

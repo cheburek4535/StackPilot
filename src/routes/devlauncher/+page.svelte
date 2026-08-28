@@ -28,7 +28,10 @@
     LaunchAction,
     ActionStatus,
     FileChangeEvent,
+    LaunchRun,
+    StepStatus,
   } from "$lib/modules/devlauncher/types";
+  import { isV2Profile, isRunTerminal, stepKindIcon, stepKindSummary, stepStatusClass } from "$lib/modules/devlauncher/types";
   import {
     actionIcon,
     actionTypeLabel,
@@ -36,6 +39,7 @@
     formatResult,
     resultClass,
   } from "$lib/modules/devlauncher/actionMeta";
+  import * as runStore from "$lib/modules/devlauncher/runStore";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -54,6 +58,9 @@
   let lastChangedFile = $state<string | null>(null);
   let unlistenFileWatch: (() => void) | null = null;
 
+  /** Active V2 run displayed inline below the launch button. */
+  let activeRun = $state<LaunchRun | null>(null);
+
   const selectedProfile = $derived(
     profiles.find((p) => p.name === selectedName) ?? null,
   );
@@ -69,8 +76,36 @@
     return { ok, err, skip };
   });
 
+  /** Check if the selected profile is a V2 profile. */
+  const isV2 = $derived(selectedProfile ? isV2Profile(selectedProfile) : false);
+
+  /** Runs belonging to the selected profile (history, refreshed explicitly). */
+  let historyRuns = $state<LaunchRun[]>([]);
+
+  function refreshHistory() {
+    if (!selectedProfile) {
+      historyRuns = [];
+      return;
+    }
+    historyRuns = runStore
+      .getAllRuns()
+      .filter((r) => r.profile_name === selectedProfile!.name)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  /** Map a step id to its display label using the profile's step graph. */
+  function stepLabel(stepId: string): string {
+    if (!selectedProfile || !Array.isArray((selectedProfile as any).steps)) return stepId;
+    const steps = (selectedProfile as any).steps as Array<{ id: string; label?: string }>;
+    const found = steps.find((s) => s.id === stepId);
+    return found?.label || stepId;
+  }
+
   onMount(async () => {
+    await runStore.init();
     await Promise.all([loadProject(), loadProfiles()]);
+    // Recover any active V2 runs.
+    await recoverActiveRun();
     // Listen for file change events from the backend watcher
     unlistenFileWatch = await listen<FileChangeEvent>(
       "devlauncher:file_changed",
@@ -88,7 +123,22 @@
 
   onDestroy(() => {
     unlistenFileWatch?.();
+    runStore.destroy();
   });
+
+  /** Recover the latest run for the selected profile (including finished runs). */
+  async function recoverActiveRun() {
+    if (!selectedProfile) return;
+    const latest = runStore.getLatestRunForProfile(selectedProfile.name);
+    if (latest) {
+      activeRun = latest;
+    } else {
+      const runs = runStore.getActiveRuns();
+      if (runs.length > 0) {
+        activeRun = runs[runs.length - 1];
+      }
+    }
+  }
 
   async function reload() {
     error = "";
@@ -113,6 +163,7 @@
       } else if (profiles.length === 0) {
         selectedName = null;
       }
+      refreshHistory();
     } catch (e) {
       error = i18n.t("devl.load_profiles_failed", { err: String(e) });
     }
@@ -129,44 +180,75 @@
     return "?";
   }
 
-  /** Запуск всего профиля: действия выполняются по очереди, результат
-   *  каждого показывается сразу по завершении (бэкенд больше не блокирует
-   *  UI, но долгие WaitForPort/Delay всё равно идут последовательно).
-   *  После запуска включается file watcher для live-reload. */
+  /** Запуск всего профиля: V2 использует event-driven orchestrator,
+   *  legacy — пошаговый executeAction. */
   async function launchProfile(profile: LaunchProfile) {
     if (launching) return;
     launching = true;
     actionResults = new Map();
+    activeRun = null;
+
     try {
-      // Привязываем запуск к проекту профиля: процессы попадут в Workspace,
-      // а таймер сессии увидит их завершение.
+      // Bind profile to workspace project.
       if (profile.project_path && profile.name !== project?.profile_name) {
         await setCurrentProject(profile.name, profile.project_path, profile.description, []);
         project = await getCurrentProject();
       }
     } catch {
-      // не критично — запуск продолжится без привязки
+      // Non-critical — launch continues without binding.
     }
-    for (const action of profile.actions) {
-      if (!action.enabled) continue;
-      launchCurrent = action.label;
+
+    if (isV2Profile(profile) && profile.id && profile.schema_version) {
+      // V2 path: use event-driven orchestrator.
       try {
-        const result = await executeAction(action);
-        actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
+        const v2Profile = profile as unknown as import("$lib/modules/devlauncher/types").LaunchProfileV2;
+        const run = await runStore.launchRun(v2Profile);
+        activeRun = run;
+        refreshHistory();
+        // Subscribe to run updates via polling (event-driven via runStore).
+        pollRun(run.run_id);
       } catch (e) {
-        actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);
+        notifyError(i18n.t("devl.launch_failed") as TranslationKey, String(e));
       }
+    } else {
+      // Legacy path: sequential executeAction per action.
+      for (const action of profile.actions) {
+        if (!action.enabled) continue;
+        launchCurrent = action.label;
+        try {
+          const result = await executeAction(action);
+          actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
+        } catch (e) {
+          actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);
+        }
+      }
+      launchCurrent = null;
     }
-    launchCurrent = null;
+
     launching = false;
-    // Start file watcher for live-reload
+    // Start file watcher for live-reload.
     if (profile.project_path) {
       try {
         await startFileWatcher(profile.project_path);
         watching = true;
       } catch {
-        // non-critical
+        // Non-critical.
       }
+    }
+  }
+
+  /** Poll a V2 run for updates (supplements event-driven updates). */
+  async function pollRun(runId: string) {
+    try {
+      const run = await runStore.fetchRun(runId);
+      if (run) {
+        activeRun = run;
+        if (!isRunTerminal(run.status) && launching) {
+          setTimeout(() => pollRun(runId), 1000);
+        }
+      }
+    } catch {
+      // Non-critical.
     }
   }
 
@@ -217,6 +299,7 @@
       notifySuccess(i18n.t("devl.toast_deleted"), profile.name);
       if (selectedName === profile.name) selectedName = null;
       actionResults = new Map();
+      activeRun = null;
       // Stop file watcher if this was the active project
       if (watching && profile.project_path) {
         try {
@@ -229,6 +312,38 @@
       notifyError(i18n.t("devl.toast_deleted"), i18n.t("devl.toast_delete_failed", { err: String(e) }));
     }
     deleting = false;
+  }
+
+  /** Cancel the active V2 run. Idempotent — safe after terminal state. */
+  async function cancelRun() {
+    await runStore.cancelCurrentRun();
+    if (activeRun) {
+      // Fetch latest state.
+      const updated = await runStore.fetchRun(activeRun.run_id);
+      if (updated) activeRun = updated;
+    }
+    refreshHistory();
+  }
+
+  /** Stop all processes of a run without cancelling the run itself. */
+  async function stopRun(runId: string) {
+    try {
+      await runStore.stopProcesses(runId);
+      if (activeRun?.run_id === runId) {
+        const updated = await runStore.fetchRun(runId);
+        if (updated) activeRun = updated;
+      }
+      refreshHistory();
+    } catch { /* non-critical */ }
+  }
+
+  function selectProfile(name: string) {
+    selectedName = name;
+    actionResults = new Map();
+    activeRun = null;
+    const latest = runStore.getLatestRunForProfile(name);
+    if (latest) activeRun = latest;
+    refreshHistory();
   }
 </script>
 
@@ -318,10 +433,7 @@
             <button
               class="sp-profile-row"
               class:sp-profile-row-active={profile.name === selectedName}
-              onclick={() => {
-                selectedName = profile.name;
-                actionResults = new Map();
-              }}
+              onclick={() => selectProfile(profile.name)}
             >
               <span class="sp-profile-row-main">
                 <strong>{profile.name}</strong>
@@ -355,7 +467,7 @@
                 icon="play"
                 block
                 loading={launching}
-                disabled={launching || selectedProfile.actions.every((a) => !a.enabled)}
+                disabled={launching || (isV2 ? false : selectedProfile.actions.every((a) => !a.enabled))}
                 onclick={() => launchProfile(selectedProfile!)}
               >
                 {launching ? (i18n.t("devl.launching") as TranslationKey) : (i18n.t("devl.launch", { name: selectedProfile.name }) as TranslationKey)}
@@ -378,6 +490,108 @@
             {#if lastChangedFile}
               <div class="sp-file-changed">
                 📄 {i18n.t("devl.file_changed", { path: lastChangedFile }) as TranslationKey}
+              </div>
+            {/if}
+
+            <!-- V2 Run State Display -->
+            {#if activeRun}
+              <div class="sp-run-card">
+                <div class="sp-run-header">
+                  <h5 class="sp-sub-title" style="margin:0">
+                    {i18n.t("devl.run") as TranslationKey} — {activeRun.profile_name}
+                  </h5>
+                  <div class="sp-run-actions">
+                    {#if !isRunTerminal(activeRun.status)}
+                      <Button variant="danger" size="sm" icon="x" onclick={cancelRun}>
+                        {i18n.t("devl.cancel_run") as TranslationKey}
+                      </Button>
+                    {:else}
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        icon="x"
+                        onclick={() => stopRun(activeRun!.run_id)}
+                      >
+                        {i18n.t("devl.stop_processes") as TranslationKey}
+                      </Button>
+                    {/if}
+                    <Badge tone={activeRun.status === "succeeded" ? "lime" : activeRun.status === "failed" ? "red" : activeRun.status === "cancelled" ? "amber" : "violet"}>
+                      {activeRun.status}
+                    </Badge>
+                  </div>
+                </div>
+                <div class="sp-run-steps">
+                  {#each activeRun.steps as step}
+                    <div class="sp-step-row {stepStatusClass(step.status)}">
+                      <span class="sp-step-status">
+                        {#if step.status === "pending"}○
+                        {:else if step.status === "running"}◉
+                        {:else if step.status === "succeeded"}✓
+                        {:else if step.status === "failed"}✗
+                        {:else if step.status === "skipped"}—
+                        {:else if step.status === "cancelled"}⊘
+                        {:else if step.status === "retrying"}↻
+                        {:else}?{/if}
+                      </span>
+                      <span class="sp-step-id">{stepLabel(step.step_id)}</span>
+                      <span class="sp-step-time">
+                        {#if step.started_at && step.finished_at}
+                          ({step.finished_at})
+                        {/if}
+                      </span>
+                      {#if step.error}
+                        <span class="sp-step-error">{step.error}</span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+                {#if activeRun.diagnostics.length > 0}
+                  <div class="sp-run-diagnostics">
+                    {#each activeRun.diagnostics as diag}
+                      <p class="sp-diag {diag.severity === "error" ? "sp-diag-err" : diag.severity === "warning" ? "sp-diag-warn" : "sp-diag-info"}">
+                        [{diag.source}] {diag.message}
+                      </p>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
+            <!-- Run history for this profile -->
+            {#if historyRuns.length > 0}
+              <div class="sp-run-history">
+                <h5 class="sp-sub-title" style="margin:0">
+                  {i18n.t("devl.run_history") as TranslationKey}
+                </h5>
+                {#each historyRuns as r}
+                  <div class="sp-history-row">
+                    <button
+                      class="sp-history-main"
+                      onclick={() => (activeRun = runStore.getRunById(r.run_id) ?? r)}
+                    >
+                      <span class="sp-history-id">#{r.run_id.slice(0, 8)}</span>
+                      <Badge tone={r.status === "succeeded" ? "lime" : r.status === "failed" ? "red" : r.status === "cancelled" ? "amber" : r.status === "running" ? "violet" : "neutral"}>
+                        {r.status}
+                      </Badge>
+                      <span class="sp-history-time">{new Date(r.created_at).toLocaleString()}</span>
+                    </button>
+                    <div class="sp-history-actions">
+                      {#if !isRunTerminal(r.status)}
+                        <Button variant="danger" size="sm" icon="x" onclick={() => stopRun(r.run_id)}>
+                          {i18n.t("devl.stop_processes") as TranslationKey}
+                        </Button>
+                      {/if}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon="terminal"
+                        onclick={() => goto(`/devlauncher/processes?log=${r.steps.find((s) => s.process_id)?.process_id ?? ""}`)}
+                      >
+                        {i18n.t("devl.logs") as TranslationKey}
+                      </Button>
+                    </div>
+                  </div>
+                {/each}
               </div>
             {/if}
 
@@ -698,6 +912,152 @@
     padding: var(--sp-1) var(--sp-2);
     background: var(--sp-accent-soft);
     border-radius: var(--sp-radius-sm);
+  }
+
+  /* V2 Run state */
+  .sp-run-card {
+    margin-top: var(--sp-3);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--sp-bg-1);
+  }
+
+  .sp-run-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+
+  .sp-run-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-run-steps {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-step-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-mono);
+  }
+
+  .sp-step-row.step-pending { opacity: 0.5; }
+  .sp-step-row.step-running { background: var(--sp-accent-soft); }
+  .sp-step-row.step-succeeded { color: var(--sp-success); }
+  .sp-step-row.step-failed { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .sp-step-row.step-skipped { color: var(--sp-warning); opacity: 0.7; }
+  .sp-step-row.step-cancelled { color: var(--sp-text-3); text-decoration: line-through; }
+  .sp-step-row.step-retrying { color: var(--sp-amber); }
+
+  .sp-step-status {
+    width: 1.2em;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .sp-step-id {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-step-time {
+    color: var(--sp-text-3);
+    font-size: var(--sp-fs-2xs);
+  }
+
+  .sp-step-error {
+    color: var(--sp-danger);
+    font-size: var(--sp-fs-2xs);
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-run-diagnostics {
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--sp-border);
+  }
+
+  .sp-diag {
+    margin: 0;
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-mono);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+  }
+
+  .sp-diag-err { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .sp-diag-warn { color: var(--sp-warning); background: rgba(251,191,36,0.08); }
+  .sp-diag-info { color: var(--sp-text-3); }
+
+  .sp-run-history {
+    margin-top: var(--sp-3);
+    border-top: 1px solid var(--sp-border);
+    padding-top: var(--sp-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-history-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+  }
+
+  .sp-history-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    background: none;
+    border: none;
+    color: var(--sp-text-1);
+    font-family: var(--sp-font-sans);
+    cursor: pointer;
+    text-align: left;
+    padding: var(--sp-1) 0;
+  }
+
+  .sp-history-id {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-2xs);
+    color: var(--sp-text-3);
+  }
+
+  .sp-history-time {
+    font-size: var(--sp-fs-2xs);
+    color: var(--sp-text-3);
+    margin-left: auto;
+  }
+
+  .sp-history-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-shrink: 0;
   }
 
   @keyframes sp-pulse {

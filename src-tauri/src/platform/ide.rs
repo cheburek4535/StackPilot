@@ -123,24 +123,27 @@ fn resolve_windows(cli: &str) -> Option<String> {
     if lower.starts_with("code") || lower.starts_with("cursor") || lower.starts_with("windsurf") {
         if let Some(base) = &local {
             let base = std::path::PathBuf::from(base);
-            candidates.push(base.join("Programs").join("Microsoft VS Code").join("Code.exe"));
+            candidates.push(
+                base.join("Programs")
+                    .join("Microsoft VS Code")
+                    .join("Code.exe"),
+            );
             candidates.push(
                 base.join("Programs")
                     .join("Microsoft VS Code Insiders")
                     .join("Code - Insiders.exe"),
             );
             candidates.push(base.join("Programs").join("cursor").join("Cursor.exe"));
-            candidates.push(
-                base.join("Programs")
-                    .join("Windsurf")
-                    .join("windsurf.exe"),
-            );
+            candidates.push(base.join("Programs").join("Windsurf").join("windsurf.exe"));
             candidates.push(base.join("Programs").join("Windsurf").join("Windsurf.exe"));
         }
         if let Some(pf) = &program_files {
             let pf = std::path::PathBuf::from(pf);
             candidates.push(pf.join("Microsoft VS Code").join("Code.exe"));
-            candidates.push(pf.join("Microsoft VS Code Insiders").join("Code - Insiders.exe"));
+            candidates.push(
+                pf.join("Microsoft VS Code Insiders")
+                    .join("Code - Insiders.exe"),
+            );
             candidates.push(pf.join("cursor").join("Cursor.exe"));
         }
     }
@@ -234,7 +237,15 @@ fn vswhere_devenv() -> Option<String> {
         return None;
     }
     let out = Command::new(&vswhere)
-        .args(["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Workload.Universal", "-property", "installationPath"])
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Workload.Universal",
+            "-property",
+            "installationPath",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -265,8 +276,16 @@ fn resolve_macos(cli: &str) -> Option<String> {
 
     // Bundle lookup map: cli name → app bundle and inner binary path.
     let bundles: &[(&str, &str, &str)] = &[
-        ("code", "Visual Studio Code.app", "Contents/Resources/app/bin/code"),
-        ("code-insiders", "Visual Studio Code - Insiders.app", "Contents/Resources/app/bin/code"),
+        (
+            "code",
+            "Visual Studio Code.app",
+            "Contents/Resources/app/bin/code",
+        ),
+        (
+            "code-insiders",
+            "Visual Studio Code - Insiders.app",
+            "Contents/Resources/app/bin/code",
+        ),
         ("cursor", "Cursor.app", "Contents/MacOS/Cursor"),
         ("windsurf", "Windsurf.app", "Contents/MacOS/windsurf"),
         ("pycharm", "PyCharm.app", "Contents/MacOS/pycharm"),
@@ -296,7 +315,9 @@ fn resolve_macos(cli: &str) -> Option<String> {
         Some("/opt/homebrew/bin"),
         Some("/usr/local/bin"),
         Some("/usr/bin"),
-        home.as_deref().map(|h| format!("{}/.local/bin", h)).as_deref(),
+        home.as_deref()
+            .map(|h| format!("{}/.local/bin", h))
+            .as_deref(),
     ] {
         if let Some(dir) = dir {
             let p = std::path::Path::new(dir).join(cli);
@@ -341,10 +362,7 @@ fn resolve_linux(cli: &str) -> Option<String> {
     let lower = cli.to_ascii_lowercase();
     for (name, id) in flatpak_ids {
         if lower.starts_with(name) {
-            let out = Command::new("flatpak")
-                .args(["info", id])
-                .output()
-                .ok();
+            let out = Command::new("flatpak").args(["info", id]).output().ok();
             if let Some(out) = out {
                 if out.status.success() {
                     return Some(format!("flatpak run {}", id));

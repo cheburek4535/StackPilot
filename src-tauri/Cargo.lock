@@ -3397,6 +3397,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
+ "url",
+ "uuid",
  "walkdir",
  "webbrowser",
  "which",

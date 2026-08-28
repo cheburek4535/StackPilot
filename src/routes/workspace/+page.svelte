@@ -22,6 +22,8 @@
     statusIcon,
     formatDuration,
     formatDateTime,
+    isProcessRunning,
+    isProcessFailed,
   } from "$lib/modules/workspace/status";
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
@@ -83,20 +85,9 @@
     session = sess;
   }
 
-  const runningProcs = $derived(processes.filter((p) => p.status === "Running"));
+  const runningProcs = $derived(processes.filter((p) => isProcessRunning(p.status)));
   const runningCount = $derived(runningProcs.length);
-  const erroredCount = $derived(
-    processes.filter((p) => {
-      if (p.status === "Crashed") return true;
-      if (
-        typeof p.status === "object" &&
-        "Exited" in p.status &&
-        p.status.Exited !== 0
-      )
-        return true;
-      return false;
-    }).length,
-  );
+  const erroredCount = $derived(processes.filter((p) => isProcessFailed(p.status)).length);
   const restarts = $derived(processes.reduce((sum, p) => sum + p.restarts, 0));
 
   async function openRecent(ref: RecentProjectRef) {
@@ -307,6 +298,12 @@
                   <span class="sp-proc-label">{p.label}</span>
                   <span class="sp-proc-meta">
                     {i18n.t("ws.pid", { pid: p.pid }) as TranslationKey} · {formatDuration(p.duration_secs)}
+                    {#if p.run_id}
+                      · <span class="sp-proc-run">run #{p.run_id.slice(0, 8)}</span>
+                    {/if}
+                    {#if p.command}
+                      · <span class="sp-proc-cmd">{p.command}</span>
+                    {/if}
                   </span>
                 </div>
                 <Badge tone={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
@@ -616,6 +613,15 @@
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
     font-family: var(--sp-font-mono);
+  }
+
+  .sp-proc-run {
+    color: var(--sp-violet);
+  }
+
+  .sp-proc-cmd {
+    color: var(--sp-text-2);
+    word-break: break-all;
   }
 
   .sp-proc-warn {

@@ -6,6 +6,11 @@ use super::host::HostOs;
 ///
 /// By default the inherited environment is preserved; the overlay adds or
 /// overrides specific variables and PATH entries on top of it.
+///
+/// Environment overlays are execution-scoped: they apply to a single
+/// command execution (hidden process, visible terminal, script, or
+/// application launch where supported). The same overlay instance can
+/// be reused across multiple executions for consistency.
 #[derive(Debug, Clone, Default)]
 pub struct EnvironmentOverlay {
     /// PATH entries to prepend (in order).
@@ -14,7 +19,28 @@ pub struct EnvironmentOverlay {
     pub vars_set: HashMap<String, String>,
     /// Environment variables to remove.
     pub vars_remove: Vec<String>,
+    /// Keys whose values should be redacted in diagnostic output.
+    redact_keys: Vec<String>,
 }
+
+/// Patterns that indicate a variable likely holds a secret.
+const SECRET_PATTERNS: &[&str] = &[
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "API_KEY",
+    "APIKEY",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "AUTH",
+    "ACCESS_KEY",
+    "SECRET_KEY",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "MONGO_URL",
+    "AMQP_URL",
+];
 
 impl EnvironmentOverlay {
     pub fn new() -> Self {
@@ -29,7 +55,11 @@ impl EnvironmentOverlay {
 
     /// Set an environment variable.
     pub fn set_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars_set.insert(key.into(), value.into());
+        let key = key.into();
+        if is_likely_secret(&key) {
+            self.redact_keys.push(key.clone());
+        }
+        self.vars_set.insert(key, value.into());
         self
     }
 
@@ -37,6 +67,32 @@ impl EnvironmentOverlay {
     pub fn remove_var(mut self, key: impl Into<String>) -> Self {
         self.vars_remove.push(key.into());
         self
+    }
+
+    /// Mark a key for redaction in diagnostic output.
+    pub fn redact_key(mut self, key: impl Into<String>) -> Self {
+        self.redact_keys.push(key.into());
+        self
+    }
+
+    /// Returns true if the overlay has any entries that need applying.
+    pub fn is_empty(&self) -> bool {
+        self.path_prepend.is_empty() && self.vars_set.is_empty() && self.vars_remove.is_empty()
+    }
+
+    /// Get a redacted copy of the environment variables for diagnostics.
+    /// Secret values are replaced with `[REDACTED]`.
+    pub fn redacted_vars(&self) -> HashMap<String, String> {
+        self.vars_set
+            .iter()
+            .map(|(k, v)| {
+                if self.redact_keys.contains(k) || is_likely_secret(k) {
+                    (k.clone(), "[REDACTED]".to_string())
+                } else {
+                    (k.clone(), v.clone())
+                }
+            })
+            .collect()
     }
 
     /// Apply this overlay to a [`std::process::Command`].
@@ -92,6 +148,12 @@ impl EnvironmentOverlay {
         let os_path = build_overlay_path(&self.path_prepend, super::host::current_os());
         cmd.env("PATH", os_path);
     }
+}
+
+/// Check if an environment key name likely holds a secret value.
+pub fn is_likely_secret(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    SECRET_PATTERNS.iter().any(|pat| upper.contains(pat))
 }
 
 /// Build a new PATH string by prepending entries to the inherited PATH.
@@ -167,6 +229,7 @@ mod tests {
         assert!(overlay.path_prepend.is_empty());
         assert!(overlay.vars_set.is_empty());
         assert!(overlay.vars_remove.is_empty());
+        assert!(overlay.is_empty());
     }
 
     #[test]
@@ -178,6 +241,7 @@ mod tests {
         assert_eq!(overlay.path_prepend, vec!["/opt/tools/bin"]);
         assert_eq!(overlay.vars_set.get("MY_VAR").unwrap(), "hello");
         assert!(overlay.vars_remove.contains(&"UNWANTED".to_string()));
+        assert!(!overlay.is_empty());
     }
 
     #[test]
@@ -329,5 +393,64 @@ mod tests {
         // The actual env application is tested through integration tests.
         // Here we just verify no panic/crash.
         let _ = cmd.output();
+    }
+
+    // ========================================================================
+    // Secret redaction tests
+    // ========================================================================
+
+    #[test]
+    fn is_likely_secret_detection() {
+        assert!(is_likely_secret("DATABASE_URL"));
+        assert!(is_likely_secret("API_KEY"));
+        assert!(is_likely_secret("SECRET_TOKEN"));
+        assert!(is_likely_secret("MY_PASSWORD"));
+        assert!(is_likely_secret("AWS_SECRET_ACCESS_KEY"));
+        assert!(!is_likely_secret("PORT"));
+        assert!(!is_likely_secret("NODE_ENV"));
+        assert!(!is_likely_secret("MY_VAR"));
+    }
+
+    #[test]
+    fn set_var_auto_redacts_secrets() {
+        let overlay = EnvironmentOverlay::new()
+            .set_var("DATABASE_URL", "postgres://user:pass@localhost/db")
+            .set_var("PORT", "3000");
+
+        assert!(overlay.redact_keys.contains(&"DATABASE_URL".to_string()));
+        assert!(!overlay.redact_keys.contains(&"PORT".to_string()));
+    }
+
+    #[test]
+    fn redacted_vars_masks_secret_values() {
+        let overlay = EnvironmentOverlay::new()
+            .set_var("DATABASE_URL", "postgres://user:pass@localhost/db")
+            .set_var("PORT", "3000");
+
+        let redacted = overlay.redacted_vars();
+        assert_eq!(redacted.get("DATABASE_URL").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("PORT").unwrap(), "3000");
+    }
+
+    #[test]
+    fn explicit_redact_key() {
+        let overlay = EnvironmentOverlay::new()
+            .set_var("CUSTOM_SECRET", "value")
+            .redact_key("CUSTOM_SECRET");
+
+        let redacted = overlay.redacted_vars();
+        assert_eq!(redacted.get("CUSTOM_SECRET").unwrap(), "[REDACTED]");
+    }
+
+    #[test]
+    fn empty_overlay_is_empty() {
+        let overlay = EnvironmentOverlay::new();
+        assert!(overlay.is_empty());
+    }
+
+    #[test]
+    fn non_empty_overlay_is_not_empty() {
+        let overlay = EnvironmentOverlay::new().set_var("A", "1");
+        assert!(!overlay.is_empty());
     }
 }

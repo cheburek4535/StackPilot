@@ -16,6 +16,7 @@
     statusLabel,
     statusIcon,
     formatDuration,
+    isProcessRunning,
   } from "$lib/modules/workspace/status";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -78,7 +79,7 @@
   }
 
   async function refreshSelectedLogs() {
-    if (!selectedId || !selectedProc || selectedProc.status !== "Running") return;
+    if (!selectedId || !selectedProc || !isProcessRunning(selectedProc.status)) return;
     if (logsLoading) return;
     try {
       logs = await getProcessLogs(selectedId);
@@ -141,7 +142,10 @@
                 <Icon name={statusIcon(p.status)} size={13} />
               </span>
               <span class="sp-proc-btn-label">{p.label}</span>
-              <Badge tone={statusTone(p.status)} dot={p.status === "Running"}>
+              {#if p.run_id}
+                <span class="sp-proc-btn-run">#{p.run_id.slice(0, 8)}</span>
+              {/if}
+              <Badge tone={statusTone(p.status)} dot={isProcessRunning(p.status)}>
                 {statusLabel(p.status)}
               </Badge>
             </button>
@@ -166,7 +170,7 @@
                   : ""}
               </span>
             </div>
-            {#if selectedProc?.status === "Running"}
+            {#if selectedProc && isProcessRunning(selectedProc.status)}
               <Badge tone="lime" dot>live</Badge>
             {/if}
           </div>
@@ -260,6 +264,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .sp-proc-btn-run {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-2xs);
+    color: var(--sp-violet);
+    flex-shrink: 0;
   }
 
   .sp-log-head {

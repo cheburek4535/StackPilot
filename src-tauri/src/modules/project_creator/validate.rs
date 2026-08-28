@@ -371,8 +371,7 @@ pub fn validate_stack(
                     languages,
                     &selected,
                     lang,
-                )
-                    == Some(side)
+                ) == Some(side)
         };
         match fw.side.as_str() {
             "backend" => {

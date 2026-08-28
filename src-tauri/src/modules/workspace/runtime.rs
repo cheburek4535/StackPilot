@@ -47,11 +47,17 @@ impl RuntimeService for DefaultRuntimeService {
         };
         for p in processes {
             match p.status {
+                ProcessStatus::Starting => counts.running += 1,
                 ProcessStatus::Running => counts.running += 1,
+                ProcessStatus::Ready => counts.running += 1,
                 ProcessStatus::Exited(0) => counts.succeeded += 1,
-                ProcessStatus::Exited(_) => counts.failed += 1,
-                ProcessStatus::Crashed => counts.failed += 1,
-                ProcessStatus::Killed => counts.killed += 1,
+                ProcessStatus::Exited(_)
+                | ProcessStatus::ExitedWithError(_)
+                | ProcessStatus::Crashed
+                | ProcessStatus::TimedOut
+                | ProcessStatus::Unknown => counts.failed += 1,
+                ProcessStatus::Killed | ProcessStatus::Cancelled => counts.killed += 1,
+                ProcessStatus::ExternalLaunchAccepted => counts.succeeded += 1,
             }
         }
         counts

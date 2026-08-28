@@ -32,4 +32,7 @@ repomix.config.js
 
 wizard_tree.json
 
+info.rs
+file_explorer.rs
+
 
