@@ -14,6 +14,7 @@ use super::models::*;
 use super::validation::{self, ProfileValidationResult};
 use crate::modules::workspace::models::ProcessStatus;
 use crate::modules::workspace::process_manager::ProcessManager;
+use crate::platform::environment::EnvironmentOverlay;
 
 // ---------------------------------------------------------------------------
 // Event names (stable, matching devlauncher-contract.md)
@@ -40,6 +41,9 @@ struct RunHandle {
     /// Every managed process spawned by this run, regardless of step status.
     /// Used for stop/cancel so long-running processes are always closable.
     process_ids: Arc<Mutex<Vec<String>>>,
+    /// Environment overlay (from the profile's environment binding) applied
+    /// to every process-spawning step of this run.
+    overlay: Option<EnvironmentOverlay>,
 }
 
 // ---------------------------------------------------------------------------
@@ -97,10 +101,25 @@ impl RunOrchestrator {
         profile: LaunchProfileV2,
         session_id: Option<String>,
     ) -> Result<LaunchRun, ProfileValidationResult> {
-        let validation = validation::validate_profile_v2(&profile);
+        self.create_run_with_session_and_overlay(profile, session_id, None)
+    }
+
+    pub fn create_run_with_session_and_overlay(
+        &self,
+        profile: LaunchProfileV2,
+        session_id: Option<String>,
+        overlay: Option<EnvironmentOverlay>,
+    ) -> Result<LaunchRun, ProfileValidationResult> {
+        let mut validation = validation::validate_profile_v2(&profile);
         if !validation.valid {
             return Err(validation);
         }
+
+        // Run-time normalization (never persisted): old profiles saved with
+        // tight wait timeouts (e.g. 30s from pre-refactor versions) routinely
+        // fail on cold starts. Readiness waits get a sensible floor and a
+        // default retry policy so a stale profile still launches reliably.
+        let profile = normalize_profile_for_run(profile, &mut validation.diagnostics);
 
         let run_id = generate_stable_id();
         let now = default_now_iso();
@@ -136,7 +155,18 @@ impl RunOrchestrator {
             created_at: now,
             finished_at: None,
             cancelled: false,
-            diagnostics: Vec::new(),
+            diagnostics: validation
+                .diagnostics
+                .into_iter()
+                .map(|d| Diagnostic {
+                    run_id: run_id.clone(),
+                    step_id: d.step_id,
+                    source: LogSource::Preflight,
+                    severity: d.severity,
+                    message: d.message,
+                    timestamp: default_now_iso(),
+                })
+                .collect(),
         };
 
         let handle = Arc::new(RunHandle {
@@ -146,6 +176,7 @@ impl RunOrchestrator {
             profile,
             session_id,
             process_ids: Arc::new(Mutex::new(Vec::new())),
+            overlay,
         });
 
         self.runs
@@ -304,6 +335,11 @@ impl RunOrchestrator {
         // Track completed, running, and skipped step IDs
         let mut completed: HashSet<String> = HashSet::new();
         let mut running: HashSet<String> = HashSet::new();
+        // Steps whose retry backoff is pending: (step_id, ready_at).
+        let mut retry_schedule: Vec<(String, tokio::time::Instant)> = Vec::new();
+        // Steps currently inside `retry_schedule` — excluded from the
+        // ready set so the scheduler never double-spawns a retried step.
+        let mut scheduled_retries: HashSet<String> = HashSet::new();
 
         // Mark disabled steps as skipped and add to completed
         {
@@ -316,15 +352,33 @@ impl RunOrchestrator {
         }
 
         loop {
-            // Find ready steps: all dependencies satisfied, not yet started
-            let ready = Self::find_ready_steps(&handle.profile, &completed, &running);
-
-            if ready.is_empty() && running.is_empty() {
-                break;
+            // 1. Promote due retries into the running set.
+            let now = tokio::time::Instant::now();
+            let mut due: Vec<String> = Vec::new();
+            retry_schedule.retain(|(id, at)| {
+                if *at <= now {
+                    due.push(id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            for step_id in &due {
+                scheduled_retries.remove(step_id);
             }
 
-            // Spawn ready steps
-            for step_id in &ready {
+            // 2. Collect everything to spawn this iteration: due retries
+            //    first, then newly-ready steps.
+            let ready = Self::find_ready_steps(&handle.profile, &completed, &running);
+            let mut to_spawn: Vec<String> = due;
+            for step_id in ready {
+                if scheduled_retries.contains(&step_id) {
+                    continue;
+                }
+                to_spawn.push(step_id);
+            }
+
+            for step_id in &to_spawn {
                 if let Some(step) = step_map.get(step_id) {
                     running.insert(step_id.clone());
 
@@ -348,8 +402,8 @@ impl RunOrchestrator {
                     let step = (*step).clone();
                     let run_id = run_id.clone();
                     let profile = handle.profile.clone();
-                    let _step_id = step_id.clone();
                     let session_id = session_id.clone();
+                    let overlay = handle.overlay.clone();
                     let handle = handle.clone();
 
                     tokio::spawn(async move {
@@ -363,6 +417,7 @@ impl RunOrchestrator {
                             &cancelled,
                             &cancel_notify,
                             &session_id,
+                            &overlay,
                             &handle,
                         )
                         .await;
@@ -372,114 +427,154 @@ impl RunOrchestrator {
                 }
             }
 
-            // Wait for completion
-            if let Some(completion) = rx.recv().await {
-                running.remove(&completion.step_id);
+            // 3. Termination: nothing running, nothing scheduled.
+            if running.is_empty() && retry_schedule.is_empty() {
+                break;
+            }
 
-                // Update step state
-                {
-                    let mut run = handle.run.lock().expect("run lock poisoned");
-                    if let Some(step_state) = run
-                        .steps
-                        .iter_mut()
-                        .find(|s| s.step_id == completion.step_id)
+            // 4. Wait for the next event.
+            if !running.is_empty() {
+                if let Some(completion) = rx.recv().await {
+                    running.remove(&completion.step_id);
+
+                    // Update step state
                     {
-                        if completion.success {
-                            step_state.status = StepStatus::Succeeded;
-                        } else if handle.cancelled.load(Ordering::SeqCst) {
-                            // User-initiated cancellation — keep the step as
-                            // Cancelled instead of Failed.
-                            step_state.status = StepStatus::Cancelled;
-                            step_state.error = completion.error.clone();
-                        } else {
-                            step_state.status = StepStatus::Failed;
-                            step_state.error = completion.error.clone();
-                        }
-                        let now = default_now_iso();
-                        step_state.finished_at = Some(now.clone());
-                        step_state.process_id = completion.process_id;
+                        let mut run = handle.run.lock().expect("run lock poisoned");
+                        if let Some(step_state) = run
+                            .steps
+                            .iter_mut()
+                            .find(|s| s.step_id == completion.step_id)
+                        {
+                            if completion.success {
+                                step_state.status = StepStatus::Succeeded;
+                            } else if handle.cancelled.load(Ordering::SeqCst) {
+                                // User-initiated cancellation — keep the step as
+                                // Cancelled instead of Failed.
+                                step_state.status = StepStatus::Cancelled;
+                                step_state.error = completion.error.clone();
+                            } else {
+                                step_state.status = StepStatus::Failed;
+                                step_state.error = completion.error.clone();
+                            }
+                            let now = default_now_iso();
+                            step_state.finished_at = Some(now.clone());
+                            step_state.process_id = completion.process_id;
 
-                        // Record attempt
-                        let attempt_num = step_state.attempts.len() as u32 + 1;
-                        step_state.attempts.push(StepAttempt {
-                            attempt_number: attempt_num,
-                            started_at: step_state
-                                .started_at
-                                .clone()
-                                .unwrap_or_else(default_now_iso),
-                            finished_at: Some(now),
-                            status: step_state.status.clone(),
-                            error: completion.error.clone(),
-                        });
+                            // Record attempt
+                            let attempt_num = step_state.attempts.len() as u32 + 1;
+                            step_state.attempts.push(StepAttempt {
+                                attempt_number: attempt_num,
+                                started_at: step_state
+                                    .started_at
+                                    .clone()
+                                    .unwrap_or_else(default_now_iso),
+                                finished_at: Some(now),
+                                status: step_state.status.clone(),
+                                error: completion.error.clone(),
+                            });
+                        }
                     }
-                }
 
-                self_emit_step_event(&app_handle, &run_id, &completion.step_id, &handle);
+                    self_emit_step_event(&app_handle, &run_id, &completion.step_id, &handle);
 
-                if completion.success {
-                    completed.insert(completion.step_id.clone());
-                } else {
-                    // Handle failure policy
-                    let failure_action = Self::handle_failure(
-                        &handle,
-                        &completion.step_id,
-                        &completed,
-                        &mut running,
-                    );
-                    match failure_action {
-                        FailureAction::StopRun => {
-                            Self::finalize_run(
-                                &handle,
-                                &runs,
+                    if completion.success {
+                        completed.insert(completion.step_id.clone());
+                    } else if handle.cancelled.load(Ordering::SeqCst) {
+                        // User-initiated cancellation: finalize immediately.
+                        Self::finalize_run(
+                            &handle,
+                            &runs,
+                            &run_id,
+                            RunStatus::Cancelled,
+                            &app_handle,
+                        )
+                        .await;
+                        return;
+                    } else {
+                        // A retry takes precedence over the failure policy:
+                        // dependents wait for the retried step to settle.
+                        if let Some(delay) = Self::consume_retry(&handle, &completion.step_id) {
+                            let ready_at = tokio::time::Instant::now() + delay;
+                            retry_schedule.push((completion.step_id.clone(), ready_at));
+                            scheduled_retries.insert(completion.step_id.clone());
+                            Self::emit_step_status(
                                 &run_id,
-                                RunStatus::Failed,
+                                &completion.step_id,
+                                StepStatus::Retrying,
                                 &app_handle,
-                            )
-                            .await;
-                            return;
+                            );
+                            continue;
                         }
-                        FailureAction::SkipDependents => {
-                            let to_skip =
-                                Self::transitive_dependents(&handle.profile, &completion.step_id);
-                            {
-                                let mut run = handle.run.lock().expect("run lock poisoned");
-                                for step_id in &to_skip {
-                                    if let Some(step_state) =
-                                        run.steps.iter_mut().find(|s| &s.step_id == step_id)
-                                    {
-                                        if step_state.status == StepStatus::Pending {
-                                            step_state.status = StepStatus::Skipped;
-                                            step_state.finished_at = Some(default_now_iso());
+
+                        // Retries exhausted (or none configured): apply the
+                        // step's failure policy.
+                        let failure_action = Self::handle_failure(
+                            &handle,
+                            &completion.step_id,
+                            &completed,
+                            &mut running,
+                        );
+                        match failure_action {
+                            FailureAction::StopRun => {
+                                Self::finalize_run(
+                                    &handle,
+                                    &runs,
+                                    &run_id,
+                                    RunStatus::Failed,
+                                    &app_handle,
+                                )
+                                .await;
+                                return;
+                            }
+                            FailureAction::SkipDependents => {
+                                // The failed step itself is now terminal:
+                                // mark it completed so the scheduler never
+                                // respawns it, then skip its dependents.
+                                completed.insert(completion.step_id.clone());
+                                let to_skip =
+                                    Self::transitive_dependents(&handle.profile, &completion.step_id);
+                                {
+                                    let mut run = handle.run.lock().expect("run lock poisoned");
+                                    for step_id in &to_skip {
+                                        if let Some(step_state) =
+                                            run.steps.iter_mut().find(|s| &s.step_id == step_id)
+                                        {
+                                            if step_state.status == StepStatus::Pending {
+                                                step_state.status = StepStatus::Skipped;
+                                                step_state.finished_at =
+                                                    Some(default_now_iso());
+                                            }
                                         }
+                                        completed.insert(step_id.clone());
+                                        running.remove(step_id);
                                     }
-                                    completed.insert(step_id.clone());
-                                    running.remove(step_id);
                                 }
                             }
-                        }
-                        FailureAction::Continue => {
-                            // The failed step's dependents can still run
-                            // (they will check the failure themselves)
-                            completed.insert(completion.step_id.clone());
+                            FailureAction::Continue => {
+                                // The failed step's dependents can still run
+                                // (they will check the failure themselves)
+                                completed.insert(completion.step_id.clone());
+                            }
                         }
                     }
-                }
 
-                // Check for retries
-                if !completion.success && !handle.cancelled.load(Ordering::SeqCst) {
-                    Self::maybe_retry(
-                        &handle,
-                        &completion.step_id,
-                        &mut running,
-                        &completed,
-                        &tx,
-                        &semaphore,
-                        &process_manager,
-                        &app_handle,
-                    );
+                    // Check cancellation
+                    if handle.cancelled.load(Ordering::SeqCst) {
+                        Self::finalize_run(&handle, &runs, &run_id, RunStatus::Cancelled, &app_handle)
+                            .await;
+                        return;
+                    }
                 }
-
-                // Check cancellation
+            } else {
+                // Only scheduled retries remain: sleep until the earliest
+                // one becomes due (or until cancellation).
+                let next = retry_schedule
+                    .iter()
+                    .map(|(_, at)| *at)
+                    .min()
+                    .expect("retry_schedule non-empty in this branch");
+                let sleep = next.saturating_duration_since(tokio::time::Instant::now());
+                let _ = tokio::time::timeout(sleep, handle.cancel_notify.notified()).await;
                 if handle.cancelled.load(Ordering::SeqCst) {
                     Self::finalize_run(&handle, &runs, &run_id, RunStatus::Cancelled, &app_handle)
                         .await;
@@ -528,6 +623,7 @@ impl RunOrchestrator {
         cancelled: &Arc<AtomicBool>,
         cancel_notify: &Arc<Notify>,
         session_id: &Option<String>,
+        overlay: &Option<EnvironmentOverlay>,
         handle: &Arc<RunHandle>,
     ) -> StepCompletion {
         // Check cancellation before starting
@@ -598,6 +694,7 @@ impl RunOrchestrator {
                     cancelled,
                     cancel_notify,
                     &step.environment,
+                    overlay,
                     session_id.as_deref(),
                     handle,
                 )
@@ -618,6 +715,7 @@ impl RunOrchestrator {
                     cancelled,
                     cancel_notify,
                     &step.environment,
+                    overlay,
                     session_id.as_deref(),
                     handle,
                 )
@@ -680,7 +778,9 @@ impl RunOrchestrator {
                 },
             },
             StepKind::WaitForPort { host, port } => {
-                let timeout = step.timeout.unwrap_or(30);
+                // Generous default: dev servers (Metro, Go, Django) need
+                // headroom for cold starts.
+                let timeout = step.timeout.unwrap_or(120);
                 Self::wait_for_port(
                     run_id,
                     &step.id,
@@ -694,7 +794,8 @@ impl RunOrchestrator {
                 .await
             }
             StepKind::WaitForUrl { url } => {
-                let timeout = step.timeout.unwrap_or(30);
+                // Generous default: HTTP services take longer to respond.
+                let timeout = step.timeout.unwrap_or(120);
                 Self::wait_for_url(
                     run_id,
                     &step.id,
@@ -707,7 +808,8 @@ impl RunOrchestrator {
                 .await
             }
             StepKind::WaitForDocker {} => {
-                let timeout = step.timeout.unwrap_or(30);
+                // Generous default: cold Docker Desktop boot exceeds 30s.
+                let timeout = step.timeout.unwrap_or(120);
                 Self::wait_for_docker_daemon(
                     run_id,
                     &step.id,
@@ -761,6 +863,7 @@ impl RunOrchestrator {
                     cancelled,
                     cancel_notify,
                     &step.environment,
+                    overlay,
                     session_id.as_deref(),
                     handle,
                 )
@@ -809,7 +912,8 @@ impl RunOrchestrator {
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
         cancelled: &Arc<AtomicBool>,
         cancel_notify: &Arc<Notify>,
-        _step_env: &Option<HashMap<String, String>>,
+        step_env: &Option<HashMap<String, String>>,
+        run_overlay: &Option<EnvironmentOverlay>,
         session_id: Option<&str>,
         handle: &Arc<RunHandle>,
     ) -> StepCompletion {
@@ -824,6 +928,15 @@ impl RunOrchestrator {
             };
         }
 
+        // Effective environment: run-level overlay (environment binding)
+        // merged with the step's own `environment` map.
+        let effective_overlay = build_effective_overlay(run_overlay, step_env);
+        let overlay_arg = if effective_overlay.is_empty() {
+            None
+        } else {
+            Some(&effective_overlay)
+        };
+
         let tracked = match visibility {
             Visibility::VisibleTerminal => {
                 let pm = process_manager.clone();
@@ -834,15 +947,15 @@ impl RunOrchestrator {
                 let run_id_owned = run_id.to_string();
                 let step_id_owned = step_id.to_string();
                 let session_id_owned = session_id.map(String::from);
-                let pm_clone = pm.clone();
+                let overlay_owned = overlay_arg.cloned();
                 match tokio::task::spawn_blocking(move || {
-                    pm_clone.spawn_visible_owned(
+                    pm.spawn_visible_owned(
                         &program_owned,
                         &args_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                         dir.as_deref(),
                         &label_owned,
                         session_id_owned,
-                        None,
+                        overlay_owned.as_ref(),
                         Some(run_id_owned),
                         Some(step_id_owned),
                     )
@@ -879,16 +992,30 @@ impl RunOrchestrator {
                 let run_id_owned = run_id.to_string();
                 let step_id_owned = step_id.to_string();
                 let session_id_owned = session_id.map(String::from);
+                let overlay_owned = overlay_arg.cloned();
                 match tokio::task::spawn_blocking(move || {
-                    pm.spawn_and_track_owned(
-                        &program_owned,
-                        &args_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                        dir.as_deref(),
-                        &label_owned,
-                        session_id_owned,
-                        Some(run_id_owned),
-                        Some(step_id_owned),
-                    )
+                    if let Some(ov) = overlay_owned.as_ref() {
+                        pm.spawn_and_track_owned_with_overlay(
+                            &program_owned,
+                            &args_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            dir.as_deref(),
+                            &label_owned,
+                            session_id_owned,
+                            ov,
+                            Some(run_id_owned),
+                            Some(step_id_owned),
+                        )
+                    } else {
+                        pm.spawn_and_track_owned(
+                            &program_owned,
+                            &args_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            dir.as_deref(),
+                            &label_owned,
+                            session_id_owned,
+                            Some(run_id_owned),
+                            Some(step_id_owned),
+                        )
+                    }
                 })
                 .await
                 {
@@ -926,13 +1053,51 @@ impl RunOrchestrator {
 
         // Handle completion based on policy
         match completion {
-            CompletionPolicy::ProcessStarted => StepCompletion {
-                step_id: step_id.to_string(),
-                success: true,
-                error: None,
-                process_id: Some(proc_id),
-                attempt_number: 0,
-            },
+            CompletionPolicy::ProcessStarted => {
+                // Probe: the spawned program must still be alive shortly
+                // after start. This catches instant-exit spawns (wrong
+                // working directory, missing executable, broken shell
+                // quoting) that would otherwise report "started" while
+                // nothing is actually running.
+                match probe_process_alive(&proc_id, process_manager, cancelled).await {
+                    Ok(true) => StepCompletion {
+                        step_id: step_id.to_string(),
+                        success: true,
+                        error: None,
+                        process_id: Some(proc_id),
+                        attempt_number: 0,
+                    },
+                    Ok(false) => {
+                        let stderr = process_manager
+                            .get_logs(&proc_id)
+                            .ok()
+                            .map(|l| l.stderr_lines.join("\n"))
+                            .unwrap_or_default();
+                        let hint = if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; output: {}", truncate_lines(&stderr, 5))
+                        };
+                        StepCompletion {
+                            step_id: step_id.to_string(),
+                            success: false,
+                            error: Some(format!(
+                                "Process '{}' exited immediately after start{}",
+                                proc_id, hint
+                            )),
+                            process_id: Some(proc_id),
+                            attempt_number: 0,
+                        }
+                    }
+                    Err(msg) => StepCompletion {
+                        step_id: step_id.to_string(),
+                        success: false,
+                        error: Some(msg),
+                        process_id: Some(proc_id),
+                        attempt_number: 0,
+                    },
+                }
+            }
             CompletionPolicy::ExitSuccess => {
                 // Wait for process exit
                 let effective_timeout = timeout.unwrap_or(3600); // 1h default for one-shot
@@ -1068,7 +1233,8 @@ impl RunOrchestrator {
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
         cancelled: &Arc<AtomicBool>,
         cancel_notify: &Arc<Notify>,
-        _step_env: &Option<HashMap<String, String>>,
+        step_env: &Option<HashMap<String, String>>,
+        run_overlay: &Option<EnvironmentOverlay>,
         session_id: Option<&str>,
         handle: &Arc<RunHandle>,
     ) -> StepCompletion {
@@ -1114,17 +1280,36 @@ impl RunOrchestrator {
         let session_id_owned = session_id.map(String::from);
         let shell_exe_owned = shell_exe.to_string();
         let shell_flag_owned = shell_flag.to_string();
+        let effective_overlay = build_effective_overlay(run_overlay, step_env);
+        let overlay_owned = if effective_overlay.is_empty() {
+            None
+        } else {
+            Some(effective_overlay)
+        };
 
         let tracked = match tokio::task::spawn_blocking(move || {
-            pm.spawn_and_track_owned(
-                &shell_exe_owned,
-                &[shell_flag_owned.as_str(), &script_owned],
-                dir.as_deref(),
-                &label_owned,
-                session_id_owned,
-                Some(run_id_owned),
-                Some(step_id_owned),
-            )
+            if let Some(ov) = overlay_owned.as_ref() {
+                pm.spawn_and_track_owned_with_overlay(
+                    &shell_exe_owned,
+                    &[shell_flag_owned.as_str(), &script_owned],
+                    dir.as_deref(),
+                    &label_owned,
+                    session_id_owned,
+                    ov,
+                    Some(run_id_owned),
+                    Some(step_id_owned),
+                )
+            } else {
+                pm.spawn_and_track_owned(
+                    &shell_exe_owned,
+                    &[shell_flag_owned.as_str(), &script_owned],
+                    dir.as_deref(),
+                    &label_owned,
+                    session_id_owned,
+                    Some(run_id_owned),
+                    Some(step_id_owned),
+                )
+            }
         })
         .await
         {
@@ -1296,13 +1481,13 @@ impl RunOrchestrator {
                 }
                 Some(ProcessStatus::ExternalLaunchAccepted) | Some(ProcessStatus::Unknown) => {
                     // Cannot track further — treat as unknown completion
+                    let untrackable = status.clone().unwrap_or(ProcessStatus::Unknown);
                     return StepCompletion {
                         step_id: step_id.to_string(),
                         success: false,
                         error: Some(format!(
                             "Process '{}' has untrackable status: {:?}",
-                            proc_id,
-                            status.unwrap_or(ProcessStatus::Unknown)
+                            proc_id, untrackable
                         )),
                         process_id: Some(proc_id.to_string()),
                         attempt_number: 0,
@@ -1336,19 +1521,28 @@ impl RunOrchestrator {
         cancel_notify: &Arc<Notify>,
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
     ) -> StepCompletion {
-        let addr_str = format!("{}:{}", host, port);
-        let addrs = match addr_str.to_socket_addrs() {
-            Ok(a) => a.collect::<Vec<_>>(),
-            Err(e) => {
-                return StepCompletion {
-                    step_id: step_id.to_string(),
-                    success: false,
-                    error: Some(format!("DNS resolve failed: {}", e)),
-                    process_id: None,
-                    attempt_number: 0,
-                };
+        // Resolve the host plus its loopback aliases: on dual-stack hosts
+        // `localhost` may resolve to ::1 only while the server binds
+        // 127.0.0.1 (and vice versa). Trying both makes the wait robust
+        // across platform/stack configurations.
+        let hosts = loopback_host_aliases(host);
+        let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
+        for h in &hosts {
+            let addr_str = format!("{}:{}", h, port);
+            match addr_str.to_socket_addrs() {
+                Ok(a) => addrs.extend(a),
+                Err(e) => {
+                    return StepCompletion {
+                        step_id: step_id.to_string(),
+                        success: false,
+                        error: Some(format!("DNS resolve failed: {}", e)),
+                        process_id: None,
+                        attempt_number: 0,
+                    };
+                }
             }
-        };
+        }
+        addrs.dedup();
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
         let poll_interval = Duration::from_secs(1);
@@ -1466,32 +1660,35 @@ impl RunOrchestrator {
 
             // Try HTTP request
             if let Ok(parsed) = parse_http_url(url) {
-                let addr_str = format!("{}:{}", parsed.host, parsed.port);
-                if let Ok(addrs) = addr_str.to_socket_addrs() {
-                    for addr in addrs {
-                        if let Ok(mut stream) =
-                            TcpStream::connect_timeout(&addr, Duration::from_secs(2))
-                        {
-                            let request = format!(
-                                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-                                parsed.path, parsed.host
-                            );
-                            if stream.write_all(request.as_bytes()).is_ok() {
-                                use std::io::{BufRead, BufReader};
-                                let mut reader = BufReader::new(&stream);
-                                let mut first_line = String::new();
-                                if reader.read_line(&mut first_line).is_ok() {
-                                    let parts: Vec<&str> = first_line.split_whitespace().collect();
-                                    if let Some(code_str) = parts.get(1) {
-                                        if let Ok(code) = code_str.parse::<u16>() {
-                                            if (200..400).contains(&code) {
-                                                return StepCompletion {
-                                                    step_id: step_id.to_string(),
-                                                    success: true,
-                                                    error: None,
-                                                    process_id: None,
-                                                    attempt_number: 0,
-                                                };
+                for host in loopback_host_aliases(&parsed.host) {
+                    let addr_str = format!("{}:{}", host, parsed.port);
+                    if let Ok(addrs) = addr_str.to_socket_addrs() {
+                        for addr in addrs {
+                            if let Ok(mut stream) =
+                                TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+                            {
+                                let request = format!(
+                                    "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                                    parsed.path, parsed.host
+                                );
+                                if stream.write_all(request.as_bytes()).is_ok() {
+                                    use std::io::{BufRead, BufReader};
+                                    let mut reader = BufReader::new(&stream);
+                                    let mut first_line = String::new();
+                                    if reader.read_line(&mut first_line).is_ok() {
+                                        let parts: Vec<&str> =
+                                            first_line.split_whitespace().collect();
+                                        if let Some(code_str) = parts.get(1) {
+                                            if let Ok(code) = code_str.parse::<u16>() {
+                                                if (200..400).contains(&code) {
+                                                    return StepCompletion {
+                                                        step_id: step_id.to_string(),
+                                                        success: true,
+                                                        error: None,
+                                                        process_id: None,
+                                                        attempt_number: 0,
+                                                    };
+                                                }
                                             }
                                         }
                                     }
@@ -1518,14 +1715,34 @@ impl RunOrchestrator {
         _cancel_notify: &Arc<Notify>,
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
     ) -> StepCompletion {
+        // When the daemon is down, `ensure_daemon` starts Docker Desktop /
+        // the Docker daemon before the wait loop. This is the core fix for
+        // "Docker daemon not ready": the wait now *starts* Docker instead
+        // of passively polling a dead daemon.
+        let daemon_diag = crate::platform::docker_service::DockerService::check_daemon();
+        if daemon_diag.status != crate::platform::docker_service::DockerStatus::DaemonReady {
+            Self::emit_diagnostic(
+                run_id,
+                Some(step_id),
+                LogSource::Preflight,
+                DiagnosticSeverity::Info,
+                "Docker daemon is not running — attempting to start \
+                 Docker Desktop / the Docker daemon"
+                    .to_string(),
+                app_handle,
+            );
+        }
+
         let check = crate::platform::docker_service::DockerReadinessCheck {
             timeout: Duration::from_secs(timeout_secs),
             poll_interval: Duration::from_secs(1),
+            auto_launch: true,
             ..Default::default()
         };
-        let result =
-            crate::platform::docker_service::DockerService::wait_for_daemon(&check, cancelled)
-                .await;
+        let result = crate::platform::docker_service::DockerService::ensure_daemon(
+            &check, cancelled,
+        )
+        .await;
 
         if cancelled.load(Ordering::SeqCst) {
             Self::emit_diagnostic(
@@ -1546,6 +1763,14 @@ impl RunOrchestrator {
         }
 
         if result.status == crate::platform::docker_service::DockerStatus::DaemonReady {
+            Self::emit_diagnostic(
+                run_id,
+                Some(step_id),
+                LogSource::Preflight,
+                DiagnosticSeverity::Info,
+                format!("Docker daemon ready (waited {}s)", result.elapsed.as_secs()),
+                app_handle,
+            );
             return StepCompletion {
                 step_id: step_id.to_string(),
                 success: true,
@@ -1556,8 +1781,14 @@ impl RunOrchestrator {
         }
 
         let msg = format!(
-            "Docker daemon not ready after {}s: {}",
-            timeout_secs, result.message
+            "Docker daemon not ready after {}s: {}{}",
+            timeout_secs,
+            result.message,
+            result
+                .suggested_action
+                .as_ref()
+                .map(|a| format!("\n{}", a))
+                .unwrap_or_default()
         );
         Self::emit_diagnostic(
             run_id,
@@ -1628,18 +1859,30 @@ impl RunOrchestrator {
         _running: &mut HashSet<String>,
     ) -> FailureAction {
         let run = handle.run.lock().expect("run lock poisoned");
-        let step = run.steps.iter().find(|s| s.step_id == failed_step_id);
-        let failure_policy = step
-            .and_then(|_| handle.profile.steps.iter().find(|s| s.id == failed_step_id))
-            .and_then(|s| s.failure_policy.clone())
-            .unwrap_or_else(|| {
-                let has_dependents = handle
-                    .profile
-                    .steps
-                    .iter()
-                    .any(|s| s.depends_on.contains(&failed_step_id.to_string()));
-                StepKind::default_failure_policy(has_dependents)
-            });
+        let step_state = run.steps.iter().find(|s| s.step_id == failed_step_id);
+        let profile_step = handle
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.id == failed_step_id);
+        let has_dependents = handle
+            .profile
+            .steps
+            .iter()
+            .any(|d| d.depends_on.contains(&failed_step_id.to_string()));
+        let failure_policy = match (step_state, profile_step) {
+            (Some(_), Some(ps)) => ps
+                .failure_policy
+                .clone()
+                .unwrap_or_else(|| ps.kind.default_failure_policy(has_dependents)),
+            _ => {
+                if has_dependents {
+                    FailurePolicy::StopRun
+                } else {
+                    FailurePolicy::WarnAndContinue
+                }
+            }
+        };
 
         match failure_policy {
             FailurePolicy::StopRun => FailureAction::StopRun,
@@ -1668,86 +1911,48 @@ impl RunOrchestrator {
     // Retry logic
     // -----------------------------------------------------------------------
 
-    fn maybe_retry(
+    /// Consume one retry for a failed step. Returns the backoff delay when a
+    /// retry was scheduled, or `None` when no retries remain.
+    ///
+    /// The step state is flipped to `Retrying`; the scheduler moves it back
+    /// to `Running` when the delay elapses and the step is re-spawned.
+    fn consume_retry(
         handle: &Arc<RunHandle>,
         step_id: &str,
-        _running: &mut HashSet<String>,
-        _completed: &HashSet<String>,
-        tx: &mpsc::UnboundedSender<StepCompletion>,
-        semaphore: &Arc<tokio::sync::Semaphore>,
-        process_manager: &Arc<dyn ProcessManager>,
-        app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
-    ) {
+    ) -> Option<tokio::time::Duration> {
         if handle.cancelled.load(Ordering::SeqCst) {
-            return;
+            return None;
         }
 
-        let retries_remaining = {
+        let delay_ms: u64 = {
             let mut run = handle.run.lock().expect("run lock poisoned");
-            if let Some(step_state) = run.steps.iter_mut().find(|s| s.step_id == step_id) {
-                match step_state.retries_remaining {
-                    Some(n) if n > 0 => {
-                        step_state.retries_remaining = Some(n - 1);
-                        step_state.status = StepStatus::Retrying;
-                        Some(n - 1)
-                    }
-                    _ => None,
+            let step_state = run
+                .steps
+                .iter_mut()
+                .find(|s| s.step_id == step_id)?;
+            let remaining = match step_state.retries_remaining {
+                Some(n) if n > 0 => {
+                    step_state.retries_remaining = Some(n - 1);
+                    step_state.status = StepStatus::Retrying;
+                    n - 1
                 }
-            } else {
-                None
-            }
+                _ => return None,
+            };
+            let policy = handle
+                .profile
+                .steps
+                .iter()
+                .find(|s| s.id == step_id)
+                .and_then(|s| s.retry_policy.clone());
+            let policy = policy?;
+            // Backoff: each consecutive retry multiplies the base delay by
+            // the configured multiplier (1.5 -> 2s, 3s, 4.5s, ...).
+            let consumed = policy.max_retries.saturating_sub(remaining + 1);
+            let multiplier = policy.backoff_multiplier.unwrap_or(1.0).max(1.0);
+            (policy.delay_ms as f64 * multiplier.powi(consumed as i32)) as u64
         };
 
-        if retries_remaining.is_none() {
-            return;
-        }
-
-        // Find the retry delay from the step definition
-        let retry_policy = handle
-            .profile
-            .steps
-            .iter()
-            .find(|s| s.id == step_id)
-            .and_then(|s| s.retry_policy.clone());
-
-        if let Some(policy) = retry_policy {
-            let delay_ms = policy.delay_ms;
-            let tx = tx.clone();
-            let semaphore = semaphore.clone();
-            let process_manager = process_manager.clone();
-            let app_handle = app_handle.clone();
-            let cancelled = handle.cancelled.clone();
-            let cancel_notify = handle.cancel_notify.clone();
-            let step_id = step_id.to_string();
-            let run_id = handle.run.lock().expect("run lock poisoned").run_id.clone();
-            let profile = handle.profile.clone();
-            let session_id = handle.session_id.clone();
-            let handle = handle.clone();
-
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                if cancelled.load(Ordering::SeqCst) {
-                    return;
-                }
-
-                let _permit = semaphore.acquire().await.unwrap();
-                let step = profile.steps.iter().find(|s| s.id == step_id).unwrap();
-                let completion = Self::step_task(
-                    &run_id,
-                    step,
-                    &profile,
-                    &process_manager,
-                    &app_handle,
-                    &cancelled,
-                    &cancel_notify,
-                    &session_id,
-                    &handle,
-                )
-                .await;
-                let _ = tx.send(completion);
-                drop(_permit);
-            });
-        }
+        Some(tokio::time::Duration::from_millis(delay_ms))
     }
 
     // -----------------------------------------------------------------------
@@ -2070,6 +2275,83 @@ impl RunOrchestrator {
 }
 
 // ---------------------------------------------------------------------------
+// Run-time profile normalization
+// ---------------------------------------------------------------------------
+
+/// Minimum timeout for generated readiness waits. Dev servers (Metro, Go,
+/// Django, Docker Desktop cold boots) routinely exceed 30s, and old profiles
+/// saved before the timeout rework carry 30s waits.
+const WAIT_TIMEOUT_FLOOR_SECS: u64 = 60;
+
+/// Default retry policy attached to readiness waits that have none.
+fn default_wait_retry_policy() -> RetryPolicy {
+    RetryPolicy {
+        max_retries: 2,
+        delay_ms: 2000,
+        backoff_multiplier: Some(1.5),
+    }
+}
+
+/// Normalize a profile for execution (never persisted back):
+///
+/// - `WaitForPort` / `WaitForUrl` steps with a timeout below the floor are
+///   raised to the floor, with an informational diagnostic.
+/// - Readiness waits without a retry policy get a default backoff retry so
+///   a stale profile still survives cold starts.
+fn normalize_profile_for_run(
+    mut profile: LaunchProfileV2,
+    diagnostics: &mut Vec<super::validation::ProfileValidationDiagnostic>,
+) -> LaunchProfileV2 {
+    for step in &mut profile.steps {
+        let is_wait = matches!(
+            step.kind,
+            StepKind::WaitForPort { .. } | StepKind::WaitForUrl { .. }
+        );
+        if !is_wait {
+            continue;
+        }
+
+        let effective_timeout: u64 = match step.timeout {
+            Some(t) if t >= WAIT_TIMEOUT_FLOOR_SECS => t,
+            Some(t) => {
+                diagnostics.push(super::validation::ProfileValidationDiagnostic {
+                    severity: DiagnosticSeverity::Info,
+                    code: "WAIT_TIMEOUT_RAISED".to_string(),
+                    message: format!(
+                        "Wait timeout raised from {}s to {}s for cold-start reliability",
+                        t, WAIT_TIMEOUT_FLOOR_SECS
+                    ),
+                    step_id: Some(step.id.clone()),
+                    field: Some("timeout".to_string()),
+                });
+                WAIT_TIMEOUT_FLOOR_SECS
+            }
+            None => WAIT_TIMEOUT_FLOOR_SECS,
+        };
+        step.timeout = Some(effective_timeout);
+
+        // Keep the completion policy in sync with the normalized timeout so
+        // RunCommand steps with an embedded PortOpen/UrlReady wait honor it.
+        if let Some(completion) = &mut step.completion {
+            match completion {
+                CompletionPolicy::PortOpen { timeout_secs, .. } => {
+                    *timeout_secs = effective_timeout;
+                }
+                CompletionPolicy::UrlReady { timeout_secs, .. } => {
+                    *timeout_secs = effective_timeout;
+                }
+                _ => {}
+            }
+        }
+
+        if step.retry_policy.is_none() {
+            step.retry_policy = Some(default_wait_retry_policy());
+        }
+    }
+    profile
+}
+
+// ---------------------------------------------------------------------------
 // Free event emission functions (usable from static methods)
 // ---------------------------------------------------------------------------
 
@@ -2128,16 +2410,6 @@ enum FailureAction {
     StopRun,
     SkipDependents,
     Continue,
-}
-
-impl StepExecutionState {
-    fn default_failure_policy(has_dependents: bool) -> FailurePolicy {
-        if has_dependents {
-            FailurePolicy::StopRun
-        } else {
-            FailurePolicy::WarnAndContinue
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2224,6 +2496,112 @@ fn parse_http_url(raw: &str) -> Result<ParsedUrl, String> {
         port: parsed.port,
         path: parsed.path,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Environment overlay helpers
+// ---------------------------------------------------------------------------
+
+/// Merge the run-level overlay (environment binding) with a step's own
+/// `environment` map. Step-level variables win over the run overlay.
+fn build_effective_overlay(
+    run_overlay: &Option<EnvironmentOverlay>,
+    step_env: &Option<HashMap<String, String>>,
+) -> EnvironmentOverlay {
+    let mut overlay = run_overlay.clone().unwrap_or_default();
+    if let Some(env) = step_env {
+        for (key, value) in env {
+            overlay = overlay.set_var(key.clone(), value.clone());
+        }
+    }
+    overlay
+}
+
+// ---------------------------------------------------------------------------
+// Process liveness probe
+// ---------------------------------------------------------------------------
+
+/// Short grace period after a `ProcessStarted`-style spawn: the child must
+/// still be alive for the step to count as started.
+const START_PROBE_GRACE_MS: u64 = 1500;
+
+/// Check that a freshly-spawned process is still alive after a short grace
+/// period. Returns:
+/// - `Ok(true)` — process is running (or already finished naturally);
+/// - `Ok(false)` — process exited before the probe (instant-exit spawn);
+/// - `Err(msg)` — the manager reported an unexpected state.
+async fn probe_process_alive(
+    proc_id: &str,
+    process_manager: &Arc<dyn ProcessManager>,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<bool, String> {
+    let grace = Duration::from_millis(START_PROBE_GRACE_MS);
+    let start = tokio::time::Instant::now();
+    loop {
+        let pm = process_manager.clone();
+        let pid = proc_id.to_string();
+        let status = tokio::task::spawn_blocking(move || pm.refresh_status(&pid))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+
+        match status {
+            Some(ProcessStatus::Running) | Some(ProcessStatus::Starting) | Some(ProcessStatus::Ready) => {
+                if tokio::time::Instant::now() - start >= grace {
+                    return Ok(true);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Some(ProcessStatus::Exited(_))
+            | Some(ProcessStatus::ExitedWithError(_))
+            | Some(ProcessStatus::Crashed)
+            | Some(ProcessStatus::Killed) => return Ok(false),
+            None => {
+                // Process no longer tracked: it exited (or the manager was
+                // restarted). Treat as an instant-exit.
+                return Ok(false);
+            }
+            Some(ProcessStatus::TimedOut) | Some(ProcessStatus::Cancelled) => {
+                return Ok(false);
+            }
+            Some(ProcessStatus::ExternalLaunchAccepted) | Some(ProcessStatus::Unknown) => {
+                return Ok(true);
+            }
+        }
+
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled".to_string());
+        }
+    }
+}
+
+/// Collapse multi-line output into a single short hint line.
+fn truncate_lines(text: &str, max_lines: usize) -> String {
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut out = String::new();
+    for (i, line) in lines.drain(..max_lines.min(lines.len())).enumerate() {
+        if i > 0 {
+            out.push_str(" | ");
+        }
+        let trimmed = line.trim();
+        out.push_str(&trimmed[..trimmed.len().min(200)]);
+    }
+    out
+}
+
+/// Loopback aliases for a host name: `localhost` ↔ `127.0.0.1` (plus
+/// `::1`), so a port wait works regardless of which interface the server
+/// bound to. Other hosts pass through unchanged.
+fn loopback_host_aliases(host: &str) -> Vec<String> {
+    let lower = host.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" => vec![
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "::1".to_string(),
+        ],
+        _ => vec![host.to_string()],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2512,6 +2890,126 @@ mod tests {
     // Integration tests — pure unit tests (no OS dependencies)
     // ===================================================================
 
+    // -------------------------------------------------------------------
+    // Run-time profile normalization
+    // -------------------------------------------------------------------
+
+    fn make_wait_step(id: &str, timeout: Option<u64>, retry: Option<RetryPolicy>) -> LaunchStep {
+        LaunchStep {
+            id: id.to_string(),
+            label: id.to_string(),
+            enabled: true,
+            kind: StepKind::WaitForPort {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+            },
+            depends_on: vec![],
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: Some(CompletionPolicy::PortOpen {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                timeout_secs: timeout.unwrap_or(30),
+            }),
+            timeout,
+            failure_policy: None,
+            retry_policy: retry,
+            metadata: None,
+            extra: Map::new(),
+        }
+    }
+
+    #[test]
+    fn normalize_profile_raises_low_wait_timeouts() {
+        let profile = valid_profile(vec![make_wait_step("w1", Some(30), None)]);
+        let mut diagnostics = Vec::new();
+        let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+        assert_eq!(normalized.steps[0].timeout, Some(60));
+        // The embedded completion policy stays in sync.
+        match normalized.steps[0].completion.as_ref().unwrap() {
+            CompletionPolicy::PortOpen { timeout_secs, .. } => assert_eq!(*timeout_secs, 60),
+            other => panic!("expected PortOpen, got {:?}", other),
+        }
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.code == "WAIT_TIMEOUT_RAISED"));
+    }
+
+    #[test]
+    fn normalize_profile_adds_default_retry_policy_to_waits() {
+        let profile = valid_profile(vec![
+            make_wait_step("w1", Some(90), None),
+            make_step("other", vec![]),
+        ]);
+        let mut diagnostics = Vec::new();
+        let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+        let wait = normalized.steps.iter().find(|s| s.id == "w1").unwrap();
+        assert!(wait.retry_policy.is_some(), "wait steps get a default retry");
+        let other = normalized.steps.iter().find(|s| s.id == "other").unwrap();
+        assert!(other.retry_policy.is_none(), "non-wait steps untouched");
+    }
+
+    #[test]
+    fn normalize_profile_keeps_long_timeouts() {
+        let profile = valid_profile(vec![make_wait_step("w1", Some(300), None)]);
+        let mut diagnostics = Vec::new();
+        let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+        assert_eq!(normalized.steps[0].timeout, Some(300));
+        assert!(diagnostics.is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // Loopback alias resolution
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn loopback_aliases_cover_localhost_variants() {
+        let aliases = loopback_host_aliases("localhost");
+        assert!(aliases.contains(&"127.0.0.1".to_string()));
+        assert!(aliases.contains(&"::1".to_string()));
+        let aliases = loopback_host_aliases("127.0.0.1");
+        assert!(aliases.contains(&"localhost".to_string()));
+        // Foreign hosts pass through untouched.
+        assert_eq!(loopback_host_aliases("192.168.1.10"), vec!["192.168.1.10"]);
+        assert_eq!(loopback_host_aliases("api.example.com"), vec!["api.example.com"]);
+    }
+
+    // -------------------------------------------------------------------
+    // Overlay merge
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn effective_overlay_merges_step_env_over_run_overlay() {
+        let mut run_vars = HashMap::new();
+        run_vars.insert("PORT".to_string(), "3000".to_string());
+        run_vars.insert("SHARED".to_string(), "run".to_string());
+        let run_overlay = Some(EnvironmentOverlay::new().set_var("PORT", "3000").set_var("SHARED", "run"));
+
+        let mut step_env = HashMap::new();
+        step_env.insert("SHARED".to_string(), "step".to_string());
+        step_env.insert("EXTRA".to_string(), "1".to_string());
+
+        let merged = build_effective_overlay(&run_overlay, &Some(step_env));
+        assert_eq!(merged.vars_set.get("PORT").unwrap(), "3000");
+        // Step-level variable wins over the run overlay.
+        assert_eq!(merged.vars_set.get("SHARED").unwrap(), "step");
+        assert_eq!(merged.vars_set.get("EXTRA").unwrap(), "1");
+        let _ = run_vars;
+    }
+
+    // -------------------------------------------------------------------
+    // Output truncation
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn truncate_lines_collapses_and_limits() {
+        assert_eq!(truncate_lines("a\nb\nc\n", 2), "a | b");
+        assert_eq!(truncate_lines("only", 5), "only");
+        assert!(truncate_lines("", 3).is_empty());
+    }
+
     /// Test 1: Profile with two independent application launches.
     /// Both should be ready to run in parallel (no dependencies).
     #[test]
@@ -2675,16 +3173,24 @@ mod tests {
             make_step("d", vec!["b"]),
         ]);
 
-        // If 'a' fails with WarnAndContinue, 'b' should still be ready
+        // Under `WarnAndContinue`, a failed step is recorded as completed:
+        // its own dependents may still run (they make their own checks),
+        // while independent branches are unaffected.
         let mut completed = HashSet::new();
         completed.insert("a".to_string());
         let running = HashSet::new();
         let ready = RunOrchestrator::find_ready_steps(&profile, &completed, &running);
         assert!(ready.contains(&"b".to_string()));
-        // 'c' should NOT be ready (its dependency 'a' failed)
-        assert!(!ready.contains(&"c".to_string()));
-        // 'd' should be ready (its dependency 'b' is independent)
-        assert!(ready.contains(&"d".to_string()));
+        // 'c' depends on 'a' which completed (failed-but-continued):
+        // per the Continue policy its dependents are NOT blocked.
+        assert!(ready.contains(&"c".to_string()));
+        // 'd' depends on 'b' which has not run yet.
+        assert!(!ready.contains(&"d".to_string()));
+        // Once 'b' completes, 'd' becomes ready.
+        let mut completed2 = completed;
+        completed2.insert("b".to_string());
+        let ready2 = RunOrchestrator::find_ready_steps(&profile, &completed2, &running);
+        assert!(ready2.contains(&"d".to_string()));
     }
 
     /// Test 7: Run cancellation stopping long-running processes.
@@ -3218,12 +3724,18 @@ mod tests {
     /// Test 13: Project path containing spaces.
     #[test]
     fn test_project_path_with_spaces() {
+        // The project root must actually exist (the validator fails fast
+        // on deleted projects), so use a real temp directory with spaces.
+        let dir = std::env::temp_dir().join("stackpilot test dir with spaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+
         let profile = LaunchProfileV2 {
             schema_version: "2".to_string(),
             id: "test".to_string(),
             name: "Test".to_string(),
             description: "desc".to_string(),
-            project_root: Some("/path/to/my project".to_string()),
+            project_root: Some(root.clone()),
             steps: vec![LaunchStep {
                 id: "s1".to_string(),
                 label: "step".to_string(),
@@ -3258,8 +3770,14 @@ mod tests {
         );
 
         // Verify path resolution handles spaces
-        let resolved = resolve_working_directory(Some("/path/to/my project"), Some("./sub dir"));
-        assert_eq!(resolved, Some("/path/to/my project/sub dir".to_string()));
+        let resolved = resolve_working_directory(Some(&root), Some("./sub dir"));
+        let expected = std::path::Path::new(&root)
+            .join("sub dir")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(resolved, Some(expected));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Test 14: Environment binding propagation.
@@ -3588,18 +4106,110 @@ mod tests {
         assert!(json.contains("proc-1"));
     }
 
-    /// Test: Failure policy defaults based on dependencies.
+    /// Test: Failure policy defaults based on step kind and dependencies.
     #[test]
     fn test_failure_policy_defaults() {
-        // Steps with dependents default to StopRun
+        // Non-wait steps with dependents default to StopRun
         assert_eq!(
-            StepKind::default_failure_policy(true),
+            StepKind::RunCommand {
+                command: "x".to_string(),
+                command_spec: None,
+            }
+            .default_failure_policy(true),
             FailurePolicy::StopRun
+        );
+        // Readiness waits with dependents default to SkipDependents so a
+        // failed infra wait does not take down independent branches
+        assert_eq!(
+            StepKind::WaitForDocker {}.default_failure_policy(true),
+            FailurePolicy::SkipDependents
+        );
+        assert_eq!(
+            StepKind::WaitForPort {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+            }
+            .default_failure_policy(true),
+            FailurePolicy::SkipDependents
         );
         // Leaf steps default to WarnAndContinue
         assert_eq!(
-            StepKind::default_failure_policy(false),
+            StepKind::RunCommand {
+                command: "x".to_string(),
+                command_spec: None,
+            }
+            .default_failure_policy(false),
             FailurePolicy::WarnAndContinue
+        );
+    }
+
+    /// A failed infra wait (SkipDependents) must not collapse the whole
+    /// run: succeeded branches + failed waits yield PartialSuccess, only
+    /// failures yield Failed, all good yields Succeeded.
+    #[test]
+    fn compute_final_status_handles_partial_success() {
+        fn make_run(statuses: &[StepStatus]) -> LaunchRun {
+            LaunchRun {
+                run_id: "r1".to_string(),
+                profile_id: "p1".to_string(),
+                profile_name: "P".to_string(),
+                status: RunStatus::Running,
+                steps: statuses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| StepExecutionState {
+                        step_id: format!("step_{}", i),
+                        status: s.clone(),
+                        process_id: None,
+                        error: None,
+                        retries_remaining: None,
+                        started_at: None,
+                        finished_at: None,
+                        attempts: Vec::new(),
+                    })
+                    .collect(),
+                created_at: "t".to_string(),
+                finished_at: None,
+                cancelled: false,
+                diagnostics: Vec::new(),
+            }
+        }
+
+        fn make_handle(run: LaunchRun) -> Arc<RunHandle> {
+            Arc::new(RunHandle {
+                run: Arc::new(Mutex::new(run)),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                cancel_notify: Arc::new(tokio::sync::Notify::new()),
+                profile: valid_profile(Vec::new()),
+                session_id: None,
+                process_ids: Arc::new(Mutex::new(Vec::new())),
+                overlay: None,
+            })
+        }
+
+        // Failed wait + succeeded branches + skipped dependents.
+        let run = make_run(&[
+            StepStatus::Succeeded,
+            StepStatus::Failed,
+            StepStatus::Skipped,
+        ]);
+        assert_eq!(
+            RunOrchestrator::compute_final_status(&make_handle(run)),
+            RunStatus::PartialSuccess
+        );
+
+        // Only failures -> Failed.
+        let run = make_run(&[StepStatus::Failed, StepStatus::Skipped]);
+        assert_eq!(
+            RunOrchestrator::compute_final_status(&make_handle(run)),
+            RunStatus::Failed
+        );
+
+        // All good -> Succeeded.
+        let run = make_run(&[StepStatus::Succeeded, StepStatus::Skipped]);
+        assert_eq!(
+            RunOrchestrator::compute_final_status(&make_handle(run)),
+            RunStatus::Succeeded
         );
     }
 

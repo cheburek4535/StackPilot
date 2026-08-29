@@ -2,23 +2,41 @@
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { analyzeProject, saveProfile } from "$lib/modules/devlauncher/api";
+  import { analyzeProjectV2, saveProfileV2 } from "$lib/modules/devlauncher/api";
   import { goto } from "$app/navigation";
-  import type { LaunchProfile, LaunchAction, ActionType } from "$lib/modules/devlauncher/types";
+  import {
+    applyStepPatch,
+    failurePolicyLabel,
+    stepKindIcon,
+    stepKindLabel,
+    stepKindSummary,
+    visibilityLabel,
+    type DraftProfile,
+    type FailurePolicy,
+    type LaunchStep,
+    type Visibility,
+  } from "$lib/modules/devlauncher/types";
 
   let projectPath = $state("");
-  let profile = $state<LaunchProfile | null>(null);
+  let draft = $state<DraftProfile | null>(null);
   let loading = $state(false);
   let saving = $state(false);
   let error = $state("");
   let savedOk = $state(false);
 
-  let dragIndex = $state<number | null>(null);
-  let dragOverIndex = $state<number | null>(null);
-
   let expanded = $state(new Set<string>());
 
-  let showAddMenu = $state(false);
+  const failurePolicies: Array<{ key: FailurePolicy; label: string }> = [
+    { key: "stop_run", label: failurePolicyLabel("stop_run") },
+    { key: "skip_dependents", label: failurePolicyLabel("skip_dependents") },
+    { key: "warn_and_continue", label: failurePolicyLabel("warn_and_continue") },
+  ];
+
+  const visibilities: Array<{ key: Visibility; label: string }> = [
+    { key: "captured", label: visibilityLabel("captured") },
+    { key: "visible_terminal", label: visibilityLabel("visible_terminal") },
+    { key: "detached", label: visibilityLabel("detached") },
+  ];
 
   async function pickFolder() {
     const selected = await open({
@@ -28,7 +46,7 @@
     });
     if (selected) {
       projectPath = selected;
-      profile = null;
+      draft = null;
       error = "";
       savedOk = false;
     }
@@ -39,10 +57,10 @@
     loading = true;
     error = "";
     savedOk = false;
-    profile = null;
+    draft = null;
     expanded = new Set();
     try {
-      profile = await analyzeProject(projectPath);
+      draft = await analyzeProjectV2(projectPath);
     } catch (e) {
       error = `Ошибка анализа: ${e}`;
     }
@@ -50,12 +68,12 @@
   }
 
   async function handleSave() {
-    if (!profile) return;
+    if (!draft) return;
     saving = true;
     error = "";
     savedOk = false;
     try {
-      await saveProfile(profile);
+      await saveProfileV2(draft.profile);
       savedOk = true;
     } catch (e) {
       error = `Ошибка сохранения: ${e}`;
@@ -63,36 +81,29 @@
     saving = false;
   }
 
-  function onDragStart(e: DragEvent, index: number) {
-    dragIndex = index;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
+  function updateStep(index: number, patch: Partial<LaunchStep>) {
+    if (!draft) return;
+    const steps = draft.profile.steps.map((s, i) =>
+      i === index ? applyStepPatch(s, patch) : s,
+    );
+    draft = { ...draft, profile: { ...draft.profile, steps } };
+  }
+
+  function toggleEnabled(index: number) {
+    if (!draft) return;
+    updateStep(index, { enabled: !draft.profile.steps[index].enabled });
+  }
+
+  function updateTimeout(index: number, raw: string) {
+    const value = raw.trim();
+    if (value === "") {
+      updateStep(index, { timeout: null });
+      return;
     }
-  }
-
-  function onDragOver(e: DragEvent, index: number) {
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    dragOverIndex = index;
-  }
-
-  function onDragLeave() {
-    dragOverIndex = null;
-  }
-
-  function onDrop(index: number) {
-    if (dragIndex === null || dragIndex === index || !profile) return;
-    const actions = [...profile.actions];
-    const [moved] = actions.splice(dragIndex, 1);
-    actions.splice(index, 0, moved);
-    profile = { ...profile, actions };
-    dragIndex = null;
-    dragOverIndex = null;
-  }
-
-  function onDragEnd() {
-    dragIndex = null;
-    dragOverIndex = null;
+    const num = parseInt(value, 10);
+    if (!Number.isNaN(num) && num > 0) {
+      updateStep(index, { timeout: num });
+    }
   }
 
   function toggleExpand(id: string) {
@@ -102,255 +113,11 @@
     expanded = next;
   }
 
-  function removeAction(index: number) {
-    if (!profile) return;
-    const actions = profile.actions.filter((_, i) => i !== index);
-    profile = { ...profile, actions };
-  }
-
-  function toggleEnabled(index: number) {
-    if (!profile) return;
-    const actions = profile.actions.map((a, i) =>
-      i === index ? { ...a, enabled: !a.enabled } : a,
-    );
-    profile = { ...profile, actions };
-  }
-
-  function updateLabel(index: number, label: string) {
-    if (!profile) return;
-    const actions = profile.actions.map((a, i) =>
-      i === index ? { ...a, label } : a,
-    );
-    profile = { ...profile, actions };
-  }
-
-  function updateActionField(index: number, path: string[], value: unknown) {
-    if (!profile) return;
-    const actions: LaunchAction[] = profile.actions.map((a, i) => {
-      if (i !== index) return a;
-      return setNestedField(a, path, value) as LaunchAction;
-    });
-    profile = { ...profile, actions };
-  }
-
-  function setNestedField(obj: unknown, path: string[], value: unknown): unknown {
-    if (path.length === 0) return value;
-    const [first, ...rest] = path;
-    if (typeof obj === "object" && obj !== null && !Array.isArray(obj)) {
-      const record = obj as Record<string, unknown>;
-      if (first === "action_type" && rest.length > 0) {
-        const currentType = record.action_type as Record<string, unknown>;
-        const variantKey = Object.keys(currentType)[0];
-        if (rest.length === 1 && rest[0] === variantKey) {
-          const nested = setNestedField(currentType[variantKey], [], value);
-          return { ...record, action_type: { [variantKey]: nested } };
-        }
-        if (rest[0] === variantKey) {
-          const nested = setNestedField(currentType[variantKey], rest.slice(1), value);
-          return { ...record, action_type: { [variantKey]: nested } };
-        }
-        if (rest[0] !== variantKey) {
-          return record;
-        }
-      }
-      return { ...record, [first]: setNestedField(record[first], rest, value) };
-    }
-    if (Array.isArray(obj)) {
-      const idx = Number(first);
-      const arr = [...obj];
-      arr[idx] = setNestedField(arr[idx], rest, value);
-      return arr;
-    }
-    return obj;
-  }
-
-  function changeActionType(index: number, newType: string) {
-    if (!profile) return;
-    const actions = profile.actions.map((a, i) => {
-      if (i !== index) return a;
-      let action_type: ActionType;
-      switch (newType) {
-        case "RunCommand":
-          action_type = { RunCommand: { command: "", working_dir: projectPath || null } };
-          break;
-        case "OpenUrl":
-          action_type = { OpenUrl: { url: "" } };
-          break;
-        case "OpenApplication":
-          action_type = { OpenApplication: { path: "", args: null } };
-          break;
-        case "WaitForUrl":
-          action_type = { WaitForUrl: { url: "", timeout_secs: 30 } };
-          break;
-        case "WaitForPort":
-          action_type = { WaitForPort: { host: "localhost", port: 3000, timeout_secs: 30 } };
-          break;
-        case "Delay":
-          action_type = { Delay: { seconds: 5 } };
-          break;
-        case "ExecuteScript":
-          action_type = { ExecuteScript: { script: "", shell: "cmd" } };
-          break;
-        default:
-          return a;
-      }
-      return { ...a, action_type };
-    });
-    profile = { ...profile, actions };
-  }
-
-  function createActionWithType(type: string, projectPath: string): LaunchAction {
-    let action_type: ActionType;
-    switch (type) {
-      case "RunCommand":
-        action_type = { RunCommand: { command: "", working_dir: projectPath || null } };
-        break;
-      case "OpenUrl":
-        action_type = { OpenUrl: { url: "" } };
-        break;
-      case "OpenApplication":
-        action_type = { OpenApplication: { path: "", args: null } };
-        break;
-      case "WaitForUrl":
-        action_type = { WaitForUrl: { url: "", timeout_secs: 30 } };
-        break;
-      case "WaitForPort":
-        action_type = { WaitForPort: { host: "localhost", port: 3000, timeout_secs: 30 } };
-        break;
-      case "Delay":
-        action_type = { Delay: { seconds: 5 } };
-        break;
-      case "ExecuteScript":
-        action_type = { ExecuteScript: { script: "", shell: "cmd" } };
-        break;
-      default:
-        action_type = { RunCommand: { command: "", working_dir: projectPath || null } };
-    }
-    return {
-      id: `act_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-      label: "Новое действие",
-      enabled: true,
-      action_type,
-    };
-  }
-
-  function addAction(actionType: string) {
-    if (!profile) return;
-    showAddMenu = false;
-    const newAction = createActionWithType(actionType, projectPath);
-    profile = { ...profile, actions: [...profile.actions, newAction] };
-    const next = new Set(expanded);
-    next.add(newAction.id);
-    expanded = next;
-  }
-
-  function actionIcon(act: ActionType): string {
-    if ("RunCommand" in act) return "▶";
-    if ("OpenUrl" in act) return "🌐";
-    if ("OpenApplication" in act) return "⬛";
-    if ("WaitForUrl" in act) return "⏳";
-    if ("WaitForPort" in act) return "🔌";
-    if ("Delay" in act) return "⏱";
-    if ("ExecuteScript" in act) return "📜";
-    return "?";
-  }
-
-  function actionTypeName(act: ActionType): string {
-    if ("RunCommand" in act) return "Команда";
-    if ("OpenUrl" in act) return "URL";
-    if ("OpenApplication" in act) return "Приложение";
-    if ("WaitForUrl" in act) return "Ожидание URL";
-    if ("WaitForPort" in act) return "Ожидание порта";
-    if ("Delay" in act) return "Пауза";
-    if ("ExecuteScript" in act) return "Скрипт";
-    return "?";
-  }
-
-  function actionSummary(act: ActionType): string {
-    if ("RunCommand" in act) return act.RunCommand.command || "(пусто)";
-    if ("OpenUrl" in act) return act.OpenUrl.url || "(пусто)";
-    if ("OpenApplication" in act) return act.OpenApplication.path || "(пусто)";
-    if ("WaitForUrl" in act) return act.WaitForUrl.url || "(пусто)";
-    if ("WaitForPort" in act) return `${act.WaitForPort.host}:${act.WaitForPort.port}`;
-    if ("Delay" in act) return `${act.Delay.seconds}с`;
-    if ("ExecuteScript" in act) return act.ExecuteScript.script || "(пусто)";
-    return "?";
-  }
-
-  function actionVariant(act: ActionType): string {
-    return Object.keys(act)[0];
-  }
-
-  function variantValue(act: ActionType): Record<string, unknown> {
-    const key = actionVariant(act);
-    return (act as Record<string, unknown>)[key] as Record<string, unknown>;
-  }
-
-  const actionTypes = [
-    { key: "RunCommand", icon: "▶", label: "Команда", desc: "Запустить команду в терминале" },
-    { key: "OpenUrl", icon: "🌐", label: "URL", desc: "Открыть веб-страницу" },
-    { key: "OpenApplication", icon: "⬛", label: "Приложение", desc: "Запустить приложение" },
-    { key: "WaitForUrl", icon: "⏳", label: "Ожидание URL", desc: "Ждать пока URL ответит" },
-    { key: "WaitForPort", icon: "🔌", label: "Ожидание порта", desc: "Ждать TCP порт" },
-    { key: "Delay", icon: "⏱", label: "Пауза", desc: "Подождать N секунд" },
-    { key: "ExecuteScript", icon: "📜", label: "Скрипт", desc: "Выполнить скрипт" },
-  ];
-
-  function getEditorFields(act: ActionType): Array<{ label: string; path: string[]; type: string; value: unknown; placeholder: string }> {
-    const key = Object.keys(act)[0];
-    const val = (act as Record<string, unknown>)[key] as Record<string, unknown>;
-
-    switch (key) {
-      case "RunCommand": {
-        const v = val as { command: string; working_dir: string | null };
-        return [
-          { label: "Команда", path: ["action_type", "RunCommand", "command"], type: "text", value: v.command ?? "", placeholder: "npm run dev" },
-          { label: "Рабочая папка", path: ["action_type", "RunCommand", "working_dir"], type: "text", value: v.working_dir ?? "", placeholder: "оставить пустым для корня проекта" },
-        ];
-      }
-      case "OpenUrl": {
-        const v = val as { url: string };
-        return [
-          { label: "URL", path: ["action_type", "OpenUrl", "url"], type: "text", value: v.url ?? "", placeholder: "http://localhost:3000" },
-        ];
-      }
-      case "OpenApplication": {
-        const v = val as { path: string; args: string | null };
-        return [
-          { label: "Путь к приложению", path: ["action_type", "OpenApplication", "path"], type: "text", value: v.path ?? "", placeholder: "code" },
-          { label: "Аргументы", path: ["action_type", "OpenApplication", "args"], type: "text", value: v.args ?? "", placeholder: "." },
-        ];
-      }
-      case "WaitForUrl": {
-        const v = val as { url: string; timeout_secs: number };
-        return [
-          { label: "URL", path: ["action_type", "WaitForUrl", "url"], type: "text", value: v.url ?? "", placeholder: "http://localhost:3000/health" },
-          { label: "Таймаут (сек)", path: ["action_type", "WaitForUrl", "timeout_secs"], type: "number", value: v.timeout_secs, placeholder: "30" },
-        ];
-      }
-      case "WaitForPort": {
-        const v = val as { host: string; port: number; timeout_secs: number };
-        return [
-          { label: "Хост", path: ["action_type", "WaitForPort", "host"], type: "text", value: v.host ?? "", placeholder: "localhost" },
-          { label: "Порт", path: ["action_type", "WaitForPort", "port"], type: "number", value: v.port, placeholder: "3000" },
-          { label: "Таймаут (сек)", path: ["action_type", "WaitForPort", "timeout_secs"], type: "number", value: v.timeout_secs, placeholder: "30" },
-        ];
-      }
-      case "Delay": {
-        const v = val as { seconds: number };
-        return [
-          { label: "Секунд", path: ["action_type", "Delay", "seconds"], type: "number", value: v.seconds, placeholder: "5" },
-        ];
-      }
-      case "ExecuteScript": {
-        const v = val as { script: string; shell: string | null };
-        return [
-          { label: "Скрипт", path: ["action_type", "ExecuteScript", "script"], type: "textarea", value: v.script ?? "", placeholder: "echo Hello" },
-          { label: "Оболочка", path: ["action_type", "ExecuteScript", "shell"], type: "text", value: v.shell ?? "cmd", placeholder: "cmd" },
-        ];
-      }
-      default:
-        return [];
+  function confidenceLabel(confidence: string): string {
+    switch (confidence) {
+      case "high": return "высокая";
+      case "medium": return "средняя";
+      default: return "низкая";
     }
   }
 </script>
@@ -385,139 +152,137 @@
     {/if}
   </div>
 
-  {#if profile}
+  {#if draft}
     <section class="editor">
       <div class="editor-header">
         <div>
-          <h2>📦 {profile.name}</h2>
-          <p class="desc">{profile.description}</p>
+          <h2>📦 {draft.profile.name}</h2>
+          <p class="desc">{draft.profile.description}</p>
         </div>
         <button class="primary save-btn" onclick={handleSave} disabled={saving}>
           {saving ? i18n.t("analyze.saving" as TranslationKey) : i18n.t("analyze.save_profile" as TranslationKey)}
         </button>
       </div>
 
+      {#if draft.diagnostics.length > 0}
+        <div class="diagnostics">
+          <h3>Диагностика анализа</h3>
+          {#each draft.diagnostics as d, i (i)}
+            <div class="diag-row" class:diag-warning={d.severity === "warning"} class:diag-error={d.severity === "error"}>
+              <span class="diag-sev">
+                {d.severity === "error" ? "✗" : d.severity === "warning" ? "⚠" : "ℹ"}
+              </span>
+              <span class="diag-text">
+                {d.message}
+                {#if d.file}
+                  <span class="diag-file">({d.file})</span>
+                {/if}
+              </span>
+              <span class="diag-conf">уверенность: {confidenceLabel(d.confidence)}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
       <div class="action-list" role="list">
-        {#each profile.actions as action, i (action.id)}
-          <div
-            class="action-card"
-            class:expanded={expanded.has(action.id)}
-            class:disabled={!action.enabled}
-            class:drag-over={dragOverIndex === i}
-            draggable="true"
-            ondragstart={(e) => onDragStart(e, i)}
-            ondragover={(e) => onDragOver(e, i)}
-            ondragleave={onDragLeave}
-            ondrop={(e) => { e.preventDefault(); onDrop(i); }}
-            ondragend={onDragEnd}
-          >
+        {#each draft.profile.steps as step, i (step.id)}
+          <div class="action-card" class:expanded={expanded.has(step.id)} class:disabled={!step.enabled}>
             <div class="card-header">
-              <span class="drag-handle" title={i18n.t("analyze.drag_reorder" as TranslationKey)}>⠿</span>
-              <span class="card-icon">{actionIcon(action.action_type)}</span>
-              <div class="card-info" onclick={() => toggleExpand(action.id)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && toggleExpand(action.id)}>
-                <span class="card-label">{action.label || i18n.t("analyze.untitled" as TranslationKey)}</span>
-                <span class="card-type">{actionTypeName(action.action_type)}</span>
-                <span class="card-summary">{actionSummary(action.action_type)}</span>
+              <span class="card-icon">{stepKindIcon(step.kind)}</span>
+              <div
+                class="card-info"
+                onclick={() => toggleExpand(step.id)}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => e.key === "Enter" && toggleExpand(step.id)}
+              >
+                <span class="card-label">{step.label || i18n.t("analyze.untitled" as TranslationKey)}</span>
+                <span class="card-type">{stepKindLabel(step.kind)}</span>
+                <span class="card-summary">{stepKindSummary(step.kind)}</span>
               </div>
               <div class="card-controls">
                 <button
                   class="toggle-btn"
-                  class:on={action.enabled}
+                  class:on={step.enabled}
                   onclick={() => toggleEnabled(i)}
-                  title={action.enabled ? i18n.t("analyze.disable" as TranslationKey) : i18n.t("analyze.enable" as TranslationKey)}
+                  title={step.enabled ? i18n.t("analyze.disable" as TranslationKey) : i18n.t("analyze.enable" as TranslationKey)}
                 >
-                  {action.enabled ? i18n.t("analyze.on" as TranslationKey) : i18n.t("analyze.off" as TranslationKey)}
+                  {step.enabled ? i18n.t("analyze.on" as TranslationKey) : i18n.t("analyze.off" as TranslationKey)}
                 </button>
-                <button class="icon-btn" onclick={() => removeAction(i)} title={i18n.t("analyze.delete" as TranslationKey)}>✕</button>
                 <button
                   class="icon-btn expand-btn"
-                  onclick={() => toggleExpand(action.id)}
+                  onclick={() => toggleExpand(step.id)}
                   title={i18n.t("analyze.expand" as TranslationKey)}
                 >
-                  {expanded.has(action.id) ? "▲" : "▼"}
+                  {expanded.has(step.id) ? "▲" : "▼"}
                 </button>
               </div>
             </div>
 
-            {#if expanded.has(action.id)}
+            {#if expanded.has(step.id)}
               <div class="card-editor">
                 <div class="field">
                   <label>{i18n.t("analyze.label" as TranslationKey)}</label>
                   <input
                     type="text"
-                    value={action.label}
-                    oninput={(e) => updateLabel(i, (e.target as HTMLInputElement).value)}
+                    value={step.label}
+                    oninput={(e) => updateStep(i, { label: (e.target as HTMLInputElement).value })}
                     placeholder={i18n.t("analyze.label_placeholder" as TranslationKey)}
                   />
                 </div>
                 <div class="field">
-                  <label>{i18n.t("analyze.action_type" as TranslationKey)}</label>
+                  <label>Таймаут (сек) — 0 / пусто = по умолчанию</label>
+                  <input
+                    type="number"
+                    value={step.timeout ?? ""}
+                    oninput={(e) => updateTimeout(i, (e.target as HTMLInputElement).value)}
+                    placeholder="120"
+                  />
+                </div>
+                <div class="field">
+                  <label>Политика при ошибке</label>
                   <select
-                    value={actionVariant(action.action_type)}
-                    onchange={(e) => changeActionType(i, (e.target as HTMLSelectElement).value)}
+                    value={step.failure_policy ?? ""}
+                    onchange={(e) => {
+                      const v = (e.target as HTMLSelectElement).value;
+                      updateStep(i, { failure_policy: (v as FailurePolicy) || null });
+                    }}
                   >
-                    {#each actionTypes as at}
-                      <option value={at.key}>{at.icon} {at.label}</option>
+                    <option value="">{failurePolicyLabel(null)}</option>
+                    {#each failurePolicies as fp}
+                      <option value={fp.key}>{fp.label}</option>
                     {/each}
                   </select>
                 </div>
-
-                {#each getEditorFields(action.action_type) as field}
+                <div class="field">
+                  <label>Видимость</label>
+                  <select
+                    value={step.visibility ?? ""}
+                    onchange={(e) => {
+                      const v = (e.target as HTMLSelectElement).value;
+                      updateStep(i, { visibility: (v as Visibility) || null });
+                    }}
+                  >
+                    <option value="">{visibilityLabel(null)}</option>
+                    {#each visibilities as vis}
+                      <option value={vis.key}>{vis.label}</option>
+                    {/each}
+                  </select>
+                </div>
+                {#if step.depends_on.length > 0}
                   <div class="field">
-                    <label>{field.label}</label>
-                    {#if field.type === "number"}
-                      <input
-                        type="number"
-                        value={field.value as number}
-                        oninput={(e) => {
-                          const val = parseInt((e.target as HTMLInputElement).value) || 0;
-                          updateActionField(i, field.path, val);
-                        }}
-                        placeholder={field.placeholder}
-                      />
-                    {:else if field.type === "textarea"}
-                      <textarea
-                        value={field.value as string}
-                        oninput={(e) => {
-                          updateActionField(i, field.path, (e.target as HTMLTextAreaElement).value);
-                        }}
-                        placeholder={field.placeholder}
-                      ></textarea>
-                    {:else}
-                      <input
-                        type="text"
-                        value={field.value as string}
-                        oninput={(e) => {
-                          updateActionField(i, field.path, (e.target as HTMLInputElement).value);
-                        }}
-                        placeholder={field.placeholder}
-                      />
-                    {/if}
+                    <label>Запускается после</label>
+                    <div class="chips">
+                      {#each step.depends_on as dep}
+                        <span class="chip">{dep}</span>
+                      {/each}
+                    </div>
                   </div>
-                {/each}
+                {/if}
               </div>
             {/if}
           </div>
         {/each}
-      </div>
-
-      <div class="add-wrapper">
-        <button class="secondary add-btn" onclick={() => (showAddMenu = !showAddMenu)}>
-          {i18n.t("analyze.add_action" as TranslationKey)}
-        </button>
-        {#if showAddMenu}
-          <div class="add-menu">
-            {#each actionTypes as at}
-              <button class="add-menu-item" onclick={() => addAction(at.key)}>
-                <span class="add-icon">{at.icon}</span>
-                <div>
-                  <strong>{at.label}</strong>
-                  <span class="add-desc">{at.desc}</span>
-                </div>
-              </button>
-            {/each}
-          </div>
-        {/if}
       </div>
 
       <div class="footer-save">
@@ -602,10 +367,41 @@
   }
 
   .editor-header h2 { margin: 0; font-size: var(--sp-fs-lg); color: var(--sp-text-1); }
-
   .desc { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.15rem 0 0; }
-
   .save-btn { white-space: nowrap; }
+
+  .diagnostics {
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .diagnostics h3 {
+    margin: 0 0 0.5rem;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-2);
+  }
+
+  .diag-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+  }
+
+  .diag-row.diag-warning .diag-sev { color: #fbbf24; }
+  .diag-row.diag-error .diag-sev { color: var(--sp-danger); }
+  .diag-row.diag-warning { color: #fbbf24; }
+  .diag-row.diag-error { color: var(--sp-danger); }
+
+  .diag-sev { flex-shrink: 0; }
+  .diag-text { flex: 1; word-break: break-word; }
+  .diag-file { opacity: 0.6; font-family: var(--sp-font-mono); }
+  .diag-conf { flex-shrink: 0; opacity: 0.6; }
 
   .action-list {
     display: flex;
@@ -618,36 +414,15 @@
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-lg);
     box-shadow: var(--sp-shadow-1);
-    transition: border-color 0.15s, box-shadow 0.15s;
   }
 
-  .action-card.drag-over {
-    border-color: var(--sp-accent);
-    box-shadow: var(--sp-shadow-accent);
-  }
-
-  .action-card.disabled {
-    opacity: 0.5;
-  }
+  .action-card.disabled { opacity: 0.5; }
 
   .card-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.6rem 0.8rem;
-  }
-
-  .drag-handle {
-    cursor: grab;
-    color: var(--sp-text-3);
-    font-size: 1rem;
-    letter-spacing: 2px;
-    user-select: none;
-    flex-shrink: 0;
-  }
-
-  .drag-handle:active {
-    cursor: grabbing;
   }
 
   .card-icon {
@@ -770,72 +545,17 @@
     box-shadow: var(--sp-shadow-accent);
   }
 
-  .field textarea {
-    min-height: 3rem;
-    resize: vertical;
+  .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+  .chip {
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--sp-radius-xs);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-bg-1);
     font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
   }
-
-  .add-wrapper {
-    position: relative;
-    margin-top: 0.75rem;
-  }
-
-  .add-btn {
-    width: 100%;
-    padding: 0.7rem;
-    border: 2px dashed var(--sp-border-strong);
-    border-radius: var(--sp-radius-lg);
-    background: transparent;
-    color: var(--sp-text-3);
-    font-size: var(--sp-fs-sm);
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .add-btn:hover {
-    border-color: var(--sp-accent);
-    color: var(--sp-accent);
-    background: var(--sp-accent-soft);
-  }
-
-  .add-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    right: 0;
-    background: var(--sp-glass-strong);
-    border: 1px solid var(--sp-border-strong);
-    border-radius: var(--sp-radius-lg);
-    box-shadow: var(--sp-shadow-2);
-    z-index: 50;
-    overflow: hidden;
-  }
-
-  .add-menu-item {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    width: 100%;
-    padding: 0.6rem 0.8rem;
-    border: none;
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    font-size: var(--sp-fs-sm);
-    color: var(--sp-text-1);
-    transition: background 0.1s;
-  }
-
-  .add-menu-item:hover { background: var(--sp-accent-soft); }
-
-  .add-icon { font-size: 1.1rem; }
-
-  .add-menu-item div { display: flex; flex-direction: column; }
-
-  .add-menu-item strong { font-weight: var(--sp-fw-semibold); font-size: var(--sp-fs-sm); }
-
-  .add-desc { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }
 
   .footer-save {
     margin-top: 1.5rem;

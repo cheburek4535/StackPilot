@@ -92,6 +92,28 @@ pub fn validate_profile_v2(profile: &LaunchProfileV2) -> ProfileValidationResult
         );
     }
 
+    // The profile is self-contained: its project root must exist before a
+    // run starts. Failing fast with a clear message beats cryptic spawn
+    // errors when the project folder was moved or deleted.
+    if let Some(ref root) = profile.project_root {
+        let path = std::path::Path::new(root);
+        if !path.exists() {
+            result.push_error(
+                "PROJECT_ROOT_NOT_FOUND",
+                format!("Project root '{}' does not exist", root),
+                None,
+                Some("project_root".to_string()),
+            );
+        } else if !path.is_dir() {
+            result.push_error(
+                "PROJECT_ROOT_NOT_DIR",
+                format!("Project root '{}' is not a directory", root),
+                None,
+                Some("project_root".to_string()),
+            );
+        }
+    }
+
     if profile.steps.is_empty() {
         result.push_warning(
             "NO_STEPS",
@@ -173,6 +195,21 @@ pub fn validate_profile_v2(profile: &LaunchProfileV2) -> ProfileValidationResult
                 result.push_warning(
                     "WORKING_DIR_NOT_FOUND",
                     format!("Working directory '{}' does not exist", wd),
+                    Some(step.id.clone()),
+                    Some("working_directory".to_string()),
+                );
+            }
+            // A relative working directory can only be resolved against the
+            // profile's project root; without it the command would silently
+            // run in the app's own directory.
+            if path.is_relative() && profile.project_root.is_none() {
+                result.push_warning(
+                    "RELATIVE_WORKING_DIR_NO_ROOT",
+                    format!(
+                        "Working directory '{}' is relative but the profile has no \
+                         project root; the command will run in the app directory",
+                        wd
+                    ),
                     Some(step.id.clone()),
                     Some("working_directory".to_string()),
                 );
@@ -441,7 +478,10 @@ pub fn topological_order(profile: &LaunchProfileV2) -> Vec<String> {
 
     let mut sorted: Vec<String> = Vec::new();
 
-    while let Some(id) = queue.pop() {
+    // Pop from the FRONT: `queue` is sorted ascending and the deterministic
+    // order must follow it (popping from the end would reverse the order).
+    while let Some(id) = queue.first().copied() {
+        queue.remove(0);
         sorted.push(id.to_string());
         if let Some(deps) = dependents.get(id) {
             let mut new_ready: Vec<&str> = Vec::new();
@@ -544,6 +584,52 @@ mod tests {
             "Expected valid, got: {:?}",
             result.diagnostics
         );
+    }
+
+    #[test]
+    fn missing_project_root_detected() {
+        let mut profile = valid_profile(vec![make_step("a", vec![])]);
+        profile.project_root = Some(
+            "/this/path/definitely/does/not/exist/stackpilot_test_xyz"
+                .to_string(),
+        );
+        let result = validate_profile_v2(&profile);
+        assert!(!result.valid);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "PROJECT_ROOT_NOT_FOUND"));
+    }
+
+    #[test]
+    fn relative_working_dir_without_root_warns() {
+        let mut profile = valid_profile(vec![LaunchStep {
+            id: "s1".to_string(),
+            label: "s1".to_string(),
+            enabled: true,
+            kind: StepKind::RunCommand {
+                command: "echo hi".to_string(),
+                command_spec: None,
+            },
+            depends_on: vec![],
+            working_directory: Some("./backend".to_string()),
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: None,
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        }]);
+        profile.project_root = None;
+        let result = validate_profile_v2(&profile);
+        assert!(result.valid);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "RELATIVE_WORKING_DIR_NO_ROOT"));
     }
 
     #[test]

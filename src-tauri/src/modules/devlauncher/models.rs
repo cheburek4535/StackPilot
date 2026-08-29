@@ -188,7 +188,7 @@ fn default_true() -> bool {
 }
 
 fn default_timeout_secs() -> u64 {
-    30
+    120
 }
 
 fn default_retry_delay_ms() -> u64 {
@@ -746,7 +746,7 @@ impl From<LaunchStep> for LaunchAction {
                         CompletionPolicy::PortOpen { timeout_secs, .. } => Some(*timeout_secs),
                         _ => None,
                     })
-                    .unwrap_or(30);
+                    .unwrap_or(120);
                 ActionType::WaitForPort {
                     host,
                     port,
@@ -761,7 +761,7 @@ impl From<LaunchStep> for LaunchAction {
                         CompletionPolicy::UrlReady { timeout_secs, .. } => Some(*timeout_secs),
                         _ => None,
                     })
-                    .unwrap_or(30);
+                    .unwrap_or(120);
                 ActionType::WaitForUrl {
                     url,
                     timeout_secs: timeout,
@@ -904,7 +904,23 @@ pub fn resolve_working_directory(
         return Some(dir.to_string());
     }
     let root = project_root?;
-    Some(Path::new(root).join(path).to_string_lossy().into_owned())
+    // Normalize the joined path: `Path::join` keeps `.` components
+    // (`/proj/./backend`), which are valid but ugly in logs and misleading
+    // in step metadata. CurDir components are dropped lexically.
+    let mut joined = std::path::PathBuf::from(root);
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // Pop only when it does not escape the accumulated prefix.
+                if joined.file_name().is_some() {
+                    joined.pop();
+                }
+            }
+            other => joined.push(other.as_os_str()),
+        }
+    }
+    Some(joined.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -953,11 +969,24 @@ impl StepKind {
         }
     }
 
-    pub fn default_failure_policy(has_dependents: bool) -> FailurePolicy {
-        if has_dependents {
-            FailurePolicy::StopRun
-        } else {
-            FailurePolicy::WarnAndContinue
+    /// Default failure policy for a step given its dependency state.
+    ///
+    /// Leaf steps (no dependents) default to `WarnAndContinue`: their
+    /// failure is isolated to themselves. Readiness waits with dependents
+    /// default to `SkipDependents`: a failed infra wait (Docker daemon,
+    /// a port that never opens) makes its own dependents useless, but it
+    /// must not take down independent branches of the run. Other steps
+    /// with dependents (builds, service starts) default to `StopRun`:
+    /// everything downstream depends on their success.
+    pub fn default_failure_policy(&self, has_dependents: bool) -> FailurePolicy {
+        if !has_dependents {
+            return FailurePolicy::WarnAndContinue;
+        }
+        match self {
+            StepKind::WaitForDocker { .. } | StepKind::WaitForPort { .. } => {
+                FailurePolicy::SkipDependents
+            }
+            _ => FailurePolicy::StopRun,
         }
     }
 }
@@ -1059,7 +1088,7 @@ mod tests {
                 port, timeout_secs, ..
             } => {
                 assert_eq!(port, 3000);
-                assert_eq!(timeout_secs, 30);
+                assert_eq!(timeout_secs, 120);
             }
             _ => panic!("expected PortOpen"),
         }
@@ -1235,19 +1264,31 @@ mod tests {
 
     #[test]
     fn resolve_working_directory_model() {
+        let root = "/proj";
+        // Expected join rendered through Path on the current platform so
+        // separator style never matters.
+        let joined = |rel: &str| Path::new(root).join(rel).to_string_lossy().into_owned();
+        // Relative directories resolve against the project root, and `.`
+        // components are stripped from the result.
         assert_eq!(
-            resolve_working_directory(Some("/proj"), Some("./backend")),
-            Some("/proj/backend".to_string())
+            resolve_working_directory(Some(root), Some("./backend")),
+            Some(joined("backend"))
         );
         assert_eq!(
-            resolve_working_directory(Some("/proj"), Some("backend")),
-            Some("/proj/backend".to_string())
+            resolve_working_directory(Some(root), Some("backend")),
+            Some(joined("backend"))
         );
+        // Absolute paths pass through unchanged.
+        let abs = if cfg!(windows) {
+            r"C:\abs\path"
+        } else {
+            "/abs/path"
+        };
         assert_eq!(
-            resolve_working_directory(Some("/proj"), Some("/abs/path")),
-            Some("/abs/path".to_string())
+            resolve_working_directory(Some(root), Some(abs)),
+            Some(abs.to_string())
         );
-        assert_eq!(resolve_working_directory(Some("/proj"), None), None);
+        assert_eq!(resolve_working_directory(Some(root), None), None);
         assert_eq!(resolve_working_directory(None, Some("./x")), None);
         assert_eq!(resolve_working_directory(None, None), None);
     }

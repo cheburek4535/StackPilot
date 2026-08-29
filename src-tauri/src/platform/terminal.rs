@@ -289,7 +289,10 @@ fn resolve_windows_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
-    // wt.exe -w new cmd /K "<script>"  (a new window is guaranteed with -w new)
+    // wt.exe -w new cmd /K "<inner>" — the command is passed as a single
+    // argv entry so cmd.exe receives it literally (no temp batch script:
+    // the user sees the exact command in the terminal and nothing leaks
+    // into %TEMP%).
     let mut args = Vec::new();
 
     match config.window_policy {
@@ -309,11 +312,9 @@ fn resolve_windows_terminal(
         args.push(label.clone());
     }
 
-    // Write the inner command to a temp batch script for reliable execution
-    let script_path = write_temp_batch_script(inner_cmd)?;
     args.push("cmd".to_string());
     args.push("/K".to_string());
-    args.push(script_path);
+    args.push(inner_cmd.to_string());
 
     Ok(TerminalPlan {
         program: "wt".to_string(),
@@ -566,36 +567,6 @@ fn resolve_custom_terminal(
 /// Check if a program exists on PATH.
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
-}
-
-/// Write a temporary batch script on Windows for reliable terminal execution.
-#[cfg(target_os = "windows")]
-fn write_temp_batch_script(inner: &str) -> Result<String, String> {
-    use std::io::Write;
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut dir = std::env::temp_dir();
-    dir.push(format!(
-        "devlauncher_term_{}_{}.cmd",
-        std::process::id(),
-        nanos
-    ));
-
-    let mut file =
-        std::fs::File::create(&dir).map_err(|e| format!("Failed to create temp script: {}", e))?;
-    writeln!(file, "@echo off")
-        .and_then(|_| writeln!(file, "{}", inner))
-        .map_err(|e| format!("Failed to write temp script: {}", e))?;
-
-    Ok(dir.to_string_lossy().into_owned())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn write_temp_batch_script(_inner: &str) -> Result<String, String> {
-    Err("temp batch scripts are Windows-only".to_string())
 }
 
 // ---------------------------------------------------------------------------

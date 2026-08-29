@@ -104,6 +104,29 @@ pub trait ProcessManager: Send + Sync {
         step_id: Option<String>,
     ) -> Result<TrackedProcess, String>;
 
+    /// Spawn a tracked process with ownership metadata and an environment
+    /// overlay applied to the child (PATH prepend, env set/remove).
+    ///
+    /// This is the overlay-capable counterpart of [`Self::spawn_and_track_owned`].
+    /// The default implementation reports the overlay as unsupported so
+    /// managers that do not implement it degrade gracefully.
+    fn spawn_and_track_owned_with_overlay(
+        &self,
+        _command: &str,
+        _args: &[&str],
+        _working_dir: Option<&str>,
+        _label: &str,
+        _session_id: Option<String>,
+        _overlay: &EnvironmentOverlay,
+        _run_id: Option<String>,
+        _step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        Err(
+            "Owned spawn with environment overlay is not supported by this process manager"
+                .to_string(),
+        )
+    }
+
     fn list(&self) -> Vec<TrackedProcess>;
     fn kill(&self, id: &str) -> Result<(), String>;
     fn refresh_status(&self, id: &str) -> Result<ProcessStatus, String>;
@@ -615,6 +638,30 @@ impl ProcessManager for OsProcessManager {
             label,
             session_id,
             overlay,
+            run_id,
+            step_id,
+        )
+    }
+
+    fn spawn_and_track_owned_with_overlay(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: &EnvironmentOverlay,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            Some(overlay),
+            false,
             run_id,
             step_id,
         )

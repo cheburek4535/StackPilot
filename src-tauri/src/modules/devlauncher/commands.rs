@@ -328,11 +328,13 @@ pub async fn run_profile(
         let _ = engine.launch_ide(ide, project_path.as_deref(), None, vscode_path.as_deref());
     }
 
-    // 2. Convert legacy profile to V2 and run through the orchestrator
-    let v2_profile = LaunchProfileV2::from(profile.clone());
+    // 2. Convert legacy profile to V2 and run through the orchestrator.
+    // Legacy profiles were strictly sequential; `migrate_legacy_profile`
+    // chains the steps so a later WaitForPort does not race its server.
+    let v2_profile = migrate_legacy_profile(profile.clone());
 
     // Resolve environment overlay once for the run
-    let _overlay = if let Some(ref binding_id) = environment_binding_id {
+    let overlay = if let Some(ref binding_id) = environment_binding_id {
         if let Some(ref svc) = state.binding_service {
             match svc.get(binding_id) {
                 Ok(binding) => {
@@ -364,7 +366,7 @@ pub async fn run_profile(
         .map(|s| s.started_at.clone());
     let run = state
         .orchestrator
-        .create_run_with_session(v2_profile, session_id)
+        .create_run_with_session_and_overlay(v2_profile, session_id, overlay)
         .map_err(|v| {
             let msgs: Vec<String> = v
                 .diagnostics
@@ -581,7 +583,7 @@ pub async fn run_profile_v2(
     settings: State<'_, SettingsState>,
     profile: LaunchProfileV2,
     _session_id: Option<String>,
-    _environment_binding_id: Option<String>,
+    environment_binding_id: Option<String>,
 ) -> Result<LaunchRun, String> {
     // 1. Launch the preferred IDE first
     let engine = Arc::clone(&state.launch_engine);
@@ -594,14 +596,40 @@ pub async fn run_profile_v2(
         let _ = engine.launch_ide(ide, project_path.as_deref(), None, vscode_path.as_deref());
     }
 
-    // 2. Create and start the run via the orchestrator
+    // 2. Resolve the environment overlay from the profile's binding once
+    let overlay = if let Some(ref binding_id) = environment_binding_id {
+        if let Some(ref svc) = state.binding_service {
+            match svc.get(binding_id) {
+                Ok(binding) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: environment binding '{}' not found: {}. Using host environment.",
+                        binding_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 3. Create and start the run via the orchestrator
     let session_id = workspace
         .session
         .get_session()
         .map(|s| s.started_at.clone());
     let run = state
         .orchestrator
-        .create_run_with_session(profile, session_id)
+        .create_run_with_session_and_overlay(profile, session_id, overlay)
         .map_err(|v| {
             let msgs: Vec<String> = v
                 .diagnostics
@@ -702,9 +730,16 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
         let cli_diag = crate::platform::docker_service::DockerService::check_cli();
         let has_docker =
             cli_diag.status != crate::platform::docker_service::DockerStatus::CliMissing;
+        // Compose availability is a property of the CLI, not the daemon:
+        // `docker compose version` answers even when the daemon is down.
         let has_compose = if has_docker {
-            let daemon_diag = crate::platform::docker_service::DockerService::check_daemon();
-            daemon_diag.status.is_ready()
+            std::process::Command::new("docker")
+                .args(["compose", "version"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
         } else {
             false
         };

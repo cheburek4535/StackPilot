@@ -6,6 +6,7 @@
 //! unrelated project actions.
 
 use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::time::Duration;
 
 use super::command_resolver::resolve_executable;
@@ -100,16 +101,20 @@ pub struct DockerReadinessCheck {
     pub port_check: Option<u16>,
     /// Optional: run a health check command.
     pub health_check: Option<String>,
+    /// When the daemon is down, attempt to auto-launch Docker Desktop /
+    /// the Docker daemon once before falling back to plain waiting.
+    pub auto_launch: bool,
 }
 
 impl Default for DockerReadinessCheck {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(30),
+            timeout: Duration::from_secs(120),
             poll_interval: Duration::from_secs(1),
             service_name: None,
             port_check: None,
             health_check: None,
+            auto_launch: false,
         }
     }
 }
@@ -233,12 +238,17 @@ impl DockerService {
     }
 
     /// Wait for Docker daemon readiness with timeout and cancellation.
+    ///
+    /// When `check.auto_launch` is set, Docker Desktop / the Docker daemon
+    /// is launched once (best-effort) as soon as the daemon is detected as
+    /// unavailable, so a cold boot does not immediately fail the wait.
     pub async fn wait_for_daemon(
         check: &DockerReadinessCheck,
         cancelled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> DockerReadinessResult {
         let start = tokio::time::Instant::now();
         let deadline = start + check.timeout;
+        let mut auto_launched = false;
 
         loop {
             if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -305,6 +315,14 @@ impl DockerService {
                 };
             }
 
+            // Auto-launch the daemon once when it is unavailable. The launch
+            // is fire-and-forget: the wait loop below reports readiness
+            // as soon as `docker version` answers.
+            if check.auto_launch && !auto_launched {
+                auto_launched = true;
+                let _ = Self::try_launch_docker();
+            }
+
             if tokio::time::Instant::now() >= deadline {
                 return DockerReadinessResult {
                     status: diag.status,
@@ -319,6 +337,133 @@ impl DockerService {
             }
 
             tokio::time::sleep(check.poll_interval).await;
+        }
+    }
+
+    /// Ensure the Docker daemon is running: auto-launch it when it is down,
+    /// then wait for readiness (bounded by `check.timeout`).
+    ///
+    /// The caller can inspect [`Self::check_daemon`] / [`Self::try_launch_docker`]
+    /// beforehand to surface diagnostics about the launch attempt.
+    pub async fn ensure_daemon(
+        check: &DockerReadinessCheck,
+        cancelled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> DockerReadinessResult {
+        let mut check = check.clone();
+        if Self::check_daemon().status != DockerStatus::DaemonReady {
+            check.auto_launch = true;
+        }
+        Self::wait_for_daemon(&check, cancelled).await
+    }
+
+    /// Attempt to start Docker Desktop / the Docker daemon on the current
+    /// platform. Fire-and-forget: the launcher is spawned detached and no
+    /// output is captured.
+    ///
+    /// Returns `Ok(())` when a launch attempt was made. Returns `Err` with
+    /// a structured diagnostic when nothing could be attempted (the app is
+    /// not installed anywhere we look).
+    pub fn try_launch_docker() -> Result<(), DockerDiagnostic> {
+        let os = crate::platform::host::current_os();
+        let err_diag = |message: String, action: Option<String>| DockerDiagnostic {
+            status: DockerStatus::DaemonUnavailable,
+            message,
+            suggested_action: action,
+            detected_os: os,
+        };
+
+        match os {
+            crate::platform::host::HostOs::Windows => {
+                // 1. App Paths / PATH resolution of "Docker Desktop".
+                let launcher = crate::platform::app_launcher::resolve_application(
+                    "Docker Desktop",
+                    None,
+                    None,
+                );
+                if launcher.found && !launcher.is_flatpak {
+                    let args: Vec<String> = launcher.args.clone();
+                    if let Err(e) = spawn_detached(&launcher.program, &args) {
+                        return Err(err_diag(
+                            format!("Failed to launch Docker Desktop: {}", e),
+                            Some(
+                                "Start Docker Desktop manually from the Start menu \
+                                 or the desktop shortcut."
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    return Ok(());
+                }
+                // 2. Well-known install locations.
+                let mut candidates: Vec<String> = vec![
+                    r"C:\Program Files\Docker\Docker\Docker Desktop.exe".to_string(),
+                    r"C:\Program Files\Docker\Docker\resources\Docker Desktop.exe".to_string(),
+                ];
+                if let Ok(pf) = std::env::var("ProgramFiles") {
+                    candidates.push(format!(r"{}\Docker\Docker\Docker Desktop.exe", pf));
+                }
+                if let Ok(la) = std::env::var("LocalAppData") {
+                    candidates.push(format!(r"{}\Docker\Docker Desktop.exe", la));
+                }
+                for candidate in candidates {
+                    if Path::new(&candidate).is_file() {
+                        if let Err(e) = spawn_detached(&candidate, &[]) {
+                            return Err(err_diag(
+                                format!("Failed to launch Docker Desktop: {}", e),
+                                Some("Start Docker Desktop manually.".to_string()),
+                            ));
+                        }
+                        return Ok(());
+                    }
+                }
+                Err(err_diag(
+                    "Docker Desktop not found; cannot auto-launch the daemon".to_string(),
+                    Some(
+                        "Install Docker Desktop or start it manually, then retry the profile."
+                            .to_string(),
+                    ),
+                ))
+            }
+            crate::platform::host::HostOs::Macos => {
+                // `open -a Docker` is the canonical way to start Docker Desktop.
+                if let Err(e) = spawn_detached("open", &["-a".to_string(), "Docker".to_string()]) {
+                    return Err(err_diag(
+                        format!("Failed to launch Docker Desktop: {}", e),
+                        Some("Start Docker Desktop from /Applications manually.".to_string()),
+                    ));
+                }
+                Ok(())
+            }
+            crate::platform::host::HostOs::Linux => {
+                // 1. Docker Desktop ships a `docker-desktop` CLI.
+                if resolve_executable("docker-desktop", None).is_some() {
+                    if let Err(e) = spawn_detached("docker-desktop", &[]) {
+                        return Err(err_diag(
+                            format!("Failed to launch Docker Desktop: {}", e),
+                            Some("Start Docker Desktop manually.".to_string()),
+                        ));
+                    }
+                    return Ok(());
+                }
+                // 2. systemd service (rootless attempts are harmless: the
+                // launch is fire-and-forget and the wait loop will report
+                // the daemon state as-is).
+                if resolve_executable("systemctl", None).is_some() {
+                    let _ = spawn_detached(
+                        "systemctl",
+                        &["start".to_string(), "docker".to_string()],
+                    );
+                    return Ok(());
+                }
+                Err(err_diag(
+                    "No way to auto-start Docker on this system".to_string(),
+                    Some(
+                        "Start the Docker daemon manually (`sudo systemctl start docker` \
+                         or Docker Desktop), then retry the profile."
+                            .to_string(),
+                    ),
+                ))
+            }
         }
     }
 
@@ -341,6 +486,30 @@ impl DockerService {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Spawn a GUI application detached (fire-and-forget, no output capture,
+/// new process group on Windows so it outlives the parent).
+fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch '{}': {}", program, e))
+}
 
 /// Classify a Docker error message into a structured status.
 fn classify_docker_error(stderr: &str, os: crate::platform::host::HostOs) -> DockerDiagnostic {
@@ -516,10 +685,27 @@ mod tests {
     #[test]
     fn readiness_check_default_values() {
         let check = DockerReadinessCheck::default();
-        assert_eq!(check.timeout, Duration::from_secs(30));
+        assert_eq!(check.timeout, Duration::from_secs(120));
         assert_eq!(check.poll_interval, Duration::from_secs(1));
         assert!(check.service_name.is_none());
         assert!(check.port_check.is_none());
+        assert!(!check.auto_launch);
+    }
+
+    #[test]
+    fn try_launch_docker_does_not_panic() {
+        // No assertion on the outcome: the machine may or may not have
+        // Docker installed. The call must simply not panic.
+        let _ = DockerService::try_launch_docker();
+    }
+
+    #[test]
+    fn spawn_detached_missing_program_errors() {
+        let result = spawn_detached(
+            "this_program_definitely_does_not_exist_xyz_98765",
+            &[],
+        );
+        assert!(result.is_err());
     }
 
     #[test]

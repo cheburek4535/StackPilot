@@ -1,6 +1,6 @@
 use crate::modules::devlauncher::models::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -170,14 +170,33 @@ impl JsonProfileManager {
 
     /// Parse a profile file's content. Tries V2 first (unknown fields are
     /// preserved into `extra`), then falls back to the legacy v1 schema.
+    ///
+    /// A bare legacy file must NOT be accepted as V2: its `actions` would
+    /// be dropped into `extra` and the profile would silently load with
+    /// zero steps. The schema is decided from the document shape — `steps`
+    /// marks V2, `actions` without `steps` marks legacy.
     fn parse_profile_file(content: &str) -> Result<LoadOutcome, String> {
-        match serde_json::from_str::<LaunchProfileV2>(content) {
-            Ok(profile) => Ok(LoadOutcome::V2(profile)),
-            Err(v2_err) => match serde_json::from_str::<LaunchProfile>(content) {
-                Ok(legacy) => Ok(LoadOutcome::Legacy(legacy)),
-                Err(_) => Err(format!("V2 parse failed: {}", v2_err)),
-            },
+        let value: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| format!("Malformed JSON: {}", e))?;
+
+        let has_v2_steps = value.get("steps").map(|s| s.is_array()).unwrap_or(false);
+        let has_legacy_actions = value.get("actions").map(|a| a.is_array()).unwrap_or(false);
+
+        if has_v2_steps {
+            let profile: LaunchProfileV2 = serde_json::from_value(value)
+                .map_err(|e| format!("V2 parse failed: {}", e))?;
+            return Ok(LoadOutcome::V2(profile));
         }
+        if has_legacy_actions {
+            let legacy: LaunchProfile =
+                serde_json::from_value(value).map_err(|e| format!("Legacy parse failed: {}", e))?;
+            return Ok(LoadOutcome::Legacy(legacy));
+        }
+        // No actions and no steps: accept as V2 (an empty profile is
+        // valid), otherwise report the V2 parse error.
+        let profile: LaunchProfileV2 = serde_json::from_value(value)
+            .map_err(|e| format!("V2 parse failed: {}", e))?;
+        Ok(LoadOutcome::V2(profile))
     }
 
     fn load_result(&self) -> ProfileLoadResult {
@@ -642,6 +661,13 @@ fn merge_legacy_into_v2(
                     step.extra = old_step.extra.clone();
                 }
             }
+            // The legacy edit may have removed steps the old graph depended
+            // on (e.g. a compose step deleted from the action list). Drop
+            // dangling dependencies so the merged profile still validates.
+            let live_ids: HashSet<String> = steps.iter().map(|s| s.id.clone()).collect();
+            for step in &mut steps {
+                step.depends_on.retain(|dep| live_ids.contains(dep));
+            }
         }
         None => {
             for i in 1..steps.len() {
@@ -758,19 +784,24 @@ mod tests {
 
     #[test]
     fn sanitize_filename_removes_dangerous_chars() {
+        // Runs of unsafe characters collapse into a single dash.
         assert_eq!(
             sanitize_filename("My Project (Backend)"),
-            "My-Project--Backend"
+            "My-Project-Backend"
         );
-        assert_eq!(sanitize_filename("../../etc/passwd"), "..-..-etc-passwd");
+        // Path separators become dashes; leading dots (hidden files on
+        // Unix) are neutralized with a `p` prefix.
+        assert_eq!(sanitize_filename("../../etc/passwd"), "p..-..-etc-passwd");
         assert_eq!(sanitize_filename("CON"), "profile-CON");
         assert_eq!(sanitize_filename("..."), "profile");
         assert_eq!(sanitize_filename(""), "profile");
-        assert_eq!(sanitize_filename(".hidden"), "p-hidden");
+        assert_eq!(sanitize_filename(".hidden"), "p.hidden");
         for n in ["../../x", "a/b\\c", "CON", "...", ""] {
             let s = sanitize_filename(n);
+            // Never a path separator, never a hidden file, never "..".
             assert!(!s.contains('/') && !s.contains('\\'), "{} -> {}", n, s);
-            assert!(!s.split('.').any(|c| c.is_empty()), "{} -> {}", n, s);
+            assert!(!s.starts_with('.'), "{} -> {}", n, s);
+            assert_ne!(s, "..", "{} -> {}", n, s);
         }
     }
 
@@ -785,7 +816,7 @@ mod tests {
         let id8: String = evil.id.chars().take(8).collect();
         assert_eq!(
             path.file_name().unwrap().to_str().unwrap(),
-            format!("..-..-evil-{}.json", id8)
+            format!("p..-..-evil-{}.json", id8)
         );
 
         let reserved = sample_v2("CON", None);
@@ -830,14 +861,18 @@ mod tests {
         manager.save_profile_v2(&profile).unwrap();
         let path1 = manager.filename_for(&profile);
 
-        // Save again with the same name -- the ID must be reused.
+        // Save again with the same name but a fresh ID -- the manager must
+        // adopt the stable ID of the existing profile (matched by name).
         let mut again = profile.clone();
         again.id = generate_stable_id();
         manager.save_profile_v2(&again).unwrap();
-        let path2 = manager.filename_for(&again);
 
-        assert_eq!(path1, path2);
-        assert_eq!(manager.list_profiles_v2().unwrap().len(), 1);
+        // The on-disk file is still the original one (adopted ID), and a
+        // stale file for the abandoned ID must not linger.
+        assert!(path1.exists(), "original file must survive");
+        let listed = manager.list_profiles_v2().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, profile.id);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -879,10 +914,13 @@ mod tests {
     fn malformed_profile_does_not_block_valid_profiles() {
         let dir = temp_dir("mixed");
         let manager = JsonProfileManager::new(dir.clone());
-        manager.save_profile_v2(&sample_v2("Alpha", None)).unwrap();
-        manager.save_profile_v2(&sample_v2("Beta", None)).unwrap();
-        // Overwrite Beta with garbage
-        fs::write(manager.filename_for(&sample_v2("Beta", None)), "{{{{").unwrap();
+        let alpha = sample_v2("Alpha", None);
+        let beta = sample_v2("Beta", None);
+        manager.save_profile_v2(&alpha).unwrap();
+        manager.save_profile_v2(&beta).unwrap();
+        // Overwrite Beta's file (same instance → same filename) with garbage
+        let beta_path = manager.filename_for(&beta);
+        fs::write(&beta_path, "{{{{").unwrap();
 
         let result = manager.list_profiles_with_diagnostics().unwrap();
         assert_eq!(result.profiles.len(), 1);

@@ -14,10 +14,14 @@ import {
   diagnosticClass,
   isRunTerminal,
   isStepTerminal,
+  applyStepPatch,
+  failurePolicyLabel,
+  visibilityLabel,
 } from "./types";
 import type {
   LaunchProfile,
   LaunchProfileV2,
+  LaunchStep,
   StepKind,
   RunStatus,
   StepStatus,
@@ -147,5 +151,37 @@ describe("isStepTerminal", () => {
     expect(isStepTerminal("pending")).toBe(false);
     expect(isStepTerminal("running")).toBe(false);
     expect(isStepTerminal("retrying")).toBe(false);
+  });
+});
+
+describe("applyStepPatch", () => {
+  it("applies a patch immutably and preserves untouched fields", () => {
+    const step: LaunchStep = {
+      id: "step_001",
+      label: "Wait for Docker daemon",
+      enabled: true,
+      kind: { type: "wait_for_docker" },
+      depends_on: ["step_002"],
+      timeout: 120,
+    };
+    const patched = applyStepPatch(step, { enabled: false, failure_policy: "skip_dependents" });
+    expect(patched.enabled).toBe(false);
+    expect(patched.failure_policy).toBe("skip_dependents");
+    expect(patched.id).toBe("step_001");
+    expect(patched.timeout).toBe(120);
+    expect(patched.depends_on).toEqual(["step_002"]);
+    expect(step.enabled).toBe(true);
+  });
+});
+
+describe("policy labels", () => {
+  it("maps failure policies and visibilities to human labels", () => {
+    expect(failurePolicyLabel("skip_dependents")).toContain("Пропустить");
+    expect(failurePolicyLabel("stop_run")).toContain("Остановить");
+    expect(failurePolicyLabel("warn_and_continue")).toContain("Продолжить");
+    expect(failurePolicyLabel(null)).toContain("По умолчанию");
+    expect(visibilityLabel("visible_terminal")).toContain("Видимое");
+    expect(visibilityLabel("detached")).toContain("Фоновый");
+    expect(visibilityLabel(undefined)).toContain("По умолчанию");
   });
 });

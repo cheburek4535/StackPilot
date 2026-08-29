@@ -133,6 +133,49 @@ export type LaunchProfileV2 = {
 };
 
 // ---------------------------------------------------------------------------
+// Analysis draft types (backend `analyze_project_v2` output)
+// ---------------------------------------------------------------------------
+
+export type AnalysisConfidence = "high" | "medium" | "low";
+
+export type AnalysisDiagnostic = {
+  severity: DiagnosticSeverity;
+  confidence: AnalysisConfidence;
+  message: string;
+  file?: string | null;
+};
+
+export type DraftProfile = {
+  profile: LaunchProfileV2;
+  diagnostics: AnalysisDiagnostic[];
+};
+
+/** Map a failure policy to a short human label. */
+export function failurePolicyLabel(policy: FailurePolicy | null | undefined): string {
+  switch (policy) {
+    case "stop_run": return "Остановить запуск";
+    case "skip_dependents": return "Пропустить зависимые";
+    case "warn_and_continue": return "Продолжить";
+    default: return "По умолчанию";
+  }
+}
+
+/** Map a visibility mode to a short human label. */
+export function visibilityLabel(v: Visibility | null | undefined): string {
+  switch (v) {
+    case "captured": return "В приложении";
+    case "visible_terminal": return "Видимое окно";
+    case "detached": return "Фоновый запуск";
+    default: return "По умолчанию";
+  }
+}
+
+/** Immutably apply a partial patch to a launch step. */
+export function applyStepPatch(step: LaunchStep, patch: Partial<LaunchStep>): LaunchStep {
+  return { ...step, ...patch };
+}
+
+// ---------------------------------------------------------------------------
 // Run lifecycle types
 // ---------------------------------------------------------------------------
 

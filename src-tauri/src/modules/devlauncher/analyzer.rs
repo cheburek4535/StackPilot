@@ -269,6 +269,9 @@ pub struct ComposeFile {
     /// Host ports of services that look like databases, with the service
     /// name that hinted at them.
     pub db_ports: Vec<(u16, String)>,
+    /// Host ports of services that look like web tools (grafana, airflow,
+    /// ...), with the tool name that hinted at them.
+    pub web_tools: Vec<(u16, String)>,
     pub parse_warning: Option<String>,
 }
 
@@ -447,12 +450,13 @@ impl ProjectModel {
                 }
                 "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => {
                     if seen_dirs.insert(dir.clone()) {
-                        let (db_ports, parse_warning) = parse_compose_ports(&path);
+                        let services = parse_compose_services(&path);
                         model.compose_files.push(ComposeFile {
                             path,
                             dir,
-                            db_ports,
-                            parse_warning,
+                            db_ports: services.db_ports,
+                            web_tools: services.web_tools,
+                            parse_warning: services.warning,
                         });
                     }
                 }
@@ -551,6 +555,10 @@ fn rel_label(dir: &Path, root: &Path) -> String {
         .unwrap_or(dir)
         .to_string_lossy()
         .into_owned();
+    // Render with forward slashes on every platform: labels are shown in
+    // the UI and stored in profiles, so they must not depend on the host
+    // path separator.
+    let rel = rel.replace('\\', "/");
     if rel.is_empty() || rel == "." {
         "root".to_string()
     } else {
@@ -948,16 +956,28 @@ fn parse_maven_project(dir: &Path, manifest: &Path) -> MavenProject {
 /// Lightweight compose port extraction. Full YAML parsing is out of scope
 /// for a draft -- service names and `ports:` blocks are matched textually,
 /// so the results are Low confidence and reported as diagnostics.
-fn parse_compose_ports(path: &Path) -> (Vec<(u16, String)>, Option<String>) {
+/// Services parsed out of a compose file.
+#[derive(Debug, Clone, Default)]
+struct ComposeServices {
+    db_ports: Vec<(u16, String)>,
+    web_tools: Vec<(u16, String)>,
+    warning: Option<String>,
+}
+
+fn parse_compose_services(path: &Path) -> ComposeServices {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(e) => return (Vec::new(), Some(format!("Failed to read: {}", e))),
+        Err(e) => {
+            return ComposeServices {
+                warning: Some(format!("Failed to read: {}", e)),
+                ..ComposeServices::default()
+            }
+        }
     };
 
-    let mut db_ports: Vec<(u16, String)> = Vec::new();
+    let mut result = ComposeServices::default();
     let mut current_service: Option<String> = None;
     let mut in_ports = false;
-    let mut warning: Option<String> = None;
 
     let service_re = regex::Regex::new(r"^\s{2}([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$").unwrap();
     let port_re = regex::Regex::new(r#"^\s*-\s*["']?(\d{2,5}):(\d{2,5})["']?\s*$"#).unwrap();
@@ -984,19 +1004,28 @@ fn parse_compose_ports(path: &Path) -> (Vec<(u16, String)>, Option<String>) {
                 let host: u16 = caps[1].parse().unwrap_or(0);
                 let container: u16 = caps[2].parse().unwrap_or(0);
                 let service = current_service.clone().unwrap_or_default();
+                let lower = service.to_ascii_lowercase();
                 let is_db = KNOWN_DB_SERVICES
                     .iter()
-                    .any(|(name, _)| service.to_ascii_lowercase().contains(name))
+                    .any(|(name, _)| lower.contains(name))
                     || KNOWN_DB_SERVICES.iter().any(|(_, port)| *port == container);
+                let web_tool = KNOWN_WEB_TOOLS
+                    .iter()
+                    .find(|(name, _)| lower.contains(name))
+                    .map(|(name, _)| *name);
                 if is_db && host > 0 {
-                    db_ports.push((host, service));
+                    result.db_ports.push((host, service));
+                } else if let Some(tool) = web_tool {
+                    if host > 0 {
+                        result.web_tools.push((host, tool.to_string()));
+                    }
                 }
             } else if let Some(caps) = container_port_re.captures(line) {
                 // Container-only port: published on a random host port --
                 // cannot be waited on. Recorded as a diagnostic hint only.
                 let container: u16 = caps[1].parse().unwrap_or(0);
                 if KNOWN_DB_SERVICES.iter().any(|(_, port)| *port == container) {
-                    warning = Some(format!(
+                    result.warning = Some(format!(
                         "Service '{}' publishes an anonymous host port; cannot infer a host port to wait on",
                         current_service.clone().unwrap_or_default()
                     ));
@@ -1005,9 +1034,11 @@ fn parse_compose_ports(path: &Path) -> (Vec<(u16, String)>, Option<String>) {
         }
     }
 
-    db_ports.sort();
-    db_ports.dedup();
-    (db_ports, warning)
+    result.db_ports.sort();
+    result.db_ports.dedup();
+    result.web_tools.sort();
+    result.web_tools.dedup();
+    result
 }
 
 const KNOWN_DB_SERVICES: &[(&str, u16)] = &[
@@ -1030,12 +1061,51 @@ const KNOWN_DB_SERVICES: &[(&str, u16)] = &[
     ("zookeeper", 2181),
 ];
 
+/// Compose services that are *web tools* (browser UIs), matched by the
+/// service name. The default URL path is "/" — dashboards are typically
+/// served at the root.
+const KNOWN_WEB_TOOLS: &[(&str, &str)] = &[
+    ("grafana", "/"),
+    ("airflow", "/"),
+    ("prometheus", "/"),
+    ("nginx", "/"),
+    ("kafka-ui", "/"),
+    ("kafkaui", "/"),
+    ("portainer", "/"),
+    ("sonarqube", "/"),
+    ("jenkins", "/"),
+    ("keycloak", "/"),
+    ("superset", "/"),
+    ("metabase", "/"),
+    ("minio", "/"),
+    ("pgadmin", "/"),
+    ("phpmyadmin", "/"),
+    ("mailhog", "/"),
+    ("rabbitmq", "/"),
+    ("redis-commander", "/"),
+];
+
 // ---------------------------------------------------------------------------
 // IDE / application resolution
 // ---------------------------------------------------------------------------
 
+/// Resolve an application name to an executable path.
+///
+/// The IDE resolver is tried first (broader PATH / App Paths coverage for
+/// developer tools). When it misses, the generic application launcher is
+/// used (well-known install directories, Windows App Paths registry).
+/// Flatpak invocations are not usable as a bare `OpenApplication` path,
+/// so they are rejected here.
 fn resolve_app(name: &str) -> Option<String> {
-    crate::platform::ide::resolve_ide_executable(name)
+    if let Some(path) = crate::platform::ide::resolve_ide_executable(name) {
+        return Some(path);
+    }
+    let launcher = crate::platform::app_launcher::resolve_application(name, None, None);
+    if launcher.found && !launcher.is_flatpak {
+        Some(launcher.program)
+    } else {
+        None
+    }
 }
 
 /// Per-OS CLI names for auxiliary tools.
@@ -1143,6 +1213,7 @@ struct PendingStep {
     execution_mode: Option<ExecutionMode>,
     completion: Option<CompletionPolicy>,
     timeout: Option<u64>,
+    retry_policy: Option<RetryPolicy>,
     metadata: Option<HashMap<String, String>>,
 }
 
@@ -1184,6 +1255,7 @@ impl PendingStep {
                 CompletionPolicy::ExitSuccess
             }),
             timeout: None,
+            retry_policy: None,
             metadata: None,
         }
     }
@@ -1206,6 +1278,13 @@ impl PendingStep {
                 timeout_secs: timeout,
             }),
             timeout: Some(timeout),
+            // Wait steps are retried with backoff: dev servers routinely
+            // need a second chance on cold starts.
+            retry_policy: Some(RetryPolicy {
+                max_retries: 2,
+                delay_ms: 2000,
+                backoff_multiplier: Some(1.5),
+            }),
             metadata: None,
         }
     }
@@ -1224,6 +1303,7 @@ impl PendingStep {
             execution_mode: None,
             completion: Some(CompletionPolicy::ExternalLaunchAccepted),
             timeout: None,
+            retry_policy: None,
             metadata: None,
         }
     }
@@ -1241,21 +1321,30 @@ impl PendingStep {
             execution_mode: None,
             completion: Some(CompletionPolicy::ExternalLaunchAccepted),
             timeout: None,
+            retry_policy: None,
             metadata: None,
         }
     }
 
-    fn wait_docker(timeout: u64) -> Self {
+    fn with_depends_on(mut self, dep: &str) -> Self {
+        self.depends_on.push(dep.to_string());
+        self
+    }
+
+    fn wait_docker(timeout: u64, depends_on: Option<&str>) -> Self {
         PendingStep {
             label: "Wait for Docker daemon".to_string(),
             enabled: true,
             kind: StepKind::WaitForDocker {},
-            depends_on: Vec::new(),
+            depends_on: depends_on
+                .map(|d| vec![d.to_string()])
+                .unwrap_or_default(),
             working_directory: None,
             visibility: None,
             execution_mode: None,
             completion: None,
             timeout: Some(timeout),
+            retry_policy: None,
             metadata: None,
         }
     }
@@ -1273,6 +1362,7 @@ impl PendingStep {
             execution_mode: Some(ExecutionMode::LongRunning),
             completion: Some(CompletionPolicy::ProcessStarted),
             timeout: None,
+            retry_policy: None,
             metadata: None,
         }
     }
@@ -1303,7 +1393,7 @@ fn finalize_steps(
         .map(|(i, p)| {
             let id = format!("step_{:03}", i + 1);
             let has_dependents = dependents.get(&id).map(|n| *n > 0).unwrap_or(false);
-            let failure_policy = Some(StepKind::default_failure_policy(has_dependents));
+            let failure_policy = Some(p.kind.default_failure_policy(has_dependents));
             if !has_dependents && matches!(p.kind, StepKind::WaitForPort { .. }) {
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Info,
@@ -1328,13 +1418,23 @@ fn finalize_steps(
                 completion: p.completion,
                 timeout: p.timeout,
                 failure_policy,
-                retry_policy: None,
+                retry_policy: p.retry_policy.clone(),
                 metadata: p.metadata,
                 extra: serde_json::Map::new(),
             }
         })
         .collect()
 }
+
+/// Default timeout for the "Wait for Docker daemon" step. A cold Docker
+/// Desktop first boot routinely exceeds 30s, so the wait gets headroom
+/// while still failing loudly.
+const WAIT_DOCKER_TIMEOUT_SECS: u64 = 120;
+
+/// Default timeout for generated port-readiness waits. Dev servers
+/// (Metro, Go, Django, ...) need headroom for cold starts; combined with
+/// the retry policy this yields ~90s + two backoff re-arms.
+const WAIT_PORT_TIMEOUT_SECS: u64 = 90;
 
 /// Generate the draft step graph from the project model.
 fn generate_steps(
@@ -1390,22 +1490,43 @@ fn generate_steps(
     let docker_present = !model.compose_files.is_empty() || !model.dockerfiles.is_empty();
     let mut docker_wait_id: Option<String> = None;
     if options.include_tool_steps && docker_present {
-        if let Some(resolved) = resolve_app(tool_cli_names()[1]) {
-            steps.push(PendingStep::open_app(
-                &resolved,
-                Vec::new(),
-                "Open Docker Desktop",
-            ));
-        } else {
-            diagnostics.push(AnalysisDiagnostic::new(
-                DiagnosticSeverity::Info,
-                AnalysisConfidence::Low,
-                "Docker Desktop not resolvable; the daemon wait will still apply".to_string(),
-                None,
-            ));
+        // "Open Docker Desktop" is always emitted so the launch intent is
+        // visible in the profile. When the app cannot be resolved the step
+        // is DISABLED (with a warning) instead of silently omitted; the
+        // daemon wait below depends on it either way, so a disabled open
+        // step does not block the wait.
+        let docker_open_id = format!("step_{:03}", steps.len() + 1);
+        match resolve_app(tool_cli_names()[1]) {
+            Some(resolved) => {
+                steps.push(PendingStep::open_app(
+                    &resolved,
+                    Vec::new(),
+                    "Open Docker Desktop",
+                ));
+            }
+            None => {
+                let mut disabled = PendingStep::open_app(
+                    tool_cli_names()[1],
+                    Vec::new(),
+                    "Open Docker Desktop",
+                );
+                disabled.enabled = false;
+                steps.push(disabled);
+                diagnostics.push(AnalysisDiagnostic::new(
+                    DiagnosticSeverity::Warning,
+                    AnalysisConfidence::Low,
+                    "Docker Desktop not resolvable; 'Open Docker Desktop' is disabled \
+                     and the daemon wait will not auto-launch it"
+                        .to_string(),
+                    None,
+                ));
+            }
         }
         docker_wait_id = Some(format!("step_{:03}", steps.len() + 1));
-        steps.push(PendingStep::wait_docker(30));
+        steps.push(PendingStep::wait_docker(
+            WAIT_DOCKER_TIMEOUT_SECS,
+            Some(&docker_open_id),
+        ));
 
         let has_db = model.compose_files.iter().any(|c| !c.db_ports.is_empty());
         if has_db {
@@ -1423,6 +1544,7 @@ fn generate_steps(
                     execution_mode: None,
                     completion: Some(CompletionPolicy::ExternalLaunchAccepted),
                     timeout: None,
+                    retry_policy: None,
                     metadata: None,
                 });
             } else {
@@ -1462,7 +1584,7 @@ fn generate_steps(
             if !known.insert(("db_wait".to_string(), key)) {
                 continue;
             }
-            let mut wait = PendingStep::wait_port("127.0.0.1", *port, 60, &compose_id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", *port, WAIT_PORT_TIMEOUT_SECS, &compose_id);
             wait.label = format!(
                 "Wait for {} ({})",
                 if service.is_empty() {
@@ -1482,6 +1604,41 @@ fn generate_steps(
                 format!(
                     "Guessed database port {} from compose service '{}'",
                     port, service
+                ),
+                Some(compose.path.display().to_string()),
+            ));
+        }
+
+        // Web tools (grafana, airflow, ...): wait for the port, then open
+        // the dashboard in the browser when it is up.
+        for (port, tool) in &compose.web_tools {
+            let key = format!("{}:{}", compose.dir.display(), port);
+            if !known.insert(("web_tool".to_string(), key)) {
+                continue;
+            }
+            let mut wait = PendingStep::wait_port(
+                "127.0.0.1",
+                *port,
+                WAIT_PORT_TIMEOUT_SECS,
+                &compose_id,
+            );
+            wait.label = format!("Wait for {} ({})", tool, port);
+            wait = wait
+                .with_metadata("confidence", "low")
+                .with_metadata("source", "docker-compose web tool");
+            let wait_id = format!("step_{:03}", steps.len() + 1);
+            steps.push(wait);
+
+            let url = format!("http://localhost:{}", port);
+            let open = PendingStep::open_url(&url, &format!("Open {} ({})", tool, url))
+                .with_depends_on(&wait_id);
+            steps.push(open);
+            diagnostics.push(AnalysisDiagnostic::new(
+                DiagnosticSeverity::Info,
+                AnalysisConfidence::Low,
+                format!(
+                    "Guessed web tool '{}' from compose service '{}'; browser step added",
+                    tool, tool
                 ),
                 Some(compose.path.display().to_string()),
             ));
@@ -1508,7 +1665,7 @@ fn generate_steps(
         steps.push(step);
         // Go ports are almost never declared in the manifest -- low confidence.
         let port = go_port_hint(&go.dir).unwrap_or(8080);
-        let mut wait = PendingStep::wait_port("127.0.0.1", port, 60, &id);
+        let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
         wait.label = format!("Wait for Go backend port {}", port);
         wait = wait
             .with_metadata("confidence", "low")
@@ -1550,7 +1707,7 @@ fn generate_steps(
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
         if let Some(port) = port {
-            let mut wait = PendingStep::wait_port("127.0.0.1", port, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = wait_label.to_string();
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
@@ -1577,7 +1734,7 @@ fn generate_steps(
             }
             let id = format!("step_{:03}", steps.len() + 1);
             steps.push(step);
-            let mut wait = PendingStep::wait_port("127.0.0.1", 8000, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", 8000, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = "Wait for Django port 8000".to_string();
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
@@ -1629,7 +1786,7 @@ fn generate_steps(
             }
             let id = format!("step_{:03}", steps.len() + 1);
             steps.push(step);
-            let mut wait = PendingStep::wait_port("127.0.0.1", port, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = format!("Wait for {} port {}", framework, port);
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
@@ -1667,7 +1824,7 @@ fn generate_steps(
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
         if gradle.is_spring {
-            let mut wait = PendingStep::wait_port("127.0.0.1", 8080, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", 8080, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = "Wait for Spring Boot port 8080".to_string();
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
@@ -1696,7 +1853,7 @@ fn generate_steps(
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
         if maven.is_spring {
-            let mut wait = PendingStep::wait_port("127.0.0.1", 8080, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", 8080, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = "Wait for Spring Boot port 8080".to_string();
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
@@ -1742,7 +1899,7 @@ fn generate_steps(
         }
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
-        let mut wait = PendingStep::wait_port("127.0.0.1", 3000, 60, &id);
+        let mut wait = PendingStep::wait_port("127.0.0.1", 3000, WAIT_PORT_TIMEOUT_SECS, &id);
         wait.label = "Wait for Rails port 3000".to_string();
         wait = wait.with_metadata("confidence", "low");
         steps.push(wait);
@@ -1781,7 +1938,7 @@ fn generate_steps(
         steps.push(step);
 
         if let Some(port) = pkg.port {
-            let mut wait = PendingStep::wait_port("127.0.0.1", port, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = format!("Wait for backend port {}", port);
             wait = wait.with_metadata("confidence", pkg.port_confidence.as_str());
             steps.push(wait);
@@ -1838,7 +1995,7 @@ fn generate_steps(
         steps.push(step);
 
         if let Some(port) = pkg.port {
-            let mut wait = PendingStep::wait_port("127.0.0.1", port, 60, &id);
+            let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = format!("Wait for {} port {}", tool, port);
             wait = wait.with_metadata("confidence", pkg.port_confidence.as_str());
             steps.push(wait);
@@ -2151,6 +2308,18 @@ fn emit_detection_diagnostics(model: &ProjectModel, diagnostics: &mut Vec<Analys
             rel_label(&compose.dir, &model.root),
             db_hint
         );
+        if !compose.web_tools.is_empty() {
+            message.push_str(&format!(
+                "; {} web tool(s) inferred: {}",
+                compose.web_tools.len(),
+                compose
+                    .web_tools
+                    .iter()
+                    .map(|(p, t)| format!("{}:{}", t, p))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if let Some(w) = &compose.parse_warning {
             message.push_str(&format!("; warning: {}", w));
         }
@@ -2430,7 +2599,8 @@ mod tests {
         assert!(has("Expo"), "labels: {:?}", labels);
         assert!(has("Go backend"), "labels: {:?}", labels);
         assert!(has("Start Docker Compose"), "labels: {:?}", labels);
-        assert!(has("database"), "labels: {:?}", labels);
+        // The DB wait is labelled with the compose service name.
+        assert!(has("postgres"), "labels: {:?}", labels);
         assert!(has("Wait for Go backend port"), "labels: {:?}", labels);
 
         // Dependency graph: compose -> db wait; backend after compose.
@@ -2442,7 +2612,7 @@ mod tests {
         let db_wait = profile
             .steps
             .iter()
-            .find(|s| s.label.contains("database"))
+            .find(|s| s.label.contains("postgres"))
             .unwrap();
         assert!(db_wait.depends_on.contains(&compose.id));
         let go = profile
@@ -2462,9 +2632,13 @@ mod tests {
             StepKind::WaitForPort { port, .. } => assert_eq!(port, 5432),
             _ => panic!("expected WaitForPort"),
         }
-        // No duplicate servers for the same project.
-        let expo_count = labels.iter().filter(|l| l.contains("Expo")).count();
-        assert_eq!(expo_count, 1);
+        // No duplicate servers for the same project: exactly one Expo *run*
+        // step (the readiness wait also mentions Expo in its label).
+        let expo_runs = labels
+            .iter()
+            .filter(|l| l.contains("Expo") && !l.contains("port"))
+            .count();
+        assert_eq!(expo_runs, 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2800,7 +2974,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_port_extraction_finds_db_ports() {
+    fn compose_ports_extract_db_and_web_tools() {
         let dir = temp_dir("compose_parse");
         let compose = dir.join("compose.yml");
         fs::write(
@@ -2808,11 +2982,52 @@ mod tests {
             "services:\n  postgres:\n    image: postgres:16\n    ports:\n      - \"5433:5432\"\n  redis:\n    image: redis\n    ports:\n      - \"6379:6379\"\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n",
         )
         .unwrap();
-        let (ports, warning) = parse_compose_ports(&compose);
-        assert!(warning.is_none());
+        let result = parse_compose_services(&compose);
+        assert!(result.warning.is_none());
         assert_eq!(
-            ports,
+            result.db_ports,
             vec![(5433, "postgres".to_string()), (6379, "redis".to_string())]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A compose file with dashboards (grafana, airflow) must produce
+    /// browser-open steps wired to the compose start.
+    #[test]
+    fn compose_web_tools_generate_browser_steps() {
+        let dir = temp_dir("compose_web");
+        fs::write(
+            dir.join("compose.yml"),
+            "services:\n  postgres:\n    image: postgres:16\n    ports:\n      - \"5433:5432\"\n  grafana:\n    image: grafana/grafana\n    ports:\n      - \"3000:3000\"\n  airflow:\n    image: apache/airflow\n    ports:\n      - \"8080:8080\"\n",
+        )
+        .unwrap();
+        let draft = FsProjectAnalyzer
+            .analyze_draft(
+                &dir.to_string_lossy(),
+                &AnalyzeOptions {
+                    include_tool_steps: false,
+                    ..AnalyzeOptions::default()
+                },
+            )
+            .unwrap();
+        let urls: Vec<&str> = draft
+            .profile
+            .steps
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StepKind::OpenUrl { url } => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            urls.iter().any(|u| u.ends_with(":3000")),
+            "grafana URL missing: {:?}",
+            urls
+        );
+        assert!(
+            urls.iter().any(|u| u.ends_with(":8080")),
+            "airflow URL missing: {:?}",
+            urls
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2823,5 +3038,34 @@ mod tests {
         fs::write(dir.join(".env"), "PORT=9090\n").unwrap();
         assert_eq!(go_port_hint(&dir), Some(9090));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The daemon wait must be linked to the "Open Docker Desktop" step
+    /// (so it never races the app launch) and carry the generous default
+    /// timeout instead of the old 30s race.
+    #[test]
+    fn wait_docker_is_linked_to_docker_open_with_generous_timeout() {
+        let wait = PendingStep::wait_docker(WAIT_DOCKER_TIMEOUT_SECS, Some("step_002"));
+        assert_eq!(wait.timeout, Some(120));
+        assert_eq!(wait.depends_on, vec!["step_002".to_string()]);
+        assert!(matches!(wait.kind, StepKind::WaitForDocker {}));
+        assert!(wait.enabled);
+
+        let standalone = PendingStep::wait_docker(WAIT_DOCKER_TIMEOUT_SECS, None);
+        assert!(standalone.depends_on.is_empty());
+    }
+
+    /// Port waits must carry the generous timeout AND a retry policy with
+    /// backoff, so a dev server that needs a second chance on cold start
+    /// is not reported as failed on the first miss.
+    #[test]
+    fn wait_port_carries_generous_timeout_and_retry_policy() {
+        let wait = PendingStep::wait_port("127.0.0.1", 8081, WAIT_PORT_TIMEOUT_SECS, "step_001");
+        assert_eq!(wait.timeout, Some(90));
+        assert_eq!(wait.depends_on, vec!["step_001".to_string()]);
+        let retry = wait.retry_policy.expect("wait port must carry a retry policy");
+        assert_eq!(retry.max_retries, 2);
+        assert_eq!(retry.delay_ms, 2000);
+        assert_eq!(retry.backoff_multiplier, Some(1.5));
     }
 }

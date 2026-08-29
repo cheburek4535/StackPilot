@@ -61,6 +61,13 @@ impl GraphBuilder {
         id
     }
 
+    /// Attach a retry policy to an already-pushed step.
+    fn set_retry_policy(&mut self, id: &str, policy: RetryPolicy) {
+        if let Some(step) = self.steps.iter_mut().find(|s| s.id == id) {
+            step.retry_policy = Some(policy);
+        }
+    }
+
     /// Resolve default failure policies now that the full graph is known:
     /// steps with dependents default to StopRun, leaves to WarnAndContinue.
     fn resolve_failure_policies(&mut self) {
@@ -72,7 +79,7 @@ impl GraphBuilder {
         }
         for step in &mut self.steps {
             let has_dependents = dependents.get(&step.id).map(|n| *n > 0).unwrap_or(false);
-            step.failure_policy = Some(StepKind::default_failure_policy(has_dependents));
+            step.failure_policy = Some(step.kind.default_failure_policy(has_dependents));
         }
     }
 }
@@ -157,7 +164,7 @@ fn wait_port_step(
     depends_on: String,
     confidence: &str,
 ) -> String {
-    g.push(
+    let id = g.push(
         label,
         StepKind::WaitForPort {
             host: "127.0.0.1".to_string(),
@@ -175,7 +182,18 @@ fn wait_port_step(
         Some(timeout_secs),
         true,
         meta(&[("confidence", confidence), ("source", "framework default")]),
-    )
+    );
+    // Wait steps are retried with backoff: dev servers routinely need a
+    // second chance on cold starts.
+    g.set_retry_policy(
+        &id,
+        RetryPolicy {
+            max_retries: 2,
+            delay_ms: 2000,
+            backoff_multiplier: Some(1.5),
+        },
+    );
+    id
 }
 
 fn open_app_step(
@@ -234,7 +252,8 @@ fn wait_docker_step(g: &mut GraphBuilder) -> String {
         None,
         None,
         None,
-        Some(30),
+        // Cold Docker Desktop boot routinely exceeds 30s.
+        Some(120),
         true,
         meta(&[
             ("confidence", "high"),
@@ -263,6 +282,10 @@ fn open_terminal_step(g: &mut GraphBuilder) -> String {
 // ---------------------------------------------------------------------------
 // Framework knowledge
 // ---------------------------------------------------------------------------
+
+/// Default timeout for generated port-readiness waits (dev servers need
+/// headroom for cold starts; the retry policy re-arms twice with backoff).
+const WAIT_PORT_TIMEOUT_SECS: u64 = 90;
 
 /// Tools that are deployed via docker-compose, with their default host port.
 const DOCKER_TOOL_PORTS: &[(&str, u16)] = &[
@@ -394,8 +417,19 @@ fn preferred_ide_for(ctx: &WizardContext) -> Option<PreferredIde> {
 }
 
 /// Resolve an IDE/app CLI to an executable when possible.
+///
+/// The IDE resolver is tried first; the generic application launcher
+/// (well-known install dirs, Windows App Paths) covers the misses.
 fn resolve_app(name: &str) -> Option<String> {
-    crate::platform::ide::resolve_ide_executable(name)
+    if let Some(path) = crate::platform::ide::resolve_ide_executable(name) {
+        return Some(path);
+    }
+    let launcher = crate::platform::app_launcher::resolve_application(name, None, None);
+    if launcher.found && !launcher.is_flatpak {
+        Some(launcher.program)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +664,7 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let port = 3000;
-                let wait = wait_port_step(&mut g, "Wait for backend port", port, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait.clone());
                 if fw == "nestjs" || fw == "nest" {
                     let docs = open_url_step(
@@ -668,7 +702,7 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let port = if fw == "flask" { 5000 } else { 8000 };
-                let wait = wait_port_step(&mut g, "Wait for backend port", port, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait.clone());
                 if fw == "fastapi" {
                     let docs = open_url_step(
@@ -706,7 +740,7 @@ pub fn build_profile_v2_from_context(
                     vec![migrate],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Django port", 8000, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for Django port", 8000, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait);
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Warning,
@@ -727,7 +761,7 @@ pub fn build_profile_v2_from_context(
                 );
                 let port = 8080;
                 let wait =
-                    wait_port_step(&mut g, "Wait for Go backend port", port, 30, start, "low");
+                    wait_port_step(&mut g, "Wait for Go backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait.clone());
                 // Swagger (swag) is the common Go API-docs convention.
                 let docs = open_url_step(
@@ -783,7 +817,7 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let wait =
-                    wait_port_step(&mut g, "Wait for Spring Boot port", 8080, 60, start, "low");
+                    wait_port_step(&mut g, "Wait for Spring Boot port", 8080, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait.clone());
                 let docs = open_url_step(
                     &mut g,
@@ -804,7 +838,7 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let wait =
-                    wait_port_step(&mut g, "Wait for .NET backend port", 5000, 30, start, "low");
+                    wait_port_step(&mut g, "Wait for .NET backend port", 5000, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait);
             }
             "rails" => {
@@ -824,7 +858,7 @@ pub fn build_profile_v2_from_context(
                     vec![install],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Rails port", 3000, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for Rails port", 3000, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 backend_waits.push(wait);
             }
             _ => {}
@@ -860,7 +894,7 @@ pub fn build_profile_v2_from_context(
                 } else {
                     5173
                 };
-                let wait = wait_port_step(&mut g, "Wait for frontend port", port, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for frontend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 let _ = wait;
             }
             "angular" => {
@@ -880,7 +914,7 @@ pub fn build_profile_v2_from_context(
                     vec![install],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Angular port", 4200, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for Angular port", 4200, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 let _ = wait;
             }
             "expo" | "react-native" => {
@@ -900,7 +934,7 @@ pub fn build_profile_v2_from_context(
                     Vec::new(),
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Metro bundler", 8081, 30, start, "low");
+                let wait = wait_port_step(&mut g, "Wait for Metro bundler", 8081, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 let _ = wait;
             }
             "electron" => {
@@ -992,7 +1026,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
             "go" => {
                 let start =
                     service_step(g, "Run Go project", "go run .", None, Vec::new(), "medium");
-                let wait = wait_port_step(g, "Wait for Go port", 8080, 30, start, "low");
+                let wait = wait_port_step(g, "Wait for Go port", 8080, WAIT_PORT_TIMEOUT_SECS, start, "low");
                 let _ = wait;
             }
             "rust" => {
@@ -1148,12 +1182,25 @@ mod tests {
 
     #[test]
     fn expo_plus_go_plus_docker_coherent_graph() {
-        let c = ctx(
+        // Use a real temp directory as the project root: the validator
+        // rejects non-existent roots (fail-fast on deleted projects).
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut c = ctx(
             &["typescript", "go"],
             &["expo", "gin"],
             &["postgresql"],
             true,
         );
+        c.project_path = Some(dir.clone());
         let (profile, _diags) = build(&c);
         let labels: Vec<&str> = profile.steps.iter().map(|s| s.label.as_str()).collect();
         let has = |needle: &str| labels.iter().any(|l| l.contains(needle));
@@ -1219,6 +1266,8 @@ mod tests {
         // Graph validates (no cycles, no missing deps).
         let result = crate::modules::devlauncher::validation::validate_profile_v2(&profile);
         assert!(result.valid, "{:?}", result.diagnostics);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

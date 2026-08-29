@@ -8,6 +8,7 @@ import type {
   LaunchRun,
   RunLogs,
   StepLogs,
+  DraftProfile,
 } from "./types";
 import type { WizardContext } from "$lib/modules/project_creator/types";
 
@@ -48,6 +49,11 @@ export async function executeAction(
 
 export async function analyzeProject(path: string): Promise<LaunchProfile> {
   return invoke("analyze_project", { path });
+}
+
+/** Analyze a project into a V2 draft profile with per-inference diagnostics. */
+export async function analyzeProjectV2(path: string): Promise<DraftProfile> {
+  return invoke("analyze_project_v2", { path });
 }
 
 /** Launch the preferred IDE for a project. Returns true if launched. */
@@ -146,17 +152,17 @@ export async function listAllRuns(): Promise<LaunchRun[]> {
 // ---------------------------------------------------------------------------
 
 /** List all V2 profiles. */
-export async function listProfilesV2(): Promise<LaunchProfile[]> {
+export async function listProfilesV2(): Promise<LaunchProfileV2[]> {
   return invoke("list_profiles_v2");
 }
 
 /** Get a V2 profile by name. */
-export async function getProfileV2(name: string): Promise<LaunchProfile> {
+export async function getProfileV2(name: string): Promise<LaunchProfileV2> {
   return invoke("get_profile_v2", { name });
 }
 
 /** Save a V2 profile. */
-export async function saveProfileV2(profile: LaunchProfile): Promise<void> {
+export async function saveProfileV2(profile: LaunchProfileV2): Promise<void> {
   return invoke("save_profile_v2", { profile });
 }
 

@@ -46,38 +46,43 @@ impl ParsedTarget {
             });
         }
 
-        // Try parsing as a full URL first.
+        // Try parsing as a full URL first — but only for http/https
+        // schemes. `Url::parse("localhost:8080")` succeeds with the opaque
+        // scheme "localhost", so anything else must fall through to the
+        // bare host:port parser below.
         if let Ok(url) = Url::parse(trimmed) {
-            let host = url
-                .host_str()
-                .ok_or_else(|| ReadinessError::InvalidTarget {
-                    target: input.to_string(),
-                    reason: "No host in URL".to_string(),
-                })?
-                .to_string();
-
-            let port =
-                url.port_or_known_default()
+            if matches!(url.scheme(), "http" | "https") {
+                let host = url
+                    .host_str()
                     .ok_or_else(|| ReadinessError::InvalidTarget {
                         target: input.to_string(),
-                        reason: "No port in URL and cannot infer default".to_string(),
-                    })?;
+                        reason: "No host in URL".to_string(),
+                    })?
+                    .to_string();
 
-            let path = if url.path().is_empty() {
-                "/".to_string()
-            } else {
-                url.path().to_string()
-            };
+                let port =
+                    url.port_or_known_default()
+                        .ok_or_else(|| ReadinessError::InvalidTarget {
+                            target: input.to_string(),
+                            reason: "No port in URL and cannot infer default".to_string(),
+                        })?;
 
-            let is_https = url.scheme() == "https";
+                let path = if url.path().is_empty() {
+                    "/".to_string()
+                } else {
+                    url.path().to_string()
+                };
 
-            return Ok(ParsedTarget {
-                host,
-                port,
-                path,
-                is_https,
-                original: input.to_string(),
-            });
+                let is_https = url.scheme() == "https";
+
+                return Ok(ParsedTarget {
+                    host,
+                    port,
+                    path,
+                    is_https,
+                    original: input.to_string(),
+                });
+            }
         }
 
         // Try parsing as bare `host:port` or `host:port/path`.
