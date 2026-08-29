@@ -144,11 +144,68 @@ pub struct DockerReadinessResult {
 pub struct DockerService;
 
 impl DockerService {
-    /// Check if the Docker CLI is available on PATH.
+    /// Resolve the docker CLI executable. PATH is tried first; when the
+    /// CLI is missing there (GUI-launched apps do not inherit shell-profile
+    /// PATH entries), the Docker Desktop bundled CLI is used.
+    pub fn resolve_cli() -> Option<std::path::PathBuf> {
+        if let Some(path) = resolve_executable("docker", None) {
+            return Some(path);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut candidates: Vec<std::path::PathBuf> = vec![
+                std::path::PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"),
+            ];
+            if let Ok(pf) = std::env::var("ProgramFiles") {
+                candidates.push(
+                    std::path::PathBuf::from(pf)
+                        .join("Docker")
+                        .join("Docker")
+                        .join("resources")
+                        .join("bin")
+                        .join("docker.exe"),
+                );
+            }
+            for cand in candidates {
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            for cand in [
+                "/Applications/Docker.app/Contents/Resources/bin/docker",
+                "/usr/local/bin/docker",
+                "/opt/homebrew/bin/docker",
+            ] {
+                let p = std::path::Path::new(cand);
+                if p.is_file() {
+                    return Some(p.to_path_buf());
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            for cand in [
+                "/usr/bin/docker",
+                "/usr/local/bin/docker",
+                "/snap/bin/docker",
+            ] {
+                let p = std::path::Path::new(cand);
+                if p.is_file() {
+                    return Some(p.to_path_buf());
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if the Docker CLI is available.
     pub fn check_cli() -> DockerDiagnostic {
         let os = crate::platform::host::current_os();
 
-        match resolve_executable("docker", None) {
+        match Self::resolve_cli() {
             Some(path) => DockerDiagnostic {
                 status: DockerStatus::DaemonReady, // CLI found; daemon status TBD
                 message: format!("Docker CLI found at: {}", path.to_string_lossy()),
@@ -170,47 +227,113 @@ impl DockerService {
 
     /// Check if the Docker daemon is running and ready.
     pub fn check_daemon() -> DockerDiagnostic {
+        Self::check_daemon_bounded(Duration::from_secs(8))
+    }
+
+    /// Check daemon readiness with a hard per-attempt timeout.
+    ///
+    /// A cold-starting engine (Docker Desktop booting its WSL2 backend,
+    /// the named pipe already existing) routinely makes `docker version`
+    /// block for tens of seconds per call. An unbounded call would stall
+    /// the whole readiness wait loop; bounding each attempt keeps the wait
+    /// responsive and cancellation-friendly.
+    pub fn check_daemon_bounded(timeout: Duration) -> DockerDiagnostic {
         let os = crate::platform::host::current_os();
 
-        // First check CLI.
+        // First check CLI (PATH, then Docker Desktop bundled CLI).
         let cli_check = Self::check_cli();
         if cli_check.status == DockerStatus::CliMissing {
             return cli_check;
         }
+        let cli = Self::resolve_cli()
+            .expect("check_cli said CLI exists, resolve_cli must agree")
+            .to_string_lossy()
+            .into_owned();
 
-        // Run `docker version --format {{.Server.Version}}` with a timeout.
-        let output = std::process::Command::new("docker")
+        // Run `docker version --format {{.Server.Version}}` and poll with
+        // `try_wait` so the attempt itself cannot block past `timeout`.
+        let mut child = match std::process::Command::new(&cli)
             .args(["version", "--format", "{{.Server.Version}}"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output();
-
-        match output {
-            Ok(out) => {
-                if out.status.success() {
-                    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !version.is_empty() {
-                        return DockerDiagnostic {
-                            status: DockerStatus::DaemonReady,
-                            message: format!("Docker daemon is running (v{})", version),
-                            suggested_action: None,
-                            detected_os: os,
-                        };
-                    }
-                }
-
-                let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
-                classify_docker_error(&stderr, os)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return DockerDiagnostic {
+                    status: DockerStatus::DaemonUnavailable,
+                    message: format!("Failed to execute Docker CLI ({}): {}", cli, e),
+                    suggested_action: Some(
+                        "Ensure Docker is installed and accessible on PATH.".to_string(),
+                    ),
+                    detected_os: os,
+                };
             }
-            Err(_) => DockerDiagnostic {
-                status: DockerStatus::DaemonUnavailable,
-                message: "Failed to execute Docker CLI".to_string(),
-                suggested_action: Some(
-                    "Ensure Docker is installed and accessible on PATH.".to_string(),
+        };
+
+        let deadline = std::time::Instant::now() + timeout;
+        let exit = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return DockerDiagnostic {
+                        status: DockerStatus::DaemonUnavailable,
+                        message: format!("Failed to check Docker CLI: {}", e),
+                        suggested_action: None,
+                        detected_os: os,
+                    };
+                }
+            }
+        };
+
+        let Some(status) = exit else {
+            // The attempt timed out: the daemon may still be booting.
+            return DockerDiagnostic {
+                status: DockerStatus::DaemonStarting,
+                message: format!(
+                    "Docker daemon did not answer within {}s (still starting?)",
+                    timeout.as_secs()
                 ),
+                suggested_action: None,
                 detected_os: os,
-            },
+            };
+        };
+
+        if status.success() {
+            let mut out = String::new();
+            if let Some(mut stdout) = child.stdout.take() {
+                use std::io::Read;
+                let _ = stdout.read_to_string(&mut out);
+            }
+            let version = out.trim().to_string();
+            if !version.is_empty() {
+                return DockerDiagnostic {
+                    status: DockerStatus::DaemonReady,
+                    message: format!("Docker daemon is running (v{})", version),
+                    suggested_action: None,
+                    detected_os: os,
+                };
+            }
         }
+
+        let mut err_buf = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut err_buf);
+        }
+        let _ = child.wait();
+        let stderr = err_buf.to_lowercase();
+        classify_docker_error(&stderr, os)
     }
 
     /// Check if a Docker Compose file exists at the given path.
@@ -261,6 +384,17 @@ impl DockerService {
             }
 
             let diag = Self::check_daemon();
+            // A missing CLI will never fix itself during the wait: fail
+            // fast with the actionable diagnostic instead of burning the
+            // full timeout on polling nothing.
+            if diag.status == DockerStatus::CliMissing {
+                return DockerReadinessResult {
+                    status: DockerStatus::CliMissing,
+                    elapsed: start.elapsed(),
+                    message: diag.message,
+                    suggested_action: diag.suggested_action,
+                };
+            }
             if diag.status == DockerStatus::DaemonReady {
                 // If service name is specified, check that too.
                 if let Some(ref service) = check.service_name {

@@ -5,7 +5,7 @@
   import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
   import type { LaunchProfile, ActionType, ActionStatus, LaunchRun } from "$lib/modules/devlauncher/types";
-  import { isV2Profile, isRunTerminal, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel } from "$lib/modules/devlauncher/types";
+  import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel } from "$lib/modules/devlauncher/types";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -420,7 +420,7 @@
       <section class="run-section">
         <div class="run-header">
           <h2>Run: {activeRun.profile_name}</h2>
-          <span class="run-status {activeRun.status}">{activeRun.status}</span>
+          <span class="run-status {activeRun.status}">{runStatusLabel(activeRun.status)}</span>
         </div>
         <div class="run-steps">
           {#each activeRun.steps as step}
@@ -442,7 +442,7 @@
                 {/if}
               </div>
               <div class="step-controls">
-                {#if step.status === "running" || step.status === "succeeded"}
+                {#if (step.status === "running" || step.status === "succeeded") && step.process_id}
                   <button class="small-btn" onclick={() => viewStepLogs(step.step_id)}>
                     Logs
                   </button>
@@ -478,7 +478,7 @@
             <div class="run-history-row" class:active={activeRun?.run_id === r.run_id}>
               <button class="history-main" onclick={() => (activeRun = runStore.getRunById(r.run_id) ?? r)}>
                 <span class="history-id">#{r.run_id.slice(0, 8)}</span>
-                <span class="run-status {r.status}">{r.status}</span>
+                <span class="run-status {r.status}">{runStatusLabel(r.status)}</span>
                 <span class="history-time">{new Date(r.created_at).toLocaleString()}</span>
               </button>
               <div class="step-controls">
@@ -559,9 +559,13 @@
         <button class="modal-close" onclick={closeLogs}>✕</button>
       </div>
       <div class="modal-body">
-        {#each logLines as line}
-          <div class="log-line">{line}</div>
-        {/each}
+        {#if logLines.length === 0}
+          <div class="log-empty">Нет логов для этого шага (процесс не запускался или терминал открыт в отдельном окне).</div>
+        {:else}
+          {#each logLines as line}
+            <div class="log-line">{line}</div>
+          {/each}
+        {/if}
       </div>
     </div>
   </div>

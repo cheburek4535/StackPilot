@@ -107,6 +107,21 @@ export type Visibility = "captured" | "visible_terminal" | "detached";
 export type ExecutionMode = "one_shot" | "long_running";
 export type FailurePolicy = "stop_run" | "skip_dependents" | "warn_and_continue";
 
+export type CompletionPolicy =
+  | { type: "exit_success" }
+  | { type: "process_started" }
+  | { type: "port_open"; host: string; port: number; timeout_secs: number }
+  | { type: "url_ready"; url: string; timeout_secs: number }
+  | { type: "delay_elapsed"; seconds: number }
+  | { type: "external_launch_accepted" }
+  | { type: "manual" };
+
+export type RetryPolicy = {
+  max_retries: number;
+  delay_ms?: number;
+  backoff_multiplier?: number | null;
+};
+
 export type LaunchStep = {
   id: string;
   label: string;
@@ -114,11 +129,16 @@ export type LaunchStep = {
   kind: StepKind;
   depends_on: string[];
   working_directory?: string | null;
+  environment?: Record<string, string> | null;
   visibility?: Visibility | null;
   execution_mode?: ExecutionMode | null;
+  completion?: CompletionPolicy | null;
   failure_policy?: FailurePolicy | null;
   timeout?: number | null;
+  retry_policy?: RetryPolicy | null;
   metadata?: Record<string, string> | null;
+  /** Unknown fields preserved through round-trips. */
+  extra?: Record<string, unknown>;
 };
 
 export type LaunchProfileV2 = {
@@ -393,6 +413,25 @@ export function runStatusClass(status: RunStatus): string {
     case "cancelled": return "run-cancelled";
     case "partial_success": return "run-partial";
     default: return "";
+  }
+}
+
+/** User-facing run status. The three terminal outcomes are unambiguous:
+ * - `succeeded` — everything passed;
+ * - `partial_success` — non-critical steps failed and were skipped, the
+ *   run continued and services are up;
+ * - `failed` — a critical step failed, the run was stopped and its
+ *   processes terminated.
+ */
+export function runStatusLabel(status: RunStatus): string {
+  switch (status) {
+    case "pending": return "Ожидает запуска";
+    case "running": return "Выполняется…";
+    case "succeeded": return "Успешно";
+    case "failed": return "Провален (остановлен)";
+    case "cancelled": return "Отменён";
+    case "partial_success": return "Запущен с ошибками";
+    default: return status;
   }
 }
 

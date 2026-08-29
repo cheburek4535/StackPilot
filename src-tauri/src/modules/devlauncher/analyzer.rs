@@ -262,6 +262,27 @@ pub struct RubyProject {
     pub manifest: PathBuf,
 }
 
+/// A single service parsed from a docker-compose file. The compose file is
+/// the source of truth for what runs in containers: ports are explicit
+/// `ports:` mappings and build contexts tell us which local directories are
+/// *governed* by the container (a local run there would conflict).
+#[derive(Debug, Clone)]
+pub struct ComposeService {
+    pub name: String,
+    /// Build context directory, resolved relative to the compose file dir.
+    pub build_context: Option<PathBuf>,
+    pub image: Option<String>,
+    /// Explicitly published host ports (`ports: - "8080:80"`).
+    pub host_ports: Vec<u16>,
+    /// Container ports (published or exposed).
+    pub container_ports: Vec<u16>,
+    pub depends_on: Vec<String>,
+    /// Classified as a database service (name/image/port match).
+    pub is_db: bool,
+    /// Matched web-tool name when the service looks like a browser tool.
+    pub web_tool: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ComposeFile {
     pub path: PathBuf,
@@ -272,6 +293,8 @@ pub struct ComposeFile {
     /// Host ports of services that look like web tools (grafana, airflow,
     /// ...), with the tool name that hinted at them.
     pub web_tools: Vec<(u16, String)>,
+    /// Fully parsed services (ports, images, build contexts, depends_on).
+    pub services: Vec<ComposeService>,
     pub parse_warning: Option<String>,
 }
 
@@ -456,6 +479,7 @@ impl ProjectModel {
                             dir,
                             db_ports: services.db_ports,
                             web_tools: services.web_tools,
+                            services: services.services,
                             parse_warning: services.warning,
                         });
                     }
@@ -953,14 +977,15 @@ fn parse_maven_project(dir: &Path, manifest: &Path) -> MavenProject {
     }
 }
 
-/// Lightweight compose port extraction. Full YAML parsing is out of scope
-/// for a draft -- service names and `ports:` blocks are matched textually,
-/// so the results are Low confidence and reported as diagnostics.
-/// Services parsed out of a compose file.
+/// Parse a docker-compose file with a real YAML parser. Service names,
+/// images, build contexts, `ports:` and `depends_on:` are extracted
+/// structurally, so ports and service identities are direct evidence
+/// (High confidence) rather than textual guesses.
 #[derive(Debug, Clone, Default)]
 struct ComposeServices {
     db_ports: Vec<(u16, String)>,
     web_tools: Vec<(u16, String)>,
+    services: Vec<ComposeService>,
     warning: Option<String>,
 }
 
@@ -975,70 +1000,206 @@ fn parse_compose_services(path: &Path) -> ComposeServices {
         }
     };
 
+    let value: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            return ComposeServices {
+                warning: Some(format!("YAML parse failed: {}", e)),
+                ..ComposeServices::default()
+            }
+        }
+    };
+
     let mut result = ComposeServices::default();
-    let mut current_service: Option<String> = None;
-    let mut in_ports = false;
+    let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    let service_re = regex::Regex::new(r"^\s{2}([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$").unwrap();
-    let port_re = regex::Regex::new(r#"^\s*-\s*["']?(\d{2,5}):(\d{2,5})["']?\s*$"#).unwrap();
-    let container_port_re = regex::Regex::new(r#"^\s*-\s*["']?(\d{2,5})["']?\s*$"#).unwrap();
+    let services_map = match value.get("services").and_then(|s| s.as_mapping()) {
+        Some(m) => m,
+        None => {
+            if !content.trim().is_empty() {
+                result.warning = Some("No 'services' key found in compose file".to_string());
+            }
+            return result;
+        }
+    };
 
-    for line in content.lines() {
-        if line.trim_start().starts_with('#') || line.trim().is_empty() {
+    for (name_val, spec_val) in services_map {
+        let name = name_val.as_str().unwrap_or("").to_string();
+        if name.is_empty() {
             continue;
         }
-        if let Some(caps) = service_re.captures(line) {
-            current_service = Some(caps[1].to_string());
-            in_ports = false;
+        let Some(spec) = spec_val.as_mapping() else {
+            result.warning = Some(format!("Service '{}' is not a mapping", name));
             continue;
+        };
+
+        let get_str = |key: &str| {
+            spec.get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+
+        // build: <dir> | build: { context: <dir>, ... }
+        let build_context = spec.get("build").and_then(|b| {
+            if let Some(s) = b.as_str() {
+                Some(s.to_string())
+            } else if let Some(m) = b.as_mapping() {
+                m.get("context").and_then(|c| c.as_str()).map(String::from)
+            } else {
+                None
+            }
+        });
+        let image = get_str("image");
+
+        // depends_on: [a, b] | depends_on: { a: { condition: ... } }
+        let mut depends_on: Vec<String> = spec
+            .get("depends_on")
+            .and_then(|d| d.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if depends_on.is_empty() {
+            depends_on = spec
+                .get("depends_on")
+                .and_then(|d| d.as_mapping())
+                .map(|m| {
+                    m.keys()
+                        .filter_map(|k| k.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
         }
-        if line.trim() == "ports:" {
-            in_ports = true;
-            continue;
-        }
-        if !line.starts_with(' ') && line.ends_with(':') {
-            in_ports = false;
-        }
-        if in_ports {
-            if let Some(caps) = port_re.captures(line) {
-                let host: u16 = caps[1].parse().unwrap_or(0);
-                let container: u16 = caps[2].parse().unwrap_or(0);
-                let service = current_service.clone().unwrap_or_default();
-                let lower = service.to_ascii_lowercase();
-                let is_db = KNOWN_DB_SERVICES
-                    .iter()
-                    .any(|(name, _)| lower.contains(name))
-                    || KNOWN_DB_SERVICES.iter().any(|(_, port)| *port == container);
-                let web_tool = KNOWN_WEB_TOOLS
-                    .iter()
-                    .find(|(name, _)| lower.contains(name))
-                    .map(|(name, _)| *name);
-                if is_db && host > 0 {
-                    result.db_ports.push((host, service));
-                } else if let Some(tool) = web_tool {
-                    if host > 0 {
-                        result.web_tools.push((host, tool.to_string()));
+
+        let mut host_ports: Vec<u16> = Vec::new();
+        let mut container_ports: Vec<u16> = Vec::new();
+        if let Some(ports) = spec.get("ports").and_then(|p| p.as_sequence()) {
+            for p in ports {
+                let raw = match p {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    serde_yaml::Value::Number(n) => n.to_string(),
+                    _ => continue,
+                };
+                if let Some((host, container)) = parse_compose_port(&raw) {
+                    if let Some(h) = host {
+                        host_ports.push(h);
                     }
-                }
-            } else if let Some(caps) = container_port_re.captures(line) {
-                // Container-only port: published on a random host port --
-                // cannot be waited on. Recorded as a diagnostic hint only.
-                let container: u16 = caps[1].parse().unwrap_or(0);
-                if KNOWN_DB_SERVICES.iter().any(|(_, port)| *port == container) {
-                    result.warning = Some(format!(
-                        "Service '{}' publishes an anonymous host port; cannot infer a host port to wait on",
-                        current_service.clone().unwrap_or_default()
-                    ));
+                    container_ports.push(container);
                 }
             }
         }
+        // expose: container-only ports (no host mapping).
+        if let Some(exp) = spec.get("expose").and_then(|e| e.as_sequence()) {
+            for p in exp {
+                if let Some(s) = p.as_str() {
+                    if let Ok(c) = s.parse::<u16>() {
+                        container_ports.push(c);
+                    }
+                } else if let Some(n) = p.as_u64() {
+                    container_ports.push(n as u16);
+                }
+            }
+        }
+
+        let lower_name = name.to_ascii_lowercase();
+        let lower_image = image
+            .as_deref()
+            .map(|i| i.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let is_db = KNOWN_DB_SERVICES.iter().any(|(n, _)| lower_name.contains(n))
+            || KNOWN_DB_SERVICES.iter().any(|(n, _)| lower_image.contains(n))
+            || container_ports
+                .iter()
+                .any(|p| KNOWN_DB_SERVICES.iter().any(|(_, port)| port == p))
+            || host_ports
+                .iter()
+                .any(|p| KNOWN_DB_SERVICES.iter().any(|(_, port)| port == p));
+        let web_tool = KNOWN_WEB_TOOLS
+            .iter()
+            .find(|(n, _)| lower_name.contains(n) || lower_image.contains(n))
+            .map(|(n, _)| n.to_string());
+
+        let build_context = build_context.map(|ctx| {
+            let p = PathBuf::from(&ctx);
+            if p.is_absolute() {
+                p
+            } else {
+                dir.join(p)
+            }
+        });
+
+        result.services.push(ComposeService {
+            name,
+            build_context,
+            image,
+            host_ports,
+            container_ports,
+            depends_on,
+            is_db,
+            web_tool,
+        });
     }
 
+    for svc in &result.services {
+        // A database without an explicit host port cannot be waited on
+        // from the host; surface it instead of silently dropping the wait.
+        if svc.is_db && svc.host_ports.is_empty() {
+            result.warning = Some(format!(
+                "Service '{}' (database) publishes no explicit host port; readiness wait omitted",
+                svc.name
+            ));
+        }
+        for p in &svc.host_ports {
+            if svc.is_db {
+                result.db_ports.push((*p, svc.name.clone()));
+            }
+            if let Some(tool) = &svc.web_tool {
+                result.web_tools.push((*p, tool.clone()));
+            }
+        }
+    }
     result.db_ports.sort();
     result.db_ports.dedup();
     result.web_tools.sort();
     result.web_tools.dedup();
     result
+}
+
+/// Parse a compose `ports:` entry into `(host_port, container_port)`.
+/// Handles `"HOST:CONTAINER"`, `"IP:HOST:CONTAINER"`, bare `"CONTAINER"`
+/// (anonymous host port), numeric values and `/proto` suffixes.
+fn parse_compose_port(raw: &str) -> Option<(Option<u16>, u16)> {
+    let raw = raw.split('/').next().unwrap_or(raw);
+    let parts: Vec<&str> = raw.split(':').collect();
+    match parts.len() {
+        1 => {
+            let c = parts[0].parse::<u16>().ok()?;
+            if c == 0 {
+                return None;
+            }
+            Some((None, c))
+        }
+        2 => {
+            let h = parts[0].parse::<u16>().ok()?;
+            let c = parts[1].parse::<u16>().ok()?;
+            if h == 0 || c == 0 {
+                return None;
+            }
+            Some((Some(h), c))
+        }
+        3 => {
+            let h = parts[1].parse::<u16>().ok()?;
+            let c = parts[2].parse::<u16>().ok()?;
+            if h == 0 || c == 0 {
+                return None;
+            }
+            Some((Some(h), c))
+        }
+        _ => None,
+    }
 }
 
 const KNOWN_DB_SERVICES: &[(&str, u16)] = &[
@@ -1109,14 +1270,55 @@ fn resolve_app(name: &str) -> Option<String> {
 }
 
 /// Per-OS CLI names for auxiliary tools.
-fn tool_cli_names() -> &'static [&'static str] {
+fn android_studio_cli_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        &["studio64", "Docker Desktop", "dbeaver"]
+        "studio64"
     } else if cfg!(target_os = "macos") {
-        &["studio", "docker", "dbeaver"]
+        "studio"
     } else {
-        &["android-studio", "docker", "dbeaver-ce"]
+        "android-studio"
     }
+}
+
+fn dbeaver_cli_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "dbeaver"
+    } else if cfg!(target_os = "macos") {
+        "dbeaver"
+    } else {
+        "dbeaver-ce"
+    }
+}
+
+/// Resolve the Docker Desktop application for the "Open Docker Desktop"
+/// step. On macOS the canonical launcher is `open -a Docker`; elsewhere the
+/// Desktop app is resolved through the platform resolvers (never the bare
+/// docker CLI — that prints help instead of starting the daemon UI).
+fn resolve_docker_desktop() -> Option<(String, Vec<String>)> {
+    if cfg!(target_os = "macos") {
+        return Some((
+            "open".to_string(),
+            vec!["-a".to_string(), "Docker".to_string()],
+        ));
+    }
+    let name = if cfg!(target_os = "windows") {
+        "Docker Desktop"
+    } else {
+        "docker-desktop"
+    };
+    if let Some(p) = resolve_app(name) {
+        return Some((p, Vec::new()));
+    }
+    // Windows last resort: Start Menu shortcut. Covers Store/MSIX installs
+    // that register neither App Paths nor a plain exe path; the structured
+    // launcher carries the `shell:AppsFolder` alias arguments.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(l) = crate::platform::app_launcher::start_menu_launcher("Docker Desktop") {
+            return Some((l.program, l.args));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1395,9 +1597,11 @@ fn finalize_steps(
             let has_dependents = dependents.get(&id).map(|n| *n > 0).unwrap_or(false);
             let failure_policy = Some(p.kind.default_failure_policy(has_dependents));
             if !has_dependents && matches!(p.kind, StepKind::WaitForPort { .. }) {
+                // Computed from the generated graph — a deterministic fact,
+                // not a guess.
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Info,
-                    AnalysisConfidence::Low,
+                    AnalysisConfidence::High,
                     format!(
                         "Readiness wait '{}' has no dependents; a failure will not stop the run",
                         p.label
@@ -1427,9 +1631,11 @@ fn finalize_steps(
 }
 
 /// Default timeout for the "Wait for Docker daemon" step. A cold Docker
-/// Desktop first boot routinely exceeds 30s, so the wait gets headroom
-/// while still failing loudly.
-const WAIT_DOCKER_TIMEOUT_SECS: u64 = 120;
+/// Desktop first boot (especially with a WSL2 backend) routinely exceeds
+/// 2 minutes, so the wait gets generous headroom while still failing
+/// loudly. Individual daemon checks are bounded by the docker service so
+/// this budget is spent on polling, not on one stuck `docker version`.
+const WAIT_DOCKER_TIMEOUT_SECS: u64 = 180;
 
 /// Default timeout for generated port-readiness waits. Dev servers
 /// (Metro, Go, Django, ...) need headroom for cold starts; combined with
@@ -1469,7 +1675,7 @@ fn generate_steps(
             .iter()
             .any(|p| p.features.expo || p.features.react_native);
         if has_mobile {
-            if let Some(resolved) = resolve_app(tool_cli_names()[0]) {
+            if let Some(resolved) = resolve_app(android_studio_cli_name()) {
                 steps.push(PendingStep::open_app(
                     &resolved,
                     vec![".".to_string()],
@@ -1496,17 +1702,17 @@ fn generate_steps(
         // daemon wait below depends on it either way, so a disabled open
         // step does not block the wait.
         let docker_open_id = format!("step_{:03}", steps.len() + 1);
-        match resolve_app(tool_cli_names()[1]) {
-            Some(resolved) => {
+        match resolve_docker_desktop() {
+            Some((resolved, args)) => {
                 steps.push(PendingStep::open_app(
                     &resolved,
-                    Vec::new(),
+                    args,
                     "Open Docker Desktop",
                 ));
             }
             None => {
                 let mut disabled = PendingStep::open_app(
-                    tool_cli_names()[1],
+                    "docker-desktop",
                     Vec::new(),
                     "Open Docker Desktop",
                 );
@@ -1514,7 +1720,7 @@ fn generate_steps(
                 steps.push(disabled);
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Warning,
-                    AnalysisConfidence::Low,
+                    AnalysisConfidence::Medium,
                     "Docker Desktop not resolvable; 'Open Docker Desktop' is disabled \
                      and the daemon wait will not auto-launch it"
                         .to_string(),
@@ -1530,7 +1736,7 @@ fn generate_steps(
 
         let has_db = model.compose_files.iter().any(|c| !c.db_ports.is_empty());
         if has_db {
-            if let Some(resolved) = resolve_app(tool_cli_names()[2]) {
+            if let Some(resolved) = resolve_app(dbeaver_cli_name()) {
                 steps.push(PendingStep {
                     label: "Open DBeaver".to_string(),
                     enabled: true,
@@ -1550,7 +1756,7 @@ fn generate_steps(
             } else {
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Info,
-                    AnalysisConfidence::Low,
+                    AnalysisConfidence::Medium,
                     "DBeaver not found; database client step omitted".to_string(),
                     None,
                 ));
@@ -1560,6 +1766,10 @@ fn generate_steps(
 
     // --- 3. Docker compose + database readiness (unconditional) ---
     let mut compose_ids: Vec<String> = Vec::new();
+    // Directories that a compose service builds from: the container provides
+    // the service, so a local run there would conflict (port clash). Maps
+    // dir -> (compose step id, governing service names).
+    let mut compose_governed: HashMap<PathBuf, (String, Vec<String>)> = HashMap::new();
     for compose in &model.compose_files {
         let label = format!("Start Docker Compose ({})", rel_label(&compose.dir, root));
         if !known.insert(("compose".to_string(), compose.dir.display().to_string())) {
@@ -1579,6 +1789,20 @@ fn generate_steps(
         steps.push(step);
         compose_ids.push(compose_id.clone());
 
+        for svc in &compose.services {
+            if let Some(ctx) = &svc.build_context {
+                let ctx = ctx.clone();
+                compose_governed
+                    .entry(ctx)
+                    .and_modify(|(_, names)| {
+                        if !names.contains(&svc.name) {
+                            names.push(svc.name.clone());
+                        }
+                    })
+                    .or_insert_with(|| (compose_id.clone(), vec![svc.name.clone()]));
+            }
+        }
+
         for (port, service) in &compose.db_ports {
             let key = format!("{}:{}", compose.dir.display(), port);
             if !known.insert(("db_wait".to_string(), key)) {
@@ -1595,15 +1819,17 @@ fn generate_steps(
                 port
             );
             wait = wait
-                .with_metadata("confidence", "low")
+                .with_metadata("confidence", "high")
                 .with_metadata("source", "docker-compose ports");
             steps.push(wait);
             diagnostics.push(AnalysisDiagnostic::new(
                 DiagnosticSeverity::Info,
-                AnalysisConfidence::Low,
+                AnalysisConfidence::High,
                 format!(
-                    "Guessed database port {} from compose service '{}'",
-                    port, service
+                    "Database port {} for compose service '{}' (explicit host port in {}); readiness wait added",
+                    port,
+                    service,
+                    compose.path.display()
                 ),
                 Some(compose.path.display().to_string()),
             ));
@@ -1624,7 +1850,7 @@ fn generate_steps(
             );
             wait.label = format!("Wait for {} ({})", tool, port);
             wait = wait
-                .with_metadata("confidence", "low")
+                .with_metadata("confidence", "high")
                 .with_metadata("source", "docker-compose web tool");
             let wait_id = format!("step_{:03}", steps.len() + 1);
             steps.push(wait);
@@ -1635,10 +1861,10 @@ fn generate_steps(
             steps.push(open);
             diagnostics.push(AnalysisDiagnostic::new(
                 DiagnosticSeverity::Info,
-                AnalysisConfidence::Low,
+                AnalysisConfidence::High,
                 format!(
-                    "Guessed web tool '{}' from compose service '{}'; browser step added",
-                    tool, tool
+                    "Web tool '{}' from compose service (host port {}); browser step added",
+                    tool, port
                 ),
                 Some(compose.path.display().to_string()),
             ));
@@ -1663,20 +1889,25 @@ fn generate_steps(
         }
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
-        // Go ports are almost never declared in the manifest -- low confidence.
-        let port = go_port_hint(&go.dir).unwrap_or(8080);
+        // Go ports are rarely declared in the manifest; the hint is
+        // source-aware (High for .env PORT / ListenAndServe, Medium for an
+        // address literal, Low for the 8080 fallback).
+        let (port, port_confidence, port_source) =
+            go_port_hint(&go.dir).unwrap_or((8080, AnalysisConfidence::Low, "default".to_string()));
         let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
         wait.label = format!("Wait for Go backend port {}", port);
         wait = wait
-            .with_metadata("confidence", "low")
-            .with_metadata("source", "default 8080");
+            .with_metadata("confidence", port_confidence.as_str())
+            .with_metadata("source", &port_source);
         steps.push(wait);
         diagnostics.push(AnalysisDiagnostic::new(
             DiagnosticSeverity::Info,
-            AnalysisConfidence::Low,
+            port_confidence,
             format!(
-                "Go backend port {} is guessed (no explicit configuration found)",
-                port
+                "Go backend port {} from {} (confidence {})",
+                port,
+                port_source,
+                port_confidence.as_str()
             ),
             Some(go.manifest.display().to_string()),
         ));
@@ -2023,10 +2254,10 @@ fn generate_steps(
 
     // --- 7. Dockerfiles: never assumed to be runnable services ---
     for df in &model.dockerfiles {
-        let governed_by_compose = model
-            .compose_files
-            .iter()
-            .any(|c| c.dir == df.dir || c.dir == *root);
+        // Governed when a compose file in the same dir (or the root) covers
+        // it, or when any compose service builds from the Dockerfile's dir.
+        let governed_by_compose = model.compose_files.iter().any(|c| c.dir == df.dir || c.dir == *root)
+            || compose_governed.contains_key(&df.dir);
         if governed_by_compose {
             continue;
         }
@@ -2052,7 +2283,61 @@ fn generate_steps(
 
     // --- 8. Open a plain terminal at the end (tool step) ---
     if options.include_tool_steps {
-        steps.push(PendingStep::open_terminal());
+        // Anchor the terminal to the project root: a bare terminal must
+        // never open in the app's own working directory.
+        let mut term = PendingStep::open_terminal();
+        term.working_directory = Some(root.to_string_lossy().into_owned());
+        steps.push(term);
+    }
+
+    // --- 9. Docker compose governance post-pass ---
+    // When a compose service builds from a local project directory, the
+    // container IS that service: the generated local run step is disabled
+    // (the user can still enable it to develop locally) and its readiness
+    // wait is re-pointed at the compose step so it never races `docker
+    // compose up` while the local run is skipped.
+    let mut governed_run_ids: HashMap<String, String> = HashMap::new();
+    for (i, p) in steps.iter_mut().enumerate() {
+        let Some(wd) = &p.working_directory else {
+            continue;
+        };
+        let wd_path = PathBuf::from(wd);
+        let Some((compose_step_id, service_names)) = compose_governed.get(&wd_path) else {
+            continue;
+        };
+        if !matches!(p.kind, StepKind::RunCommand { .. }) {
+            continue;
+        }
+        let run_id = format!("step_{:03}", i + 1);
+        governed_run_ids.insert(run_id.clone(), compose_step_id.clone());
+        p.enabled = false;
+        p.metadata
+            .get_or_insert_with(HashMap::new)
+            .insert("policy".to_string(), "docker-compose-governs".to_string());
+        if !p.depends_on.iter().any(|d| d == compose_step_id) {
+            p.depends_on.push(compose_step_id.clone());
+        }
+        diagnostics.push(AnalysisDiagnostic::new(
+            DiagnosticSeverity::Warning,
+            AnalysisConfidence::High,
+            format!(
+                "Local run '{}' DISABLED: docker compose service(s) '{}' build from this \
+                 directory; the container provides the service (enable manually to run locally)",
+                p.label,
+                service_names.join(", ")
+            ),
+            None,
+        ));
+    }
+    // Re-point every dependent of a governed run at the compose step: port
+    // waits must not race `docker compose up`, and URL steps (API docs)
+    // must not open before the containerized service is reachable.
+    for p in steps.iter_mut() {
+        for dep in &mut p.depends_on {
+            if let Some(compose_step_id) = governed_run_ids.get(dep) {
+                *dep = compose_step_id.clone();
+            }
+        }
     }
 
     // Structural diagnostic about the layout.
@@ -2083,24 +2368,49 @@ fn generate_steps(
     finalize_steps(steps, diagnostics)
 }
 
-fn go_port_hint(dir: &Path) -> Option<u16> {
-    let env_re = regex::Regex::new(r"(?m)\bPORT\s*=\s*(\d{2,5})").unwrap();
+fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {
+    // Highest evidence: an explicit PORT in the environment file.
+    let env_re = regex::Regex::new(r"(?m)^\s*PORT\s*=\s*(\d{2,5})").unwrap();
+    let env_path = dir.join(".env");
+    if env_path.is_file() {
+        if let Ok(content) = fs::read_to_string(&env_path) {
+            if let Some(caps) = env_re.captures(&content) {
+                if let Ok(p) = caps[1].parse::<u16>() {
+                    if p > 0 {
+                        return Some((p, AnalysisConfidence::High, ".env PORT".to_string()));
+                    }
+                }
+            }
+        }
+    }
+    // Direct listen call: `http.ListenAndServe(":8080", ...)`.
+    let listen_re =
+        regex::Regex::new(r#"ListenAndServe(TLS)?\s*\(\s*":(\d{2,5})"#).unwrap();
+    // Fallback: any `:port` token in the entry source.
     let addr_re = regex::Regex::new(r":(\d{2,5})\b").unwrap();
-    for file in [".env", "main.go", "cmd/main.go"] {
+    for file in ["main.go", "cmd/main.go"] {
         let path = dir.join(file);
         if path.is_file() {
             if let Ok(content) = fs::read_to_string(&path) {
-                if let Some(caps) = env_re.captures(&content) {
-                    if let Ok(p) = caps[1].parse::<u16>() {
+                if let Some(caps) = listen_re.captures(&content) {
+                    if let Ok(p) = caps[2].parse::<u16>() {
                         if p > 0 {
-                            return Some(p);
+                            return Some((
+                                p,
+                                AnalysisConfidence::High,
+                                format!("{} ListenAndServe", file),
+                            ));
                         }
                     }
                 }
                 for caps in addr_re.captures_iter(&content) {
                     if let Ok(p) = caps[1].parse::<u16>() {
                         if p > 0 && p != 80 && p != 443 {
-                            return Some(p);
+                            return Some((
+                                p,
+                                AnalysisConfidence::Medium,
+                                format!("{} address literal", file),
+                            ));
                         }
                     }
                 }
@@ -2164,9 +2474,18 @@ fn emit_detection_diagnostics(model: &ProjectModel, diagnostics: &mut Vec<Analys
                 ));
             }
         }
+        // The manifest file itself is direct evidence of the package; a
+        // lockfile additionally pins the package manager. The port guess
+        // (if any) is reported in the message text with its own confidence
+        // — it must not drag the detection confidence down.
+        let detection_confidence = if pkg.has_lockfile {
+            AnalysisConfidence::High
+        } else {
+            AnalysisConfidence::Medium
+        };
         diagnostics.push(AnalysisDiagnostic::new(
             DiagnosticSeverity::Info,
-            pkg.port_confidence,
+            detection_confidence,
             evidence,
             Some(pkg.manifest.display().to_string()),
         ));
@@ -2323,13 +2642,13 @@ fn emit_detection_diagnostics(model: &ProjectModel, diagnostics: &mut Vec<Analys
         if let Some(w) = &compose.parse_warning {
             message.push_str(&format!("; warning: {}", w));
         }
+        // A compose file parsed by a real YAML parser is direct evidence:
+        // service names and host ports literally come from the file. The
+        // only inference is "this service is a database/web tool", which is
+        // a canonical-list match — high confidence, not a guess.
         diagnostics.push(AnalysisDiagnostic::new(
             DiagnosticSeverity::Info,
-            if compose.db_ports.is_empty() {
-                AnalysisConfidence::Medium
-            } else {
-                AnalysisConfidence::Low
-            },
+            AnalysisConfidence::High,
             message,
             Some(compose.path.display().to_string()),
         ));
@@ -3033,10 +3352,107 @@ mod tests {
     }
 
     #[test]
+    fn compose_governed_services_disable_local_runs() {
+        let dir = temp_dir("governed");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "frontend/package.json",
+                    r#"{"name":"mobile","dependencies":{"expo":"^51"},"scripts":{"start":"expo start"}}"#,
+                ),
+                ("frontend/App.tsx", "1"),
+                ("backend/go.mod", "module example.com/api\n\ngo 1.22\n"),
+                (
+                    "backend/main.go",
+                    "package main\nfunc main() { http.ListenAndServe(\":3000\", nil) }\n",
+                ),
+                (
+                    "docker-compose.yaml",
+                    "services:\n\
+                     \x20 postgres:\n\x20\x20 image: postgres:16\n\x20\x20 ports:\n\x20\x20\x20 - \"5432:5432\"\n\
+                     \x20 backend:\n\x20\x20 build: ./backend\n\x20\x20 ports:\n\x20\x20\x20 - \"3000:3000\"\n\
+                     \x20 grafana:\n\x20\x20 image: grafana/grafana\n\x20\x20 ports:\n\x20\x20\x20 - \"3001:3000\"\n",
+                ),
+            ],
+        );
+        let draft = analyze(&dir);
+        let profile = &draft.profile;
+
+        let go = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Go backend"))
+            .expect("go backend step generated (disabled)");
+        assert!(!go.enabled, "go run must be disabled when compose builds it");
+        assert_eq!(
+            go.metadata.as_ref().unwrap().get("policy").unwrap(),
+            "docker-compose-governs"
+        );
+
+        // The readiness wait must be chained to the compose step, never to
+        // the (skipped) local run — it must not race `docker compose up`.
+        let go_wait = profile
+            .steps
+            .iter()
+            .find(|s| s.label.starts_with("Wait for Go backend port"))
+            .expect("go wait");
+        assert!(!go_wait.depends_on.contains(&go.id));
+        let compose = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Docker Compose"))
+            .unwrap();
+        assert!(
+            go_wait.depends_on.contains(&compose.id),
+            "go wait must depend on compose, got {:?}",
+            go_wait.depends_on
+        );
+
+        // The Expo frontend is not governed and stays enabled.
+        let expo = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Expo") && !s.label.contains("port"))
+            .expect("expo run step");
+        assert!(expo.enabled);
+
+        // Web tools from compose produce browser steps at high confidence.
+        let compose_diag = draft
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("Detected compose file"))
+            .expect("compose diagnostic");
+        assert_eq!(compose_diag.confidence, AnalysisConfidence::High);
+        assert!(draft
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Web tool 'grafana'")
+                && d.confidence == AnalysisConfidence::High));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn go_port_hint_detects_port_from_env() {
         let dir = temp_dir("goenv");
         fs::write(dir.join(".env"), "PORT=9090\n").unwrap();
-        assert_eq!(go_port_hint(&dir), Some(9090));
+        let hint = go_port_hint(&dir).expect("hint");
+        assert_eq!(hint.0, 9090);
+        assert_eq!(hint.1, AnalysisConfidence::High);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn go_port_hint_detects_listen_and_serve() {
+        let dir = temp_dir("golisten");
+        fs::write(
+            dir.join("main.go"),
+            "package main\nimport \"net/http\"\nfunc main() { http.ListenAndServe(\":7070\", nil) }\n",
+        )
+        .unwrap();
+        let hint = go_port_hint(&dir).expect("hint");
+        assert_eq!(hint.0, 7070);
+        assert_eq!(hint.1, AnalysisConfidence::High);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -3046,7 +3462,7 @@ mod tests {
     #[test]
     fn wait_docker_is_linked_to_docker_open_with_generous_timeout() {
         let wait = PendingStep::wait_docker(WAIT_DOCKER_TIMEOUT_SECS, Some("step_002"));
-        assert_eq!(wait.timeout, Some(120));
+        assert_eq!(wait.timeout, Some(180));
         assert_eq!(wait.depends_on, vec!["step_002".to_string()]);
         assert!(matches!(wait.kind, StepKind::WaitForDocker {}));
         assert!(wait.enabled);

@@ -182,6 +182,70 @@ fn resolve_windows(cli: &str) -> Option<String> {
         }
     }
 
+    // Android Studio (also matched through "studio64", the exe name the
+    // analyzer passes on Windows).
+    if lower.starts_with("studio64") || lower.starts_with("android-studio") || lower == "studio" {
+        if let Some(pf) = &program_files {
+            let pf = std::path::PathBuf::from(pf);
+            candidates.push(
+                pf.join("Android")
+                    .join("Android Studio")
+                    .join("bin")
+                    .join("studio64.exe"),
+            );
+        }
+        if let Some(base) = &local {
+            let base = std::path::PathBuf::from(base);
+            candidates.push(
+                base.join("Programs")
+                    .join("Android Studio")
+                    .join("bin")
+                    .join("studio64.exe"),
+            );
+        }
+    }
+
+    // Docker Desktop — the GUI exe, never the docker CLI.
+    if lower == "docker desktop" || lower == "docker-desktop" {
+        if let Some(pf) = &program_files {
+            let pf = std::path::PathBuf::from(pf);
+            candidates.push(
+                pf.join("Docker")
+                    .join("Docker")
+                    .join("Docker Desktop.exe"),
+            );
+            candidates.push(
+                pf.join("Docker")
+                    .join("Docker")
+                    .join("resources")
+                    .join("Docker Desktop.exe"),
+            );
+        }
+        if let Some(base) = &local {
+            let base = std::path::PathBuf::from(base);
+            candidates.push(base.join("Docker").join("Docker Desktop.exe"));
+        }
+    }
+
+    // DBeaver.
+    if lower.starts_with("dbeaver") {
+        if let Some(pf) = &program_files {
+            let pf = std::path::PathBuf::from(pf);
+            candidates.push(pf.join("DBeaver").join("dbeaver.exe"));
+        }
+        if let Some(pf86) = &program_files_x86 {
+            let pf86 = std::path::PathBuf::from(pf86);
+            candidates.push(pf86.join("DBeaver").join("dbeaver.exe"));
+        }
+        if let Some(base) = &local {
+            let base = std::path::PathBuf::from(base);
+            candidates.push(base.join("DBeaver").join("dbeaver.exe"));
+            candidates.push(
+                base.join("Programs").join("DBeaver").join("dbeaver.exe"),
+            );
+        }
+    }
+
     for cand in candidates {
         if cand.is_file() {
             return Some(cand.to_string_lossy().into_owned());
@@ -212,16 +276,27 @@ fn registry_app_path(exe_name: &str) -> Option<String> {
             continue;
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        // Lines look like: `    (Default)    REG_SZ    C:\...\Code.exe`
+        // `reg query` lines look like:
+        //   (Default)    REG_SZ    C:\Program Files\...\Code.exe
+        // The value may contain spaces, so the path is everything after
+        // the value-type token — never a whitespace-split segment.
         for line in text.lines().rev() {
-            let mut parts = line.split_whitespace();
-            let _ = parts.next(); // (Default)
-            let _ = parts.next(); // REG_SZ
-            if let Some(path) = parts.next() {
-                let p = Path::new(path);
-                if p.is_file() {
-                    return Some(path.to_string());
-                }
+            let line = line.trim();
+            let Some(idx) = line.find("REG_") else {
+                continue;
+            };
+            let mut path = line[idx + 4..].trim().to_string();
+            // REG_EXPAND_SZ values are printed as `@path`.
+            if let Some(stripped) = path.strip_prefix('@') {
+                path = stripped.trim().to_string();
+            }
+            if path.is_empty() {
+                continue;
+            }
+            let path = path.trim_matches('"');
+            let p = Path::new(path);
+            if p.is_file() {
+                return Some(path.to_string());
             }
         }
     }

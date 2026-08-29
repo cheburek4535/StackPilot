@@ -31,7 +31,7 @@
     LaunchRun,
     StepStatus,
   } from "$lib/modules/devlauncher/types";
-  import { isV2Profile, isRunTerminal, stepKindIcon, stepKindSummary, stepStatusClass } from "$lib/modules/devlauncher/types";
+  import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindSummary, stepStatusClass } from "$lib/modules/devlauncher/types";
   import {
     actionIcon,
     actionTypeLabel,
@@ -515,8 +515,8 @@
                         {i18n.t("devl.stop_processes") as TranslationKey}
                       </Button>
                     {/if}
-                    <Badge tone={activeRun.status === "succeeded" ? "lime" : activeRun.status === "failed" ? "red" : activeRun.status === "cancelled" ? "amber" : "violet"}>
-                      {activeRun.status}
+                    <Badge tone={activeRun.status === "succeeded" ? "lime" : activeRun.status === "failed" ? "red" : activeRun.status === "cancelled" ? "amber" : activeRun.status === "partial_success" ? "amber" : "violet"}>
+                      {runStatusLabel(activeRun.status)}
                     </Badge>
                   </div>
                 </div>
@@ -570,8 +570,8 @@
                       onclick={() => (activeRun = runStore.getRunById(r.run_id) ?? r)}
                     >
                       <span class="sp-history-id">#{r.run_id.slice(0, 8)}</span>
-                      <Badge tone={r.status === "succeeded" ? "lime" : r.status === "failed" ? "red" : r.status === "cancelled" ? "amber" : r.status === "running" ? "violet" : "neutral"}>
-                        {r.status}
+                      <Badge tone={r.status === "succeeded" ? "lime" : r.status === "failed" ? "red" : r.status === "cancelled" ? "amber" : r.status === "partial_success" ? "amber" : r.status === "running" ? "violet" : "neutral"}>
+                        {runStatusLabel(r.status)}
                       </Badge>
                       <span class="sp-history-time">{new Date(r.created_at).toLocaleString()}</span>
                     </button>

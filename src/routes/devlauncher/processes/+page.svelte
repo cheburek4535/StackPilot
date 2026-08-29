@@ -212,11 +212,20 @@
       // Write existing logs
       try {
         const logs = await getProcessLogs(id);
-        for (const line of logs.stdout_lines) {
-          term.writeln(line);
-        }
-        for (const line of logs.stderr_lines) {
-          term.writeln(`\x1b[31m${line}\x1b[0m`);
+        const proc = processes.find((p) => p.id === id);
+        if (
+          logs.stdout_lines.length === 0 &&
+          logs.stderr_lines.length === 0 &&
+          proc?.tracking_quality === "terminal_wrapper"
+        ) {
+          term.writeln("\x1b[33mВывод идёт в отдельное окно терминала — здесь логов нет.\x1b[0m");
+        } else {
+          for (const line of logs.stdout_lines) {
+            term.writeln(line);
+          }
+          for (const line of logs.stderr_lines) {
+            term.writeln(`\x1b[31m${line}\x1b[0m`);
+          }
         }
       } catch (e) {
         term.writeln(`\x1b[33m${i18n.t("devl.load_logs_failed", { err: String(e) })}\x1b[0m`);

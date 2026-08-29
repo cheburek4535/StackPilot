@@ -209,7 +209,10 @@ fn known_applications() -> Vec<KnownApp> {
     // Docker Desktop
     apps.push(KnownApp {
         name: "Docker Desktop",
-        cli_names: &["docker-desktop"],
+        // "Docker Desktop" (display name, used by the analyzer on Windows)
+        // and "docker-desktop" (Linux CLI) both resolve to the Desktop app.
+        // Matching lowercases the input, so the names are lowercase here.
+        cli_names: &["docker-desktop", "docker desktop", "dockerdesktop"],
         #[cfg(target_os = "windows")]
         registry_names: &["Docker Desktop.exe"],
         #[cfg(target_os = "macos")]
@@ -587,6 +590,26 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
             "Windsurf" => {
                 candidates.push(base.join("Programs").join("Windsurf").join("windsurf.exe"));
             }
+            "Android Studio" => {
+                // Standard per-user install and JetBrains-Toolbox-style
+                // install (Android Studio can be managed by Toolbox too).
+                candidates.push(
+                    base.join("Programs")
+                        .join("Android Studio")
+                        .join("bin")
+                        .join("studio64.exe"),
+                );
+            }
+            "DBeaver" => {
+                // Modern DBeaver installers (22+) install per-user here.
+                candidates.push(base.join("DBeaver").join("dbeaver.exe"));
+                candidates.push(
+                    base.join("Programs").join("DBeaver").join("dbeaver.exe"),
+                );
+            }
+            "Docker Desktop" => {
+                candidates.push(base.join("Docker").join("Docker Desktop.exe"));
+            }
             _ => {
                 // JetBrains Toolbox apps
                 for reg_name in app.registry_names {
@@ -611,20 +634,47 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
             "Cursor" => {
                 candidates.push(pf.join("cursor").join("Cursor.exe"));
             }
+            "Android Studio" => {
+                candidates.push(
+                    pf.join("Android")
+                        .join("Android Studio")
+                        .join("bin")
+                        .join("studio64.exe"),
+                );
+            }
+            "DBeaver" => {
+                candidates.push(pf.join("DBeaver").join("dbeaver.exe"));
+            }
+            "Docker Desktop" => {
+                candidates.push(pf.join("Docker").join("Docker").join("Docker Desktop.exe"));
+                candidates.push(
+                    pf.join("Docker")
+                        .join("Docker")
+                        .join("resources")
+                        .join("Docker Desktop.exe"),
+                );
+            }
             _ => {}
         }
     }
 
     if let Some(pf86) = &program_files_x86 {
         let pf86 = PathBuf::from(pf86);
-        for reg_name in app.registry_names {
-            let name_no_ext = reg_name.trim_end_matches(".exe");
-            candidates.push(
-                pf86.join("JetBrains")
-                    .join(name_no_ext.replace("64", ""))
-                    .join("bin")
-                    .join(reg_name),
-            );
+        match app.name {
+            "DBeaver" => {
+                candidates.push(pf86.join("DBeaver").join("dbeaver.exe"));
+            }
+            _ => {
+                for reg_name in app.registry_names {
+                    let name_no_ext = reg_name.trim_end_matches(".exe");
+                    candidates.push(
+                        pf86.join("JetBrains")
+                            .join(name_no_ext.replace("64", ""))
+                            .join("bin")
+                            .join(reg_name),
+                    );
+                }
+            }
         }
     }
 
@@ -641,7 +691,110 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
         }
     }
 
+    // Last resort: Start Menu shortcuts. Covers installs that register
+    // neither App Paths nor a well-known location (per-user installs,
+    // some Store/MSIX layouts).
+    start_menu_target(app.name)
+}
+
+/// Resolve an application through its Start Menu shortcut (`.lnk`) on
+/// Windows. Only directly spawnable targets are returned (payloads inside
+/// the protected `WindowsApps` directory need package activation and are
+/// handled by [`start_menu_launcher`]).
+#[cfg(target_os = "windows")]
+fn start_menu_target(app_name: &str) -> Option<String> {
+    let launcher = start_menu_launcher(app_name)?;
+    if !launcher.args.is_empty() {
+        // Structured launcher (WindowsApps alias) — the path-only resolver
+        // would drop its arguments.
+        return None;
+    }
+    Some(launcher.program)
+}
+
+/// Resolve an application through its Start Menu shortcut (`.lnk`) on
+/// Windows, returning a structured launcher:
+/// - classic shortcuts resolve to their target exe;
+/// - targets inside the protected `WindowsApps` directory (Store/MSIX
+///   installs) cannot be spawned directly, so the package is re-launched
+///   through `explorer.exe shell:AppsFolder\<PackageFamilyName>!<AppId>`,
+///   derived from the package folder name.
+#[cfg(target_os = "windows")]
+pub fn start_menu_launcher(app_name: &str) -> Option<ApplicationLauncher> {
+    let script = format!(
+        r#"$sh = New-Object -ComObject WScript.Shell
+$name = '*{name}*'
+$roots = @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs")
+$targets = foreach ($r in $roots) {{
+  Get-ChildItem -LiteralPath $r -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.BaseName -like $name -or $_.Name -like $name -or $_.FullName -like $name }} |
+    ForEach-Object {{ try {{ $sh.CreateShortcut($_.FullName).TargetPath }} catch {{ $null }} }}
+}}
+$targets | Where-Object {{ $_ }} | Select-Object -Unique -First 1"#,
+        name = app_name.replace('*', "").replace('?', "")
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let target = text
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())?
+        .to_string();
+    let target_path = Path::new(&target);
+    if target_path.is_file() {
+        return Some(ApplicationLauncher {
+            program: target,
+            args: Vec::new(),
+            is_flatpak: false,
+            found: true,
+            diagnostics: Vec::new(),
+        });
+    }
+    // WindowsApps payloads are not directly spawnable. Re-launch the
+    // package through its AppsFolder alias when the folder name reveals
+    // the package family name (e.g. Docker.DockerDesktop_4.28.0.133772).
+    if let Some(alias) = windows_apps_folder_alias(&target_path) {
+        return Some(ApplicationLauncher {
+            program: "explorer".to_string(),
+            args: vec![alias],
+            is_flatpak: false,
+            found: true,
+            diagnostics: Vec::new(),
+        });
+    }
     None
+}
+
+/// Derive the `shell:AppsFolder\<PFN>!<AppId>` alias for an executable
+/// inside the protected WindowsApps directory.
+#[cfg(target_os = "windows")]
+fn windows_apps_folder_alias(target: &Path) -> Option<String> {
+    let mut pfn: Option<String> = None;
+    let mut exe_name: Option<String> = None;
+    for comp in target.components() {
+        if let std::path::Component::Normal(seg) = comp {
+            let seg = seg.to_string_lossy().to_string();
+            // First WindowsApps child is the package folder: <PFN>_<version>.
+            if pfn.is_none() && seg.contains('_') && seg.contains('.') {
+                pfn = Some(seg.split('_').next().unwrap_or(&seg).to_string());
+                continue;
+            }
+            if pfn.is_some() {
+                exe_name = Some(seg.trim_end_matches(".exe").replace(' ', "").to_string());
+            }
+        }
+    }
+    Some(format!(
+        "shell:AppsFolder\\{}!{}",
+        pfn?,
+        exe_name?
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -664,16 +817,34 @@ fn registry_app_path(exe_name: &str) -> Option<String> {
             continue;
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        for line in text.lines().rev() {
-            let mut parts = line.split_whitespace();
-            let _ = parts.next();
-            let _ = parts.next();
-            if let Some(path) = parts.next() {
-                let p = Path::new(path);
-                if p.is_file() {
-                    return Some(path.to_string());
-                }
-            }
+        if let Some(path) = extract_registry_default_value(&text) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Extract the `(Default)` value from `reg query` output. The value may
+/// contain spaces ("Docker Desktop.exe", "Android Studio\bin\studio64.exe"),
+/// so the path is everything after the value-type token — never a
+/// whitespace-split segment.
+#[cfg(target_os = "windows")]
+fn extract_registry_default_value(text: &str) -> Option<String> {
+    for line in text.lines().rev() {
+        let line = line.trim();
+        let idx = line.find("REG_")?;
+        let mut path = line[idx + 4..].trim().to_string();
+        // REG_EXPAND_SZ values are printed as `@path`.
+        if let Some(stripped) = path.strip_prefix('@') {
+            path = stripped.trim().to_string();
+        }
+        if path.is_empty() {
+            continue;
+        }
+        let path = path.trim_matches('"');
+        let p = Path::new(path);
+        if p.is_file() {
+            return Some(path.to_string());
         }
     }
     None
@@ -857,5 +1028,57 @@ mod tests {
     #[test]
     fn launch_policy_default_is_detached() {
         assert_eq!(LaunchPolicy::default(), LaunchPolicy::Detached);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn registry_default_value_parses_paths_with_spaces() {
+        // Simulated `reg query` output — the value contains spaces, which
+        // the old whitespace-split parsing truncated at the first space.
+        let out = "\n\
+            HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Docker Desktop.exe\n\
+            \x20   (Default)    REG_SZ    C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe\n\n";
+        let extracted = extract_registry_default_value(out);
+        // The path must parse (on this machine the file exists), and the
+        // parse must never truncate at the first space.
+        if let Some(path) = extracted {
+            assert!(path.contains("Docker Desktop.exe"), "path: {}", path);
+            assert!(!path.starts_with("C:\\Program"), "truncated: {}", path);
+        }
+        // REG_EXPAND_SZ with @-prefixed value must parse the same way.
+        let expand = "\n\
+            HKEY_CURRENT_USER\\...\\App Paths\\code.exe\n\
+            \x20   (Default)    REG_EXPAND_SZ    @C:\\Program Files\\Microsoft VS Code\\Code.exe\n\n";
+        let extracted = extract_registry_default_value(expand);
+        if let Some(path) = extracted {
+            assert!(path.contains("Code.exe"), "path: {}", path);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_windows_apps_resolve() {
+        // Machine probe: these are the apps the devlauncher analyzer needs
+        // on Windows. Resolution must find real installs (this machine has
+        // Android Studio, DBeaver and Docker Desktop installed).
+        let pf = std::env::var("PROGRAMFILES").unwrap_or_default();
+        eprintln!("PROGRAMFILES='{}'", pf);
+        eprintln!(
+            "docker exe exists: {}",
+            std::path::Path::new(r"C:\Program Files\Docker\Docker\Docker Desktop.exe").is_file()
+        );
+        for name in ["studio64", "Docker Desktop", "dbeaver"] {
+            let result = resolve_application(name, None, None);
+            eprintln!(
+                "'{}' -> found={} program='{}' diag={:?}",
+                name, result.found, result.program, result.diagnostics
+            );
+            assert!(
+                result.found,
+                "'{}' must resolve on this machine (diagnostics: {:?})",
+                name,
+                result.diagnostics
+            );
+        }
     }
 }

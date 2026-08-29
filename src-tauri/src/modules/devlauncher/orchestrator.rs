@@ -487,6 +487,7 @@ impl RunOrchestrator {
                             &run_id,
                             RunStatus::Cancelled,
                             &app_handle,
+                            &process_manager,
                         )
                         .await;
                         return;
@@ -522,6 +523,7 @@ impl RunOrchestrator {
                                     &run_id,
                                     RunStatus::Failed,
                                     &app_handle,
+                                    &process_manager,
                                 )
                                 .await;
                                 return;
@@ -560,8 +562,15 @@ impl RunOrchestrator {
 
                     // Check cancellation
                     if handle.cancelled.load(Ordering::SeqCst) {
-                        Self::finalize_run(&handle, &runs, &run_id, RunStatus::Cancelled, &app_handle)
-                            .await;
+                        Self::finalize_run(
+                            &handle,
+                            &runs,
+                            &run_id,
+                            RunStatus::Cancelled,
+                            &app_handle,
+                            &process_manager,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -576,8 +585,15 @@ impl RunOrchestrator {
                 let sleep = next.saturating_duration_since(tokio::time::Instant::now());
                 let _ = tokio::time::timeout(sleep, handle.cancel_notify.notified()).await;
                 if handle.cancelled.load(Ordering::SeqCst) {
-                    Self::finalize_run(&handle, &runs, &run_id, RunStatus::Cancelled, &app_handle)
-                        .await;
+                    Self::finalize_run(
+                        &handle,
+                        &runs,
+                        &run_id,
+                        RunStatus::Cancelled,
+                        &app_handle,
+                        &process_manager,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -585,7 +601,8 @@ impl RunOrchestrator {
 
         // All steps done — finalize
         let final_status = Self::compute_final_status(&handle);
-        Self::finalize_run(&handle, &runs, &run_id, final_status, &app_handle).await;
+        Self::finalize_run(&handle, &runs, &run_id, final_status, &app_handle, &process_manager)
+            .await;
     }
 
     // -----------------------------------------------------------------------
@@ -808,8 +825,9 @@ impl RunOrchestrator {
                 .await
             }
             StepKind::WaitForDocker {} => {
-                // Generous default: cold Docker Desktop boot exceeds 30s.
-                let timeout = step.timeout.unwrap_or(120);
+                // Generous default: cold Docker Desktop boot (WSL2 backend
+                // included) routinely exceeds 2 minutes.
+                let timeout = step.timeout.unwrap_or(180);
                 Self::wait_for_docker_daemon(
                     run_id,
                     &step.id,
@@ -1058,8 +1076,16 @@ impl RunOrchestrator {
                 // after start. This catches instant-exit spawns (wrong
                 // working directory, missing executable, broken shell
                 // quoting) that would otherwise report "started" while
-                // nothing is actually running.
-                match probe_process_alive(&proc_id, process_manager, cancelled).await {
+                // nothing is actually running. Terminal wrappers are
+                // probed leniently (the launcher detaches by design).
+                match probe_process_alive(
+                    &proc_id,
+                    process_manager,
+                    cancelled,
+                    tracked.tracking_quality.as_ref(),
+                )
+                .await
+                {
                     Ok(true) => StepCompletion {
                         step_id: step_id.to_string(),
                         success: true,
@@ -1959,17 +1985,61 @@ impl RunOrchestrator {
     // Finalize run
     // -----------------------------------------------------------------------
 
+    /// Finalize a run: settle in-flight step states, terminate leftover
+    /// processes on failure/cancellation, set the terminal status and
+    /// prune the oldest finished runs.
     async fn finalize_run(
         handle: &RunHandle,
         runs: &Arc<RwLock<HashMap<String, Arc<RunHandle>>>>,
         run_id: &str,
         final_status: RunStatus,
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
+        process_manager: &Arc<dyn ProcessManager>,
     ) {
+        // A Failed (abort) or Cancelled run must not leave processes
+        // "running": kill every process the run spawned, so the process
+        // list and the run status never contradict each other. Partial
+        // success keeps long-running services up (that is the point).
+        if matches!(final_status, RunStatus::Failed | RunStatus::Cancelled) {
+            let ids: Vec<String> = handle
+                .process_ids
+                .lock()
+                .expect("process_ids lock poisoned")
+                .clone();
+            for proc_id in &ids {
+                let _ = process_manager.kill(proc_id);
+            }
+        }
+
         {
             let mut run = handle.run.lock().expect("run lock poisoned");
             run.status = final_status.clone();
             run.finished_at = Some(default_now_iso());
+            // Settle steps that are still in flight so the step list never
+            // shows Running/Pending under a terminal run status.
+            let now = default_now_iso();
+            for step in &mut run.steps {
+                match (&step.status, &final_status) {
+                    (StepStatus::Pending, RunStatus::Failed) => {
+                        step.status = StepStatus::Skipped;
+                        step.finished_at = Some(now.clone());
+                    }
+                    (StepStatus::Running, RunStatus::Failed) => {
+                        step.status = StepStatus::Failed;
+                        step.error = step.error.clone().or_else(|| {
+                            Some(
+                                "Run aborted by a failing step; process terminated".to_string(),
+                            )
+                        });
+                        step.finished_at = Some(now.clone());
+                    }
+                    (StepStatus::Pending | StepStatus::Running, RunStatus::Cancelled) => {
+                        step.status = StepStatus::Cancelled;
+                        step.finished_at = Some(now.clone());
+                    }
+                    _ => {}
+                }
+            }
         }
 
         emit_status_to_app(app_handle, run_id, final_status.clone());
@@ -2210,10 +2280,21 @@ impl RunOrchestrator {
             .find(|s| s.step_id == step_id)
             .ok_or_else(|| format!("Step '{}' not found in run '{}'", step_id, run_id))?;
 
-        let proc_id = step_state
-            .process_id
-            .as_ref()
-            .ok_or_else(|| format!("Step '{}' has no associated process", step_id))?;
+        // Steps that never spawned a process (URL opens, port waits, delay,
+        // failed spawns) have nothing to show — an empty log sheet, not an
+        // error. The frontend hides the button anyway, but a stale click
+        // (or a step whose process was already pruned) must never surface
+        // a confusing "no associated process" failure.
+        let Some(proc_id) = step_state.process_id.as_ref() else {
+            return Ok(StepLogs {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+                process_id: String::new(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                truncation: None,
+            });
+        };
 
         let (stdout, stderr, truncation) =
             if let Some(buffer) = self.process_manager.get_log_buffer(proc_id) {
@@ -2270,7 +2351,16 @@ impl RunOrchestrator {
     /// spawning. Delegates to the platform resolver (tokenizer-based, shell
     /// fallback for shell-syntax command lines).
     fn resolve_command_target(command: &str) -> (String, Vec<String>) {
-        crate::platform::command_resolver::resolve_command_target(command)
+        let (program, args) = crate::platform::command_resolver::resolve_command_target(command);
+        // The docker CLI is often missing from PATH in GUI-launched apps
+        // (shell profiles are not inherited). Fall back to the Docker
+        // Desktop bundled CLI so compose/docker steps keep working.
+        if program == "docker" {
+            if let Some(cli) = crate::platform::docker_service::DockerService::resolve_cli() {
+                return (cli.to_string_lossy().into_owned(), args);
+            }
+        }
+        (program, args)
     }
 }
 
@@ -2530,11 +2620,23 @@ const START_PROBE_GRACE_MS: u64 = 1500;
 /// - `Ok(true)` — process is running (or already finished naturally);
 /// - `Ok(false)` — process exited before the probe (instant-exit spawn);
 /// - `Err(msg)` — the manager reported an unexpected state.
+///
+/// Terminal-wrapper processes (`tracking == TerminalWrapper`) are probed
+/// leniently: the launcher process (wt.exe, osascript, gnome-terminal, …)
+/// detaches as soon as the terminal window is up, and the real command
+/// keeps running inside it. A wrapper exiting with code 0 is the NORMAL
+/// case; only a non-zero exit (real spawn failure) fails the probe. The
+/// actual service readiness is checked by the follow-up WaitForPort steps.
 async fn probe_process_alive(
     proc_id: &str,
     process_manager: &Arc<dyn ProcessManager>,
     cancelled: &Arc<AtomicBool>,
+    tracking_quality: Option<&ProcessTrackingQuality>,
 ) -> Result<bool, String> {
+    let is_wrapper = matches!(
+        tracking_quality,
+        Some(ProcessTrackingQuality::TerminalWrapper)
+    );
     let grace = Duration::from_millis(START_PROBE_GRACE_MS);
     let start = tokio::time::Instant::now();
     loop {
@@ -2552,13 +2654,23 @@ async fn probe_process_alive(
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            Some(ProcessStatus::Exited(_))
-            | Some(ProcessStatus::ExitedWithError(_))
+            Some(ProcessStatus::Exited(code)) => {
+                // A wrapper that detached cleanly is a successful launch.
+                if is_wrapper && code == 0 {
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            Some(ProcessStatus::ExitedWithError(_))
             | Some(ProcessStatus::Crashed)
             | Some(ProcessStatus::Killed) => return Ok(false),
             None => {
                 // Process no longer tracked: it exited (or the manager was
-                // restarted). Treat as an instant-exit.
+                // restarted). For a wrapper this is still a clean launch —
+                // the terminal window owns the real process from here on.
+                if is_wrapper {
+                    return Ok(true);
+                }
                 return Ok(false);
             }
             Some(ProcessStatus::TimedOut) | Some(ProcessStatus::Cancelled) => {

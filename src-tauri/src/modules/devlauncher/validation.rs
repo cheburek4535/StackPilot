@@ -72,6 +72,22 @@ impl ProfileValidationResult {
         });
     }
 
+    fn push_info(
+        &mut self,
+        code: &str,
+        message: String,
+        step_id: Option<String>,
+        field: Option<String>,
+    ) {
+        self.diagnostics.push(ProfileValidationDiagnostic {
+            severity: DiagnosticSeverity::Info,
+            code: code.to_string(),
+            message,
+            step_id,
+            field,
+        });
+    }
+
     fn merge(&mut self, other: ProfileValidationResult) {
         if !other.valid {
             self.valid = false;
@@ -353,7 +369,10 @@ fn validate_step_kind(step: &LaunchStep) -> ProfileValidationResult {
         }
         StepKind::OpenTerminal { command } => {
             if command.trim().is_empty() {
-                result.push_warning(
+                // A plain terminal is an intentional design (the analyzer
+                // ends every draft with one); it must not surface as a
+                // warning in the run diagnostics on every launch.
+                result.push_info(
                     "EMPTY_TERMINAL_COMMAND",
                     "OpenTerminal with an empty command opens a plain terminal".to_string(),
                     Some(step.id.clone()),

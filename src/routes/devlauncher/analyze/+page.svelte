@@ -25,6 +25,20 @@
   let savedOk = $state(false);
 
   let expanded = $state(new Set<string>());
+  let showAddPanel = $state(false);
+  let dragIndex = $state<number | null>(null);
+  let dragOverIndex = $state<number | null>(null);
+
+  let addTpl = $state({
+    command: "",
+    workdir: "",
+    path: "",
+    url: "",
+    port: "8080",
+    host: "127.0.0.1",
+    timeout: "90",
+    seconds: "5",
+  });
 
   const failurePolicies: Array<{ key: FailurePolicy; label: string }> = [
     { key: "stop_run", label: failurePolicyLabel("stop_run") },
@@ -37,6 +51,138 @@
     { key: "visible_terminal", label: visibilityLabel("visible_terminal") },
     { key: "detached", label: visibilityLabel("detached") },
   ];
+
+  type AddTemplate =
+    | { kind: "terminal_plain" }
+    | { kind: "terminal_cmd" }
+    | { kind: "run_command" }
+    | { kind: "open_folder" }
+    | { kind: "open_url" }
+    | { kind: "wait_port" }
+    | { kind: "delay" };
+
+  /** Build a new step from a micro-template. Working dir defaults to the
+   * analyzed project root so terminals/commands open in the right place. */
+  function buildStep(tpl: AddTemplate): LaunchStep {
+    const id = crypto.randomUUID();
+    const wd = projectPath || undefined;
+    const workdir = addTpl.workdir.trim() || wd;
+    switch (tpl.kind) {
+      case "terminal_plain":
+        return {
+          id,
+          label: "Открыть терминал",
+          enabled: true,
+          kind: { type: "open_terminal", command: "" },
+          depends_on: [],
+          working_directory: wd,
+          visibility: "visible_terminal",
+          execution_mode: "long_running",
+          completion: { type: "process_started" },
+        };
+      case "terminal_cmd": {
+        const command = addTpl.command.trim();
+        return {
+          id,
+          label: command ? `Терминал: ${command}` : "Открыть терминал",
+          enabled: true,
+          kind: { type: "open_terminal", command },
+          depends_on: [],
+          working_directory: workdir,
+          visibility: "visible_terminal",
+          execution_mode: "long_running",
+          completion: { type: "process_started" },
+        };
+      }
+      case "run_command": {
+        const command = addTpl.command.trim();
+        return {
+          id,
+          label: `Выполнить: ${command}`,
+          enabled: true,
+          kind: { type: "run_command", command },
+          depends_on: [],
+          working_directory: workdir,
+          visibility: "visible_terminal",
+          execution_mode: "long_running",
+          completion: { type: "process_started" },
+        };
+      }
+      case "open_folder": {
+        const path = addTpl.path.trim() || wd || "";
+        return {
+          id,
+          label: "Открыть папку",
+          enabled: true,
+          kind: { type: "open_folder", path },
+          depends_on: [],
+          working_directory: path || undefined,
+          completion: { type: "external_launch_accepted" },
+        };
+      }
+      case "open_url": {
+        const url = addTpl.url.trim();
+        return {
+          id,
+          label: `Открыть URL: ${url}`,
+          enabled: true,
+          kind: { type: "open_url", url },
+          depends_on: [],
+          completion: { type: "external_launch_accepted" },
+        };
+      }
+      case "wait_port": {
+        const port = parseInt(addTpl.port, 10) || 0;
+        const host = addTpl.host.trim() || "127.0.0.1";
+        const timeout = parseInt(addTpl.timeout, 10) || 90;
+        return {
+          id,
+          label: `Ожидание порта ${host}:${port}`,
+          enabled: true,
+          kind: { type: "wait_for_port", host, port },
+          depends_on: [],
+          timeout,
+          completion: { type: "port_open", host, port, timeout_secs: timeout },
+          retry_policy: { max_retries: 2, delay_ms: 2000, backoff_multiplier: 1.5 },
+        };
+      }
+      case "delay": {
+        const seconds = parseInt(addTpl.seconds, 10) || 5;
+        return {
+          id,
+          label: `Пауза ${seconds} сек`,
+          enabled: true,
+          kind: { type: "delay", seconds },
+          depends_on: [],
+          timeout: seconds + 10,
+          completion: { type: "delay_elapsed", seconds },
+        };
+      }
+    }
+  }
+
+  function addStep(tpl: AddTemplate) {
+    if (!draft) return;
+    const steps = [...draft.profile.steps, buildStep(tpl)];
+    draft = { ...draft, profile: { ...draft.profile, steps } };
+    addTpl = { ...addTpl, command: "", workdir: "", path: "", url: "" };
+  }
+
+  function removeStep(index: number) {
+    if (!draft) return;
+    const steps = draft.profile.steps.filter((_, i) => i !== index);
+    draft = { ...draft, profile: { ...draft.profile, steps } };
+  }
+
+  function onDropStep(index: number) {
+    if (dragIndex === null || dragIndex === index || !draft) return;
+    const steps = [...draft.profile.steps];
+    const [moved] = steps.splice(dragIndex, 1);
+    steps.splice(index, 0, moved);
+    draft = { ...draft, profile: { ...draft.profile, steps } };
+    dragIndex = null;
+    dragOverIndex = null;
+  }
 
   async function pickFolder() {
     const selected = await open({
@@ -184,9 +330,113 @@
         </div>
       {/if}
 
+      <div class="add-bar">
+        <button class="secondary" onclick={() => (showAddPanel = !showAddPanel)}>
+          {showAddPanel ? "▲ Скрыть шаблоны" : "➕ Добавить действие"}
+        </button>
+        <span class="add-hint">Перетаскивайте карточки, чтобы изменить порядок</span>
+      </div>
+
+      {#if showAddPanel}
+        <div class="template-panel">
+          <div class="tpl-row">
+            <span class="tpl-icon">🖥</span>
+            <div class="tpl-body">
+              <div class="tpl-name">Пустой терминал</div>
+              <div class="tpl-desc">Открыть терминал в корне проекта без команды</div>
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "terminal_plain" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">🖥</span>
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">Терминал с командой</div>
+              <input type="text" placeholder="Команда (например: docker logs -f backend)" bind:value={addTpl.command} />
+              <input type="text" placeholder={`Рабочая папка (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.workdir} />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "terminal_cmd" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">▶</span>
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">Выполнить команду</div>
+              <input type="text" placeholder="Команда (например: npm test)" bind:value={addTpl.command} />
+              <input type="text" placeholder={`Рабочая папка (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.workdir} />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "run_command" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">📁</span>
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">Открыть папку</div>
+              <input type="text" placeholder={`Путь (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.path} />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "open_folder" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">🌐</span>
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">Открыть URL</div>
+              <input type="text" placeholder="https://localhost:3000/docs" bind:value={addTpl.url} />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "open_url" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">🔌</span>
+            <div class="tpl-body tpl-fields tpl-inline">
+              <div class="tpl-name">Ожидать порт</div>
+              <input type="text" placeholder="Хост" bind:value={addTpl.host} class="tpl-sm" />
+              <input type="number" placeholder="Порт" bind:value={addTpl.port} class="tpl-sm" />
+              <input type="number" placeholder="Таймаут, сек" bind:value={addTpl.timeout} class="tpl-sm" />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "wait_port" })}>Добавить</button>
+          </div>
+
+          <div class="tpl-row">
+            <span class="tpl-icon">⏱</span>
+            <div class="tpl-body tpl-fields tpl-inline">
+              <div class="tpl-name">Пауза</div>
+              <input type="number" placeholder="Секунды" bind:value={addTpl.seconds} class="tpl-sm" />
+            </div>
+            <button class="secondary" onclick={() => addStep({ kind: "delay" })}>Добавить</button>
+          </div>
+        </div>
+      {/if}
+
       <div class="action-list" role="list">
         {#each draft.profile.steps as step, i (step.id)}
-          <div class="action-card" class:expanded={expanded.has(step.id)} class:disabled={!step.enabled}>
+          <div
+            class="action-card"
+            class:expanded={expanded.has(step.id)}
+            class:disabled={!step.enabled}
+            class:drag-over={dragOverIndex === i}
+            draggable="true"
+            ondragstart={(e) => {
+              dragIndex = i;
+              if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+            }}
+            ondragover={(e) => {
+              e.preventDefault();
+              if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+              dragOverIndex = i;
+            }}
+            ondragleave={() => {
+              if (dragOverIndex === i) dragOverIndex = null;
+            }}
+            ondrop={(e) => {
+              e.preventDefault();
+              onDropStep(i);
+            }}
+            ondragend={() => {
+              dragIndex = null;
+              dragOverIndex = null;
+            }}
+          >
             <div class="card-header">
               <span class="card-icon">{stepKindIcon(step.kind)}</span>
               <div
@@ -215,6 +465,9 @@
                   title={i18n.t("analyze.expand" as TranslationKey)}
                 >
                   {expanded.has(step.id) ? "▲" : "▼"}
+                </button>
+                <button class="icon-btn delete-btn" onclick={() => removeStep(i)} title="Удалить действие">
+                  ✕
                 </button>
               </div>
             </div>
@@ -409,11 +662,77 @@
     gap: 0.4rem;
   }
 
+  .add-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    flex-wrap: wrap;
+  }
+
+  .add-hint {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .template-panel {
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    padding: 0.6rem;
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .tpl-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.6rem;
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+  }
+
+  .tpl-icon { font-size: 1rem; flex-shrink: 0; }
+  .tpl-body { flex: 1; min-width: 0; }
+  .tpl-name { font-size: var(--sp-fs-sm); font-weight: var(--sp-fw-semibold); color: var(--sp-text-1); }
+  .tpl-desc { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }
+  .tpl-fields { display: flex; flex-direction: column; gap: 0.3rem; }
+  .tpl-fields input,
+  .tpl-fields .tpl-sm {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--sp-border-strong);
+    border-radius: var(--sp-radius-sm);
+    font-size: var(--sp-fs-xs);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-1);
+    font-family: inherit;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .tpl-fields input:focus {
+    outline: none;
+    border-color: var(--sp-accent);
+  }
+  .tpl-inline { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
+  .tpl-inline .tpl-sm { width: auto; min-width: 90px; }
+
   .action-card {
     background: var(--sp-bg-1);
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-lg);
     box-shadow: var(--sp-shadow-1);
+    cursor: grab;
+    transition: border-color 0.15s, opacity 0.15s;
+  }
+
+  .action-card:active { cursor: grabbing; }
+  .action-card.drag-over {
+    border-color: var(--sp-accent);
+    box-shadow: var(--sp-shadow-accent);
   }
 
   .action-card.disabled { opacity: 0.5; }
@@ -501,6 +820,7 @@
   .icon-btn:hover { background: var(--sp-bg-2); color: var(--sp-text-1); }
   .icon-btn:active { background: var(--sp-bg-3); }
   .expand-btn { min-width: 2em; }
+  .delete-btn:hover { background: rgba(248, 113, 113, 0.15); color: var(--sp-danger); }
 
   .card-editor {
     border-top: 1px solid var(--sp-border);
