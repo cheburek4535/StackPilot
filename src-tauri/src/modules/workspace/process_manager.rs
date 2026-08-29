@@ -127,6 +127,45 @@ pub trait ProcessManager: Send + Sync {
         )
     }
 
+    /// Spawn a tracked process whose LAST argument is appended to the
+    /// command line verbatim (never re-quoted).
+    ///
+    /// Windows `cmd /C` / `cmd /K` parse their argument from the RAW
+    /// command line; backslash-escaped quotes from standard argument
+    /// quoting (`\"`) break commands that contain quoted paths. Callers
+    /// pass the cmd-style-quoted tail separately (e.g. a script for
+    /// `cmd /C`), and the implementation appends it raw.
+    ///
+    /// The default implementation degrades to a regular owned spawn
+    /// (the tail appended as a normal argument) for managers that do not
+    /// implement the raw distinction.
+    fn spawn_and_track_owned_with_raw_tail(
+        &self,
+        command: &str,
+        args: &[&str],
+        raw_tail: Option<&str>,
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        let mut all: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        if let Some(raw) = raw_tail {
+            all.push(raw.to_string());
+        }
+        let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
+        self.spawn_and_track_owned(
+            command,
+            &refs,
+            working_dir,
+            label,
+            session_id,
+            run_id,
+            step_id,
+        )
+    }
+
     fn list(&self) -> Vec<TrackedProcess>;
     fn kill(&self, id: &str) -> Result<(), String>;
     fn refresh_status(&self, id: &str) -> Result<ProcessStatus, String>;
@@ -255,18 +294,39 @@ impl OsProcessManager {
     /// Build a Command for launching a GUI application detached.
     fn build_detached_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
         let plan = crate::platform::command::resolve_spawn_plan(command);
-        let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
-            (
-                "cmd".to_string(),
-                crate::platform::command::batch_shim_cmd_line(&plan.program, args),
-            )
-        } else {
-            (plan.program, args.iter().map(|s| s.to_string()).collect())
-        };
+        // Batch shims run through `cmd /C <cmd-style-quoted line>`. The
+        // line is appended RAW: standard argument quoting would escape its
+        // quotes with backslashes, which cmd's /C parsing breaks.
+        let (spawn_program, spawn_args, raw_last): (String, Vec<String>, Option<String>) =
+            if plan.batch_shim {
+                let line = crate::platform::command::batch_shim_cmd_line(&plan.program, args);
+                (
+                    "cmd".to_string(),
+                    vec![line[0].clone()],
+                    Some(line[1].clone()),
+                )
+            } else {
+                (
+                    plan.program,
+                    args.iter().map(|s| s.to_string()).collect(),
+                    None,
+                )
+            };
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
         let mut cmd = Command::new(spawn_program);
         cmd.args(spawn_args_refs);
+        if let Some(raw) = raw_last {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.raw_arg(&raw);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = raw;
+            }
+        }
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -358,10 +418,21 @@ fn spawn_in_terminal(
     let plan = resolve_terminal_plan(&config)
         .map_err(|e| format!("Failed to resolve terminal plan: {}", e))?;
 
-    let plan_args: Vec<&str> = plan.args.iter().map(|s| s.as_str()).collect();
+    // The terminal plan may carry a raw command tail (cmd-style quoting for
+    // `cmd /K` / `wt`): it must reach the spawned process verbatim, so it
+    // is popped from the arg list and appended raw by the spawner.
+    let (plan_args, raw_tail) = if plan.raw_tail.is_some() {
+        let mut args = plan.args.clone();
+        let raw = args.pop();
+        (args, raw)
+    } else {
+        (plan.args.clone(), None)
+    };
+    let plan_args: Vec<&str> = plan_args.iter().map(|s| s.as_str()).collect();
     manager.spawn_and_track_visible_inner(
         &plan.program,
         &plan_args,
+        raw_tail.as_deref(),
         None,
         label,
         session_id,
@@ -530,6 +601,7 @@ impl ProcessManager for OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
@@ -552,6 +624,7 @@ impl ProcessManager for OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
@@ -609,6 +682,7 @@ impl ProcessManager for OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
@@ -657,10 +731,36 @@ impl ProcessManager for OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
             Some(overlay),
+            false,
+            run_id,
+            step_id,
+        )
+    }
+
+    fn spawn_and_track_owned_with_raw_tail(
+        &self,
+        command: &str,
+        args: &[&str],
+        raw_tail: Option<&str>,
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_and_track_inner(
+            command,
+            args,
+            raw_tail,
+            working_dir,
+            label,
+            session_id,
+            None,
             false,
             run_id,
             step_id,
@@ -876,6 +976,7 @@ impl OsProcessManager {
         &self,
         command: &str,
         args: &[&str],
+        raw_tail: Option<&str>,
         working_dir: Option<&str>,
         label: &str,
         session_id: Option<String>,
@@ -885,17 +986,42 @@ impl OsProcessManager {
         step_id: Option<String>,
     ) -> Result<TrackedProcess, String> {
         let plan = crate::platform::command::resolve_spawn_plan(command);
-        let (spawn_program, spawn_args): (String, Vec<String>) = if plan.batch_shim {
-            (
-                "cmd".to_string(),
-                crate::platform::command::batch_shim_cmd_line(&plan.program, args),
-            )
-        } else {
-            (plan.program, args.iter().map(|s| s.to_string()).collect())
-        };
+        // Batch shims must go through `cmd /C`. The command line built by
+        // `batch_shim_cmd_line` is already cmd-style quoted; passing it
+        // through argument quoting would re-escape the quotes (`\"`), which
+        // cmd's /C parsing does not understand. It is appended RAW instead.
+        let (spawn_program, spawn_args, raw_last): (String, Vec<String>, Option<String>) =
+            if plan.batch_shim {
+                let line = crate::platform::command::batch_shim_cmd_line(&plan.program, args);
+                (
+                    "cmd".to_string(),
+                    vec![line[0].clone()],
+                    Some(line[1].clone()),
+                )
+            } else {
+                (
+                    plan.program,
+                    args.iter().map(|s| s.to_string()).collect(),
+                    raw_tail.map(String::from),
+                )
+            };
+        let mut spawn_args = spawn_args;
+        let mut raw_last = raw_last;
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
         let mut cmd = Self::build_command(&spawn_program, &spawn_args_refs, working_dir);
+
+        if let Some(raw) = raw_last.take() {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.raw_arg(&raw);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = raw;
+            }
+        }
 
         if let Some(ov) = overlay {
             ov.apply_std(&mut cmd);
@@ -1005,6 +1131,7 @@ impl OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
@@ -1028,6 +1155,7 @@ impl OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            None,
             working_dir,
             label,
             session_id,
@@ -1043,6 +1171,7 @@ impl OsProcessManager {
         &self,
         command: &str,
         args: &[&str],
+        raw_tail: Option<&str>,
         working_dir: Option<&str>,
         label: &str,
         session_id: Option<String>,
@@ -1053,6 +1182,7 @@ impl OsProcessManager {
         self.spawn_and_track_inner(
             command,
             args,
+            raw_tail,
             working_dir,
             label,
             session_id,

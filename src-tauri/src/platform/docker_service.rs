@@ -526,6 +526,7 @@ impl DockerService {
                             ),
                         ));
                     }
+                    Self::docker_desktop_start();
                     return Ok(());
                 }
                 // 2. Well-known install locations.
@@ -547,9 +548,13 @@ impl DockerService {
                                 Some("Start Docker Desktop manually.".to_string()),
                             ));
                         }
+                        Self::docker_desktop_start();
                         return Ok(());
                     }
                 }
+                // 3. The GUI is not installed, but the CLI may still exist
+                // (Docker Engine / docker-machine): start the engine CLI.
+                Self::docker_desktop_start();
                 Err(err_diag(
                     "Docker Desktop not found; cannot auto-launch the daemon".to_string(),
                     Some(
@@ -566,6 +571,7 @@ impl DockerService {
                         Some("Start Docker Desktop from /Applications manually.".to_string()),
                     ));
                 }
+                Self::docker_desktop_start();
                 Ok(())
             }
             crate::platform::host::HostOs::Linux => {
@@ -577,6 +583,7 @@ impl DockerService {
                             Some("Start Docker Desktop manually.".to_string()),
                         ));
                     }
+                    Self::docker_desktop_start();
                     return Ok(());
                 }
                 // 2. systemd service (rootless attempts are harmless: the
@@ -599,6 +606,23 @@ impl DockerService {
                 ))
             }
         }
+    }
+
+    /// Best-effort start of the Docker Desktop ENGINE when the GUI is
+    /// already running but the daemon pipe/endpoint is missing (the WSL2
+    /// backend frequently ends up in this state after sleep or a crash).
+    /// `docker desktop start` (Docker Desktop 4.26+) boots the engine
+    /// without restarting the GUI and is idempotent. Older versions print
+    /// an unknown-command error to stderr (discarded) — harmless.
+    fn docker_desktop_start() {
+        let Some(cli) = Self::resolve_cli() else {
+            return;
+        };
+        let _ = std::process::Command::new(&cli)
+            .args(["desktop", "start"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     /// Preflight check for Docker commands — validates daemon state

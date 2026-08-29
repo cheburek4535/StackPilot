@@ -146,6 +146,17 @@ pub struct TerminalPlan {
     pub args: Vec<String>,
     /// The tracking quality for processes spawned through this plan.
     pub tracking_quality: ProcessTrackingQuality,
+    /// When set, the LAST argument of `args` must be appended to the spawned
+    /// command line verbatim (never re-quoted).
+    ///
+    /// Windows `cmd` and `wt` re-parse their command tail with cmd-style
+    /// rules from the RAW command line (they do not round-trip through
+    /// CommandLineToArgvW). Backslash-escaped quotes produced by standard
+    /// argument quoting (`\"`) survive into the command and break paths
+    /// with spaces, silently killing the whole chain. The tail is therefore
+    /// pre-quoted with cmd-style quotes and appended raw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_tail: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +260,7 @@ fn escape_osascript(s: &str) -> String {
 }
 
 /// Escape a command for use in a `.cmd` batch script.
+#[allow(dead_code)]
 fn batch_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_quotes = false;
@@ -292,7 +304,9 @@ fn resolve_windows_terminal(
     // wt.exe -w new cmd /K "<inner>" — the command is passed as a single
     // argv entry so cmd.exe receives it literally (no temp batch script:
     // the user sees the exact command in the terminal and nothing leaks
-    // into %TEMP%).
+    // into %TEMP%). The tail is cmd-style quoted and appended RAW: wt
+    // forwards the command portion verbatim to cmd, whose /K parsing does
+    // not understand backslash-escaped quotes.
     let mut args = Vec::new();
 
     match config.window_policy {
@@ -316,30 +330,41 @@ fn resolve_windows_terminal(
     args.push("/K".to_string());
     args.push(inner_cmd.to_string());
 
+    // The tail is wrapped in cmd-style quotes (like `cmd /K "<cmd>"`) —
+    // exactly the form wt forwards verbatim to the new tab.
+    let raw_tail = format!("\"{}\"", inner_cmd);
     Ok(TerminalPlan {
         program: "wt".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: Some(raw_tail),
     })
 }
 
 fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let escaped = batch_escape(inner_cmd);
+    // `cmd /K <tail>`: the tail is a raw command line parsed by cmd itself.
+    // `&&` separators must NOT be escaped (`^&^&` would join the pieces
+    // into one command) and the tail must reach cmd without backslash
+    // re-escaping — hence `raw_tail`.
     let mut args = Vec::new();
     args.push("/K".to_string());
 
     let full_cmd = if let Some(ref label) = config.label {
-        format!("title {} && {}", label, escaped)
+        format!("title {} && {}", label, inner_cmd)
     } else {
-        escaped
+        inner_cmd.to_string()
     };
 
-    args.push(full_cmd);
+    args.push(full_cmd.clone());
 
+    // `cmd /K "..."` — the tail is wrapped in cmd-style quotes so cmd's
+    // first/last-quote stripping leaves exactly `full_cmd` to execute.
+    let raw_tail = format!("\"{}\"", full_cmd);
     Ok(TerminalPlan {
         program: "cmd".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: Some(raw_tail),
     })
 }
 
@@ -358,6 +383,7 @@ fn resolve_powershell(config: &TerminalConfig, inner_cmd: &str) -> Result<Termin
         program: "powershell".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -376,6 +402,7 @@ fn resolve_pwsh(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan
         program: "pwsh".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -394,6 +421,7 @@ fn resolve_terminal_app(config: &TerminalConfig, inner_cmd: &str) -> Result<Term
         program: "osascript".to_string(),
         args: vec!["-e".to_string(), script],
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -410,6 +438,7 @@ fn resolve_iterm2(_config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalP
         program: "osascript".to_string(),
         args: vec!["-e".to_string(), script],
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -439,6 +468,7 @@ fn resolve_gnome_terminal(
         program: "gnome-terminal".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -459,6 +489,7 @@ fn resolve_konsole(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalP
         program: "konsole".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -479,6 +510,7 @@ fn resolve_xterm(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPla
         program: "xterm".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -496,6 +528,7 @@ fn resolve_alacritty(config: &TerminalConfig, inner_cmd: &str) -> Result<Termina
         program: "alacritty".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -515,6 +548,7 @@ fn resolve_kitty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPla
         program: "kitty".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -539,6 +573,7 @@ fn resolve_xfce4_terminal(
         program: "xfce4-terminal".to_string(),
         args,
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -557,6 +592,7 @@ fn resolve_custom_terminal(
             inner_cmd.to_string(),
         ],
         tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
     })
 }
 
@@ -687,6 +723,7 @@ mod tests {
             program: "cmd".to_string(),
             args: vec!["/K".to_string(), "echo hello".to_string()],
             tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+            raw_tail: None,
         };
         // TerminalPlan is not Serialize by default, but we can test Debug
         let debug = format!("{:?}", plan);

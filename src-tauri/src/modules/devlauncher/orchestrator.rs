@@ -690,8 +690,13 @@ impl RunOrchestrator {
                 // Prefer the structured command spec when provided; otherwise
                 // resolve the command string into program + args (falling back
                 // to the platform shell for shell-syntax command lines).
+                // Visible-terminal steps resolve WITHOUT the batch-shim
+                // `cmd /C` wrapper — the terminal's own shell runs batch
+                // files natively (nested cmd breaks the command line).
                 let (program, args) = if let Some(spec) = command_spec {
                     (spec.program.clone(), spec.args.clone())
+                } else if matches!(visibility, Visibility::VisibleTerminal) {
+                    Self::resolve_terminal_command(command)
                 } else {
                     Self::resolve_command_target(command)
                 };
@@ -864,7 +869,7 @@ impl RunOrchestrator {
                 } else {
                     command.clone()
                 };
-                let (program, args) = Self::resolve_command_target(&effective);
+                let (program, args) = Self::resolve_terminal_command(&effective);
                 Self::execute_process_step(
                     run_id,
                     &step.id,
@@ -1306,6 +1311,19 @@ impl RunOrchestrator {
         let session_id_owned = session_id.map(String::from);
         let shell_exe_owned = shell_exe.to_string();
         let shell_flag_owned = shell_flag.to_string();
+        // `cmd /C` parses its argument from the raw command line: the
+        // script must be appended RAW, otherwise backslash-escaped quotes
+        // break scripts containing quoted paths. Other shells accept a
+        // regular argument.
+        let (spawn_args, raw_tail): (Vec<String>, Option<String>) =
+            if shell_flag.eq_ignore_ascii_case("/C") {
+                (vec![shell_flag_owned.clone()], Some(script_owned.clone()))
+            } else {
+                (
+                    vec![shell_flag_owned.clone(), script_owned.clone()],
+                    None,
+                )
+            };
         let effective_overlay = build_effective_overlay(run_overlay, step_env);
         let overlay_owned = if effective_overlay.is_empty() {
             None
@@ -1314,10 +1332,11 @@ impl RunOrchestrator {
         };
 
         let tracked = match tokio::task::spawn_blocking(move || {
+            let spawn_arg_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
             if let Some(ov) = overlay_owned.as_ref() {
                 pm.spawn_and_track_owned_with_overlay(
                     &shell_exe_owned,
-                    &[shell_flag_owned.as_str(), &script_owned],
+                    &spawn_arg_refs,
                     dir.as_deref(),
                     &label_owned,
                     session_id_owned,
@@ -1326,9 +1345,10 @@ impl RunOrchestrator {
                     Some(step_id_owned),
                 )
             } else {
-                pm.spawn_and_track_owned(
+                pm.spawn_and_track_owned_with_raw_tail(
                     &shell_exe_owned,
-                    &[shell_flag_owned.as_str(), &script_owned],
+                    &spawn_arg_refs,
+                    raw_tail.as_deref(),
                     dir.as_deref(),
                     &label_owned,
                     session_id_owned,
@@ -1451,7 +1471,11 @@ impl RunOrchestrator {
                     return StepCompletion {
                         step_id: step_id.to_string(),
                         success: false,
-                        error: Some(format!("Process exited with code {}", code)),
+                        error: Some(format!(
+                            "Process exited with code {}{}",
+                            code,
+                            output_tail_hint(process_manager, proc_id)
+                        )),
                         process_id: Some(proc_id.to_string()),
                         attempt_number: 0,
                     };
@@ -1460,7 +1484,11 @@ impl RunOrchestrator {
                     return StepCompletion {
                         step_id: step_id.to_string(),
                         success: false,
-                        error: Some(format!("Process exited with error code {}", code)),
+                        error: Some(format!(
+                            "Process exited with error code {}{}",
+                            code,
+                            output_tail_hint(process_manager, proc_id)
+                        )),
                         process_id: Some(proc_id.to_string()),
                         attempt_number: 0,
                     };
@@ -2362,6 +2390,25 @@ impl RunOrchestrator {
         }
         (program, args)
     }
+
+    /// Resolve a command for execution INSIDE a visible terminal window.
+    ///
+    /// Unlike [`Self::resolve_command_target`], batch shims are NOT wrapped
+    /// in a nested `cmd /C`: the terminal's own shell executes batch files
+    /// natively, and nesting cmd inside cmd breaks the command line (quote
+    /// mangling) — the terminal would open empty with nothing running.
+    fn resolve_terminal_command(command: &str) -> (String, Vec<String>) {
+        let resolved =
+            crate::platform::command_resolver::resolve_command_string(command, None, None);
+        let program = resolved.command.program;
+        let args = resolved.command.args;
+        if program == "docker" {
+            if let Some(cli) = crate::platform::docker_service::DockerService::resolve_cli() {
+                return (cli.to_string_lossy().into_owned(), args);
+            }
+        }
+        (program, args)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2699,6 +2746,33 @@ fn truncate_lines(text: &str, max_lines: usize) -> String {
         out.push_str(&trimmed[..trimmed.len().min(200)]);
     }
     out
+}
+
+/// Tail of a failed process's captured output, appended to failure
+/// messages so the user sees WHY a command failed (e.g. a Docker build
+/// error) instead of a bare exit code. Never returns more than ~2KB.
+fn output_tail_hint(process_manager: &Arc<dyn ProcessManager>, proc_id: &str) -> String {
+    let logs = process_manager.get_logs(proc_id).ok();
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(l) = logs {
+        for line in l.stderr_lines.into_iter().chain(l.stdout_lines) {
+            if !line.trim().is_empty() {
+                lines.push(line);
+            }
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut tail: Vec<&str> = lines.iter().map(|s| s.as_str()).rev().take(12).collect();
+    tail.reverse();
+    let text = tail.join("\n");
+    let text = if text.len() > 2048 {
+        format!("…{}", &text[text.len() - 2048..])
+    } else {
+        text
+    };
+    format!("\n--- last output ---\n{}", text)
 }
 
 /// Loopback aliases for a host name: `localhost` ↔ `127.0.0.1` (plus

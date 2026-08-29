@@ -1775,12 +1775,15 @@ fn generate_steps(
         if !known.insert(("compose".to_string(), compose.dir.display().to_string())) {
             continue;
         }
+        // Visible terminal: the user sees the image build and container
+        // startup output — hidden failures (exit code 1) are the #1
+        // support question. Readiness is still verified by the port waits.
         let mut step = PendingStep::run(
             &label,
             "docker compose up -d",
             Some(&compose.dir),
             root,
-            false,
+            true,
         );
         if let Some(w) = &docker_wait_id {
             step.depends_on.push(w.clone());
@@ -2298,6 +2301,13 @@ fn generate_steps(
     // compose up` while the local run is skipped.
     let mut governed_run_ids: HashMap<String, String> = HashMap::new();
     for (i, p) in steps.iter_mut().enumerate() {
+        let run_id = format!("step_{:03}", i + 1);
+        // The compose step itself is never "governed" — it IS the container
+        // orchestration (a service building from the compose dir must not
+        // disable the very step that starts it).
+        if compose_ids.contains(&run_id) {
+            continue;
+        }
         let Some(wd) = &p.working_directory else {
             continue;
         };
@@ -2308,7 +2318,6 @@ fn generate_steps(
         if !matches!(p.kind, StepKind::RunCommand { .. }) {
             continue;
         }
-        let run_id = format!("step_{:03}", i + 1);
         governed_run_ids.insert(run_id.clone(), compose_step_id.clone());
         p.enabled = false;
         p.metadata
