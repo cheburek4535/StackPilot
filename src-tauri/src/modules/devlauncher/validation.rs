@@ -608,10 +608,8 @@ mod tests {
     #[test]
     fn missing_project_root_detected() {
         let mut profile = valid_profile(vec![make_step("a", vec![])]);
-        profile.project_root = Some(
-            "/this/path/definitely/does/not/exist/stackpilot_test_xyz"
-                .to_string(),
-        );
+        profile.project_root =
+            Some("/this/path/definitely/does/not/exist/stackpilot_test_xyz".to_string());
         let result = validate_profile_v2(&profile);
         assert!(!result.valid);
         assert!(result

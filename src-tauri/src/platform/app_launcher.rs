@@ -603,9 +603,7 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
             "DBeaver" => {
                 // Modern DBeaver installers (22+) install per-user here.
                 candidates.push(base.join("DBeaver").join("dbeaver.exe"));
-                candidates.push(
-                    base.join("Programs").join("DBeaver").join("dbeaver.exe"),
-                );
+                candidates.push(base.join("Programs").join("DBeaver").join("dbeaver.exe"));
             }
             "Docker Desktop" => {
                 candidates.push(base.join("Docker").join("Docker Desktop.exe"));
@@ -790,11 +788,7 @@ fn windows_apps_folder_alias(target: &Path) -> Option<String> {
             }
         }
     }
-    Some(format!(
-        "shell:AppsFolder\\{}!{}",
-        pfn?,
-        exe_name?
-    ))
+    Some(format!("shell:AppsFolder\\{}!{}", pfn?, exe_name?))
 }
 
 #[cfg(target_os = "windows")]
@@ -949,6 +943,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn flatpak_invocation_parsed_correctly() {
         let result = resolve_application("flatpak run com.visualstudio.code", None, None);
         assert!(result.is_flatpak);
@@ -957,6 +952,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn flatpak_invocation_with_args() {
         let result = resolve_application(
             "flatpak run com.jetbrains.PyCharm-Community --project /tmp/proj",
@@ -977,6 +973,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn structured_launcher_not_single_path() {
         let result = resolve_application("flatpak run com.visualstudio.code", None, None);
         // The program must be "flatpak", not "flatpak run com.visualstudio.code"
@@ -985,6 +982,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn custom_path_override() {
         let result = resolve_application("code", Some("/usr/bin/code"), None);
         assert_eq!(result.program, "/usr/bin/code");
@@ -992,6 +990,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn path_with_separator_checked_directly() {
         let result = resolve_application("/usr/bin/sh", None, None);
         assert!(result.found);
@@ -1076,8 +1075,7 @@ mod tests {
             assert!(
                 result.found,
                 "'{}' must resolve on this machine (diagnostics: {:?})",
-                name,
-                result.diagnostics
+                name, result.diagnostics
             );
         }
     }

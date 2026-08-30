@@ -153,9 +153,9 @@ impl DockerService {
         }
         #[cfg(target_os = "windows")]
         {
-            let mut candidates: Vec<std::path::PathBuf> = vec![
-                std::path::PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"),
-            ];
+            let mut candidates: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(
+                r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
+            )];
             if let Ok(pf) = std::env::var("ProgramFiles") {
                 candidates.push(
                     std::path::PathBuf::from(pf)
@@ -590,10 +590,8 @@ impl DockerService {
                 // launch is fire-and-forget and the wait loop will report
                 // the daemon state as-is).
                 if resolve_executable("systemctl", None).is_some() {
-                    let _ = spawn_detached(
-                        "systemctl",
-                        &["start".to_string(), "docker".to_string()],
-                    );
+                    let _ =
+                        spawn_detached("systemctl", &["start".to_string(), "docker".to_string()]);
                     return Ok(());
                 }
                 Err(err_diag(
@@ -859,10 +857,7 @@ mod tests {
 
     #[test]
     fn spawn_detached_missing_program_errors() {
-        let result = spawn_detached(
-            "this_program_definitely_does_not_exist_xyz_98765",
-            &[],
-        );
+        let result = spawn_detached("this_program_definitely_does_not_exist_xyz_98765", &[]);
         assert!(result.is_err());
     }
 

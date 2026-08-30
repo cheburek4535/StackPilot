@@ -280,7 +280,13 @@ mod tests {
 
     #[test]
     fn validate_shell_string_valid() {
-        let result = validate_shell_string("sh");
+        // Test with a shell that's available on the current platform
+        let shell = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "sh"
+        };
+        let result = validate_shell_string(shell);
         assert!(result.is_ok());
     }
 

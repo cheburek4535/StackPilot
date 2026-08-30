@@ -664,7 +664,14 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let port = 3000;
-                let wait = wait_port_step(&mut g, "Wait for backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for backend port",
+                    port,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait.clone());
                 if fw == "nestjs" || fw == "nest" {
                     let docs = open_url_step(
@@ -702,7 +709,14 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let port = if fw == "flask" { 5000 } else { 8000 };
-                let wait = wait_port_step(&mut g, "Wait for backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for backend port",
+                    port,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait.clone());
                 if fw == "fastapi" {
                     let docs = open_url_step(
@@ -740,7 +754,14 @@ pub fn build_profile_v2_from_context(
                     vec![migrate],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Django port", 8000, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Django port",
+                    8000,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait);
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Warning,
@@ -760,8 +781,14 @@ pub fn build_profile_v2_from_context(
                     "high",
                 );
                 let port = 8080;
-                let wait =
-                    wait_port_step(&mut g, "Wait for Go backend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Go backend port",
+                    port,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait.clone());
                 // Swagger (swag) is the common Go API-docs convention.
                 let docs = open_url_step(
@@ -816,8 +843,14 @@ pub fn build_profile_v2_from_context(
                     vec![install],
                     "high",
                 );
-                let wait =
-                    wait_port_step(&mut g, "Wait for Spring Boot port", 8080, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Spring Boot port",
+                    8080,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait.clone());
                 let docs = open_url_step(
                     &mut g,
@@ -837,8 +870,14 @@ pub fn build_profile_v2_from_context(
                     infra,
                     "high",
                 );
-                let wait =
-                    wait_port_step(&mut g, "Wait for .NET backend port", 5000, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for .NET backend port",
+                    5000,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait);
             }
             "rails" => {
@@ -858,7 +897,14 @@ pub fn build_profile_v2_from_context(
                     vec![install],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Rails port", 3000, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Rails port",
+                    3000,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 backend_waits.push(wait);
             }
             _ => {}
@@ -894,7 +940,14 @@ pub fn build_profile_v2_from_context(
                 } else {
                     5173
                 };
-                let wait = wait_port_step(&mut g, "Wait for frontend port", port, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for frontend port",
+                    port,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 let _ = wait;
             }
             "angular" => {
@@ -914,7 +967,14 @@ pub fn build_profile_v2_from_context(
                     vec![install],
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Angular port", 4200, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Angular port",
+                    4200,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 let _ = wait;
             }
             "expo" | "react-native" => {
@@ -934,7 +994,14 @@ pub fn build_profile_v2_from_context(
                     Vec::new(),
                     "high",
                 );
-                let wait = wait_port_step(&mut g, "Wait for Metro bundler", 8081, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    &mut g,
+                    "Wait for Metro bundler",
+                    8081,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 let _ = wait;
             }
             "electron" => {
@@ -1026,7 +1093,14 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
             "go" => {
                 let start =
                     service_step(g, "Run Go project", "go run .", None, Vec::new(), "medium");
-                let wait = wait_port_step(g, "Wait for Go port", 8080, WAIT_PORT_TIMEOUT_SECS, start, "low");
+                let wait = wait_port_step(
+                    g,
+                    "Wait for Go port",
+                    8080,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "low",
+                );
                 let _ = wait;
             }
             "rust" => {

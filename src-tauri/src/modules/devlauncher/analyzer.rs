@@ -1109,8 +1109,12 @@ fn parse_compose_services(path: &Path) -> ComposeServices {
             .map(|i| i.to_ascii_lowercase())
             .unwrap_or_default();
 
-        let is_db = KNOWN_DB_SERVICES.iter().any(|(n, _)| lower_name.contains(n))
-            || KNOWN_DB_SERVICES.iter().any(|(n, _)| lower_image.contains(n))
+        let is_db = KNOWN_DB_SERVICES
+            .iter()
+            .any(|(n, _)| lower_name.contains(n))
+            || KNOWN_DB_SERVICES
+                .iter()
+                .any(|(n, _)| lower_image.contains(n))
             || container_ports
                 .iter()
                 .any(|p| KNOWN_DB_SERVICES.iter().any(|(_, port)| port == p))
@@ -1538,9 +1542,7 @@ impl PendingStep {
             label: "Wait for Docker daemon".to_string(),
             enabled: true,
             kind: StepKind::WaitForDocker {},
-            depends_on: depends_on
-                .map(|d| vec![d.to_string()])
-                .unwrap_or_default(),
+            depends_on: depends_on.map(|d| vec![d.to_string()]).unwrap_or_default(),
             working_directory: None,
             visibility: None,
             execution_mode: None,
@@ -1711,11 +1713,8 @@ fn generate_steps(
                 ));
             }
             None => {
-                let mut disabled = PendingStep::open_app(
-                    "docker-desktop",
-                    Vec::new(),
-                    "Open Docker Desktop",
-                );
+                let mut disabled =
+                    PendingStep::open_app("docker-desktop", Vec::new(), "Open Docker Desktop");
                 disabled.enabled = false;
                 steps.push(disabled);
                 diagnostics.push(AnalysisDiagnostic::new(
@@ -1811,7 +1810,8 @@ fn generate_steps(
             if !known.insert(("db_wait".to_string(), key)) {
                 continue;
             }
-            let mut wait = PendingStep::wait_port("127.0.0.1", *port, WAIT_PORT_TIMEOUT_SECS, &compose_id);
+            let mut wait =
+                PendingStep::wait_port("127.0.0.1", *port, WAIT_PORT_TIMEOUT_SECS, &compose_id);
             wait.label = format!(
                 "Wait for {} ({})",
                 if service.is_empty() {
@@ -1845,12 +1845,8 @@ fn generate_steps(
             if !known.insert(("web_tool".to_string(), key)) {
                 continue;
             }
-            let mut wait = PendingStep::wait_port(
-                "127.0.0.1",
-                *port,
-                WAIT_PORT_TIMEOUT_SECS,
-                &compose_id,
-            );
+            let mut wait =
+                PendingStep::wait_port("127.0.0.1", *port, WAIT_PORT_TIMEOUT_SECS, &compose_id);
             wait.label = format!("Wait for {} ({})", tool, port);
             wait = wait
                 .with_metadata("confidence", "high")
@@ -2259,7 +2255,10 @@ fn generate_steps(
     for df in &model.dockerfiles {
         // Governed when a compose file in the same dir (or the root) covers
         // it, or when any compose service builds from the Dockerfile's dir.
-        let governed_by_compose = model.compose_files.iter().any(|c| c.dir == df.dir || c.dir == *root)
+        let governed_by_compose = model
+            .compose_files
+            .iter()
+            .any(|c| c.dir == df.dir || c.dir == *root)
             || compose_governed.contains_key(&df.dir);
         if governed_by_compose {
             continue;
@@ -2393,8 +2392,7 @@ fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {
         }
     }
     // Direct listen call: `http.ListenAndServe(":8080", ...)`.
-    let listen_re =
-        regex::Regex::new(r#"ListenAndServe(TLS)?\s*\(\s*":(\d{2,5})"#).unwrap();
+    let listen_re = regex::Regex::new(r#"ListenAndServe(TLS)?\s*\(\s*":(\d{2,5})"#).unwrap();
     // Fallback: any `:port` token in the entry source.
     let addr_re = regex::Regex::new(r":(\d{2,5})\b").unwrap();
     for file in ["main.go", "cmd/main.go"] {
@@ -3393,7 +3391,10 @@ mod tests {
             .iter()
             .find(|s| s.label.contains("Go backend"))
             .expect("go backend step generated (disabled)");
-        assert!(!go.enabled, "go run must be disabled when compose builds it");
+        assert!(
+            !go.enabled,
+            "go run must be disabled when compose builds it"
+        );
         assert_eq!(
             go.metadata.as_ref().unwrap().get("policy").unwrap(),
             "docker-compose-governs"
@@ -3488,7 +3489,9 @@ mod tests {
         let wait = PendingStep::wait_port("127.0.0.1", 8081, WAIT_PORT_TIMEOUT_SECS, "step_001");
         assert_eq!(wait.timeout, Some(90));
         assert_eq!(wait.depends_on, vec!["step_001".to_string()]);
-        let retry = wait.retry_policy.expect("wait port must carry a retry policy");
+        let retry = wait
+            .retry_policy
+            .expect("wait port must carry a retry policy");
         assert_eq!(retry.max_retries, 2);
         assert_eq!(retry.delay_ms, 2000);
         assert_eq!(retry.backoff_multiplier, Some(1.5));

@@ -616,7 +616,8 @@ mod tests {
     #[test]
     fn resolve_command_string_parses_correctly() {
         let result = resolve_command_string("docker compose up -d", None, None);
-        assert_eq!(result.command.program, "docker");
+        // Program may be resolved to full path if found in PATH
+        assert!(result.command.program.contains("docker") || result.command.program == "docker");
         assert_eq!(result.command.args, vec!["compose", "up", "-d"]);
     }
 
@@ -632,7 +633,8 @@ mod tests {
             Some("/tmp/project".to_string()),
             None,
         );
-        assert_eq!(result.command.program, "node");
+        // Program may be resolved to full path if found in PATH
+        assert!(result.command.program.contains("node") || result.command.program == "node");
         assert!(result.command.env.is_some());
         assert_eq!(result.command.cwd, Some("/tmp/project".to_string()));
     }
@@ -693,7 +695,8 @@ mod tests {
     #[test]
     fn resolve_command_string_with_quotes() {
         let result = resolve_command_string(r#"node -e "console.log('hello world')""#, None, None);
-        assert_eq!(result.command.program, "node");
+        // Program may be resolved to full path if found in PATH
+        assert!(result.command.program.contains("node") || result.command.program == "node");
         assert_eq!(
             result.command.args,
             vec!["-e", "console.log('hello world')"]
@@ -704,7 +707,8 @@ mod tests {
     fn resolve_command_string_docker_compose() {
         let result =
             resolve_command_string("docker compose -f docker-compose.yml up -d", None, None);
-        assert_eq!(result.command.program, "docker");
+        // Program may be resolved to full path if found in PATH
+        assert!(result.command.program.contains("docker") || result.command.program == "docker");
         assert_eq!(
             result.command.args,
             vec!["compose", "-f", "docker-compose.yml", "up", "-d"]

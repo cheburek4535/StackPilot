@@ -176,15 +176,15 @@ impl JsonProfileManager {
     /// zero steps. The schema is decided from the document shape — `steps`
     /// marks V2, `actions` without `steps` marks legacy.
     fn parse_profile_file(content: &str) -> Result<LoadOutcome, String> {
-        let value: serde_json::Value = serde_json::from_str(content)
-            .map_err(|e| format!("Malformed JSON: {}", e))?;
+        let value: serde_json::Value =
+            serde_json::from_str(content).map_err(|e| format!("Malformed JSON: {}", e))?;
 
         let has_v2_steps = value.get("steps").map(|s| s.is_array()).unwrap_or(false);
         let has_legacy_actions = value.get("actions").map(|a| a.is_array()).unwrap_or(false);
 
         if has_v2_steps {
-            let profile: LaunchProfileV2 = serde_json::from_value(value)
-                .map_err(|e| format!("V2 parse failed: {}", e))?;
+            let profile: LaunchProfileV2 =
+                serde_json::from_value(value).map_err(|e| format!("V2 parse failed: {}", e))?;
             return Ok(LoadOutcome::V2(profile));
         }
         if has_legacy_actions {
@@ -194,8 +194,8 @@ impl JsonProfileManager {
         }
         // No actions and no steps: accept as V2 (an empty profile is
         // valid), otherwise report the V2 parse error.
-        let profile: LaunchProfileV2 = serde_json::from_value(value)
-            .map_err(|e| format!("V2 parse failed: {}", e))?;
+        let profile: LaunchProfileV2 =
+            serde_json::from_value(value).map_err(|e| format!("V2 parse failed: {}", e))?;
         Ok(LoadOutcome::V2(profile))
     }
 

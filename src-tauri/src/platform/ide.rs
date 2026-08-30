@@ -220,11 +220,7 @@ fn resolve_windows(cli: &str) -> Option<String> {
     if lower == "docker desktop" || lower == "docker-desktop" {
         if let Some(pf) = &program_files {
             let pf = std::path::PathBuf::from(pf);
-            candidates.push(
-                pf.join("Docker")
-                    .join("Docker")
-                    .join("Docker Desktop.exe"),
-            );
+            candidates.push(pf.join("Docker").join("Docker").join("Docker Desktop.exe"));
             candidates.push(
                 pf.join("Docker")
                     .join("Docker")
@@ -251,9 +247,7 @@ fn resolve_windows(cli: &str) -> Option<String> {
         if let Some(base) = &local {
             let base = std::path::PathBuf::from(base);
             candidates.push(base.join("DBeaver").join("dbeaver.exe"));
-            candidates.push(
-                base.join("Programs").join("DBeaver").join("dbeaver.exe"),
-            );
+            candidates.push(base.join("Programs").join("DBeaver").join("dbeaver.exe"));
         }
     }
 

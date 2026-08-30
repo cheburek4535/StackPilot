@@ -520,11 +520,7 @@ pub fn generate_dockerfile_content(
     match lang {
         "python" => {
             let (base_image, port, cmd) = match framework {
-                Some("fastapi") => (
-                    "python:3.13-slim",
-                    "3000",
-                    "[\"python\", \"src/main.py\"]",
-                ),
+                Some("fastapi") => ("python:3.13-slim", "3000", "[\"python\", \"src/main.py\"]"),
                 // Django: runserver обязан принимать запросы из контейнера —
                 // без `0.0.0.0:8000` сервер слушает только 127.0.0.1 и наружу
                 // недоступен. Раньше CMD был просто `python manage.py` — Django
@@ -534,16 +530,8 @@ pub fn generate_dockerfile_content(
                     "8000",
                     "[\"python\", \"manage.py\", \"runserver\", \"0.0.0.0:8000\"]",
                 ),
-                Some("flask") => (
-                    "python:3.13-slim",
-                    "3000",
-                    "[\"python\", \"src/app.py\"]",
-                ),
-                _ => (
-                    "python:3.13-slim",
-                    "3000",
-                    "[\"python\", \"src/main.py\"]",
-                ),
+                Some("flask") => ("python:3.13-slim", "3000", "[\"python\", \"src/app.py\"]"),
+                _ => ("python:3.13-slim", "3000", "[\"python\", \"src/main.py\"]"),
             };
 
             Some(format!(
@@ -631,15 +619,13 @@ CMD ["./{bin_name}"]
                     "COPY . .\nRUN npm ci && npm run build\n",
                     "[\"node\", \"dist/main.js\"]",
                 ),
-                Some("fastify") | Some("express") => {
-                    (
-                        "node:22-alpine",
-                        false,
-                        "3000",
-                        "",
-                        "[\"node\", \"src/index.js\"]",
-                    )
-                }
+                Some("fastify") | Some("express") => (
+                    "node:22-alpine",
+                    false,
+                    "3000",
+                    "",
+                    "[\"node\", \"src/index.js\"]",
+                ),
                 _ => (
                     "node:22-alpine",
                     false,
@@ -1840,9 +1826,15 @@ mod tests {
 
     #[test]
     fn go_minor_version_parses_full_patch_output() {
-        assert_eq!(go_minor_version("go version go1.25.3 windows/amd64"), Some("1.25".into()));
+        assert_eq!(
+            go_minor_version("go version go1.25.3 windows/amd64"),
+            Some("1.25".into())
+        );
         assert_eq!(go_minor_version("go version go1.24.0"), Some("1.24".into()));
-        assert_eq!(go_minor_version("go version go1.22 linux/amd64"), Some("1.22".into()));
+        assert_eq!(
+            go_minor_version("go version go1.22 linux/amd64"),
+            Some("1.22".into())
+        );
     }
 
     #[test]
@@ -1902,8 +1894,8 @@ mod tests {
     fn ktor_dockerfile_exposes_server_actual_port() {
         // ktor-каркас биндит Netty на 3000 (см. scaffold embeddedServer),
         // поэтому EXPOSE обязан быть 3000, а не 8080.
-        let dockerfile = generate_dockerfile_content("kotlin", Some("ktor"), "myapi")
-            .expect("ktor dockerfile");
+        let dockerfile =
+            generate_dockerfile_content("kotlin", Some("ktor"), "myapi").expect("ktor dockerfile");
         assert!(dockerfile.contains("EXPOSE 3000"), "{dockerfile}");
         assert!(!dockerfile.contains("EXPOSE 8080"), "{dockerfile}");
     }
@@ -1926,16 +1918,22 @@ mod tests {
     #[test]
     fn go_ci_uses_detected_version_not_hardcoded() {
         let ci = generate_ci_content("go", None, "myapi");
-        assert!(!ci.contains("go-version: '1.24'"), "CI захардкожена версия: {ci}");
-        assert!(ci.contains("go-version: '"), "CI должна использовать detected версию: {ci}");
+        assert!(
+            !ci.contains("go-version: '1.24'"),
+            "CI захардкожена версия: {ci}"
+        );
+        assert!(
+            ci.contains("go-version: '"),
+            "CI должна использовать detected версию: {ci}"
+        );
     }
 
     #[test]
     fn django_dockerfile_runs_runserver_not_bare_manage_py() {
         // Голый `python manage.py` печатает справку Django и завершается.
         // В контейнере должен запускаться runserver на 0.0.0.0:8000.
-        let dockerfile =
-            generate_dockerfile_content("python", Some("django"), "myapp").expect("django dockerfile");
+        let dockerfile = generate_dockerfile_content("python", Some("django"), "myapp")
+            .expect("django dockerfile");
         assert!(dockerfile.contains("EXPOSE 8000"), "{dockerfile}");
         assert!(
             !dockerfile.contains("CMD [\"python\", \"manage.py\"]"),
@@ -1950,8 +1948,11 @@ mod tests {
     #[test]
     fn nextjs_dockerfile_uses_next_start_not_bare_next() {
         // Голый `next` поднимает dev-сервер, а не production-сервер.
-        let dockerfile =
-            generate_dockerfile_content("typescript", Some("nextjs"), "myweb").expect("nextjs dockerfile");
-        assert!(        dockerfile.contains("next\", \"start\", \"-H\", \"0.0.0.0\""), "{dockerfile}");
+        let dockerfile = generate_dockerfile_content("typescript", Some("nextjs"), "myweb")
+            .expect("nextjs dockerfile");
+        assert!(
+            dockerfile.contains("next\", \"start\", \"-H\", \"0.0.0.0\""),
+            "{dockerfile}"
+        );
     }
 }

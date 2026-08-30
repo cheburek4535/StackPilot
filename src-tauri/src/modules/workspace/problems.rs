@@ -40,6 +40,9 @@ impl ProblemsService for DefaultProblemsService {
             let is_error = match &p.status {
                 ProcessStatus::Crashed => true,
                 ProcessStatus::Exited(code) if *code != 0 => true,
+                ProcessStatus::ExitedWithError(_) => true,
+                ProcessStatus::Killed => true,
+                ProcessStatus::TimedOut => true,
                 _ => false,
             };
             if is_error {

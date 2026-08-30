@@ -533,8 +533,10 @@ impl RunOrchestrator {
                                 // mark it completed so the scheduler never
                                 // respawns it, then skip its dependents.
                                 completed.insert(completion.step_id.clone());
-                                let to_skip =
-                                    Self::transitive_dependents(&handle.profile, &completion.step_id);
+                                let to_skip = Self::transitive_dependents(
+                                    &handle.profile,
+                                    &completion.step_id,
+                                );
                                 {
                                     let mut run = handle.run.lock().expect("run lock poisoned");
                                     for step_id in &to_skip {
@@ -543,8 +545,7 @@ impl RunOrchestrator {
                                         {
                                             if step_state.status == StepStatus::Pending {
                                                 step_state.status = StepStatus::Skipped;
-                                                step_state.finished_at =
-                                                    Some(default_now_iso());
+                                                step_state.finished_at = Some(default_now_iso());
                                             }
                                         }
                                         completed.insert(step_id.clone());
@@ -601,8 +602,15 @@ impl RunOrchestrator {
 
         // All steps done — finalize
         let final_status = Self::compute_final_status(&handle);
-        Self::finalize_run(&handle, &runs, &run_id, final_status, &app_handle, &process_manager)
-            .await;
+        Self::finalize_run(
+            &handle,
+            &runs,
+            &run_id,
+            final_status,
+            &app_handle,
+            &process_manager,
+        )
+        .await;
     }
 
     // -----------------------------------------------------------------------
@@ -1319,10 +1327,7 @@ impl RunOrchestrator {
             if shell_flag.eq_ignore_ascii_case("/C") {
                 (vec![shell_flag_owned.clone()], Some(script_owned.clone()))
             } else {
-                (
-                    vec![shell_flag_owned.clone(), script_owned.clone()],
-                    None,
-                )
+                (vec![shell_flag_owned.clone(), script_owned.clone()], None)
             };
         let effective_overlay = build_effective_overlay(run_overlay, step_env);
         let overlay_owned = if effective_overlay.is_empty() {
@@ -1793,10 +1798,8 @@ impl RunOrchestrator {
             auto_launch: true,
             ..Default::default()
         };
-        let result = crate::platform::docker_service::DockerService::ensure_daemon(
-            &check, cancelled,
-        )
-        .await;
+        let result =
+            crate::platform::docker_service::DockerService::ensure_daemon(&check, cancelled).await;
 
         if cancelled.load(Ordering::SeqCst) {
             Self::emit_diagnostic(
@@ -1914,11 +1917,7 @@ impl RunOrchestrator {
     ) -> FailureAction {
         let run = handle.run.lock().expect("run lock poisoned");
         let step_state = run.steps.iter().find(|s| s.step_id == failed_step_id);
-        let profile_step = handle
-            .profile
-            .steps
-            .iter()
-            .find(|s| s.id == failed_step_id);
+        let profile_step = handle.profile.steps.iter().find(|s| s.id == failed_step_id);
         let has_dependents = handle
             .profile
             .steps
@@ -1970,20 +1969,14 @@ impl RunOrchestrator {
     ///
     /// The step state is flipped to `Retrying`; the scheduler moves it back
     /// to `Running` when the delay elapses and the step is re-spawned.
-    fn consume_retry(
-        handle: &Arc<RunHandle>,
-        step_id: &str,
-    ) -> Option<tokio::time::Duration> {
+    fn consume_retry(handle: &Arc<RunHandle>, step_id: &str) -> Option<tokio::time::Duration> {
         if handle.cancelled.load(Ordering::SeqCst) {
             return None;
         }
 
         let delay_ms: u64 = {
             let mut run = handle.run.lock().expect("run lock poisoned");
-            let step_state = run
-                .steps
-                .iter_mut()
-                .find(|s| s.step_id == step_id)?;
+            let step_state = run.steps.iter_mut().find(|s| s.step_id == step_id)?;
             let remaining = match step_state.retries_remaining {
                 Some(n) if n > 0 => {
                     step_state.retries_remaining = Some(n - 1);
@@ -2055,9 +2048,7 @@ impl RunOrchestrator {
                     (StepStatus::Running, RunStatus::Failed) => {
                         step.status = StepStatus::Failed;
                         step.error = step.error.clone().or_else(|| {
-                            Some(
-                                "Run aborted by a failing step; process terminated".to_string(),
-                            )
+                            Some("Run aborted by a failing step; process terminated".to_string())
                         });
                         step.finished_at = Some(now.clone());
                     }
@@ -2695,7 +2686,9 @@ async fn probe_process_alive(
             .and_then(|r| r.ok());
 
         match status {
-            Some(ProcessStatus::Running) | Some(ProcessStatus::Starting) | Some(ProcessStatus::Ready) => {
+            Some(ProcessStatus::Running)
+            | Some(ProcessStatus::Starting)
+            | Some(ProcessStatus::Ready) => {
                 if tokio::time::Instant::now() - start >= grace {
                     return Ok(true);
                 }
@@ -3118,9 +3111,7 @@ mod tests {
             CompletionPolicy::PortOpen { timeout_secs, .. } => assert_eq!(*timeout_secs, 60),
             other => panic!("expected PortOpen, got {:?}", other),
         }
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "WAIT_TIMEOUT_RAISED"));
+        assert!(diagnostics.iter().any(|d| d.code == "WAIT_TIMEOUT_RAISED"));
     }
 
     #[test]
@@ -3132,7 +3123,10 @@ mod tests {
         let mut diagnostics = Vec::new();
         let normalized = normalize_profile_for_run(profile, &mut diagnostics);
         let wait = normalized.steps.iter().find(|s| s.id == "w1").unwrap();
-        assert!(wait.retry_policy.is_some(), "wait steps get a default retry");
+        assert!(
+            wait.retry_policy.is_some(),
+            "wait steps get a default retry"
+        );
         let other = normalized.steps.iter().find(|s| s.id == "other").unwrap();
         assert!(other.retry_policy.is_none(), "non-wait steps untouched");
     }
@@ -3159,7 +3153,10 @@ mod tests {
         assert!(aliases.contains(&"localhost".to_string()));
         // Foreign hosts pass through untouched.
         assert_eq!(loopback_host_aliases("192.168.1.10"), vec!["192.168.1.10"]);
-        assert_eq!(loopback_host_aliases("api.example.com"), vec!["api.example.com"]);
+        assert_eq!(
+            loopback_host_aliases("api.example.com"),
+            vec!["api.example.com"]
+        );
     }
 
     // -------------------------------------------------------------------
@@ -3171,7 +3168,11 @@ mod tests {
         let mut run_vars = HashMap::new();
         run_vars.insert("PORT".to_string(), "3000".to_string());
         run_vars.insert("SHARED".to_string(), "run".to_string());
-        let run_overlay = Some(EnvironmentOverlay::new().set_var("PORT", "3000").set_var("SHARED", "run"));
+        let run_overlay = Some(
+            EnvironmentOverlay::new()
+                .set_var("PORT", "3000")
+                .set_var("SHARED", "run"),
+        );
 
         let mut step_env = HashMap::new();
         step_env.insert("SHARED".to_string(), "step".to_string());

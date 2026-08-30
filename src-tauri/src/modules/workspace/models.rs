@@ -293,7 +293,7 @@ impl BoundedLogBuffer {
                         let mut removed = 0;
                         let mut bytes_removed = 0usize;
                         for (i, line) in buf.iter().enumerate() {
-                            bytes_removed += line.len() + 1; // +1 for newline
+                            bytes_removed += line.len();
                             removed = i + 1;
                             if total - bytes_removed <= self.max_bytes {
                                 break;

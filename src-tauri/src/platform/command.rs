@@ -663,6 +663,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn spawn_plan_unix_passes_through() {
         let plan = resolve_spawn_plan("npm");
         assert_eq!(plan.program, "npm");

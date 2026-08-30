@@ -39,7 +39,8 @@ impl DefaultSessionService {
 }
 
 impl SessionService for DefaultSessionService {
-    fn start_session(&self, ctx: &ProjectContext) {        let session = ActiveSession {
+    fn start_session(&self, ctx: &ProjectContext) {
+        let session = ActiveSession {
             context: ctx.clone(),
             started_at: Self::now_secs(),
             process_ids: Vec::new(),

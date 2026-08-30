@@ -12,9 +12,8 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "windows" {
         if let Some(rc) = find_rc() {
-            let out_dir = std::path::PathBuf::from(
-                std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"),
-            );
+            let out_dir =
+                std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
             let manifest_path = out_dir.join("stackpilot-common-controls.manifest");
             std::fs::write(&manifest_path, include_str!("app.manifest"))
                 .expect("failed to write common-controls manifest");
@@ -27,11 +26,8 @@ fn main() {
             // identifier `RT_MANIFEST` would be recorded as a *named*
             // string type, which the loader ignores.
             let manifest_display = manifest_path.display().to_string().replace('\\', "/");
-            std::fs::write(
-                &rc_path,
-                format!("1 24 \"{}\"\n", manifest_display),
-            )
-            .expect("failed to write resource script");
+            std::fs::write(&rc_path, format!("1 24 \"{}\"\n", manifest_display))
+                .expect("failed to write resource script");
 
             let status = std::process::Command::new(&rc)
                 .arg("/fo")
@@ -63,7 +59,12 @@ fn find_rc() -> Option<std::path::PathBuf> {
     let kits_root = std::env::var("ProgramFiles(x86)")
         .or_else(|_| std::env::var("ProgramFiles"))
         .ok()
-        .map(|pf| std::path::PathBuf::from(pf).join("Windows Kits").join("10").join("bin"));
+        .map(|pf| {
+            std::path::PathBuf::from(pf)
+                .join("Windows Kits")
+                .join("10")
+                .join("bin")
+        });
 
     let mut best: Option<(u64, std::path::PathBuf)> = None;
     if let Some(root) = kits_root {

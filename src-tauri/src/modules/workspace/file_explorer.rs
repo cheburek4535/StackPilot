@@ -122,9 +122,7 @@ impl FileExplorerService for DefaultFileExplorerService {
         // A configured-but-blank path (the settings field may be empty until
         // the user picks one) must fall back to auto-detection rather than
         // failing on an empty command.
-        let configured = vscode_path
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty());
+        let configured = vscode_path.map(|s| s.trim()).filter(|s| !s.is_empty());
         let cli = configured.unwrap_or("code");
         // Resolve the CLI name to an absolute path using the shared
         // cross-platform discovery (PATH, Windows App Paths registry, macOS
