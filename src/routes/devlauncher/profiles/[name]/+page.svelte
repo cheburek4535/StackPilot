@@ -19,6 +19,9 @@
 
   /** V2 run state. */
   let activeRun = $state<LaunchRun | null>(null);
+  /** Whether the profile has been launched (drives visibility of the
+   *  "Open in Workspace" button — it stays hidden until the launch). */
+  let launched = $state(false);
   let logRunId = $state<string | null>(null);
   let logStepId = $state<string | null>(null);
   let logLines = $state<string[]>([]);
@@ -50,6 +53,11 @@
     await loadProfile();
     // Recover any active run for this profile.
     await recoverRun();
+    // If the user clicked "Run" on a recent mini-card on the Home page, the
+    // profile page was opened with ?run=1 — launch the profile here.
+    if ($page.url.searchParams.get("run") === "1") {
+      await runAll();
+    }
   });
 
   onDestroy(() => {
@@ -116,6 +124,10 @@
         activeRun = runs[runs.length - 1];
       }
     }
+    // A still-active run means the profile has really been launched.
+    if (activeRun && !isRunTerminal(activeRun.status)) {
+      launched = true;
+    }
   }
 
   /** Runs for this profile (history). */
@@ -150,6 +162,7 @@
     if (!profile || runningAll) return;
     runningAll = true;
     activeRun = null;
+    launched = true;
 
     // Bind the profile to the workspace project so the Workspace module
     // (Overview/Runtime/Logs) shows the processes after the launch.
@@ -393,9 +406,11 @@
         <button class="danger-outline" onclick={handleDelete} disabled={runningAll}>
           {i18n.t("devl.delete_profile") as TranslationKey}
         </button>
-        <button class="secondary" onclick={openInWorkspace}>
-          {i18n.t("devl.open_in_workspace") as TranslationKey}
-        </button>
+        {#if launched}
+          <button class="secondary" onclick={openInWorkspace}>
+            {i18n.t("devl.open_in_workspace") as TranslationKey}
+          </button>
+        {/if}
         <button class="primary" onclick={runAll} disabled={runningAll}>
           {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>

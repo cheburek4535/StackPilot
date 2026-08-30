@@ -8162,9 +8162,15 @@ fn steps_for_docker(
 
     let mut result = Vec::new();
 
-    if let Some(dockerfile_content) =
-        content::generate_dockerfile_content(primary_lang, primary_fw, project_name)
-    {
+    // Для части языков/фреймворков (rust+clap, go+cobra, java без spring-boot,
+    // php без laravel/symfony и т.д.) Dockerfile не генерируется вообще — тогда
+    // app-сервис docker-compose не должен ссылаться на несуществующий build
+    // (docker compose up --build упал бы на отсутствующем Dockerfile). Держим
+    // include_app = generate_dockerfile_content вернул Some.
+    let app_dockerfile =
+        content::generate_dockerfile_content(primary_lang, primary_fw, project_name);
+
+    if let Some(dockerfile_content) = app_dockerfile.clone() {
         result.push(Step::WriteFile {
             id: "dockerfile".into(),
             label: "Create Dockerfile".into(),
@@ -8198,14 +8204,12 @@ fn steps_for_docker(
         .cloned()
         .collect();
     let services = content::collect_docker_services(&docker_tools);
-    // App-сервис добавляется в compose ВСЕГДА (generate_docker_compose пишет
-    // его безусловно), а инфра-сервисы — по мере наличия. Раньше compose
-    // генерировался только при непустых сервисах, поэтому docker-инструмент
-    // без БД оставлял проект без compose вообще.
+    // App-сервис попадает в compose, только если генерируется Dockerfile
+    // (app_dockerfile.is_some()). Инфра-сервисы (БД/кеши) — по мере наличия.
     let app_port = match primary_fw {
-        Some("django") | Some("fastapi") => "8000",
-        Some("spring-boot") | Some("ktor") | Some("aspnetcore") => "8080",
-        Some("laravel") | Some("symfony") => "8000",
+        Some("django") | Some("laravel") | Some("symfony") => "8000",
+        // ktor-каркас биндит Netty на 3000 (не 8080) — см. scaffold и Dockerfile.
+        Some("spring-boot") | Some("aspnetcore") => "8080",
         Some("phoenix") => "4000",
         _ => "3000",
     };
@@ -8214,7 +8218,13 @@ fn steps_for_docker(
         label: "Create docker-compose".into(),
         description: "Generate docker-compose file".into(),
         path: "docker-compose.yaml".into(),
-        content: content::generate_docker_compose(&services, project_name, app_port, &app_dir),
+        content: content::generate_docker_compose(
+            &services,
+            project_name,
+            app_port,
+            &app_dir,
+            app_dockerfile.is_some(),
+        ),
         overwrite: true,
         policy: None,
         condition: None,

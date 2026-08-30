@@ -5,6 +5,7 @@ use crate::modules::workspace::models::*;
 use crate::modules::workspace::overview::{OverviewData, OverviewService};
 use crate::modules::workspace::problems::{Problem, ProblemsService};
 use crate::modules::workspace::project::ProjectService;
+use crate::modules::workspace::session;
 use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::WorkspaceState;
 use tauri::State;
@@ -20,7 +21,7 @@ pub fn spawn_process(
     label: String,
 ) -> Result<TrackedProcess, String> {
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let session_id = state.session.get_session().map(|s| s.started_at.clone());
+    let session_id = session::ensure_session(&state);
     let proc = state.process_manager.spawn_and_track(
         &command,
         &args_refs,
@@ -68,7 +69,7 @@ pub fn spawn_process_visible(
     label: String,
 ) -> Result<TrackedProcess, String> {
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let session_id = state.session.get_session().map(|s| s.started_at.clone());
+    let session_id = session::ensure_session(&state);
     let proc = state.process_manager.spawn_visible(
         &command,
         &args_refs,
@@ -169,10 +170,14 @@ fn auto_end_session_if_idle(
 
     let relevant: Vec<&String> = linked.iter().chain(session_procs.iter()).collect();
     if relevant.is_empty() {
-        // Even with no linked processes, stay alive if there are active orchestrator runs
+        // No processes are linked to this session and none carry its id. If
+        // there is nothing running, the workspace is just open but not
+        // launched — the session timer must NOT keep ticking in that case.
+        // Only an active orchestrator run keeps it alive.
         if !orchestrator.list_active_runs().is_empty() {
             return;
         }
+        state.session.end_session();
         return;
     }
     let all_done = relevant.iter().all(|id| {

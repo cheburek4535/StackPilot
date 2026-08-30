@@ -1,4 +1,5 @@
 use crate::modules::workspace::models::{ProjectContext, SessionInfo};
+use crate::modules::workspace::project::ProjectService;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -38,8 +39,7 @@ impl DefaultSessionService {
 }
 
 impl SessionService for DefaultSessionService {
-    fn start_session(&self, ctx: &ProjectContext) {
-        let session = ActiveSession {
+    fn start_session(&self, ctx: &ProjectContext) {        let session = ActiveSession {
             context: ctx.clone(),
             started_at: Self::now_secs(),
             process_ids: Vec::new(),
@@ -84,4 +84,23 @@ impl SessionService for DefaultSessionService {
             session.error_count += 1;
         }
     }
+}
+
+/// Ensures an active session exists before a process is about to start.
+///
+/// A session auto-ends when the workspace is open but idle (nothing running).
+/// When the user then starts a launch without re-binding the project, the
+/// session would otherwise stay `None` and the fresh process would not be
+/// tracked by the running timer. If a project is bound we (re)start the
+/// session so the spawned process is linked to it. Returns the current
+/// session start timestamp (if any) for linkage.
+pub fn ensure_session(state: &crate::modules::workspace::WorkspaceState) -> Option<String> {
+    if state.session.get_session().is_none() {
+        if let Some(ctx) = state.project.get_current() {
+            state.session.start_session(&ctx);
+        } else {
+            return None;
+        }
+    }
+    state.session.get_session().map(|s| s.started_at.clone())
 }

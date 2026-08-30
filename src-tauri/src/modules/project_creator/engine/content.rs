@@ -366,6 +366,149 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
 }
 
 // ---------------------------------------------------------------------------
+// Go toolchain version for build/CI files
+// ---------------------------------------------------------------------------
+//
+// Го-проект создаётся через `go mod init`, а оно записывает в go.mod версию
+// ЛОКАЛЬНО установленного Go (например «go 1.25.0»). Если Dockerfile/CI
+// жёстко зашпинывали бы старую версию (было golang:1.24-alpine), контейнер
+// с более новым go.mod не собрался бы — версии расходились. Поэтому версия
+// для golang-образа и go-version в CI берётся из фактически установленного
+// Go, а не из константы.
+
+/// Рекомендуемая версия Go из toolchain/tools.json — запасной вариант,
+/// когда версию нельзя определить (Go не в PATH и т.п.). Это НИЖНЯЯ граница:
+/// образ всегда >= того, что напишет в go.mod установленный Go.
+pub const DEFAULT_GO_VERSION: &str = "1.24";
+
+/// Извлекает «X.Y» из вывода `go version` («go version go1.25.3 windows/amd64»).
+/// Go всегда версионируется как go1.MINOR.PATCH → возвращаем «1.MINOR».
+/// Чистая функция — тестируется без запуска процессов.
+pub fn go_minor_version(raw: &str) -> Option<String> {
+    // Ищем маркер «go1.» — он фиксирует мажорную версию 1 и съедает её.
+    let marker = "go1.";
+    let idx = raw.find(marker)?;
+    let rest = &raw[idx + marker.len()..];
+    let mut minor = String::new();
+    for c in rest.chars() {
+        if c.is_ascii_digit() {
+            minor.push(c);
+        } else {
+            break;
+        }
+    }
+    if minor.is_empty() {
+        return None;
+    }
+    Some(format!("1.{minor}"))
+}
+
+/// Определяет мажор+минор установленного Go через `go version`.
+/// При любой ошибке возвращает DEFAULT_GO_VERSION (безопасно: это нижняя
+/// граница, образ всегда >= версии, которую напишет go mod init).
+pub fn detect_go_version() -> String {
+    if let Ok(out) = std::process::Command::new("go")
+        .arg("version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    {
+        if let Some(v) = go_minor_version(&out) {
+            return v;
+        }
+    }
+    DEFAULT_GO_VERSION.to_string()
+}
+
+// ---------------------------------------------------------------------------
+//
+// Аналогично Go: `cargo init` пишет edition по умолчанию из ЛОКАЛЬНО
+// установленного rustc (новые версии — edition 2024, требующая rust >= 1.85).
+// Если образ был бы жёстко зашпинен на старую версию (было rust:1.83),
+// каркас с edition 2024 не собрался бы. Поэтому версия rust-образа берётся
+// из фактически установленного rustc, а не из константы.
+//
+// Минимальная версия rustc для edition 2024 — 1.85. Фоллбэк должен быть
+// >= 1.85, иначе собранный каркас с edition 2024 не скомпилируется в образе.
+
+/// Нижняя граница rust-образа, поддерживающая edition 2024 (rustc >= 1.85).
+pub const RUST_DOCKERFILE_FLOOR: &str = "1.85";
+
+/// Извлекает «1.X» из вывода `rustc --version` («rustc 1.97.1 (8bab… )»).
+/// Чистая функция — тестируется без запуска процессов.
+pub fn rust_minor_version(raw: &str) -> Option<String> {
+    // «rustc 1.» фиксирует мажорную версию 1 и съедает её.
+    let marker = "rustc 1.";
+    let idx = raw.find(marker)?;
+    let rest = &raw[idx + marker.len()..];
+    let mut minor = String::new();
+    for c in rest.chars() {
+        if c.is_ascii_digit() {
+            minor.push(c);
+        } else {
+            break;
+        }
+    }
+    if minor.is_empty() {
+        return None;
+    }
+    Some(format!("1.{minor}"))
+}
+
+/// Определяет мажор+минор установленного rustc. При ошибке — RUST_DOCKERFILE_FLOOR.
+pub fn detect_rust_version() -> String {
+    if let Ok(out) = std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    {
+        if let Some(v) = rust_minor_version(&out) {
+            return v;
+        }
+    }
+    RUST_DOCKERFILE_FLOOR.to_string()
+}
+
+// ---------------------------------------------------------------------------
+//
+// Аналогично Go/Rust: `dotnet new webapi` пишет TFM (net8.0/net10.0) по
+// ЛОКАЛЬНО установленному SDK. Если образ зашпинить на старую версию
+// (было dotnet/sdk:8.0), каркас с net10.0 не собрался бы. Версия образа
+// берётся из фактически установленного `dotnet --version`.
+
+/// Нижняя граница — fallback, когда версию определить нельзя.
+pub const DOTNET_DOCKERFILE_FLOOR: &str = "8.0";
+
+/// Извлекает «X.Y» из вывода `dotnet --version` («10.0.102»).
+/// Чистая функция — тестируется без запуска процессов.
+pub fn dotnet_minor_version(raw: &str) -> Option<String> {
+    let mut parts = raw.trim().split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if major.is_empty()
+        || minor.is_empty()
+        || !major.chars().all(|c| c.is_ascii_digit())
+        || !minor.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{major}.{minor}"))
+}
+
+/// Определяет мажор+минор установленного .NET SDK. При ошибке — DOTNET_DOCKERFILE_FLOOR.
+pub fn detect_dotnet_version() -> String {
+    if let Ok(out) = std::process::Command::new("dotnet")
+        .arg("--version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    {
+        if let Some(v) = dotnet_minor_version(&out) {
+            return v;
+        }
+    }
+    DOTNET_DOCKERFILE_FLOOR.to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Dockerfile content generation
 // ---------------------------------------------------------------------------
 
@@ -376,15 +519,31 @@ pub fn generate_dockerfile_content(
 ) -> Option<String> {
     match lang {
         "python" => {
-            let (base_image, entrypoint, port) = match framework {
-                Some("fastapi") => ("python:3.13-slim", "src/main.py", "3000"),
+            let (base_image, port, cmd) = match framework {
+                Some("fastapi") => (
+                    "python:3.13-slim",
+                    "3000",
+                    "[\"python\", \"src/main.py\"]",
+                ),
+                // Django: runserver обязан принимать запросы из контейнера —
+                // без `0.0.0.0:8000` сервер слушает только 127.0.0.1 и наружу
+                // недоступен. Раньше CMD был просто `python manage.py` — Django
+                // печатал справку и завершался.
                 Some("django") => (
                     "python:3.13-slim",
-                    "manage.py", // Django запускается иначе
-                    "8000",      // Django default port
+                    "8000",
+                    "[\"python\", \"manage.py\", \"runserver\", \"0.0.0.0:8000\"]",
                 ),
-                Some("flask") => ("python:3.13-slim", "src/app.py", "3000"),
-                _ => ("python:3.13-slim", "src/main.py", "3000"),
+                Some("flask") => (
+                    "python:3.13-slim",
+                    "3000",
+                    "[\"python\", \"src/app.py\"]",
+                ),
+                _ => (
+                    "python:3.13-slim",
+                    "3000",
+                    "[\"python\", \"src/main.py\"]",
+                ),
             };
 
             Some(format!(
@@ -403,7 +562,7 @@ COPY . .
 EXPOSE {port}
 
 # Run the application
-CMD ["python", "{entrypoint}"]
+CMD {cmd}
 "#
             ))
         }
@@ -414,10 +573,13 @@ CMD ["python", "{entrypoint}"]
                 Some("clap") => return None, // CLI не нужен Docker
                 _ => ("3000", project_name),
             };
+            // `cargo init` пишет edition по умолчанию установленного rustc
+            // (новые версии — edition 2024), поэтому образ берём под него.
+            let rust_version = detect_rust_version();
 
             Some(format!(
                 r#"# Build stage
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:{rust_version}-slim-bookworm AS builder
 
 WORKDIR /app
 COPY . .
@@ -437,39 +599,54 @@ CMD ["./{bin_name}"]
         }
 
         "typescript" | "javascript" | "node" => {
-            let (base_image, needs_build, entrypoint, port, _build_steps) = match framework {
+            let (base_image, needs_build, port, _build_steps, start_cmd) = match framework {
                 Some("nextjs") => (
                     "node:22-alpine",
                     true,
-                    "node_modules/.bin/next",
                     "3000",
-                    "RUN npm run build\n", // Next.js запускается через next start
+                    "RUN npm run build\n",
+                    // `next` без подкоманды запускает dev-сервер (`next dev`);
+                    // в контейнере нужен `next start`. Плюс 0.0.0.0, иначе
+                    // Next.js слушает только localhost.
+                    "[\"node_modules/.bin/next\", \"start\", \"-H\", \"0.0.0.0\"]",
                 ),
                 Some("nuxt") => (
                     "node:22-alpine",
                     true,
-                    ".output/server/index.mjs",
                     "3000",
                     "COPY . .\nRUN npm ci && npm run build\n",
+                    "[\"node\", \".output/server/index.mjs\"]",
                 ),
                 Some("sveltekit") => (
                     "node:22-alpine",
                     true,
-                    "build/index.js",
                     "3000",
                     "COPY . .\nRUN npm ci && npm run build\n",
+                    "[\"node\", \"build/index.js\"]",
                 ),
                 Some("nest") => (
                     "node:22-alpine",
                     true,
-                    "dist/main.js",
                     "3000",
                     "COPY . .\nRUN npm ci && npm run build\n",
+                    "[\"node\", \"dist/main.js\"]",
                 ),
                 Some("fastify") | Some("express") => {
-                    ("node:22-alpine", false, "src/index.js", "3000", "")
+                    (
+                        "node:22-alpine",
+                        false,
+                        "3000",
+                        "",
+                        "[\"node\", \"src/index.js\"]",
+                    )
                 }
-                _ => ("node:22-alpine", false, "src/index.js", "3000", ""),
+                _ => (
+                    "node:22-alpine",
+                    false,
+                    "3000",
+                    "",
+                    "[\"node\", \"src/index.js\"]",
+                ),
             };
 
             if needs_build {
@@ -492,7 +669,7 @@ RUN npm prune --production
 
 EXPOSE {port}
 
-CMD ["node", "{entrypoint}"]
+CMD {start_cmd}
 "#
                 ))
             } else {
@@ -511,7 +688,7 @@ COPY . .
 
 EXPOSE {port}
 
-CMD ["node", "{entrypoint}"]
+CMD {start_cmd}
 "#
                 ))
             }
@@ -521,14 +698,18 @@ CMD ["node", "{entrypoint}"]
             if framework == Some("cobra") {
                 return None;
             }
+            let go_version = detect_go_version();
             Some(format!(
                 r#"# Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:{go_version}-alpine AS builder
 
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
+# go.sum может отсутствовать (голый `go mod init` без внешних зависимостей
+# его не создаёт), поэтому не копируем go.mod/go.sum отдельно одним COPY —
+# иначе сборка упадёт на отсутствующем go.sum. Копируем весь проект и даём
+# `go build` самому подтянуть зависимости.
 COPY . .
+RUN go mod download
 RUN CGO_ENABLED=0 go build -o app ./cmd/main.go
 
 # Runtime stage
@@ -544,21 +725,24 @@ CMD ["./app"]
             ))
         }
         "csharp" => {
+            // `dotnet new` пишет TFM по установленному SDK (net8.0/net10.0),
+            // поэтому SDK/runtime-образы берём под фактическую версию.
+            let dotnet_version = detect_dotnet_version();
             let (runtime_image, port, project_file) = match framework {
                 Some("aspnetcore") => (
-                    "mcr.microsoft.com/dotnet/aspnet:8.0",
+                    format!("mcr.microsoft.com/dotnet/aspnet:{dotnet_version}"),
                     "EXPOSE 8080",
                     format!("{}.csproj", project_name),
                 ),
                 _ => (
-                    "mcr.microsoft.com/dotnet/runtime:8.0",
+                    format!("mcr.microsoft.com/dotnet/runtime:{dotnet_version}"),
                     "",
                     format!("{}.csproj", project_name),
                 ),
             };
 
             Some(format!(
-                r#"FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+                r#"FROM mcr.microsoft.com/dotnet/sdk:{dotnet_version} AS build
 WORKDIR /src
 COPY {project_file} .
 RUN dotnet restore
@@ -663,23 +847,22 @@ COPY --from=build /app/build/{project_name} .
 ENTRYPOINT ["./{project_name}", "-platform", "offscreen"]"#
                 ))
             } else {
+                // Обычный C/C++-скаффолд пишет Makefile (не CMakeLists.txt),
+                // поэтому собираем `make`, а не cmake. Бинарь — {project_name}.
                 Some(format!(
                     r#"FROM ubuntu:24.04 AS build
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
-RUN mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    cmake --build .
+RUN make
 
 FROM ubuntu:24.04 AS final
 WORKDIR /app
 
-COPY --from=build /app/build/{project_name} .
+COPY --from=build /app/{project_name} .
 ENTRYPOINT ["./{project_name}"]"#
                 ))
             }
@@ -711,8 +894,33 @@ ENTRYPOINT ["/{project_name}"]
         "kotlin" => {
             let has_fw = framework == Some("ktor") || framework == Some("spring-boot");
             if has_fw {
-                Some(format!(
-                    r#"FROM gradle:8.10-jdk21 AS build
+                if framework == Some("ktor") {
+                    // ktor биндит Netty на 3000 (см. scaffold). Обычный
+                    // `gradle build` даёт ТОНКИЙ jar — `java -jar` без
+                    // classpath не стартует. application-плагин позволяет
+                    // `gradle installDist` собрать самодостаточный
+                    // дистрибутив; имя = rootProject.name (safe_name).
+                    let app_name = project_name.replace(['-', ' '], "_").replace('"', "_");
+                    Some(format!(
+                        r#"FROM gradle:8.10-jdk21 AS build
+WORKDIR /app
+COPY build.gradle.kts settings.gradle.kts ./
+RUN gradle dependencies --no-daemon
+COPY src ./src
+RUN gradle installDist --no-daemon
+
+FROM eclipse-temurin:21-jre-alpine AS final
+WORKDIR /app
+COPY --from=build /app/build/install/ ./
+EXPOSE 3000
+CMD ["./{app_name}/bin/{app_name}"]
+"#
+                    ))
+                } else {
+                    // Spring Boot: `gradle build` даёт толстый bootJar —
+                    // `java -jar` работает как есть.
+                    Some(format!(
+                        r#"FROM gradle:8.10-jdk21 AS build
 WORKDIR /app
 COPY build.gradle.kts settings.gradle.kts ./
 RUN gradle dependencies --no-daemon
@@ -727,7 +935,8 @@ COPY --from=build /app/build/libs/ ./libs/
 RUN cp $(ls ./libs/*.jar | grep -v -E 'plain|sources|javadoc') app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]
 "#
-                ))
+                    ))
+                }
             } else {
                 None // Без фреймворка не генерируем Dockerfile
             }
@@ -771,35 +980,45 @@ ENTRYPOINT ["./{project_name}"]
                 ))
             }
         }
-        "dart" => Some(format!(
-            r#"# Этап сборки
+        "dart" => {
+            // `dart create` кладёт пакет в подпапку `{safe_name}/` (см. scaffold),
+            // а не в корень — поэтому собираем внутри этой подпапки.
+            let safe_name = project_name.replace('-', "_");
+            Some(format!(
+                r#"# Этап сборки
 FROM dart:3.5 AS build
 WORKDIR /app
-COPY pubspec.yaml ./
-RUN dart pub get
 COPY . .
+WORKDIR /app/{safe_name}
+RUN dart pub get
 RUN dart compile exe bin/main.dart -o bin/main
 
 # Этап запуска
 FROM scratch
-COPY --from=build /app/bin/main /main
+COPY --from=build /app/{safe_name}/bin/main /main
 ENTRYPOINT ["/main"]
 "#
-        )),
-        "gleam" => Some(format!(
-            r#"FROM ghcr.io/gleam-lang/gleam:v1.4-erlang-alpine AS build
+            ))
+        }
+        "gleam" => {
+            // `gleam new` кладёт проект в подпапку `{project_name}/` (см.
+            // scaffold), а не в корень — собираем внутри этой подпапки.
+            let project_dir = project_name;
+            Some(format!(
+                r#"FROM ghcr.io/gleam-lang/gleam:v1.4-erlang-alpine AS build
 WORKDIR /app
-COPY gleam.toml manifest.toml ./
-RUN gleam deps download
 COPY . .
+WORKDIR /app/{project_dir}
+RUN gleam deps download
 RUN gleam export erlang-shipment
 
 FROM erlang:27-alpine AS final
 WORKDIR /app
-COPY --from=build /app/build/erlang-shipment ./
+COPY --from=build /app/{project_dir}/build/erlang-shipment ./
 ENTRYPOINT ["/app/entrypoint.sh"]
 "#
-        )),
+            ))
+        }
         _ => None, // Неизвестный язык — не генерируем Dockerfile
     }
 }
@@ -849,6 +1068,7 @@ pub fn generate_docker_compose(
     project_name: &str,
     app_port: &str,
     build_context: &str,
+    include_app: bool,
 ) -> String {
     let mut result = String::new();
     let mut volumes_section = String::new();
@@ -862,18 +1082,23 @@ pub fn generate_docker_compose(
 
     result.push_str("version: '3.8'\n\nservices:\n");
 
-    // App service всегда добавляется
-    result.push_str(&format!(
-        r#"  app:
+    // App-сервис добавляется ТОЛЬКО если для языка/фреймворка генерируется
+    // Dockerfile (include_app). Иначе `docker compose up --build` ссылался бы
+    // на несуществующий build-контекст/Dockerfile (rust+clap, go+cobra,
+    // java без spring-boot и т.п.).
+    if include_app {
+        result.push_str(&format!(
+            r#"  app:
     build: {build_ctx}
     container_name: {project_name}_app
     ports:
       - "{app_port}:{app_port}"
 "#
-    ));
+        ));
+    }
 
     // Если есть сервисы — добавляем depends_on
-    if !services.is_empty() {
+    if include_app && !services.is_empty() {
         result.push_str("    depends_on:\n");
         for service in services.iter() {
             result.push_str(&format!("      - {}\n", service.name));
@@ -1330,8 +1555,10 @@ jobs:
 "#
         ),
 
-        "go" => format!(
-            r#"name: CI
+        "go" => {
+            let go_version = detect_go_version();
+            format!(
+                r#"name: CI
 
 on:
   push:
@@ -1347,13 +1574,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '{go_version}'
       - name: Test
         run: go test ./...
       - name: Build
         run: go build -v ./...
 "#
-        ),
+            )
+        }
 
         "java" => format!(
             r#"name: CI
@@ -1540,7 +1768,7 @@ mod tests {
         // airflow монтирует ./dags и ./logs — это bind-mounts, их НЕЛЬЗЯ
         // объявлять в глобальной секции volumes (Property is not allowed).
         let services = collect_docker_services(&["airflow".into(), "postgresql".into()]);
-        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
 
         // Bind-mount остаётся внутри сервиса
         assert!(compose.contains("./dags:/opt/airflow/dags"), "{compose}");
@@ -1568,7 +1796,7 @@ mod tests {
             volumes: vec!["postgres_data:/var/lib/postgresql/data".into()],
             depends_on: vec![],
         }];
-        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
         assert!(
             compose.contains("volumes:\n\n  postgres_data:")
                 || compose.contains("\nvolumes:\n  postgres_data:"),
@@ -1602,11 +1830,128 @@ mod tests {
             volumes: vec!["dags/data:/opt/app/data".into()],
             depends_on: vec![],
         }];
-        let compose = generate_docker_compose(&services, "myproj", "3000", ".");
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
         assert!(compose.contains("- dags/data:/opt/app/data"), "{compose}");
         assert!(
             !compose.contains("\nvolumes:"),
             "относительный bind-mount не объявляется глобально: {compose}"
         );
+    }
+
+    #[test]
+    fn go_minor_version_parses_full_patch_output() {
+        assert_eq!(go_minor_version("go version go1.25.3 windows/amd64"), Some("1.25".into()));
+        assert_eq!(go_minor_version("go version go1.24.0"), Some("1.24".into()));
+        assert_eq!(go_minor_version("go version go1.22 linux/amd64"), Some("1.22".into()));
+    }
+
+    #[test]
+    fn go_minor_version_rejects_garbage() {
+        assert_eq!(go_minor_version("not a version"), None);
+        assert_eq!(go_minor_version(""), None);
+        // Символ 'go' без номера после него — не версия.
+        assert_eq!(go_minor_version("go version"), None);
+    }
+
+    #[test]
+    fn rust_minor_version_parses_rustc_output() {
+        assert_eq!(
+            rust_minor_version("rustc 1.97.1 (8bab26f4f 2026-07-14)"),
+            Some("1.97".into())
+        );
+        assert_eq!(rust_minor_version("rustc 1.85.0"), Some("1.85".into()));
+        assert_eq!(rust_minor_version("garbage"), None);
+        assert_eq!(rust_minor_version("rustc"), None);
+    }
+
+    #[test]
+    fn dotnet_minor_version_parses_sdk_output() {
+        assert_eq!(dotnet_minor_version("10.0.102\n"), Some("10.0".into()));
+        assert_eq!(dotnet_minor_version("8.0.404"), Some("8.0".into()));
+        assert_eq!(dotnet_minor_version("garbage"), None);
+        assert_eq!(dotnet_minor_version(""), None);
+        assert_eq!(dotnet_minor_version("8"), None);
+    }
+
+    #[test]
+    fn rust_dockerfile_uses_detected_version_not_hardcoded() {
+        // rust:1.83 не умеет edition 2024, которое `cargo init` пишет под
+        // новый rustc (>=1.85). Образ обязан использовать detected версию.
+        let dockerfile =
+            generate_dockerfile_content("rust", Some("axum"), "myapi").expect("rust dockerfile");
+        assert!(dockerfile.contains("FROM rust:"), "{dockerfile}");
+        assert!(
+            !dockerfile.contains("FROM rust:1.83"),
+            "устаревший rust:1.83 не соберёт edition 2024: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn csharp_dockerfile_uses_detected_version_not_hardcoded() {
+        // dotnet new webapi пишет net10.0 под SDK 10.x — образ 8.0 не соберёт.
+        let dockerfile = generate_dockerfile_content("csharp", Some("aspnetcore"), "myweb")
+            .expect("csharp dockerfile");
+        assert!(dockerfile.contains("dotnet/sdk:"), "{dockerfile}");
+        assert!(
+            !dockerfile.contains("dotnet/sdk:8.0"),
+            "устаревший sdk:8.0 не соберёт net10: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn ktor_dockerfile_exposes_server_actual_port() {
+        // ktor-каркас биндит Netty на 3000 (см. scaffold embeddedServer),
+        // поэтому EXPOSE обязан быть 3000, а не 8080.
+        let dockerfile = generate_dockerfile_content("kotlin", Some("ktor"), "myapi")
+            .expect("ktor dockerfile");
+        assert!(dockerfile.contains("EXPOSE 3000"), "{dockerfile}");
+        assert!(!dockerfile.contains("EXPOSE 8080"), "{dockerfile}");
+    }
+
+    #[test]
+    fn go_dockerfile_uses_detected_version_not_hardcoded() {
+        // Dockerfile для Go НЕ должен содержать жёстко зашитую версию, иначе
+        // он разъедется с go.mod, который `go mod init` пишет под установленный Go.
+        let dockerfile =
+            generate_dockerfile_content("go", Some("gin"), "myapi").expect("go dockerfile");
+        assert!(dockerfile.contains("FROM golang:"), "{dockerfile}");
+        assert!(dockerfile.contains("-alpine AS builder"), "{dockerfile}");
+        // Никакого «golang:1.24-alpine» захардкоженного.
+        assert!(
+            !dockerfile.contains("FROM golang:1.24-alpine"),
+            "Dockerfile должен брать версию Go динамически: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn go_ci_uses_detected_version_not_hardcoded() {
+        let ci = generate_ci_content("go", None, "myapi");
+        assert!(!ci.contains("go-version: '1.24'"), "CI захардкожена версия: {ci}");
+        assert!(ci.contains("go-version: '"), "CI должна использовать detected версию: {ci}");
+    }
+
+    #[test]
+    fn django_dockerfile_runs_runserver_not_bare_manage_py() {
+        // Голый `python manage.py` печатает справку Django и завершается.
+        // В контейнере должен запускаться runserver на 0.0.0.0:8000.
+        let dockerfile =
+            generate_dockerfile_content("python", Some("django"), "myapp").expect("django dockerfile");
+        assert!(dockerfile.contains("EXPOSE 8000"), "{dockerfile}");
+        assert!(
+            !dockerfile.contains("CMD [\"python\", \"manage.py\"]"),
+            "голый manage.py не запускает сервер: {dockerfile}"
+        );
+        assert!(
+            dockerfile.contains("\"manage.py\", \"runserver\", \"0.0.0.0:8000\""),
+            "django CMD должен запускать runserver на 0.0.0.0:8000: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn nextjs_dockerfile_uses_next_start_not_bare_next() {
+        // Голый `next` поднимает dev-сервер, а не production-сервер.
+        let dockerfile =
+            generate_dockerfile_content("typescript", Some("nextjs"), "myweb").expect("nextjs dockerfile");
+        assert!(        dockerfile.contains("next\", \"start\", \"-H\", \"0.0.0.0\""), "{dockerfile}");
     }
 }

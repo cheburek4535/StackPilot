@@ -18,7 +18,6 @@
     getDemoProfile,
     executeAction,
     listProfiles,
-    runProfile,
   } from "$lib/modules/devlauncher/api";
   import type { LaunchProfile } from "$lib/modules/devlauncher/types";
   import type { BadgeTone } from "$lib/components/ui/Badge.svelte";
@@ -43,7 +42,6 @@
   let demoRunning = $state<Set<string>>(new Set());
 
   let profiles = $state<LaunchProfile[]>([]);
-  let launchingProfile = $state<string | null>(null);
 
   const sourceIcons: Record<string, string> = {
     created: "sparkles",
@@ -115,16 +113,25 @@
     }
   }
 
-  async function quickLaunchProfile(profile: LaunchProfile) {
-    if (launchingProfile) return;
-    launchingProfile = profile.name;
-    try {
-      await runProfile(profile);
-      notifySuccess(i18n.t("home.launch_profile") as TranslationKey, profile.name);
-    } catch (e) {
-      notifyError(i18n.t("home.launch_profile") as TranslationKey, `${e}`);
-    }
-    launchingProfile = null;
+  /** Match a recent project reference to a saved launch profile. */
+  function profileForRef(ref: RecentProjectRef): LaunchProfile | null {
+    return (
+      profiles.find((p) => p.project_path && p.project_path === ref.path) ??
+      profiles.find((p) => p.name === ref.name) ??
+      null
+    );
+  }
+
+  /** Open the profile's page in the DevLauncher Profiles tab (no launch). */
+  async function openProfilePage(profile: LaunchProfile) {
+    goto(`/devlauncher/profiles/${encodeURIComponent(profile.name)}`);
+  }
+
+  /** Navigate to the profile page and launch it there. */
+  async function runProfileFromRecent(profile: LaunchProfile) {
+    goto(
+      `/devlauncher/profiles/${encodeURIComponent(profile.name)}?run=1`,
+    );
   }
 
   async function runDemoAction(actionId: string) {
@@ -232,6 +239,7 @@
         {:else}
           <div class="sp-recent-list">
             {#each $recentProjects as ref}
+              {@const matched = profileForRef(ref)}
               <div class="sp-recent-row">
                 <div class="sp-recent-main">
                   <div class="sp-recent-name-row">
@@ -244,19 +252,38 @@
                   <span class="sp-recent-when">{formatWhen(ref.at)}</span>
                 </div>
                 <div class="sp-actions">
+                  {#if matched}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon="play"
+                      onclick={() => runProfileFromRecent(matched)}
+                    >
+                      {i18n.t("home.run") as TranslationKey}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon="bookmark"
+                      onclick={() => openProfilePage(matched)}
+                    >
+                      {i18n.t("home.open_profile") as TranslationKey}
+                    </Button>
+                  {:else}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon="layers"
+                      loading={openingPath === ref.path}
+                      disabled={openingPath !== null}
+                      onclick={() => openRecent(ref)}
+                    >
+                      {i18n.t("home.open") as TranslationKey}
+                    </Button>
+                  {/if}
                   <Button
                     size="sm"
-                    variant="primary"
-                    icon="layers"
-                    loading={openingPath === ref.path}
-                    disabled={openingPath !== null}
-                    onclick={() => openRecent(ref)}
-                  >
-                    {i18n.t("home.open") as TranslationKey}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
+                    variant="ghost"
                     icon="external"
                     onclick={() => openInVSCodeSafe(ref.path)}
                   >
@@ -273,43 +300,17 @@
     {#if profiles.length > 0}
       <Card
         title={i18n.t("devl.saved_profiles") as TranslationKey}
-        description={i18n.t("devl.no_profiles_desc") as TranslationKey}
+        description={i18n.t("home.saved_profiles_desc") as TranslationKey}
       >
-        <div class="sp-profile-grid">
-          {#each profiles as profile}
-            <div class="sp-profile-card">
-              <div class="sp-profile-card-head">
-                <h4 class="sp-profile-card-name">{profile.name}</h4>
-                <Badge tone="cyan">{profile.actions.length} actions</Badge>
-              </div>
-              <p class="sp-profile-card-desc">{profile.description}</p>
-              {#if profile.project_path}
-                <p class="sp-profile-card-path">{profile.project_path}</p>
-              {/if}
-              <div class="sp-actions">
-                <Button
-                  size="sm"
-                  variant="primary"
-                  icon="play"
-                  loading={launchingProfile === profile.name}
-                  disabled={launchingProfile !== null}
-                  onclick={() => quickLaunchProfile(profile)}
-                >
-                  {i18n.t("home.launch_profile") as TranslationKey}
-                </Button>
-                {#if profile.project_path}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon="external"
-                    onclick={() => openInVSCodeSafe(profile.project_path!)}
-                  >
-                    {i18n.t("home.vscode") as TranslationKey}
-                  </Button>
-                {/if}
-              </div>
-            </div>
-          {/each}
+        <div class="sp-profiles-cta">
+          <p>{i18n.t("home.saved_profiles_hint") as TranslationKey}</p>
+          <Button
+            variant="primary"
+            icon="bookmark"
+            href="/devlauncher/profiles"
+          >
+            {i18n.t("home.go_to_profiles") as TranslationKey}
+          </Button>
         </div>
       </Card>
     {/if}
@@ -496,51 +497,18 @@
     margin-top: var(--sp-6);
   }
 
-  .sp-profile-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
-    gap: var(--sp-3);
-  }
-
-  .sp-profile-card {
-    padding: var(--sp-3) var(--sp-4);
-    background: var(--sp-bg-1);
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-
-  .sp-profile-card-head {
+  .sp-profiles-cta {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
+    flex-wrap: wrap;
   }
 
-  .sp-profile-card-name {
+  .sp-profiles-cta p {
     margin: 0;
     font-size: var(--sp-fs-sm);
-    font-weight: var(--sp-fw-semibold);
-    color: var(--sp-text-1);
-  }
-
-  .sp-profile-card-desc {
-    margin: 0;
-    font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .sp-profile-card-path {
-    margin: 0;
-    font-family: var(--sp-font-mono);
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-    word-break: break-all;
   }
 
   .sp-action-list {

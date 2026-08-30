@@ -121,6 +121,8 @@ fn resolve_windows(cli: &str) -> Option<String> {
 
     // VS Code family.
     if lower.starts_with("code") || lower.starts_with("cursor") || lower.starts_with("windsurf") {
+        // Base install dirs we then scan for VS Code-family executables.
+        let mut scan_dirs: Vec<std::path::PathBuf> = Vec::new();
         if let Some(base) = &local {
             let base = std::path::PathBuf::from(base);
             candidates.push(
@@ -136,6 +138,7 @@ fn resolve_windows(cli: &str) -> Option<String> {
             candidates.push(base.join("Programs").join("cursor").join("Cursor.exe"));
             candidates.push(base.join("Programs").join("Windsurf").join("windsurf.exe"));
             candidates.push(base.join("Programs").join("Windsurf").join("Windsurf.exe"));
+            scan_dirs.push(base.join("Programs"));
         }
         if let Some(pf) = &program_files {
             let pf = std::path::PathBuf::from(pf);
@@ -145,7 +148,15 @@ fn resolve_windows(cli: &str) -> Option<String> {
                     .join("Code - Insiders.exe"),
             );
             candidates.push(pf.join("cursor").join("Cursor.exe"));
+            scan_dirs.push(pf.clone());
         }
+        if let Some(pf86) = &program_files_x86 {
+            scan_dirs.push(std::path::PathBuf::from(pf86));
+        }
+        // Broader fallback scan — catches custom install folder names and
+        // portable installs that are not in the well-known paths, so the
+        // "Open in VS Code" button works without a manually entered path.
+        candidates.extend(scan_vscode_family(&scan_dirs));
     }
 
     // JetBrains Toolbox apps: <user>/AppData/Local/Programs/<IDE>/bin/<ide>64.exe
@@ -253,6 +264,51 @@ fn resolve_windows(cli: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Scan a set of install base directories (e.g. `%LOCALAPPDATA%\Programs`,
+/// `%ProgramFiles%`) one level deep for VS Code-family installs and yield
+/// candidate executables (Code.exe, Insiders, Cursor, Windsurf and their
+/// `bin` CLI shims). Catches custom/portable install folder names that the
+/// well-known well-known candidates miss, so the CLI name resolves without a
+/// manually entered path.
+#[cfg(target_os = "windows")]
+fn scan_vscode_family(base_dirs: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for base in base_dirs {
+        let Ok(entries) = std::fs::read_dir(base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let lower = name.to_ascii_lowercase();
+            let is_family = lower.contains("vscode")
+                || lower.contains("visual studio code")
+                || lower.contains("vs code")
+                || lower.starts_with("code")
+                || lower.contains("cursor")
+                || lower.contains("windsurf");
+            if !is_family {
+                continue;
+            }
+            let dir = entry.path();
+            out.push(dir.join("Code.exe"));
+            out.push(dir.join("Code - Insiders.exe"));
+            out.push(dir.join("Cursor.exe"));
+            out.push(dir.join("windsurf.exe"));
+            out.push(dir.join("Windsurf.exe"));
+            out.push(dir.join("bin").join("code.cmd"));
+            out.push(dir.join("bin").join("code"));
+        }
+    }
+    out
 }
 
 /// Read the `App Paths` registry key for the given executable name.

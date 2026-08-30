@@ -218,13 +218,22 @@
           </p>
         </div>
         {#if project.project_path}
-          <Button
-            variant="secondary"
-            icon="folder"
-            onclick={() => goto("/workspace/files")}
-          >
-            {i18n.t("ws.browse_files") as TranslationKey}
-          </Button>
+          <div class="sp-hero-actions">
+            <Button
+              variant="secondary"
+              icon="bookmark"
+              onclick={() => goto(`/devlauncher/profiles/${encodeURIComponent(project.profile_name)}`)}
+            >
+              {i18n.t("ws.open_profile") as TranslationKey}
+            </Button>
+            <Button
+              variant="secondary"
+              icon="folder"
+              onclick={() => goto("/workspace/files")}
+            >
+              {i18n.t("ws.browse_files") as TranslationKey}
+            </Button>
+          </div>
         {/if}
       </div>
     </Card>
@@ -424,6 +433,13 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--sp-4);
+  }
+
+  .sp-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
   }
 
   .sp-hero-main {

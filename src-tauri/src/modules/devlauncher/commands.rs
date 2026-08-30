@@ -139,8 +139,11 @@ pub async fn execute_action(
     let mut action = action;
     resolve_working_dir(&mut action, &workspace);
     // Процессы, запущенные из профиля, привязываются к текущей сессии —
-    // иначе таймер сессии никогда не увидит их завершения.
-    let session_id = session_id.or_else(|| workspace.session.get_session().map(|s| s.started_at));
+    // иначе таймер сессии никогда не увидит их завершения. If no session is
+    // active (the workspace was idle and the session auto-ended), restart it
+    // so the launched process is tracked by the running timer.
+    let session_id = session_id
+        .or_else(|| crate::modules::workspace::session::ensure_session(&workspace));
     let session_id_for_link = session_id.clone();
 
     // Resolve environment overlay from binding if provided
