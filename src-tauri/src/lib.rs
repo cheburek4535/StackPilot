@@ -218,6 +218,7 @@ pub fn run() {
             modules::project_creator::commands::preview_project_files,
             modules::project_creator::commands::start_project_execution,
             modules::project_creator::commands::project_execution_snapshot,
+            modules::project_creator::commands::count_project_files,
             modules::project_creator::commands::check_project_folder_exists,
             modules::project_creator::commands::get_host_platform,
             modules::project_creator::commands::validate_project_stack,

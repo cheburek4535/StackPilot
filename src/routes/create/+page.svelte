@@ -63,6 +63,7 @@ import type { TranslationKey } from "$lib/core/i18n.svelte";
 import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
 import { goto } from "$app/navigation";
 import { deleteProfile } from "$lib/modules/devlauncher/api";
+import { notifyError } from "$lib/core/toasts";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -2002,9 +2003,12 @@ async function handleExecEvent(event: ExecutionEvent) {
   execStatuses = new Map(execStatuses);
 }
 
-function openInVSCode() {
-  if (execPlan) {
-    const _ = invoke("open_in_vscode", { path: execPlan.project_path });
+async function openInVSCode() {
+  if (!execPlan?.project_path) return;
+  try {
+    await invoke("open_in_vscode", { path: execPlan.project_path });
+  } catch (error) {
+    notifyError(i18n.t("create.open_vscode") as TranslationKey, String(error));
   }
 }
 
@@ -2969,7 +2973,12 @@ function resetAll() {
               <span class="ctx-label">{i18n.t("create.tools") as TranslationKey}</span>
               <span class="ctx-value">
                 {selectedTools.length > 0
-                  ? (i18n.t("create.tools_count", { n: selectedTools.length }) as TranslationKey)
+                  ? selectedTools
+                      .map((id) => {
+                        const t = tree?.tools.find((x) => x.id === id);
+                        return t ? i18n.t(t.label as TranslationKey) : id;
+                      })
+                      .join(", ")
                   : (i18n.t("create.none") as TranslationKey)}
               </span>
               <button class="btn-change" onclick={() => goPhase(1)}>{i18n.t("create.change") as TranslationKey}</button>

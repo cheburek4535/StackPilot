@@ -9,6 +9,7 @@
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { notifyError } from "$lib/core/toasts";
 
   let profile = $state<LaunchProfile | null>(null);
   let loading = $state(true);
@@ -109,7 +110,9 @@
         if (updated) activeRun = updated;
       }
       refreshHistory();
-    } catch { /* non-critical */ }
+    } catch (error) {
+      notifyError(i18n.t("devl.stop_processes") as TranslationKey, String(error));
+    }
   }
 
   /** Recover the latest run for this profile (including finished runs). */

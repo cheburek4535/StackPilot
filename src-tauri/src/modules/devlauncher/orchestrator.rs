@@ -2240,11 +2240,30 @@ impl RunOrchestrator {
             .expect("process_ids lock poisoned")
             .clone();
 
+        // Stopping is an explicit user cancellation.  Set the shared flag so
+        // the scheduler cannot launch another pending step while we tear down
+        // already-running processes.
+        handle.cancelled.store(true, Ordering::SeqCst);
+        handle.cancel_notify.notify_waiters();
+
         let mut killed = Vec::new();
         for proc_id in &processes_to_kill {
             if self.process_manager.kill(proc_id).is_ok() {
                 killed.push(proc_id.clone());
             }
+        }
+
+        // Docker Compose containers are daemon-owned and therefore are not
+        // children of the terminal process tracked above.  Always tear down
+        // the profile's compose project as part of the same Stop action.
+        if let Some(root) = handle.profile.project_root.as_deref() {
+            let docker = crate::platform::docker_service::DockerService::resolve_cli()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "docker".to_string());
+            let _ = std::process::Command::new(&docker)
+                .args(["compose", "down", "--remove-orphans"])
+                .current_dir(root)
+                .status();
         }
         Ok(killed)
     }

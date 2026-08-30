@@ -49,6 +49,64 @@
     "notes": "tool.winget.notes"
   },
   {
+    "id": "brew",
+    "category": "utility",
+    "display": "Homebrew",
+    "description": "tool.brew.desc",
+    "icon": "brew.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "brew",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": null,
+      "recommended": null
+    },
+    "sources": {
+      "windows": [],
+      "linux": [],
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "brew",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 400,
+    "needs_admin": false,
+    "path_entries": [
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
+    ],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "brew",
+        "command": [
+          "brew",
+          "--version"
+        ]
+      }
+    ],
+    "notes": "tool.brew.notes",
+    "manual_install": "tool.brew.manual_install",
+    "platform_availability": [
+      "macos"
+    ]
+  },
+  {
     "id": "node",
     "category": "language",
     "display": "Node.js",
@@ -277,6 +335,41 @@
       }
     ],
     "notes": null
+  },
+  {
+    "id": "pip",
+    "category": "language",
+    "display": "pip",
+    "description": "tool.pip.desc",
+    "icon": "pip.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "python",
+          "-m",
+          "pip",
+          "--version"
+        ]
+      ],
+      "known_paths": [],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": null,
+      "recommended": null
+    },
+    "sources": {
+      "windows": [],
+      "linux": [],
+      "macos": []
+    },
+    "size_mb": 0,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": "python",
+    "health_checks": [],
+    "notes": "tool.pip.notes",
+    "manual_install": "tool.pip.manual_install"
   },
   {
     "id": "rust",
@@ -3245,7 +3338,17 @@
     "sources": {
       "windows": [],
       "linux": [],
-      "macos": []
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "xcode",
+          "args": [
+            "--cask"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
     },
     "size_mb": 0,
     "needs_admin": false,

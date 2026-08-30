@@ -1952,13 +1952,30 @@ fn generate_steps(
             } else {
                 format!("Run Django server ({})", dir_label)
             };
-            let mut step = PendingStep::run(
-                &label,
-                "python manage.py runserver",
+            let install_cmd = if py.dir.join(if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe" } else { ".venv/bin/python" }).is_file() {
+                if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe -m pip install -r requirements.txt" } else { "./.venv/bin/python -m pip install -r requirements.txt" }
+            } else {
+                "python -m pip install -r requirements.txt"
+            };
+            let install = PendingStep::run(
+                "Install Django dependencies",
+                install_cmd,
                 Some(&py.dir),
                 root,
                 true,
             );
+            let python_cmd = if py.dir.join(if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe" } else { ".venv/bin/python" }).is_file() {
+                if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe manage.py runserver" } else { "./.venv/bin/python manage.py runserver" }
+            } else { "python manage.py runserver" };
+            let mut step = PendingStep::run(
+                &label,
+                python_cmd,
+                Some(&py.dir),
+                root,
+                true,
+            );
+            step.depends_on.push(format!("step_{:03}", steps.len() + 1));
+            steps.push(install);
             if let Some(cid) = &compose_id {
                 step.depends_on.push(cid.clone());
             }
@@ -2035,9 +2052,9 @@ fn generate_steps(
     for gradle in &model.gradle_projects {
         let dir_label = rel_label(&gradle.dir, root);
         let cmd = if gradle.is_spring {
-            "./gradlew bootRun"
+            if cfg!(target_os = "windows") { "gradlew.bat bootRun" } else { "./gradlew bootRun" }
         } else {
-            "./gradlew run"
+            if cfg!(target_os = "windows") { "gradlew.bat run" } else { "./gradlew run" }
         };
         let label = if dir_label == "root" {
             "Run Gradle project".to_string()
@@ -2064,9 +2081,9 @@ fn generate_steps(
     for maven in &model.maven_projects {
         let dir_label = rel_label(&maven.dir, root);
         let cmd = if maven.is_spring {
-            "mvn spring-boot:run"
+            if cfg!(target_os = "windows") { "mvnw.cmd spring-boot:run" } else { "./mvnw spring-boot:run" }
         } else {
-            "mvn exec:java"
+            if cfg!(target_os = "windows") { "mvnw.cmd exec:java" } else { "./mvnw exec:java" }
         };
         let label = if dir_label == "root" {
             "Run Maven project".to_string()
@@ -2220,11 +2237,20 @@ fn generate_steps(
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
         }
-        let step = PendingStep::run(&label, run, Some(&pkg.dir), root, true);
+        let backend_uses_3000 = node_backends.iter().any(|b| b.port == Some(3000));
+        let frontend_port_override = backend_uses_3000
+            && (pkg.features.next || pkg.features.nuxt)
+            && pkg.port.unwrap_or(3000) == 3000;
+        let run_command = if frontend_port_override {
+            format!("{} -- --port 3001", run)
+        } else {
+            run.clone()
+        };
+        let step = PendingStep::run(&label, &run_command, Some(&pkg.dir), root, true);
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
 
-        if let Some(port) = pkg.port {
+        if let Some(port) = pkg.port.map(|p| if frontend_port_override { 3001 } else { p }) {
             let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
             wait.label = format!("Wait for {} port {}", tool, port);
             wait = wait.with_metadata("confidence", pkg.port_confidence.as_str());

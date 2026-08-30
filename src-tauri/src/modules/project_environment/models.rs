@@ -219,6 +219,19 @@ fn is_absolute_path(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Convert a Unix-style absolute path into a platform-appropriate absolute
+    /// path so path helpers treat it the same on every OS.
+    fn abs(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("C:{}", p.replace('/', "\\"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string()
+        }
+    }
+
     #[test]
     fn binding_new_generates_id_and_timestamps() {
         let b = EnvironmentBinding::new(Some("test".into()), None);
@@ -312,13 +325,13 @@ mod tests {
         b.tool_overrides.insert(
             "node".into(),
             ToolOverride {
-                executable_path: Some("/usr/local/bin/node".into()),
+                executable_path: Some(abs("/usr/local/bin/node")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
             },
         );
-        b.managed_path_entries.push("/opt/node/bin".into());
+        b.managed_path_entries.push(abs("/opt/node/bin"));
 
         let warnings = b.validate_paths();
         assert!(warnings.is_empty());

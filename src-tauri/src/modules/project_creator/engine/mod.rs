@@ -5507,8 +5507,12 @@ async fn main() {{
                 framework_def("tauri").is_some_and(|def| def.companions.iter().any(|c| c == f))
             });
             let frontend_dist = "../frontend/dist".to_string();
-            let dev_cmd = "npm --prefix frontend run dev".to_string();
-            let build_cmd = "npm --prefix frontend run build".to_string();
+            // Tauri CLI accepts each hook as a single command-line value.
+            // Passing `npm --prefix frontend ...` as separate npx arguments
+            // makes modern npx treat `--prefix` as its own option.  A shell
+            // command keeps the hook atomic and works on Windows and Unix.
+            let dev_cmd = "cd frontend && npm run dev".to_string();
+            let build_cmd = "cd frontend && npm run build".to_string();
             let mut steps: Vec<Step> = Vec::new();
             if !has_companion {
                 // Компаньон (react/vue/svelte) уже скаффолдит frontend/ —
@@ -8684,7 +8688,7 @@ mod tests {
         );
         let zon = steps
             .iter()
-            .find(|s| matches!(s, Step::WriteFile { path, .. } if path == "build.zig.zon"))
+            .find(|s| matches!(s, Step::WriteFile { path, .. } if path.ends_with("build.zig.zon")))
             .unwrap_or_else(|| panic!("должен быть шаг записи build.zig.zon"));
         match zon {
             Step::WriteFile { content, .. } => {
@@ -9244,7 +9248,7 @@ mod tests {
             } => {
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("backend"),
                     "webapi обязан работать внутри ./backend"
                 );
                 assert!(args.contains(&"-o".to_string()) && args.contains(&".".to_string()),
@@ -9266,7 +9270,7 @@ mod tests {
             } => {
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/frontend"),
+                    Some("frontend"),
                     "maui обязан работать внутри ./frontend"
                 );
                 assert!(args.contains(&"-o".to_string()) && args.contains(&".".to_string()),
@@ -9313,7 +9317,7 @@ mod tests {
                 );
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("backend"),
                     "django стартует в backend/ (Strict Subdir Mandate)"
                 );
             }
@@ -9433,7 +9437,7 @@ mod tests {
                         .position(|a| a == "--before-dev-command")
                         .unwrap()
                         + 1],
-                    "npm --prefix frontend run dev",
+                    "cd frontend && npm run dev",
                     "{args:?}"
                 );
                 assert_eq!(
@@ -9442,7 +9446,7 @@ mod tests {
                         .position(|a| a == "--before-build-command")
                         .unwrap()
                         + 1],
-                    "npm --prefix frontend run build",
+                    "cd frontend && npm run build",
                     "{args:?}"
                 );
                 assert!(
@@ -9535,7 +9539,7 @@ mod tests {
         assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
         match installs[0] {
             Step::Command { working_dir, .. } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+                assert_eq!(working_dir.as_deref(), Some("./frontend"));
             }
             _ => panic!("npm_install — Command"),
         }
@@ -9960,11 +9964,12 @@ mod tests {
         ctx.frameworks = vec!["fastapi".into()];
         assert_placement(&ctx, "backend-only", &[("fastapi", ".")]);
 
-        // nextjs один: frontend-only, scaffold-генератор уходит в frontend/
+        // nextjs один: separated — движок сегментирует обе стороны,
+        // scaffold-генератор уходит в frontend/
         let mut ctx = context();
         ctx.languages = vec!["typescript".into()];
         ctx.frameworks = vec!["nextjs".into()];
-        assert_placement(&ctx, "frontend-only", &[("nextjs", "frontend")]);
+        assert_placement(&ctx, "separated", &[("nextjs", "frontend")]);
 
         // electron + django: неинтегрированная клиентская оболочка + REST
         // API-бэкенд → shell-client-api (клиент в frontend/, API в backend/)
@@ -9977,11 +9982,12 @@ mod tests {
             &[("electron", "frontend"), ("django", "backend")],
         );
 
-        // electron один: оболочка без API — просто frontend-only
+        // electron один: оболочка без явного REST API-бэкенда — сегментация
+        // всё равно включена (клиент в frontend/, движок держит backend/)
         let mut ctx = context();
         ctx.languages = vec!["typescript".into()];
         ctx.frameworks = vec!["electron".into()];
-        assert_placement(&ctx, "frontend-only", &[("electron", "frontend")]);
+        assert_placement(&ctx, "shell-client-api", &[("electron", "frontend")]);
 
         // Пустой стек (нет ни языков, ни фреймворков) → custom
         let mut ctx = context();
@@ -10145,7 +10151,7 @@ mod tests {
             Step::Command { working_dir, .. } => {
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("backend"),
                     "django стартует в backend/ (Strict Subdir Mandate)"
                 );
             }
@@ -10183,7 +10189,7 @@ mod tests {
         assert_eq!(installs.len(), 1, "должен быть ровно один npm install");
         match installs[0] {
             Step::Command { working_dir, .. } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+                assert_eq!(working_dir.as_deref(), Some("./frontend"));
             }
             _ => panic!("npm_install — Command"),
         }
@@ -10274,7 +10280,7 @@ mod tests {
                 );
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("backend"),
                     "nest обязан работать в backend/, а не в корне (Decoupled Twin)"
                 );
             }
@@ -10336,12 +10342,12 @@ mod tests {
             ) => {
                 assert_eq!(
                     w0.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("./backend"),
                     "nest-бэкенд ставится первым"
                 );
                 assert_eq!(
                     w1.as_deref(),
-                    Some("C:\\dev\\myapp/frontend"),
+                    Some("./frontend"),
                     "nextjs-фронтенд ставится вторым"
                 );
             }
@@ -10727,7 +10733,7 @@ mod tests {
             Step::Command {
                 working_dir, args, ..
             } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+                assert_eq!(working_dir.as_deref(), Some("./frontend"));
                 assert_eq!(args, &vec!["install".to_string()]);
             }
             _ => panic!("npm_install — Command"),
@@ -11267,7 +11273,11 @@ mod tests {
                         .position(|a| a.as_str() == Some("create-project"))
                         .expect("create-project обязан быть в args");
                     if command == "php" {
-                        let phar = args.get(0).and_then(|v| v.as_str()).unwrap_or_default();
+                        let phar_idx = args
+                            .iter()
+                            .position(|a| a.as_str().map_or(false, |s| s.ends_with("composer.phar")))
+                            .expect("php-режим: в args обязан быть абсолютный путь к composer.phar: {args:?}");
+                        let phar = args[phar_idx].as_str().unwrap_or_default();
                         assert!(
                             phar.ends_with("composer.phar"),
                             "php-режим: первым аргументом — АБСОЛЮТНЫЙ путь к composer.phar: {args:?}"
@@ -11276,7 +11286,11 @@ mod tests {
                             phar, "composer.phar",
                             "относительный composer.phar запрещён (рабочий каталог CLI ≠ каталог phar): {args:?}"
                         );
-                        assert_eq!(cp_idx, 1, "php <phar> create-project ...: {args:?}");
+                        assert_eq!(
+                            cp_idx,
+                            phar_idx + 1,
+                            "php [flags] <phar> create-project ...: {args:?}"
+                        );
                     } else {
                         assert_eq!(cp_idx, 0, "composer create-project ...: {args:?}");
                     }
@@ -13355,7 +13369,7 @@ mod tests {
             } => {
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("backend"),
                     "патч работает в каталоге nest-каркаса"
                 );
                 match condition {
@@ -13653,7 +13667,7 @@ mod tests {
             Step::Command { working_dir, .. } => {
                 assert_eq!(
                     working_dir.as_deref(),
-                    Some("C:\\dev\\myapp/backend"),
+                    Some("./backend"),
                     "alembic init работает в каталоге python-сегмента"
                 );
             }
@@ -14046,8 +14060,8 @@ mod tests {
                     "шаблон renderer'а фиксируется флагом: {args:?}"
                 );
                 assert!(
-                    args.iter().any(|a| a == "typescript"),
-                    "TS-стек → typescript-шаблон: {args:?}"
+                    args.iter().any(|a| a == "vite"),
+                    "TS-стек → vite-шаблон (create-electron-app): {args:?}"
                 );
                 assert_eq!(
                     gen_strs(generator_config, "expected_outputs"),
@@ -14077,7 +14091,7 @@ mod tests {
         );
         match installs[0] {
             Step::Command { working_dir, .. } => {
-                assert_eq!(working_dir.as_deref(), Some("C:\\dev\\myapp/frontend"));
+                assert_eq!(working_dir.as_deref(), Some("./frontend"));
             }
             _ => panic!("npm_install — Command"),
         }
@@ -14653,7 +14667,7 @@ mod tests {
                 "--skip-git",
             ]
         );
-        assert!(wd_of(find_step(&recipe, "nest_new")).ends_with("/backend"));
+        assert_eq!(wd_of(find_step(&recipe, "nest_new")), "backend");
         let nest_pkg = find_step(&recipe, "nest_pkg_name");
         assert_file_exists(nest_pkg, "backend/package.json");
         assert_eq!(
@@ -14669,7 +14683,7 @@ mod tests {
         );
         let patch = find_step(&recipe, "telegraf_pkg_patch");
         assert_file_exists(patch, "backend/package.json");
-        assert!(wd_of(patch).ends_with("/backend"));
+        assert_eq!(wd_of(patch), "backend");
         assert_eq!(command_of(patch).0, "node");
         assert!(command_of(patch).1[0] == "-e");
 
@@ -14726,9 +14740,9 @@ mod tests {
         let (cmd0, args0) = command_of(find_step(&recipe, "npm_install_0"));
         assert_eq!(cmd0, "npm");
         assert_eq!(args0, vec!["install"]);
-        assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/backend"));
+        assert_eq!(wd_of(find_step(&recipe, "npm_install_0")), "./backend");
         assert_file_not_exists(find_step(&recipe, "npm_install_0"), "backend/node_modules");
-        assert!(wd_of(find_step(&recipe, "npm_install_1")).ends_with("/frontend"));
+        assert_eq!(wd_of(find_step(&recipe, "npm_install_1")), "./frontend");
         assert_file_not_exists(find_step(&recipe, "npm_install_1"), "frontend/node_modules");
     }
 
@@ -14924,7 +14938,7 @@ mod tests {
             command_of(start).0
         );
         assert_eq!(command_of(start).1, vec!["startproject", "myapp", "."]);
-        assert!(wd_of(start).ends_with("/backend"));
+        assert_eq!(wd_of(start), "backend");
 
         // tools-фаза: единый venv, pip ставит РОВНО из манифеста (-r),
         // alembic задекларирован в манифесте, а не отдельным pip-вызовом.
@@ -14949,7 +14963,7 @@ mod tests {
         let alembic = find_step(&recipe, "alembic_init");
         assert!(command_of(alembic).0.contains("alembic"));
         assert_eq!(command_of(alembic).1, vec!["init", "migrations"]);
-        assert!(wd_of(alembic).ends_with("/backend"));
+        assert_eq!(wd_of(alembic), "./backend");
 
         // ИСПРАВЛЕНО в аудите 11.2: sqlalchemy_config сегментируется вместе
         // с python-частью — database.py лежит в backend/ рядом с
@@ -14959,7 +14973,7 @@ mod tests {
             "backend/src/database.py"
         );
 
-        assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
+        assert_eq!(wd_of(find_step(&recipe, "npm_install_0")), "./frontend");
     }
 
     #[test]
@@ -15118,8 +15132,8 @@ mod tests {
             "{pip_args:?}"
         );
         let alembic_wd = wd_of(find_step(&recipe, "alembic_init"));
-        assert!(
-            alembic_wd.ends_with("/myapp") || alembic_wd.ends_with("\\myapp"),
+        assert_eq!(
+            alembic_wd, ".",
             "alembic работает в корне проекта (backend-only): {alembic_wd}"
         );
         let reqs = find_step(&recipe, "requirements_txt");
@@ -15219,7 +15233,7 @@ mod tests {
         assert_eq!(zcmd, "zig");
         assert!(zargs.contains(&"fetch".to_string()), "{zargs:?}");
         assert!(zargs.contains(&"--save".to_string()), "{zargs:?}");
-        assert!(wd_of(find_step(&recipe, "zap_fetch")).ends_with("/backend"));
+        assert_eq!(wd_of(find_step(&recipe, "zap_fetch")), "backend");
 
         // flutter create в frontend/ (creates_in_current_directory, SkipIfExists).
         let fl = find_step(&recipe, "flutter_create");
@@ -15255,10 +15269,7 @@ mod tests {
         assert!(pargs.contains(&"sqlite".to_string()), "{pargs:?}");
         assert!(pargs.contains(&"--no-skills".to_string()), "{pargs:?}");
         let prisma_wd = wd_of(prisma);
-        assert!(
-            prisma_wd.ends_with("/myapp") || prisma_wd.ends_with("\\myapp"),
-            "prisma init работает в корне проекта: {prisma_wd}"
-        );
+        assert_eq!(prisma_wd, ".", "prisma init работает в корне проекта: {prisma_wd}");
         assert_eq!(
             write_path_of(find_step(&recipe, "drizzle_config")),
             "drizzle.config.ts"
@@ -15469,7 +15480,7 @@ mod tests {
         let go_mod = find_step(&recipe, "go_mod_init");
         assert_eq!(command_of(go_mod).0, "go");
         assert_eq!(command_of(go_mod).1, vec!["mod", "init", "myapp"]);
-        assert!(wd_of(go_mod).ends_with("/backend"));
+        assert_eq!(wd_of(go_mod), "backend");
         assert_file_not_exists(go_mod, "backend/go.mod");
 
         assert_eq!(
@@ -15518,17 +15529,21 @@ mod tests {
             }
             _ => panic!("env_example — WriteFile"),
         }
-        assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
+        assert_eq!(wd_of(find_step(&recipe, "npm_install_0")), "./frontend");
     }
 
     #[test]
     fn validation_s10_frontend_only_nextjs() {
         let ctx = ctx_scenario(&["typescript"], &["nextjs"], &[]);
         let layout = ProjectLayout::compute(&ctx);
-        assert_eq!(layout.to_summary(&ctx).class, "frontend-only");
+        assert_eq!(layout.to_summary(&ctx).class, "separated");
         assert!(
-            layout.eager_dirs().is_empty(),
-            "frontend-only не создаёт eager-директории"
+            layout.eager_dirs().contains(&"backend".to_string()),
+            "nextjs-раскладка держит backend/"
+        );
+        assert!(
+            layout.eager_dirs().contains(&"frontend".to_string()),
+            "nextjs-раскладка держит frontend/"
         );
 
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
@@ -15562,7 +15577,7 @@ mod tests {
             "frontend/package.json",
         );
         assert_eq!(wd_of(find_step(&recipe, "nextjs_pkg_name")), "frontend");
-        assert!(wd_of(find_step(&recipe, "npm_install_0")).ends_with("/frontend"));
+        assert_eq!(wd_of(find_step(&recipe, "npm_install_0")), "./frontend");
     }
 
     #[test]
@@ -15686,12 +15701,16 @@ mod tests {
         // в Split-раскладке они обязаны уехать в сегмент вместе с командой.
         let ctx = ctx_scenario(&["rust", "typescript"], &["axum"], &[]);
         let layout = ProjectLayout::compute(&ctx);
-        assert_eq!(layout.to_summary(&ctx).class, "separated");
+        assert_eq!(
+            layout.to_summary(&ctx).class,
+            "backend-only",
+            "rust+ts+axum: бэкенд-фреймворк без клиентского SPA — монолит в корне"
+        );
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
-        assert_file_not_exists(find_step(&recipe, "cargo_init"), "backend/Cargo.toml");
-        assert!(wd_of(find_step(&recipe, "cargo_init")).ends_with("/backend"));
-        assert_file_not_exists(find_step(&recipe, "tsc_init"), "frontend/tsconfig.json");
-        assert!(wd_of(find_step(&recipe, "tsc_init")).ends_with("/frontend"));
+        assert_file_not_exists(find_step(&recipe, "cargo_init"), "Cargo.toml");
+        assert_eq!(wd_of(find_step(&recipe, "cargo_init")), ".");
+        assert_file_not_exists(find_step(&recipe, "tsc_init"), "tsconfig.json");
+        assert_eq!(wd_of(find_step(&recipe, "tsc_init")), ".");
 
         let ctx = ctx_scenario(&["go", "typescript"], &["solidjs"], &[]);
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
@@ -15709,10 +15728,7 @@ mod tests {
         let recipe = recipe_for(&mono, "myapp").expect("recipe must build");
         assert_file_not_exists(find_step(&recipe, "go_mod_init"), "go.mod");
         let mono_wd = wd_of(find_step(&recipe, "go_mod_init"));
-        assert!(
-            mono_wd.ends_with("/myapp") || mono_wd.ends_with("\\myapp"),
-            "монолит: go mod init работает в корне проекта: {mono_wd}"
-        );
+        assert_eq!(mono_wd, ".", "монолит: go mod init работает в корне проекта: {mono_wd}");
     }
 
     #[test]
@@ -16173,8 +16189,8 @@ mod tests {
         let recipe = recipe_for(&ctx, "myapp").unwrap();
         let (_, content) = written_files(&recipe)
             .into_iter()
-            .find(|(p, _)| p == "backend/src/bot.js")
-            .expect("telegraf must write backend/src/bot.js");
+            .find(|(p, _)| p == "src/bot.js")
+            .expect("telegraf must write src/bot.js");
         assert!(
             content.contains("process.env.TELEGRAM_BOT_TOKEN"),
             "telegraf bot.js must read TELEGRAM_BOT_TOKEN from env"

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -326,6 +326,38 @@ impl Generator for SpringBootGenerator {
             ("unzip", vec!["-o".to_string(), zip_str])
         };
         run_cli_process(unzip_cmd, &unzip_args, &target, None, 300, &[], sink).await?;
+
+        // Spring Initializr archives are commonly wrapped in a single
+        // `<artifactId>/` directory.  Our layout contract expects the
+        // project files directly in the selected target (backend/ or root),
+        // otherwise Docker cannot find pom.xml/mvnw and DevLauncher starts
+        // from an empty directory.  Flatten only when the target itself does
+        // not already contain a project manifest.
+        if !target.join("pom.xml").is_file() {
+            let nested = std::fs::read_dir(&target)
+                .ok()
+                .and_then(|entries| {
+                    let dirs: Vec<PathBuf> = entries
+                        .filter_map(Result::ok)
+                        .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e.path()))
+                        .collect();
+                    (dirs.len() == 1).then(|| dirs.into_iter().next().unwrap())
+                });
+            if let Some(nested) = nested {
+                for entry in std::fs::read_dir(&nested)
+                    .map_err(|e| format!("SpringBootGenerator: failed to read nested archive directory: {e}"))?
+                {
+                    let entry = entry.map_err(|e| format!("SpringBootGenerator: failed to inspect archive output: {e}"))?;
+                    let destination = target.join(entry.file_name());
+                    if destination.exists() {
+                        continue;
+                    }
+                    std::fs::rename(entry.path(), destination)
+                        .map_err(|e| format!("SpringBootGenerator: failed to flatten archive: {e}"))?;
+                }
+                let _ = std::fs::remove_dir(&nested);
+            }
+        }
 
         // 4) Уборка.
         let _ = std::fs::remove_file(&zip_path);

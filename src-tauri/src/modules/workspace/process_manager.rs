@@ -1250,7 +1250,15 @@ mod tests {
 
     #[test]
     fn build_command_sets_working_dir() {
-        let mut cmd = OsProcessManager::build_command("echo", &["hello"], Some("/tmp"));
+        let wd = std::env::temp_dir();
+        let wd = wd.to_str().expect("temp dir is valid UTF-8");
+        // `echo` не является исполняемым файлом на Windows (это встроенная
+        // команда cmd), поэтому там используем `cmd /C echo`.
+        #[cfg(target_os = "windows")]
+        let (cmd_name, cmd_args): (&str, &[&str]) = ("cmd", &["/C", "echo hello"]);
+        #[cfg(not(target_os = "windows"))]
+        let (cmd_name, cmd_args): (&str, &[&str]) = ("echo", &["hello"]);
+        let mut cmd = OsProcessManager::build_command(cmd_name, cmd_args, Some(wd));
         let child = cmd.spawn();
         assert!(child.is_ok(), "command with working_dir should spawn");
         let mut child = child.unwrap();

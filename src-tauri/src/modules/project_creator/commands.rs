@@ -323,3 +323,20 @@ pub fn project_execution_snapshot(
     let running = state.execution_running.load(Ordering::SeqCst);
     Ok(ExecutionSnapshot { running, events })
 }
+
+/// Подсчёт реальных файлов сгенерированного проекта на диске (включая
+/// node_modules и сторонние артефакты). Выполняется в фоновом потоке, чтобы
+/// не блокировать UI; при очень больших деревьях останавливается на лимите
+/// и возвращает capped=true (фронтенд показывает «N+»).
+#[tauri::command]
+pub async fn count_project_files(path: String) -> Result<ProjectFileCount, String> {
+    let path_buf = PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        if !path_buf.is_dir() {
+            return Err(format!("Not a directory: {}", path_buf.display()));
+        }
+        Ok(super::count_project_files_on_disk(&path_buf, super::FILE_COUNT_LIMIT))
+    })
+    .await
+    .map_err(|e| format!("Count files task failed: {e}"))?
+}

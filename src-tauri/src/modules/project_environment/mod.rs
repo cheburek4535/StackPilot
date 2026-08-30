@@ -50,6 +50,36 @@ mod tests {
     use resolver::*;
     use std::collections::HashMap;
 
+    /// Convert a Unix-style absolute path into a platform-appropriate absolute
+    /// path so path helpers treat it the same on every OS.
+    fn abs(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("C:{}", p.replace('/', "\\"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string()
+        }
+    }
+
+    fn abs_parent(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            match p.rfind('\\') {
+                Some(i) => p[..i].to_string(),
+                None => p.to_string(),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::path::Path::new(p)
+                .parent()
+                .map(|x| x.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string())
+        }
+    }
+
     #[test]
     fn full_lifecycle_create_save_resolve() {
         use service::EnvironmentBindingService;
@@ -68,7 +98,7 @@ mod tests {
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/usr/bin/python3.12".into()),
+                executable_path: Some(abs("/usr/bin/python3.12")),
                 version: Some("3.12".into()),
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -77,7 +107,7 @@ mod tests {
         binding.tool_overrides.insert(
             "node".into(),
             ToolOverride {
-                executable_path: Some("/usr/local/bin/node".into()),
+                executable_path: Some(abs("/usr/local/bin/node")),
                 version: Some("20".into()),
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -130,27 +160,30 @@ mod tests {
     #[test]
     fn binding_precedence_tool_before_managed_before_global() {
         let mut binding = EnvironmentBinding::new(None, None);
+        let py_exe = abs("/opt/python/bin/python3");
+        let py_parent = abs_parent(&py_exe);
+        let py_lib = abs("/opt/python/lib");
+        let venv_bin = abs("/project/.venv/bin");
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/opt/python/bin/python3".into()),
+                executable_path: Some(py_exe),
                 version: None,
-                path_entries: vec!["/opt/python/lib".into()],
+                path_entries: vec![py_lib.clone()],
                 env_vars: HashMap::new(),
             },
         );
-        binding
-            .managed_path_entries
-            .push("/project/.venv/bin".into());
+        binding.managed_path_entries.push(venv_bin.clone());
 
         let overlay = resolve_binding_overlay(&binding);
 
+
         // Tool executable parent dir should be first
-        assert_eq!(overlay.path_prepend[0], "/opt/python/bin");
+        assert_eq!(overlay.path_prepend[0], py_parent);
         // Tool path_entries should be second
-        assert_eq!(overlay.path_prepend[1], "/opt/python/lib");
+        assert_eq!(overlay.path_prepend[1], py_lib);
         // Managed paths should be last
-        assert_eq!(overlay.path_prepend[2], "/project/.venv/bin");
+        assert_eq!(overlay.path_prepend[2], venv_bin);
     }
 
     #[test]
@@ -166,7 +199,7 @@ mod tests {
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/nonexistent/python3.12".into()),
+                executable_path: Some(abs("/nonexistent/python3.12")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),

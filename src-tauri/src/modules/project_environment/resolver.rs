@@ -141,6 +141,37 @@ mod tests {
         }
     }
 
+    /// Convert a Unix-style absolute path into a platform-appropriate absolute
+    /// path so the resolver's `is_absolute_path` treats it the same everywhere.
+    fn abs(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("C:{}", p.replace('/', "\\"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string()
+        }
+    }
+
+    /// Parent dir of an already platform-absolute path.
+    fn abs_parent(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            match p.rfind('\\') {
+                Some(i) => p[..i].to_string(),
+                None => p.to_string(),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::path::Path::new(p)
+                .parent()
+                .map(|x| x.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string())
+        }
+    }
+
     #[test]
     fn no_binding_returns_empty_overlay() {
         let binding = make_binding();
@@ -153,10 +184,12 @@ mod tests {
     #[test]
     fn executable_path_parent_prepended_to_path() {
         let mut binding = make_binding();
+        let exe_path = abs("/usr/local/bin/python3.12");
+        let expected_parent = abs_parent(&exe_path);
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/usr/local/bin/python3.12".into()),
+                executable_path: Some(exe_path),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -164,44 +197,40 @@ mod tests {
         );
 
         let overlay = resolve_binding_overlay(&binding);
-        assert!(overlay.path_prepend.contains(&"/usr/local/bin".to_string()));
+        assert!(overlay.path_prepend.contains(&expected_parent));
     }
 
     #[test]
     fn tool_path_entries_prepended() {
         let mut binding = make_binding();
+        let java_bin = abs("/opt/java/bin");
+        let java_lib = abs("/opt/java/lib");
         binding.tool_overrides.insert(
             "java".into(),
             ToolOverride {
                 executable_path: None,
                 version: None,
-                path_entries: vec!["/opt/java/bin".into(), "/opt/java/lib".into()],
+                path_entries: vec![java_bin.clone(), java_lib.clone()],
                 env_vars: HashMap::new(),
             },
         );
 
         let overlay = resolve_binding_overlay(&binding);
-        assert!(overlay.path_prepend.contains(&"/opt/java/bin".to_string()));
-        assert!(overlay.path_prepend.contains(&"/opt/java/lib".to_string()));
+        assert!(overlay.path_prepend.contains(&java_bin));
+        assert!(overlay.path_prepend.contains(&java_lib));
     }
 
     #[test]
     fn managed_path_entries_prepended() {
         let mut binding = make_binding();
-        binding
-            .managed_path_entries
-            .push("/project/.venv/bin".into());
-        binding
-            .managed_path_entries
-            .push("/project/node_modules/.bin".into());
+        let venv_bin = abs("/project/.venv/bin");
+        let node_bin = abs("/project/node_modules/.bin");
+        binding.managed_path_entries.push(venv_bin.clone());
+        binding.managed_path_entries.push(node_bin.clone());
 
         let overlay = resolve_binding_overlay(&binding);
-        assert!(overlay
-            .path_prepend
-            .contains(&"/project/.venv/bin".to_string()));
-        assert!(overlay
-            .path_prepend
-            .contains(&"/project/node_modules/.bin".to_string()));
+        assert!(overlay.path_prepend.contains(&venv_bin));
+        assert!(overlay.path_prepend.contains(&node_bin));
     }
 
     #[test]
@@ -270,30 +299,30 @@ mod tests {
     #[test]
     fn mixed_tool_and_managed_paths() {
         let mut binding = make_binding();
+        let usr_bin = abs_parent(&abs("/usr/bin/python3"));
+        let venv_bin = abs("/project/.venv/bin");
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/usr/bin/python3".into()),
+                executable_path: Some(abs("/usr/bin/python3")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
             },
         );
-        binding
-            .managed_path_entries
-            .push("/project/.venv/bin".into());
+        binding.managed_path_entries.push(venv_bin.clone());
 
         let overlay = resolve_binding_overlay(&binding);
         // Tool paths come before managed paths
         let py_pos = overlay
             .path_prepend
             .iter()
-            .position(|p| p == "/usr/bin")
+            .position(|p| *p == usr_bin)
             .unwrap();
         let venv_pos = overlay
             .path_prepend
             .iter()
-            .position(|p| p == "/project/.venv/bin")
+            .position(|p| *p == venv_bin)
             .unwrap();
         assert!(
             py_pos < venv_pos,
@@ -332,10 +361,12 @@ mod tests {
     #[test]
     fn multiple_tools_paths_in_order() {
         let mut binding = make_binding();
+        let py_bin = abs_parent(&abs("/opt/python/bin/python3"));
+        let node_bin = abs_parent(&abs("/opt/node/bin/node"));
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/opt/python/bin/python3".into()),
+                executable_path: Some(abs("/opt/python/bin/python3")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -344,7 +375,7 @@ mod tests {
         binding.tool_overrides.insert(
             "node".into(),
             ToolOverride {
-                executable_path: Some("/opt/node/bin/node".into()),
+                executable_path: Some(abs("/opt/node/bin/node")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -354,9 +385,7 @@ mod tests {
         let overlay = resolve_binding_overlay(&binding);
         // Both should be present (order depends on HashMap iteration,
         // but both must be there)
-        assert!(overlay
-            .path_prepend
-            .contains(&"/opt/python/bin".to_string()));
-        assert!(overlay.path_prepend.contains(&"/opt/node/bin".to_string()));
+        assert!(overlay.path_prepend.contains(&py_bin));
+        assert!(overlay.path_prepend.contains(&node_bin));
     }
 }

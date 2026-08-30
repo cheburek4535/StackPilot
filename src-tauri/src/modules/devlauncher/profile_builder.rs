@@ -392,6 +392,44 @@ fn side_dir(ctx: &WizardContext, side: &str) -> Option<String> {
     }
 }
 
+/// Commands emitted by the wizard must work in a freshly generated project
+/// on every host.  Unix-style `./gradlew` is not executable by `cmd.exe`, and
+/// Spring Initializr defaults to Maven even when Gradle is installed.
+fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
+    let use_gradle = ctx.tools.iter().any(|t| t == "gradle")
+        && !ctx.tools.iter().any(|t| t == "maven");
+    if use_gradle {
+        if cfg!(target_os = "windows") {
+            format!("gradlew.bat {}", task)
+        } else {
+            format!("./gradlew {}", task)
+        }
+    } else if cfg!(target_os = "windows") {
+        format!("mvnw.cmd {}", task)
+    } else {
+        format!("./mvnw {}", task)
+    }
+}
+
+/// Use the project virtual environment when Project Creator created one.
+/// Falling back to `python` keeps profiles for externally-created projects
+/// usable, while generated Django projects never leak into system Python.
+fn python_command(_dir: Option<&str>, args: &str) -> String {
+    if cfg!(target_os = "windows") {
+        ".venv\\Scripts\\python.exe ".to_string() + args
+    } else {
+        "./.venv/bin/python ".to_string() + args
+    }
+}
+
+fn python_install_command() -> String {
+    if cfg!(target_os = "windows") {
+        "cmd /C \"python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"".to_string()
+    } else {
+        "sh -c \"python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt\"".to_string()
+    }
+}
+
 fn has_language(ctx: &WizardContext, lang: &str) -> bool {
     ctx.languages.iter().any(|l| l == lang)
 }
@@ -649,7 +687,7 @@ pub fn build_profile_v2_from_context(
                     "npm install",
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
@@ -688,10 +726,10 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install Python dependencies",
-                    "pip install -r requirements.txt",
+                    &python_install_command(),
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let cmd = if fw == "fastapi" {
                     "uvicorn main:app --reload"
@@ -733,15 +771,15 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install Python dependencies",
-                    "pip install -r requirements.txt",
+                    &python_install_command(),
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let migrate = one_shot_step(
                     &mut g,
                     "Run Django database migrations (disabled by default)",
-                    "python manage.py migrate",
+                    &python_command(dir.as_deref(), "manage.py migrate"),
                     dir.as_deref(),
                     vec![install],
                     false,
@@ -749,7 +787,7 @@ pub fn build_profile_v2_from_context(
                 let start = service_step(
                     &mut g,
                     "Start Django server",
-                    "python manage.py runserver",
+                    &python_command(dir.as_deref(), "manage.py runserver"),
                     dir.as_deref(),
                     vec![migrate],
                     "high",
@@ -827,18 +865,20 @@ pub fn build_profile_v2_from_context(
                 }
             }
             "spring-boot" | "spring" => {
+                let gradle = ctx.tools.iter().any(|t| t == "gradle")
+                    && !ctx.tools.iter().any(|t| t == "maven");
                 let install = one_shot_step(
                     &mut g,
                     "Install Java dependencies",
-                    "./gradlew build -x test",
+                    &java_wrapper_command(ctx, if gradle { "build -x test" } else { "package -DskipTests" }),
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
                     "Start Spring Boot",
-                    "./gradlew bootRun",
+                    &java_wrapper_command(ctx, if gradle { "bootRun" } else { "spring-boot:run" }),
                     dir.as_deref(),
                     vec![install],
                     "high",
@@ -887,7 +927,7 @@ pub fn build_profile_v2_from_context(
                     "bundle install",
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
@@ -917,24 +957,36 @@ pub fn build_profile_v2_from_context(
         match fw.as_str() {
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
             | "vite-svelte" | "react" | "vue" | "svelte" | "solid" => {
+                let frontend_port = if has_backend {
+                    if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") { 3001 } else { 5174 }
+                } else if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
+                    3000
+                } else {
+                    5173
+                };
+                let frontend_cmd = if has_backend {
+                    format!("npm run dev -- --port {}", frontend_port)
+                } else {
+                    "npm run dev".to_string()
+                };
                 let install = one_shot_step(
                     &mut g,
                     "Install frontend dependencies",
                     "npm install",
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
                     "Start frontend dev server",
-                    "npm run dev",
+                    &frontend_cmd,
                     dir.as_deref(),
                     vec![install],
                     "high",
                 );
                 let port = if fw == "next" || fw == "nextjs" || fw == "nuxt" || fw == "nuxtjs" {
-                    3000
+                    frontend_port
                 } else if fw == "angular" {
                     4200
                 } else {
@@ -957,7 +1009,7 @@ pub fn build_profile_v2_from_context(
                     "npm install",
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
@@ -1011,7 +1063,7 @@ pub fn build_profile_v2_from_context(
                     "npm install",
                     dir.as_deref(),
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     &mut g,
@@ -1075,10 +1127,10 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
                 let install = one_shot_step(
                     g,
                     "Install Python dependencies",
-                    "pip install -r requirements.txt",
+                    &python_install_command(),
                     None,
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     g,
@@ -1121,7 +1173,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
                     "npm install",
                     None,
                     Vec::new(),
-                    false,
+                    true,
                 );
                 let start = service_step(
                     g,

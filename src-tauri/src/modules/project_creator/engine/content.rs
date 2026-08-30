@@ -298,7 +298,7 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
             }
 
             "clickhouse" => services.push(DockerService {
-                name: "clickHouse".into(),
+                name: "clickhouse".into(),
                 image: "clickhouse/clickhouse-server:latest".into(),
                 ports: vec!["8123:8123".into(), "9000:9000".into()],
                 environment: Vec::new(),
@@ -360,6 +360,30 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
 
             _ => {}
         }
+    }
+
+    // Airflow's LocalExecutor requires PostgreSQL.  Treat this as a
+    // transitive infrastructure dependency so selecting Airflow alone never
+    // produces a compose file with `depends_on: postgres` but no postgres
+    // service (the exact failure Docker Compose reports to users).
+    if services.iter().any(|s| s.name == "airflow")
+        && !services.iter().any(|s| s.name == "postgres")
+    {
+        services.insert(
+            0,
+            DockerService {
+                name: "postgres".into(),
+                image: "postgres:16-alpine".into(),
+                ports: vec!["5432:5432".into()],
+                environment: vec![
+                    ("POSTGRES_USER".into(), "postgres".into()),
+                    ("POSTGRES_PASSWORD".into(), "12345".into()),
+                    ("POSTGRES_DB".into(), "postgres".into()),
+                ],
+                volumes: Vec::new(),
+                depends_on: Vec::new(),
+            },
+        );
     }
 
     services
@@ -1066,7 +1090,10 @@ pub fn generate_docker_compose(
         build_context
     };
 
-    result.push_str("version: '3.8'\n\nservices:\n");
+    // Compose Specification no longer needs a `version` key.  Emitting it
+    // only creates a warning in current Docker Desktop and confuses novice
+    // users into thinking the file is invalid.
+    result.push_str("services:\n");
 
     // App-сервис добавляется ТОЛЬКО если для языка/фреймворка генерируется
     // Dockerfile (include_app). Иначе `docker compose up --build` ссылался бы

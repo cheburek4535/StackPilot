@@ -26,6 +26,44 @@ use wizard::WizardEngine;
 /// покрывает типичную генерацию проекта и держит память в разумных границах.
 pub const EXECUTION_SNAPSHOT_LIMIT: usize = 20_000;
 
+/// Лимит подсчёта файлов сгенерированного проекта на диске. 500k файлов —
+/// это заметно больше даже плотного node_modules; подсчёт до этого лимита
+/// занимает миллисекунды, а «хвост» сверх лимита показывается как N+.
+pub const FILE_COUNT_LIMIT: u64 = 500_000;
+
+/// Очень быстрый подсчёт всех файлов в директории (включая node_modules и
+/// прочие сторонние артефакты): итеративный обход через std::fs::read_dir
+/// без рекурсии, без follow-symlink (защита от циклов и повторного счёта).
+/// Ошибки чтения отдельных каталогов/записей пропускаются — даже потеряв
+/// часть дерева, мы вернём точную нижнюю границу реального числа файлов.
+pub fn count_project_files_on_disk(path: &std::path::Path, limit: u64) -> models::ProjectFileCount {
+    let mut count: u64 = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(entry.path()),
+                Ok(ft) if ft.is_file() => {
+                    count += 1;
+                    if count >= limit {
+                        return models::ProjectFileCount { count, capped: true, limit };
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    models::ProjectFileCount { count, capped: false, limit }
+}
+
 pub struct ProjectCreatorState {
     pub wizard: WizardEngine,
     pub analyzer: Arc<dyn ProjectAnalyzer>,

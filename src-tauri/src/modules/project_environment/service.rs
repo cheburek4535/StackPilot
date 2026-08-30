@@ -204,6 +204,19 @@ mod tests {
     use crate::modules::project_environment::models::ToolOverride;
     use std::collections::HashMap;
 
+    /// Convert a Unix-style absolute path into a platform-appropriate absolute
+    /// path so path helpers treat it the same on every OS.
+    fn abs(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("C:{}", p.replace('/', "\\"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string()
+        }
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "sp_env_binding_test_{}_{}",
@@ -318,7 +331,7 @@ mod tests {
         b.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/nonexistent/python3.12".into()),
+                executable_path: Some(abs("/nonexistent/python3.12")),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),

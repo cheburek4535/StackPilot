@@ -1,7 +1,8 @@
 <script lang="ts">
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
-  import type { ExecutionPlan, StepStatus } from "$lib/modules/project_creator/types";
+  import type { ExecutionPlan, StepStatus, ProjectFileCount } from "$lib/modules/project_creator/types";
+  import { countProjectFiles } from "$lib/modules/project_creator/api";
 
   let {
     execPlan,
@@ -72,6 +73,47 @@
     };
     return count(plan.steps);
   });
+
+  /** Реальный подсчёт файлов сгенерированного проекта на диске (включая
+   *  node_modules и сторонние артефакты) через быстрый walk на бэкенде.
+   *  Запускается при завершении генерации — план считает только файлы
+   *  StackPilot, а npm install / скаффолдеры добавляют тысячи своих. */
+  let diskFileCount = $state<ProjectFileCount | null>(null);
+  let diskCountState = $state<"idle" | "loading" | "done" | "error">("idle");
+  const diskPath = $derived(execPlan?.project_path ?? execProjectPath);
+
+  $effect(() => {
+    if (execOverallStatus !== "done" || !diskPath || diskCountState !== "idle") return;
+    diskCountState = "loading";
+    let cancelled = false;
+    countProjectFiles(diskPath).then(
+      (c) => {
+        if (cancelled) return;
+        diskFileCount = c;
+        diskCountState = "done";
+      },
+      () => {
+        if (!cancelled) diskCountState = "error";
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /** План-счётчик как фолбэк (если реальный подсчёт ещё идёт / упал). */
+  let totalFallback = $derived(fileStats.total);
+
+  /** Форматирование числа файлов: точное значение, либо «круглое N+», если
+   *  подсчёт упёрся в лимит на бэкенде (capped). */
+  function formatFileCount(c: ProjectFileCount): string {
+    if (!c.capped) return c.count.toLocaleString("ru-RU");
+    const base = c.count >= 1000 ? Math.floor(c.count / 1000) * 1000 : c.count;
+    return `${base.toLocaleString("ru-RU")}+`;
+  }
+  let totalDisplay = $derived(
+    diskFileCount ? formatFileCount(diskFileCount) : String(totalFallback),
+  );
 
   /** Лёгкий рендер markdown-подмножества (заголовки, код, списки, ссылки,
    *  жирный, инлайн-код, hr) — без внешних зависимостей. */
@@ -211,11 +253,11 @@
         <span class="about-stat-label">{i18n.t("create.preview.tab_steps") as TranslationKey}</span>
       </span>
       <span class="about-stat">
-        <span class="about-stat-num">{fileStats.generated}</span>
+        <span class="about-stat-num">{diskCountState === "loading" ? "…" : (fileStats.generated.toLocaleString("ru-RU"))}</span>
         <span class="about-stat-label">{i18n.t("create.preview.files_by_stackpilot") as TranslationKey}</span>
       </span>
       <span class="about-stat">
-        <span class="about-stat-num">{fileStats.total}</span>
+        <span class="about-stat-num">{diskCountState === "loading" ? "…" : totalDisplay}</span>
         <span class="about-stat-label">{i18n.t("create.preview.files_total") as TranslationKey}</span>
       </span>
     </div>

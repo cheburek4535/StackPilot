@@ -114,6 +114,36 @@ mod tests {
         dir
     }
 
+    /// Convert a Unix-style absolute path into a platform-appropriate absolute
+    /// path so path helpers treat it the same on every OS.
+    fn abs(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("C:{}", p.replace('/', "\\"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string()
+        }
+    }
+
+    fn abs_parent(p: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            match p.rfind('\\') {
+                Some(i) => p[..i].to_string(),
+                None => p.to_string(),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::path::Path::new(p)
+                .parent()
+                .map(|x| x.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string())
+        }
+    }
+
     #[test]
     fn create_and_list_bindings() {
         let dir = temp_dir("cmd_list");
@@ -181,11 +211,13 @@ mod tests {
         let dir = temp_dir("cmd_resolve");
         let svc = JsonEnvironmentBindingService::new(dir.clone());
 
+        let exe = abs("/usr/bin/python3");
+        let expected_parent = abs_parent(&exe);
         let mut binding = EnvironmentBinding::new(None, None);
         binding.tool_overrides.insert(
             "python".into(),
             ToolOverride {
-                executable_path: Some("/usr/bin/python3".into()),
+                executable_path: Some(exe),
                 version: None,
                 path_entries: vec![],
                 env_vars: HashMap::new(),
@@ -199,7 +231,7 @@ mod tests {
         let loaded = svc.get(&saved.binding_id).unwrap();
         let (overlay, _diagnostics) = resolve_with_diagnostics(&loaded);
 
-        assert!(overlay.path_prepend.contains(&"/usr/bin".to_string()));
+        assert!(overlay.path_prepend.contains(&expected_parent));
         assert_eq!(overlay.vars_set.get("VIRTUAL_ENV").unwrap(), "/venv");
 
         let _ = std::fs::remove_dir_all(dir);

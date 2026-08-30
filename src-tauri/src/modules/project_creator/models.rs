@@ -765,6 +765,21 @@ pub struct ProjectPreviewSummary {
     pub dir_count: usize,
 }
 
+/// Результат подсчёта реальных файлов сгенерированного проекта на диске.
+/// Walk считается быстро (итеративный обход без рекурсии); при достижении
+/// лимита подсчёт останавливается и `capped = true`, чтобы UI показал
+/// «круглое число +» вместо бесконечного счета (например, node_modules
+/// на десятки тысяч файлов).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectFileCount {
+    /// Сколько файлов насчитано (до лимита включительно).
+    pub count: u64,
+    /// true, если упёрлись в лимит и реальное число файлов больше `count`.
+    pub capped: bool,
+    /// Лимит, на котором остановился подсчёт.
+    pub limit: u64,
+}
+
 /// Куда именно фреймворк кладёт свои файлы (итог канонической раскладки).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameworkPlacement {

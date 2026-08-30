@@ -12,6 +12,7 @@ import type {
   StackIssue,
   StackRecommendations,
   ProjectFilePreview,
+  ProjectFileCount,
 } from "./types";
 
 export function pingProjectCreator(): Promise<string> {
@@ -78,6 +79,12 @@ export function startProjectExecution(
 /** Снимок выполнения: работает ли оно и буфер событий (для восстановления вкладки) */
 export function getProjectExecutionSnapshot(): Promise<ExecutionSnapshot> {
   return invoke("project_execution_snapshot");
+}
+
+/** Подсчёт реальных файлов сгенерированного проекта на диске (быстрый walk,
+ *  включает node_modules). Может вернуть capped=true на очень больших деревьях. */
+export function countProjectFiles(path: string): Promise<ProjectFileCount> {
+  return invoke("count_project_files", { path });
 }
 
 export function checkFolderExists(path: string): Promise<boolean> {

@@ -383,6 +383,15 @@ export type ProjectFilePreview = {
   summary: ProjectPreviewSummary;
 };
 
+/** Результат подсчёта реальных файлов сгенерированного проекта на диске
+ *  (walk директории, включая node_modules и сторонние артефакты). */
+export type ProjectFileCount = {
+  count: number;
+  /** true, если упёрлись в лимит — реальных файлов больше, чем `count` */
+  capped: boolean;
+  limit: number;
+};
+
 export type LayoutSummary = {
   class: string;
   generated_directories: string[];

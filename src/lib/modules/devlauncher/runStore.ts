@@ -253,13 +253,9 @@ export async function cancelCurrentRun(): Promise<void> {
   }
 }
 
-/** Stop all processes in a run without cancelling the run. */
+/** Stop every process and compose container owned by a run. */
 export async function stopProcesses(runId: string): Promise<void> {
-  try {
-    await api.stopRunProcesses(runId);
-  } catch {
-    // Non-critical.
-  }
+  await api.stopRunProcesses(runId);
 }
 
 /** Fetch and store a specific run (for remount recovery). */

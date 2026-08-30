@@ -145,18 +145,24 @@ fn language_side(
             return Some(required_by[0]);
         }
     }
-    match tree
-        .languages
-        .iter()
-        .find(|l| &l.id == lang)
-        .and_then(|l| l.category.as_deref())
-    {
-        Some("backend") | Some("both") => Some("backend"),
-        Some("frontend") | Some("static") => Some("frontend"),
-        _ => None,
+    // Только ВЫБРАННЫЙ язык может внести свою сторону (category). Невыбранный
+    // язык (например, javascript при выбранных cpp+typescript) не может
+    // «спасти» фреймворк: категория стороны действует лишь для тех языков,
+    // которые реально в стеке (nest+cpp+ts: невыбранный js не даёт nest бэкенд).
+    if selected_langs.iter().any(|l| l == lang) {
+        match tree
+            .languages
+            .iter()
+            .find(|l| &l.id == lang)
+            .and_then(|l| l.category.as_deref())
+        {
+            Some("backend") | Some("both") => return Some("backend"),
+            Some("frontend") | Some("static") => return Some("frontend"),
+            _ => {}
+        }
     }
+    None
 }
-
 /// ЕДИНСТВЕННЫЙ полный барьер валидации контекста. Три слоя в одном вызове:
 ///   1. каноническая нормализация (normalize_context): неизвестные id,
 ///      язык на обеих сторонах, вывод сторон, пересчёт docker;
@@ -1460,10 +1466,11 @@ mod tests {
         let t = tree();
         // C# на обеих сторонах (MAUI на фронте + ASP.NET Core на бэке) —
         // валидация должна видеть csharp на фронтенде для MAUI, несмотря
-        // на то что csharp есть и в backend_langs.
+        // на то что csharp есть и в backend_langs. Тип «custom» выбран
+        // потому, что ASP.NET Core не поддерживает desktop-app (см. данные).
         let issues = validate(
             &t,
-            Some("desktop-app"),
+            Some("custom"),
             Some("csharp"),
             Some("csharp"),
             &["maui", "aspnetcore"],

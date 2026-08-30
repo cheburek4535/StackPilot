@@ -238,7 +238,7 @@
           <p class="sp-none">{i18n.t("home.no_recent") as TranslationKey}</p>
         {:else}
           <div class="sp-recent-list">
-            {#each $recentProjects as ref}
+            {#each $recentProjects.slice(0, 3) as ref}
               {@const matched = profileForRef(ref)}
               <div class="sp-recent-row">
                 <div class="sp-recent-main">
