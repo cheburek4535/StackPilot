@@ -32,10 +32,10 @@ export const ACCENT_PRESETS: Record<string, string> = {
   green: "#22c55e",
   orange: "#f97316",
   red: "#ef4444",
-  cyan: "#22d3ee",
+  cyan: "#06b6d4",
 };
 
-const ACCENT_DEFAULT = ACCENT_PRESETS.violet;
+const ACCENT_DEFAULT = ACCENT_PRESETS.orange;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));

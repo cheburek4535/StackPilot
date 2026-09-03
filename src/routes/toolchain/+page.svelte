@@ -321,6 +321,11 @@
 
   <!-- ===== План установки ===== -->
   <PlanReviewModal request={planRequest} onclose={() => (planRequest = null)} />
+
+  <!-- ===== Примечание о расширении каталога ===== -->
+  <p class="grow-note">
+    {i18n.t("tc.catalog_grows_note")}
+  </p>
 </PageContainer>
 
 <style>
@@ -342,8 +347,8 @@
     gap: var(--sp-2);
     padding: var(--sp-1) var(--sp-3);
     border-radius: var(--sp-radius-full);
-    border: 1px solid rgba(34, 211, 238, 0.35);
-    background: rgba(34, 211, 238, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    background: rgba(6, 182, 212, 0.1);
     color: var(--sp-cyan);
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-semibold);
@@ -352,7 +357,7 @@
   }
 
   .active-op:hover {
-    background: rgba(34, 211, 238, 0.16);
+    background: rgba(6, 182, 212, 0.16);
   }
 
   .active-op-dot {
@@ -388,15 +393,15 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-xs);
     color: var(--sp-danger);
-    border: 1px solid rgba(248, 113, 113, 0.28);
-    background: rgba(248, 113, 113, 0.07);
+    border: 1px solid rgba(239, 68, 68, 0.28);
+    background: rgba(239, 68, 68, 0.07);
     border-radius: var(--sp-radius-md);
   }
 
   .issue-warn {
     color: var(--sp-warning);
-    border-color: rgba(251, 191, 36, 0.3);
-    background: rgba(251, 191, 36, 0.07);
+    border-color: rgba(245, 158, 11, 0.3);
+    background: rgba(245, 158, 11, 0.07);
   }
 
   .modes {
@@ -423,5 +428,14 @@
 
   .job-center {
     margin-bottom: var(--sp-5);
+  }
+
+  .grow-note {
+    margin: var(--sp-6) auto 0;
+    padding-top: var(--sp-4);
+    text-align: center;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    opacity: 0.55;
   }
 </style>

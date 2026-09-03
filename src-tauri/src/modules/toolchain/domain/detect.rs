@@ -794,7 +794,10 @@ async fn probe_health_at_known_paths(
 ///   2) «двойной» docker-инструмент Project Creator (в standalone-скане
 ///      dual_tools пуст — правило не срабатывает);
 ///   3) источник для этой ОС → Installable;
-///   4) manual_install → ManualOnly;
+///   4) manual_install → ManualOnly (кроме bundled-инструментов: pip
+///      приходит с python, npm — с node, поэтому «ставьте вручную» для
+///      них ложь — они классифицируются как BuiltIn и идут в комплекте
+///      с хостом);
 ///   5) источники есть, но не для этой ОС → UnsupportedOnPlatform;
 ///   6) иначе BuiltIn.
 pub fn classify_applicability(
@@ -813,7 +816,7 @@ pub fn classify_applicability(
     if !os_sources.is_empty() {
         return PlatformApplicability::Installable;
     }
-    if def.manual_install.is_some() {
+    if def.manual_install.is_some() && def.bundled_with.is_none() {
         return PlatformApplicability::ManualOnly;
     }
     let any_sources = !def.sources.windows.is_empty()
@@ -920,9 +923,14 @@ pub fn compose_state(
     if working_install.is_none() {
         if installs.is_empty() {
             // Ничего не нашли вовсе.
+            // Bundled-инструмент (pip с python) без установленного хоста —
+            // это честное «не установлен», а не ручная инструкция: pip
+            // приходит вместе с python, поэтому ManualInstall для него ложь.
             if let Some(reason) = &def.manual_install {
                 // Движок/SDK: отсутствие — ручная инструкция, не блокировка.
-                if applicability != PlatformApplicability::UnsupportedOnPlatform {
+                if applicability != PlatformApplicability::UnsupportedOnPlatform
+                    && def.bundled_with.is_none()
+                {
                     return ToolState::ManualInstall {
                         reason: reason.clone(),
                     };
@@ -1853,6 +1861,28 @@ mod tests {
         let mut def = empty_rules_def("manual");
         def.sources = InstallSources::default();
         def.manual_install = Some("Ставится вручную".to_string());
+        assert_eq!(
+            classify_applicability(&def, "windows", false),
+            PlatformApplicability::ManualOnly
+        );
+    }
+
+    /// Bundled-инструмент (pip с python, npm с node) НЕ «ручная установка»:
+    /// он приходит вместе с хостом, поэтому manual_install-текст для него
+    /// не должен давать ManualOnly — классификация BuiltIn (в комплекте).
+    #[test]
+    fn bundled_tool_not_manual_only_despite_manual_text() {
+        let mut def = empty_rules_def("pip-like");
+        def.sources = InstallSources::default();
+        def.manual_install = Some("Идёт вместе с python".to_string());
+        def.bundled_with = Some("python".to_string());
+        assert_eq!(
+            classify_applicability(&def, "windows", false),
+            PlatformApplicability::BuiltIn,
+            "bundled-тул без источников — в комплекте с хостом, а не «вручную»"
+        );
+        // Без bundled_with поведение прежнее.
+        def.bundled_with = None;
         assert_eq!(
             classify_applicability(&def, "windows", false),
             PlatformApplicability::ManualOnly

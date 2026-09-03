@@ -81,24 +81,23 @@
   let diskFileCount = $state<ProjectFileCount | null>(null);
   let diskCountState = $state<"idle" | "loading" | "done" | "error">("idle");
   const diskPath = $derived(execPlan?.project_path ?? execProjectPath);
+  /** Plain flag (not reactive) so the effect below never re-runs and cancels
+   *  an in-flight count: it starts the count exactly once per "done" state. */
+  let diskCountStarted = false;
 
   $effect(() => {
-    if (execOverallStatus !== "done" || !diskPath || diskCountState !== "idle") return;
+    if (execOverallStatus !== "done" || !diskPath || diskCountStarted) return;
+    diskCountStarted = true;
     diskCountState = "loading";
-    let cancelled = false;
     countProjectFiles(diskPath).then(
       (c) => {
-        if (cancelled) return;
         diskFileCount = c;
         diskCountState = "done";
       },
       () => {
-        if (!cancelled) diskCountState = "error";
+        diskCountState = "error";
       },
     );
-    return () => {
-      cancelled = true;
-    };
   });
 
   /** План-счётчик как фолбэк (если реальный подсчёт ещё идёт / упал). */

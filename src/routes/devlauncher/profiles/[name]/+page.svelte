@@ -50,7 +50,11 @@
   });
 
   onMount(async () => {
-    await runStore.init();
+    try {
+      await runStore.init();
+    } catch {
+      // Non-critical — the profile itself loads without the event store.
+    }
     await loadProfile();
     // Recover any active run for this profile.
     await recoverRun();
@@ -65,6 +69,16 @@
     runStore.destroy();
   });
 
+  function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(i18n.t("devl.load_timeout") as TranslationKey)), ms);
+      p.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
   async function loadProfile() {
     loading = true;
     errorMsg = "";
@@ -77,11 +91,11 @@
     }
 
     try {
-      const demo = await getDemoProfile();
+      const demo = await withTimeout(getDemoProfile(), 10000);
       if (demo.name === name) {
         profile = demo;
       } else {
-        profile = await getProfile(name);
+        profile = await withTimeout(getProfile(name), 10000);
       }
     } catch (e) {
       errorMsg = i18n.t("devl.profile_load_failed", { name, err: String(e) }) as TranslationKey;
@@ -409,11 +423,9 @@
         <button class="danger-outline" onclick={handleDelete} disabled={runningAll}>
           {i18n.t("devl.delete_profile") as TranslationKey}
         </button>
-        {#if launched}
-          <button class="secondary" onclick={openInWorkspace}>
-            {i18n.t("devl.open_in_workspace") as TranslationKey}
-          </button>
-        {/if}
+        <button class="secondary" onclick={openInWorkspace}>
+          {i18n.t("devl.open_in_workspace") as TranslationKey}
+        </button>
         <button class="primary" onclick={runAll} disabled={runningAll}>
           {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>
@@ -646,7 +658,7 @@
     font-size: var(--sp-fs-sm);
     font-family: var(--sp-font-sans);
   }
-  .danger-outline:hover { background: rgba(248, 113, 113, 0.14); }
+  .danger-outline:hover { background: rgba(239, 68, 68, 0.14); }
 
   h1 { margin: 0; font-size: var(--sp-fs-xl); color: var(--sp-text-1); }
   .desc { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.15rem 0 0; }
@@ -654,8 +666,8 @@
   .empty { color: var(--sp-text-3); font-style: italic; }
 
   .error-card {
-    background: rgba(248, 113, 113, 0.1);
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.35);
     border-radius: var(--sp-radius-md);
     padding: 1.5rem;
     text-align: center;
@@ -819,7 +831,7 @@
     color: var(--sp-success);
     transition: background 0.15s;
   }
-  .run-btn:hover:not(:disabled) { background: rgba(163, 230, 53, 0.14); border-color: var(--sp-success); }
+  .run-btn:hover:not(:disabled) { background: rgba(132, 204, 22, 0.14); border-color: var(--sp-success); }
   .run-btn:disabled { color: var(--sp-text-3); cursor: default; }
 
   .toggle { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }

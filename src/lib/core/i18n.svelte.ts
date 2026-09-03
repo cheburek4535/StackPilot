@@ -12,7 +12,7 @@ export type TranslationDict = typeof ru;
 export type TranslationKey = string;
 
 class I18nService {
-  locale = $state<Locale>('en');
+  locale = $state<Locale>('ru');
 
   constructor() {
     if (browser) {

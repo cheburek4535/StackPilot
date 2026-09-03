@@ -11,7 +11,7 @@
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
   import { workspaceContext } from "$lib/modules/workspace/context";
   import { i18n } from "$lib/core/i18n.svelte";
-  import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import type { Locale, TranslationKey } from "$lib/core/i18n.svelte";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
@@ -25,7 +25,11 @@
   onMount(() => {
     initTheme();
     getSettings()
-      .then((s) => (restoreRoute = s.restore_last_route))
+      .then((s) => {
+        restoreRoute = s.restore_last_route;
+        // The backend is the single source of truth for the UI language.
+        i18n.setLocale((s.language as Locale) || "ru");
+      })
       .catch(() => {});
     // First-run detection — open the welcome tour unless already seen.
     if (get(onboarding).firstRun) showOnboarding();

@@ -47,9 +47,9 @@
     text-align: center;
     gap: var(--sp-2);
     padding: var(--sp-10) var(--sp-6);
-    border: 1px solid rgba(248, 113, 113, 0.28);
+    border: 1px solid rgba(239, 68, 68, 0.28);
     border-radius: var(--sp-radius-lg);
-    background: rgba(248, 113, 113, 0.06);
+    background: rgba(239, 68, 68, 0.06);
     width: 100%;
   }
 
@@ -60,9 +60,9 @@
     width: 3.25rem;
     height: 3.25rem;
     border-radius: var(--sp-radius-full);
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--sp-danger);
-    border: 1px solid rgba(248, 113, 113, 0.3);
+    border: 1px solid rgba(239, 68, 68, 0.3);
     margin-bottom: var(--sp-1);
   }
 

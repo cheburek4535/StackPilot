@@ -465,7 +465,7 @@
   .env-optional .group-label { color: var(--sp-danger); margin: 0 0 0.35rem; }
   .env-optional .env-row { background: var(--sp-bg-1); }
   .env-optional .env-row.ok { border-left-color: var(--sp-success); }
-  .env-optional-local { border-color: rgba(163, 230, 53, 0.35); background: rgba(163, 230, 53, 0.04); }
+  .env-optional-local { border-color: rgba(132, 204, 22, 0.35); background: rgba(132, 204, 22, 0.04); }
   .env-optional-local .group-label { color: var(--sp-success); }
   .infra-toggle {
     display: inline-flex;

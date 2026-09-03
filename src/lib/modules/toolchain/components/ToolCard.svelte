@@ -85,6 +85,13 @@
       case "path_broken":
         return base("red", true, i18n.t("tc.state.path_broken") as TranslationKey, i18n.t("tc.card.path_warning") as TranslationKey);
       case "missing":
+        if (tool.bundled_with) {
+          return base(
+            "cyan",
+            true,
+            i18n.t("tc.install.bundled_with", { tool: tool.bundled_with }) as TranslationKey,
+          );
+        }
         return base("neutral", false, i18n.t("tc.state.missing") as TranslationKey);
       case "scan_pending":
         return base("cyan", false, i18n.t("tc.state.scanning") as TranslationKey);

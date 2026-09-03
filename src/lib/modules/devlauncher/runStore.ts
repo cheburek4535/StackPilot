@@ -313,84 +313,73 @@ export function getLatestRunForProfile(
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+/** Register a listener without letting a single failure break init().
+ *  The event stream is a supplement — the store still works without it. */
+async function safeListen<T>(
+  event: string,
+  handler: (e: { payload: T }) => void,
+): Promise<void> {
+  try {
+    const unlisten = await listen<T>(event, handler);
+    listeners.push(unlisten);
+  } catch (e) {
+    console.warn(`[runStore] Failed to listen to "${event}":`, e);
+  }
+}
+
 /**
  * Initialize the store: register event listeners and recover active runs.
- * Safe to call multiple times (idempotent).
+ * Safe to call multiple times (idempotent). Never rejects — a failed
+ * listener or recovery call must not block callers (e.g. page mounts).
  */
 export async function init(): Promise<void> {
   if (state.initialized || destroyed) return;
   state.initialized = true;
 
-  // Register backend event listeners
-  const regRunCreated = await listen<LaunchRun>(
-    "devlauncher:run-created",
-    (e) => {
-      storeRun(e.payload);
-    },
-  );
-  listeners.push(regRunCreated);
+  // Register backend event listeners (each guarded individually)
+  await safeListen<LaunchRun>("devlauncher:run-created", (e) => {
+    storeRun(e.payload);
+  });
 
-  const regRunStatus = await listen<RunStatusPayload>(
-    "devlauncher:run-status-changed",
-    (e) => {
-      applyRunStatus(e.payload.run_id, e.payload.status);
-    },
-  );
-  listeners.push(regRunStatus);
+  await safeListen<RunStatusPayload>("devlauncher:run-status-changed", (e) => {
+    applyRunStatus(e.payload.run_id, e.payload.status);
+  });
 
-  const regStepStatus = await listen<StepStatusPayload>(
-    "devlauncher:step-status-changed",
-    (e) => {
-      if (e.payload?.step?.step_id) {
-        applyStepUpdate(e.payload.run_id, e.payload.step);
+  await safeListen<StepStatusPayload>("devlauncher:step-status-changed", (e) => {
+    if (e.payload?.step?.step_id) {
+      applyStepUpdate(e.payload.run_id, e.payload.step);
+    }
+  });
+
+  await safeListen<ProcessStartedPayload>("devlauncher:process-started", (e) => {
+    // Store the process_id in the step execution state.
+    const run = state.runs.get(e.payload.run_id);
+    if (run) {
+      const step = run.steps.find((s) => s.step_id === e.payload.step_id);
+      if (step) {
+        step.process_id = e.payload.process.id;
       }
-    },
-  );
-  listeners.push(regStepStatus);
+    }
+  });
 
-  const regProcessStarted = await listen<ProcessStartedPayload>(
-    "devlauncher:process-started",
-    (e) => {
-      // Store the process_id in the step execution state.
-      const run = state.runs.get(e.payload.run_id);
-      if (run) {
-        const step = run.steps.find(
-          (s) => s.step_id === e.payload.step_id,
-        );
-        if (step) {
-          step.process_id = e.payload.process.id;
-        }
+  await safeListen<Diagnostic>("devlauncher:diagnostic", (e) => {
+    const run = state.runs.get(e.payload.run_id);
+    if (run) {
+      // Append diagnostic if not already present (idempotent by timestamp).
+      const exists = run.diagnostics.some(
+        (d) =>
+          d.timestamp === e.payload.timestamp &&
+          d.message === e.payload.message,
+      );
+      if (!exists) {
+        run.diagnostics.push(e.payload);
       }
-    },
-  );
-  listeners.push(regProcessStarted);
+    }
+  });
 
-  const regDiagnostic = await listen<Diagnostic>(
-    "devlauncher:diagnostic",
-    (e) => {
-      const run = state.runs.get(e.payload.run_id);
-      if (run) {
-        // Append diagnostic if not already present (idempotent by timestamp).
-        const exists = run.diagnostics.some(
-          (d) =>
-            d.timestamp === e.payload.timestamp &&
-            d.message === e.payload.message,
-        );
-        if (!exists) {
-          run.diagnostics.push(e.payload);
-        }
-      }
-    },
-  );
-  listeners.push(regDiagnostic);
-
-  const regRunFinished = await listen<LaunchRun>(
-    "devlauncher:run-finished",
-    (e) => {
-      updateRun(e.payload);
-    },
-  );
-  listeners.push(regRunFinished);
+  await safeListen<LaunchRun>("devlauncher:run-finished", (e) => {
+    updateRun(e.payload);
+  });
 
   // Recover any active runs from a previous session (remount/reload).
   // Also recover finished runs so run history survives tab switches.

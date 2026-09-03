@@ -51,7 +51,8 @@ pub fn run() {
             os_pm.set_app_handle(app.handle().clone());
             let process_manager: Arc<dyn modules::workspace::process_manager::ProcessManager> =
                 Arc::new(os_pm);
-            let workspace_state = modules::workspace::WorkspaceState::new(process_manager.clone());
+            let workspace_state =
+                modules::workspace::WorkspaceState::new(process_manager.clone(), Some(data_dir.clone()));
 
             // === ProcessSupervisor (background monitor, bounded logs) ===
             let process_supervisor =

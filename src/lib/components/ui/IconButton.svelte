@@ -110,7 +110,7 @@
   }
 
   .sp-icon-btn-danger:hover:not(:disabled) {
-    background: rgba(248, 113, 113, 0.14);
+    background: rgba(239, 68, 68, 0.14);
     color: var(--sp-danger);
   }
 </style>

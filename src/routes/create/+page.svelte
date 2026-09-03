@@ -2824,6 +2824,10 @@ function resetAll() {
                 {i18n.t("create.review_create") as TranslationKey}
               </button>
             </div>
+
+            <p class="grow-note">
+              {i18n.t("create.catalog_grows_note") as TranslationKey}
+            </p>
           {/if}
 
           <!-- Phase 2: Review -->
@@ -3164,7 +3168,7 @@ function resetAll() {
   margin: 0 0 1rem;
   background: var(--sp-bg-1);
 }
-.arch-integrated { border-color: rgba(163, 230, 53, 0.35); background: rgba(163, 230, 53, 0.05); }
+.arch-integrated { border-color: rgba(132, 204, 22, 0.35); background: rgba(132, 204, 22, 0.05); }
 .arch-decoupled { border-color: var(--sp-accent-border); background: var(--sp-accent-soft); }
 .arch-body { flex: 1; min-width: 0; }
 .arch-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: var(--sp-text-1); }
@@ -3282,7 +3286,7 @@ function resetAll() {
 .fw-grid .card .conflict-badge { margin-top: 0.3rem; }
 .conflict-badge { display: block; font-size: 0.7rem; color: var(--sp-danger); margin-top: 0.25rem; }
 .conflict-detail { display: block; font-size: 0.68rem; color: var(--sp-danger); margin-top: 0.15rem; line-height: 1.25; }
-.warn-badge { display: block; font-size: 0.68rem; color: var(--sp-warning); background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35); border-radius: 6px; padding: 0.1rem 0.45rem; margin-top: 0.25rem; }
+.warn-badge { display: block; font-size: 0.68rem; color: var(--sp-warning); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 6px; padding: 0.1rem 0.45rem; margin-top: 0.25rem; }
 .conflict-alts { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; margin-top: 0.35rem; }
 .conflict-alts-label { font-size: 0.68rem; color: var(--sp-text-3); }
 .alt-chip {
@@ -3298,9 +3302,9 @@ function resetAll() {
 }
 .alt-chip:hover { background: var(--sp-accent-border); color: #fff; }
 .alt-chip:focus-visible { outline: 2px solid var(--sp-accent-strong); }
-.notice-bar { display: block; font-size: 0.78rem; color: var(--sp-warning); background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35); border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
+.notice-bar { display: block; font-size: 0.78rem; color: var(--sp-warning); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
 .fw-lang-chip { display: inline-block; font-size: 0.72rem; color: var(--sp-accent); background: var(--sp-accent-soft); border: 1px solid var(--sp-accent-border); padding: 0.15rem 0.5rem; border-radius: 999px; margin-top: 0.3rem; }
-.fw-lang-chip.selected { color: var(--sp-success); background: rgba(163, 230, 53, 0.12); border-color: rgba(163, 230, 53, 0.4); }
+.fw-lang-chip.selected { color: var(--sp-success); background: rgba(132, 204, 22, 0.12); border-color: rgba(132, 204, 22, 0.4); }
 .fw-lang-multi { display: block; font-size: 0.68rem; color: var(--sp-accent); margin-top: 0.15rem; }
 
 /* ---- Попап настройки фреймворка ---- */
@@ -3335,8 +3339,8 @@ function resetAll() {
 .popup-opt-tag {
   font-size: 0.62rem;
   color: var(--sp-info);
-  background: rgba(34, 211, 238, 0.12);
-  border: 1px solid rgba(34, 211, 238, 0.35);
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.35);
   border-radius: 999px;
   padding: 0.05rem 0.45rem;
   font-weight: 600;
@@ -3344,8 +3348,8 @@ function resetAll() {
 .star { color: var(--sp-warning); font-size: 0.72rem; white-space: nowrap; }
 .popup-actions { display: flex; gap: 0.4rem; margin-top: 0.7rem; align-items: center; flex-wrap: wrap; }
 .btn-xs { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
-.btn-remove { background: none; border: 1px solid rgba(248, 113, 113, 0.35); color: var(--sp-danger); padding: 0.3rem 0.7rem; border-radius: 6px; cursor: pointer; font-size: 0.78rem; }
-.btn-remove:hover { background: rgba(248, 113, 113, 0.12); }
+.btn-remove { background: none; border: 1px solid rgba(239, 68, 68, 0.35); color: var(--sp-danger); padding: 0.3rem 0.7rem; border-radius: 6px; cursor: pointer; font-size: 0.78rem; }
+.btn-remove:hover { background: rgba(239, 68, 68, 0.12); }
 
 /* ---- Липкий футер страницы стека ---- */
 .mega-footer {
@@ -3458,8 +3462,8 @@ function resetAll() {
 .tool-cat-rec {
   font-size: 0.68rem;
   color: var(--sp-warning);
-  background: rgba(251, 191, 36, 0.12);
-  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
   font-weight: 600;
@@ -3488,9 +3492,9 @@ function resetAll() {
 .tool-item-desc { font-size: 0.74rem; color: var(--sp-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-item-badges { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; flex: 0 0 auto; flex-wrap: wrap; }
 .tool-item-badge { font-size: 0.68rem; padding: 0.12rem 0.45rem; border-radius: 999px; white-space: nowrap; }
-.tool-item-badge.docker { color: var(--sp-info); background: rgba(34, 211, 238, 0.12); border: 1px solid rgba(34, 211, 238, 0.35); }
-.tool-item-badge.conflict { color: var(--sp-danger); background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.35); }
-.tool-item-badge.rec { color: var(--sp-warning); background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35); }
+.tool-item-badge.docker { color: var(--sp-info); background: rgba(6, 182, 212, 0.12); border: 1px solid rgba(6, 182, 212, 0.35); }
+.tool-item-badge.conflict { color: var(--sp-danger); background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); }
+.tool-item-badge.rec { color: var(--sp-warning); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); }
 .tool-item-check { color: var(--sp-accent-strong); font-weight: 700; font-size: 0.95rem; }
 .group-label { font-size: 0.85rem; font-weight: 600; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
 .tooltip { position: fixed; background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.8rem; max-width: 240px; z-index: 999; pointer-events: none; color: var(--sp-text-2); }
@@ -3511,7 +3515,7 @@ function resetAll() {
 .review-hint { color: var(--sp-text-3); font-size: 0.8rem; margin: 0.5rem 0 0; }
 
 /* ---- Проблемы стека ---- */
-.stack-issues { border: 1px solid rgba(248, 113, 113, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: rgba(248, 113, 113, 0.1); }
+.stack-issues { border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: rgba(239, 68, 68, 0.1); }
 .stack-issues p { margin: 0.3rem 0; font-size: 0.8rem; }
 
 /* ---- Summary ---- */
@@ -3541,8 +3545,8 @@ function resetAll() {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--sp-danger);
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
   border-radius: 8px;
   padding: 0.35rem 0.8rem;
   cursor: pointer;
@@ -3550,8 +3554,8 @@ function resetAll() {
   margin-left: 0.5rem;
   transition: background 0.15s;
 }
-.btn-clear-stack:hover { background: rgba(248, 113, 113, 0.12); border-color: var(--sp-danger); }
-.notice-bar { display: inline-block; font-size: 0.78rem; color: var(--sp-warning); background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35); border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
+.btn-clear-stack:hover { background: rgba(239, 68, 68, 0.12); border-color: var(--sp-danger); }
+.notice-bar { display: inline-block; font-size: 0.78rem; color: var(--sp-warning); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
 .conflict-dialog { background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 12px; padding: 1.5rem; max-width: 480px; width: 90%; }
 .conflict-dialog h3 { margin: 0 0 0.75rem; color: var(--sp-warning); }
 .conflict-dialog p { font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 1.25rem; line-height: 1.4; }
@@ -3560,6 +3564,16 @@ function resetAll() {
 
 /* ---- Окружение ---- */
 .env-warn { color: var(--sp-warning); font-weight: 600; }
+
+/* ---- Примечание о расширении каталога ---- */
+.grow-note {
+  margin: 1.5rem auto 0;
+  padding-top: 1.25rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--sp-text-3);
+  opacity: 0.55;
+}
 
 
 @keyframes skeleton-pulse {

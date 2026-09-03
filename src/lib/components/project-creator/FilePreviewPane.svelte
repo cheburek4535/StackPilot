@@ -143,15 +143,15 @@
   }
 
   .fpb-certain {
-    background: rgba(163, 230, 53, 0.14);
+    background: rgba(132, 204, 22, 0.14);
     color: var(--sp-success);
-    border: 1px solid rgba(163, 230, 53, 0.3);
+    border: 1px solid rgba(132, 204, 22, 0.3);
   }
 
   .fpb-expected {
-    background: rgba(251, 191, 36, 0.14);
+    background: rgba(245, 158, 11, 0.14);
     color: var(--sp-warning);
-    border: 1px solid rgba(251, 191, 36, 0.3);
+    border: 1px solid rgba(245, 158, 11, 0.3);
   }
 
   .fpb-unknown {
@@ -189,10 +189,10 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-4);
-    background: rgba(251, 191, 36, 0.08);
+    background: rgba(245, 158, 11, 0.08);
     color: var(--sp-warning);
     font-size: var(--sp-fs-xs);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.15);
+    border-bottom: 1px solid rgba(245, 158, 11, 0.15);
     flex-shrink: 0;
   }
 

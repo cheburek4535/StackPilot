@@ -7,6 +7,8 @@
  *     /            Home — project launcher (recent projects, quick actions)
  *     /toolchain   Toolchain — system-wide dev environment tools
  *     /create      Project Creator — scaffolding wizard
+ *     /devlauncher/analyze   Analyze — DevLauncher project analysis
+ *     /settings    Settings — app preferences
  *
  *   Active Project:
  *     /workspace   Workspace — the single unified home for the active project.
@@ -63,6 +65,20 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: "sparkles",
         match: exact(["/project-creator", "/create"]),
       },
+      {
+        id: "analyze",
+        label: "nav.analyze",
+        href: "/devlauncher/analyze",
+        icon: "search",
+        match: exact(["/devlauncher/analyze", "/analyze"]),
+      },
+      {
+        id: "settings",
+        label: "nav.settings",
+        href: "/settings",
+        icon: "settings",
+        match: exact(["/settings"]),
+      },
     ],
   },
   {
@@ -74,13 +90,9 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "nav.workspace",
         href: "/workspace",
         icon: "folder",
-        match: prefix([
-          "/workspace",
-          "/devlauncher",
-          "/profiles",
-          "/processes",
-          "/analyze",
-        ]),
+        match: (p) =>
+          prefix(["/workspace", "/profiles", "/processes"])(p) ||
+          (p.startsWith("/devlauncher") && !p.startsWith("/devlauncher/analyze")),
       },
     ],
   },

@@ -12,6 +12,7 @@ pub mod runtime;
 pub mod session;
 
 use crate::modules::workspace::process_manager::ProcessManager;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub struct WorkspaceState {
@@ -27,13 +28,13 @@ pub struct WorkspaceState {
 }
 
 impl WorkspaceState {
-    pub fn new(process_manager: Arc<dyn ProcessManager>) -> Self {
+    pub fn new(process_manager: Arc<dyn ProcessManager>, data_dir: Option<PathBuf>) -> Self {
         Self {
             process_manager,
             project: project::DefaultProjectService::new(),
             overview: overview::DefaultOverviewService::new(),
             runtime: runtime::DefaultRuntimeService::new(),
-            session: session::DefaultSessionService::new(),
+            session: session::DefaultSessionService::new(data_dir),
             logs: logs::DefaultLogsService::new(),
             problems: problems::DefaultProblemsService::new(),
             info: info::DefaultInfoService::new(),

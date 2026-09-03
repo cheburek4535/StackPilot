@@ -58,7 +58,7 @@ impl JsonSettingsService {
             font_size: "md".into(),
             reduced_motion: false,
             show_interface_hints: true,
-            accent_color: "violet".into(),
+            accent_color: "orange".into(),
             restore_last_route: true,
             confirm_before_reset: true,
             personal: PersonalSettings::default(),
@@ -99,7 +99,7 @@ impl JsonSettingsService {
         s.accent_color = if Self::is_accent_preset(&accent) || Self::is_valid_hex(&accent) {
             accent
         } else {
-            "violet".into()
+            "orange".into()
         };
 
         s.personal.name = s.personal.name.trim().to_string();
@@ -222,7 +222,7 @@ mod tests {
         let svc = JsonSettingsService::new(dir.clone());
         let got = svc.get_settings().unwrap();
         assert_eq!(got.theme, "dark");
-        assert_eq!(got.accent_color, "violet");
+        assert_eq!(got.accent_color, "orange");
         assert!(got.auto_save);
         assert!(svc.settings_path.exists());
         fs::remove_dir_all(dir).ok();
@@ -242,7 +242,7 @@ mod tests {
         let got = svc.update_settings(&s).unwrap();
         assert_eq!(got.theme, "dark");
         assert_eq!(got.font_size, "md");
-        assert_eq!(got.accent_color, "violet");
+        assert_eq!(got.accent_color, "orange");
         assert_eq!(got.ai.temperature, 2.0);
         assert_eq!(got.ai.max_tokens, 1);
         assert_eq!(got.ai.provider, "custom");

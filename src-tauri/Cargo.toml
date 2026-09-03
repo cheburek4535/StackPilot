@@ -1,6 +1,6 @@
 [package]
 name = "stackpilot"
-version = "0.1.0"
+version = "1.2.1"
 description = "A Tauri App"
 authors = ["cheburek4535"]
 edition = "2021"

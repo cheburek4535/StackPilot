@@ -69,7 +69,7 @@
     background: linear-gradient(
       135deg,
       var(--sp-accent-soft),
-      rgba(34, 211, 238, 0.08)
+      rgba(6, 182, 212, 0.08)
     );
     border: 1px solid var(--sp-accent-border);
     box-shadow: var(--sp-shadow-1);

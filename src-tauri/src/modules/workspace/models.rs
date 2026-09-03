@@ -12,7 +12,11 @@ pub struct ProjectContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub started_at: String,
+    /// Current session uptime (since this session was opened).
     pub duration_secs: u64,
+    /// All-time accumulated time for this project (persisted locally across
+    /// sessions), including the current session's elapsed time.
+    pub total_duration_secs: u64,
     pub process_count: usize,
     pub error_count: usize,
 }

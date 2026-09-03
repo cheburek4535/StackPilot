@@ -12,7 +12,7 @@
   import TechIcon from "$lib/components/TechIcon.svelte";
   import StateBadge from "./StateBadge.svelte";
   import type { MarketplaceItem } from "../marketplace";
-  import { marketplaceAction } from "../marketplace";
+  import { marketplaceAction, isManualOnly } from "../marketplace";
   import {
     formatSizeMb,
     platformName,
@@ -72,6 +72,12 @@
     def.bundled_with ? (i18n.t("tc.install.bundled_with", { tool: def.bundled_with }) as TranslationKey) : (i18n.t("tc.install.builtin_os") as TranslationKey),
   );
 
+  /** Bundled-тул без установки: статус «в комплекте с <хостом>» вместо
+   *  «не установлен» — pip не ставят отдельно, он приходит с python. */
+  const stateOverride = $derived(
+    scan?.state.kind === "missing" && def.bundled_with ? builtInLabel : null,
+  );
+
   const hasLinks = $derived(!!(def.docs_url || def.source_url));
 </script>
 
@@ -85,7 +91,7 @@
       <span class="category">{def.category}</span>
     </div>
     {#if scan}
-      <StateBadge state={scan.state} />
+      <StateBadge state={scan.state} overrideLabel={stateOverride} />
     {:else}
       <Badge tone="neutral">{i18n.t("tc.install.no_scan") as TranslationKey}</Badge>
     {/if}
@@ -145,13 +151,15 @@
     {#if item.docker_alternative}
       <Badge tone="blue">{i18n.t("tc.install.docker_image", { image: item.docker_alternative.image ?? (i18n.t("tc.install.no_image") as TranslationKey) }) as TranslationKey}</Badge>
     {/if}
-    {#if def.manual_install}
+    {#if isManualOnly(def)}
       <Badge tone="violet">{i18n.t("tc.install.manual_only") as TranslationKey}</Badge>
     {/if}
   </div>
 
-  {#if def.manual_install}
+  {#if isManualOnly(def)}
     <p class="manual-note" title={i18n.t(def.manual_install as TranslationKey)}>{i18n.t(def.manual_install as TranslationKey)}</p>
+  {:else if def.bundled_with}
+    <p class="bundled-note" title={builtInLabel}>{builtInLabel}</p>
   {/if}
 
   <footer class="foot">
@@ -344,6 +352,18 @@
     margin: 0;
     font-size: var(--sp-fs-xs);
     color: var(--sp-warning);
+    line-height: var(--sp-lh-normal);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .bundled-note {
+    margin: 0;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
     line-height: var(--sp-lh-normal);
     display: -webkit-box;
     -webkit-line-clamp: 2;

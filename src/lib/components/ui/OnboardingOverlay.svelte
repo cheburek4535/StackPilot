@@ -190,7 +190,7 @@
     background: linear-gradient(
       135deg,
       var(--sp-accent-soft),
-      rgba(34, 211, 238, 0.1)
+      rgba(6, 182, 212, 0.1)
     );
     color: var(--sp-accent);
     border: 1px solid var(--sp-accent-border);

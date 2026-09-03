@@ -162,8 +162,8 @@
     flex: 0 0 auto;
     border-radius: var(--sp-radius-md);
     color: var(--sp-cyan);
-    background: rgba(34, 211, 238, 0.12);
-    border: 1px solid rgba(34, 211, 238, 0.3);
+    background: rgba(6, 182, 212, 0.12);
+    border: 1px solid rgba(6, 182, 212, 0.3);
   }
 
   .op-icon.spin :global(svg) {

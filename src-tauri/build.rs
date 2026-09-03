@@ -1,4 +1,20 @@
 fn main() {
+    // Mandatory: generates ACL manifests (plugin permissions + capabilities)
+    // into OUT_DIR, which tauri::generate_context! embeds into the binary.
+    // Without it the app compiles with an empty ACL and every IPC command
+    // (dialog.open, custom commands) is denied with "not allowed. Plugin
+    // not found".
+    //
+    // The default app manifest (common-controls v6) is skipped because the
+    // Windows manifest is linked below for ALL targets (app + cargo test
+    // binaries); tauri-build's own manifest would duplicate the
+    // RT_MANIFEST resource and fail the link with CVT1100.
+    tauri_build::try_build(
+        tauri_build::Attributes::default()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest()),
+    )
+    .expect("tauri-build failed");
+
     // Test binaries on Windows link the full Win32 stack, including
     // `TaskDialogIndirect` from comctl32. Without an application manifest
     // the loader binds the legacy comctl32 v5.82 from WinSxS, which does
@@ -40,6 +56,9 @@ fn main() {
                 "rc.exe failed to compile the test manifest resource"
             );
 
+            // Same manifest tauri-build links into the app binary (bins);
+            // this one also covers test binaries (cargo test), which
+            // tauri-build's rustc-link-arg-bins does not reach.
             println!("cargo:rustc-link-arg={}", res_path.display());
         } else {
             println!(

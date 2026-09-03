@@ -9,14 +9,21 @@
     state,
     dot = true,
     withVersion = false,
+    overrideLabel = null,
   }: {
     state: ToolState;
     dot?: boolean;
-    /** Показать версию рядом с подписью (если вариант её несёт). */
     withVersion?: boolean;
+    /** Полная замена подписи состояния (например «в комплекте с python»
+     *  для bundled-тула вместо «не установлен»). */
+    overrideLabel?: string | null;
   } = $props();
 
-  const info = $derived(toolStateInfo(state));
+  const info = $derived(
+    overrideLabel
+      ? { label: overrideLabel, tone: "cyan" as const, short: undefined as string | undefined }
+      : toolStateInfo(state),
+  );
   const version = $derived(withVersion ? toolStateVersion(state) : null);
 </script>
 

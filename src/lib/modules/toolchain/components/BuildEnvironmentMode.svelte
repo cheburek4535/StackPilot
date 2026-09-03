@@ -273,8 +273,8 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-xs);
     color: var(--sp-warning);
-    border: 1px solid rgba(251, 191, 36, 0.3);
-    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    background: rgba(245, 158, 11, 0.08);
     border-radius: var(--sp-radius-md);
   }
 

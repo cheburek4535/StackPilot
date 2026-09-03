@@ -73,6 +73,13 @@ export function sourcesForPlatform(def: ToolDefinition, os: string): InstallSour
 // Возможности, выводимые из определения (зеркало бэкенда)
 // ------------------------------------------------------------
 
+/** Ручная установка по каталогу: manual_install БЕЗ bundled-хоста.
+ *  Bundled-тулы (pip с python, npm с node) приходят вместе с хостом —
+ *  «ставьте вручную» для них ложь. */
+export function isManualOnly(def: ToolDefinition): boolean {
+  return !!def.manual_install && !def.bundled_with;
+}
+
 /** Флаги возможностей из ОДНОГО определения (для режима без снапшота). */
 export function capabilitiesOfDefinition(def: ToolDefinition): ToolPlatformCapabilities {
   const detectable =
@@ -83,7 +90,7 @@ export function capabilitiesOfDefinition(def: ToolDefinition): ToolPlatformCapab
     (def.sources.windows.length > 0 ||
       def.sources.linux.length > 0 ||
       def.sources.macos.length > 0) &&
-    !def.manual_install;
+    !isManualOnly(def);
   return {
     detectable,
     installable,
@@ -91,7 +98,7 @@ export function capabilitiesOfDefinition(def: ToolDefinition): ToolPlatformCapab
     removable: def.declared_capabilities?.removable === true,
     repairable: def.declared_capabilities?.repairable === true,
     health_checkable: def.health_checks.length > 0,
-    manual_instructions_available: !!def.manual_install,
+    manual_instructions_available: isManualOnly(def),
     docker_alternative_available: !!def.docker,
   };
 }
@@ -140,14 +147,15 @@ export function checksumStatus(sources: InstallSource[]): MarketplaceItem["check
 }
 
 function applicabilityOf(def: ToolDefinition, os: string): MarketplaceItem["applicability"] {
-  if (def.manual_install) return "manual_only";
+  if (isManualOnly(def)) return "manual_only";
   const hasAnySource =
     def.sources.windows.length > 0 ||
     def.sources.linux.length > 0 ||
     def.sources.macos.length > 0;
   if (!hasAnySource) {
     // Без источников нигде: встроенный в ОС (curl/tar) или чисто
-    // информационная запись — по фактам каталога.
+    // информационная запись — по фактам каталога. Bundled-тулы
+    // (pip с python) тоже попадают сюда: «в комплекте с хостом».
     return "built_in";
   }
   if (sourcesForPlatform(def, os).length === 0) return "no_source";
@@ -179,7 +187,7 @@ export function buildMarketplaceItems(
       def,
       os,
       scan: scanById.get(def.id) ?? null,
-      installable: sources.length > 0 && !def.manual_install,
+      installable: sources.length > 0 && !isManualOnly(def),
       applicability: applicabilityOf(def, os),
       sources_for_os: sources,
       availability: platformsOfDefinition(def),
@@ -246,6 +254,9 @@ export function marketplaceAction(item: MarketplaceItem, busy = false): Marketpl
   if (item.applicability === "no_source") {
     return { kind: "no_source", label: "Нет источника на этой ОС" };
   }
+  if (item.def.bundled_with) {
+    return { kind: "built_in", label: `В комплекте с ${item.def.bundled_with}` };
+  }
   return { kind: "built_in", label: "Встроен в ОС" };
 }
 
@@ -283,7 +294,7 @@ export function makeMarketplacePredicate(filters: CatalogFilters) {
       // (регрессия «reviewUpdates в Manage → витрина без скана пуста»).
       if (scan && scan.state.kind !== "update_available") return false;
     }
-    if (filters.manual_only && !item.def.manual_install) return false;
+    if (filters.manual_only && !isManualOnly(item.def)) return false;
     if (filters.installable && !item.installable) return false;
     if (filters.has_docker_alternative && !item.def.docker) return false;
     return true;
@@ -380,7 +391,7 @@ export function marketplaceBooleanCount(
         if (item.installable) n += 1;
         break;
       case "manual_only":
-        if (item.def.manual_install) n += 1;
+        if (isManualOnly(item.def)) n += 1;
         break;
       case "update_only":
         if (item.scan?.state.kind === "update_available") n += 1;

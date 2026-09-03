@@ -408,6 +408,65 @@ export function initTauriMock() {
       };
     }
 
+    if (cmd === "analyze_project_v2") {
+      const raw = args.path || "New Project";
+      const name = raw.split(/[\\/]/).filter(Boolean).pop() || "New Project";
+      return {
+        profile: {
+          schema_version: "2.0",
+          id: `prof-${Date.now()}`,
+          name,
+          description: `Автоанализ проекта из ${raw}`,
+          project_root: raw,
+          steps: [
+            {
+              id: `step-open-${Date.now()}`,
+              label: "Открыть папку",
+              enabled: true,
+              kind: { type: "open_folder", path: raw },
+              depends_on: [],
+              working_directory: raw,
+              completion: { type: "external_launch_accepted" },
+            },
+            {
+              id: `step-term-${Date.now()}`,
+              label: "Открыть терминал",
+              enabled: true,
+              kind: { type: "open_terminal", command: "" },
+              depends_on: [],
+              working_directory: raw,
+              visibility: "visible_terminal",
+              execution_mode: "long_running",
+              completion: { type: "process_started" },
+            },
+          ],
+        },
+        diagnostics: [],
+      };
+    }
+
+    if (cmd === "save_profile_v2") {
+      const profiles = getStorage<any[]>("profiles_v2", []);
+      const idx = profiles.findIndex((p: any) => p.name === args.profile.name);
+      if (idx >= 0) {
+        profiles[idx] = args.profile;
+      } else {
+        profiles.push(args.profile);
+      }
+      setStorage("profiles_v2", profiles);
+      return;
+    }
+
+    if (cmd === "list_profiles_v2") {
+      return getStorage<any[]>("profiles_v2", []);
+    }
+
+    if (cmd === "delete_profile_v2") {
+      const profiles = getStorage<any[]>("profiles_v2", []);
+      setStorage("profiles_v2", profiles.filter((p: any) => p.name !== args.name));
+      return;
+    }
+
     // ==========================================
     // Project Creator Commands
     // ==========================================
@@ -1041,7 +1100,14 @@ export function initTauriMock() {
     // Plugin dialog & opener calls
     // ==========================================
     if (cmd === "plugin:dialog|open") {
-      return "/workspace/StackPilot";
+      // В браузере системный проводник недоступен — честный prompt
+      // вместо молчаливого возврата пути (иначе «выбрать папку»
+      // выглядит мёртвой кнопкой).
+      const typed = window.prompt(
+        "Выберите папку (режим браузера):",
+        "/workspace/StackPilot",
+      );
+      return typed && typed.trim() ? typed.trim() : null;
     }
 
     if (cmd === "plugin:opener|open_url") {

@@ -146,12 +146,12 @@
   }
 
   .sb-badge-certain {
-    background: rgba(163, 230, 53, 0.14);
+    background: rgba(132, 204, 22, 0.14);
     color: var(--sp-success);
   }
 
   .sb-badge-expected {
-    background: rgba(251, 191, 36, 0.14);
+    background: rgba(245, 158, 11, 0.14);
     color: var(--sp-warning);
   }
 

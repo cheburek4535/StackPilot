@@ -53,37 +53,37 @@
   }
 
   .sp-badge-neutral {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(148, 163, 184, 0.1);
     color: var(--sp-text-2);
   }
 
   .sp-badge-violet {
-    background: rgba(139, 92, 246, 0.12);
+    background: rgba(160, 139, 232, 0.12);
     color: var(--sp-violet);
   }
 
   .sp-badge-cyan {
-    background: rgba(34, 211, 238, 0.12);
+    background: rgba(6, 182, 212, 0.12);
     color: var(--sp-cyan);
   }
 
   .sp-badge-blue {
-    background: rgba(96, 165, 250, 0.12);
+    background: rgba(111, 158, 232, 0.12);
     color: var(--sp-blue);
   }
 
   .sp-badge-lime {
-    background: rgba(163, 230, 53, 0.12);
+    background: rgba(132, 204, 22, 0.12);
     color: var(--sp-lime);
   }
 
   .sp-badge-amber {
-    background: rgba(251, 191, 36, 0.12);
+    background: rgba(245, 158, 11, 0.12);
     color: var(--sp-amber);
   }
 
   .sp-badge-red {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--sp-red);
   }
 </style>

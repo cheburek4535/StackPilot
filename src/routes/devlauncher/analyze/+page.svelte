@@ -7,7 +7,6 @@
   import {
     applyStepPatch,
     failurePolicyLabel,
-    stepKindIcon,
     stepKindLabel,
     stepKindSummary,
     visibilityLabel,
@@ -16,6 +15,7 @@
     type LaunchStep,
     type Visibility,
   } from "$lib/modules/devlauncher/types";
+  import Icon from "$lib/components/ui/Icon.svelte";
 
   let projectPath = $state("");
   let draft = $state<DraftProfile | null>(null);
@@ -185,16 +185,20 @@
   }
 
   async function pickFolder() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Выберите папку проекта",
-    });
-    if (selected) {
-      projectPath = selected;
-      draft = null;
-      error = "";
-      savedOk = false;
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Выберите папку проекта",
+      });
+      if (selected) {
+        projectPath = selected;
+        draft = null;
+        error = "";
+        savedOk = false;
+      }
+    } catch (e) {
+      error = `Ошибка выбора папки: ${e}`;
     }
   }
 
@@ -302,7 +306,7 @@
     <section class="editor">
       <div class="editor-header">
         <div>
-          <h2>📦 {draft.profile.name}</h2>
+          <h2>{draft.profile.name}</h2>
           <p class="desc">{draft.profile.description}</p>
         </div>
         <button class="primary save-btn" onclick={handleSave} disabled={saving}>
@@ -312,35 +316,33 @@
 
       {#if draft.diagnostics.length > 0}
         <div class="diagnostics">
-          <h3>Диагностика анализа</h3>
+          <h3>{i18n.t("analyze.diagnostics" as TranslationKey)}</h3>
           {#each draft.diagnostics as d, i (i)}
             <div class="diag-row" class:diag-warning={d.severity === "warning"} class:diag-error={d.severity === "error"}>
-              <span class="diag-sev">
-                {d.severity === "error" ? "✗" : d.severity === "warning" ? "⚠" : "ℹ"}
-              </span>
+              <span class="diag-dot" class:diag-dot-warning={d.severity === "warning"} class:diag-dot-error={d.severity === "error"}></span>
               <span class="diag-text">
                 {d.message}
                 {#if d.file}
                   <span class="diag-file">({d.file})</span>
                 {/if}
               </span>
-              <span class="diag-conf">уверенность: {confidenceLabel(d.confidence)}</span>
+              <span class="diag-conf">{i18n.t("analyze.confidence") as TranslationKey}: {confidenceLabel(d.confidence)}</span>
             </div>
           {/each}
         </div>
       {/if}
 
       <div class="add-bar">
-        <button class="secondary" onclick={() => (showAddPanel = !showAddPanel)}>
-          {showAddPanel ? "▲ Скрыть шаблоны" : "➕ Добавить действие"}
+        <button class="secondary add-toggle" onclick={() => (showAddPanel = !showAddPanel)}>
+          <Icon name={showAddPanel ? "x" : "plus"} size={14} />
+          {showAddPanel ? i18n.t("analyze.hide_templates") : i18n.t("analyze.add_action")}
         </button>
-        <span class="add-hint">Перетаскивайте карточки, чтобы изменить порядок</span>
+        <span class="add-hint">{i18n.t("analyze.drag_hint")}</span>
       </div>
 
       {#if showAddPanel}
         <div class="template-panel">
           <div class="tpl-row">
-            <span class="tpl-icon">🖥</span>
             <div class="tpl-body">
               <div class="tpl-name">Пустой терминал</div>
               <div class="tpl-desc">Открыть терминал в корне проекта без команды</div>
@@ -349,7 +351,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">🖥</span>
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">Терминал с командой</div>
               <input type="text" placeholder="Команда (например: docker logs -f backend)" bind:value={addTpl.command} />
@@ -359,7 +360,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">▶</span>
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">Выполнить команду</div>
               <input type="text" placeholder="Команда (например: npm test)" bind:value={addTpl.command} />
@@ -369,7 +369,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">📁</span>
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">Открыть папку</div>
               <input type="text" placeholder={`Путь (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.path} />
@@ -378,7 +377,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">🌐</span>
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">Открыть URL</div>
               <input type="text" placeholder="https://localhost:3000/docs" bind:value={addTpl.url} />
@@ -387,7 +385,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">🔌</span>
             <div class="tpl-body tpl-fields tpl-inline">
               <div class="tpl-name">Ожидать порт</div>
               <input type="text" placeholder="Хост" bind:value={addTpl.host} class="tpl-sm" />
@@ -398,7 +395,6 @@
           </div>
 
           <div class="tpl-row">
-            <span class="tpl-icon">⏱</span>
             <div class="tpl-body tpl-fields tpl-inline">
               <div class="tpl-name">Пауза</div>
               <input type="number" placeholder="Секунды" bind:value={addTpl.seconds} class="tpl-sm" />
@@ -438,7 +434,6 @@
             }}
           >
             <div class="card-header">
-              <span class="card-icon">{stepKindIcon(step.kind)}</span>
               <div
                 class="card-info"
                 onclick={() => toggleExpand(step.id)}
@@ -461,13 +456,14 @@
                 </button>
                 <button
                   class="icon-btn expand-btn"
+                  class:expanded={expanded.has(step.id)}
                   onclick={() => toggleExpand(step.id)}
                   title={i18n.t("analyze.expand" as TranslationKey)}
                 >
-                  {expanded.has(step.id) ? "▲" : "▼"}
+                  <Icon name="chevronRight" size={14} />
                 </button>
                 <button class="icon-btn delete-btn" onclick={() => removeStep(i)} title="Удалить действие">
-                  ✕
+                  <Icon name="trash" size={14} />
                 </button>
               </div>
             </div>
@@ -591,14 +587,14 @@
   .hint { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.75rem 0 0; }
   .msg { margin-top: 0.75rem; padding: 0.6rem 1rem; border-radius: var(--sp-radius-md); font-size: var(--sp-fs-sm); }
   .msg.error {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--sp-danger);
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    border: 1px solid rgba(239, 68, 68, 0.35);
   }
   .msg.success {
-    background: rgba(163, 230, 53, 0.12);
+    background: rgba(132, 204, 22, 0.12);
     color: var(--sp-success);
-    border: 1px solid rgba(163, 230, 53, 0.35);
+    border: 1px solid rgba(132, 204, 22, 0.35);
   }
   .msg .link {
     background: none;
@@ -646,12 +642,22 @@
     color: var(--sp-text-2);
   }
 
-  .diag-row.diag-warning .diag-sev { color: #fbbf24; }
-  .diag-row.diag-error .diag-sev { color: var(--sp-danger); }
-  .diag-row.diag-warning { color: #fbbf24; }
-  .diag-row.diag-error { color: var(--sp-danger); }
+  .diag-row.diag-warning .diag-text { color: var(--sp-amber); }
+  .diag-row.diag-error .diag-text { color: var(--sp-danger); }
 
-  .diag-sev { flex-shrink: 0; }
+  .diag-dot {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    align-self: center;
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-info);
+    opacity: 0.7;
+  }
+
+  .diag-dot-warning { background: var(--sp-warning); }
+  .diag-dot-error { background: var(--sp-danger); }
+
   .diag-text { flex: 1; word-break: break-word; }
   .diag-file { opacity: 0.6; font-family: var(--sp-font-mono); }
   .diag-conf { flex-shrink: 0; opacity: 0.6; }
@@ -668,6 +674,12 @@
     gap: 0.75rem;
     margin: 0.75rem 0;
     flex-wrap: wrap;
+  }
+
+  .add-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
   .add-hint {
@@ -696,7 +708,6 @@
     border-radius: var(--sp-radius-md);
   }
 
-  .tpl-icon { font-size: 1rem; flex-shrink: 0; }
   .tpl-body { flex: 1; min-width: 0; }
   .tpl-name { font-size: var(--sp-fs-sm); font-weight: var(--sp-fw-semibold); color: var(--sp-text-1); }
   .tpl-desc { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }
@@ -742,13 +753,6 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.6rem 0.8rem;
-  }
-
-  .card-icon {
-    font-size: 1rem;
-    width: 1.4rem;
-    text-align: center;
-    flex-shrink: 0;
   }
 
   .card-info {
@@ -801,12 +805,15 @@
   }
 
   .toggle-btn.on {
-    background: rgba(163, 230, 53, 0.14);
-    border-color: rgba(163, 230, 53, 0.4);
+    background: rgba(132, 204, 22, 0.14);
+    border-color: rgba(132, 204, 22, 0.4);
     color: var(--sp-success);
   }
 
   .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: 0.25rem 0.5rem;
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-sm);
@@ -820,11 +827,17 @@
   .icon-btn:hover { background: var(--sp-bg-2); color: var(--sp-text-1); }
   .icon-btn:active { background: var(--sp-bg-3); }
   .expand-btn { min-width: 2em; }
-  .delete-btn:hover { background: rgba(248, 113, 113, 0.15); color: var(--sp-danger); }
+  .expand-btn :global(.sp-icon) {
+    transition: transform 0.15s ease;
+  }
+  .expand-btn.expanded :global(.sp-icon) {
+    transform: rotate(90deg);
+  }
+  .delete-btn:hover { background: rgba(239, 68, 68, 0.15); color: var(--sp-danger); }
 
   .card-editor {
     border-top: 1px solid var(--sp-border);
-    padding: 0.75rem 0.8rem 1rem 2.7rem;
+    padding: 0.75rem 0.8rem 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;

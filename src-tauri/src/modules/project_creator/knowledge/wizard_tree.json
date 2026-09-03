@@ -290,7 +290,7 @@
       "id": "telegram-bot",
       "label": "wizard.pt.telegram_bot.label",
       "description": "wizard.pt.telegram_bot.desc",
-      "icon": "telegram-bot.webp",
+      "icon": "telegram.svg",
       "tags": [
         "bot",
         "messenger"
@@ -349,7 +349,7 @@
       "id": "embedded",
       "label": "wizard.pt.embedded.label",
       "description": "wizard.pt.embedded.desc",
-      "icon": "iot.png",
+      "icon": "iot.svg",
       "tags": [
         "embedded",
         "iot",

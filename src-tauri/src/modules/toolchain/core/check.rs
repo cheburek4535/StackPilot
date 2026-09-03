@@ -15,6 +15,8 @@
 //     ManualInstall: честное предупреждение «установите вручную».
 //     Не блокирует проект, не учитывается в размере загрузки
 //     и администраторе (UpdateAvailable → Installed, PathBroken → warning);
+//     bundled-инструменты (pip с python) из этого правила исключены —
+//     они идут в комплекте с хостом;
 //   - всё остальное — требование со статусом.
 //
 // free_space_mb на этапе 2 всегда 0 (проверка диска — этап 5):
@@ -121,21 +123,28 @@ pub async fn run_check(
             // Installed (обновляется вручную, advisory-версии не важны),
             // PathBroken → предупреждение (проба бинаря движка, который
             // обычно не в PATH, — ложная тревога, а не поломка).
+            // Bundled-инструменты (pip с python) НЕ подпадают под эту
+            // нормализацию: они приходят вместе с хостом, и отсутствие
+            // остаётся честным Missing → «не требование» ниже.
             let os_sources = sources_for_os(&def, &os);
             let status = if os_sources.is_empty() {
                 if let Some(reason) = &def.manual_install {
-                    match status {
-                        ToolStatus::Missing => ToolStatus::ManualInstall { reason: reason.clone() },
-                        ToolStatus::UpdateAvailable { installed, .. } => {
-                            ToolStatus::Installed { version: installed }
+                    if def.bundled_with.is_none() {
+                        match status {
+                            ToolStatus::Missing => ToolStatus::ManualInstall { reason: reason.clone() },
+                            ToolStatus::UpdateAvailable { installed, .. } => {
+                                ToolStatus::Installed { version: installed }
+                            }
+                            ToolStatus::PathBroken { reason } => ToolStatus::ManualInstall {
+                                reason: format!(
+                                    "Установка найдена, но бинарник не отвечает на пробу — его каталог, скорее всего, не в PATH приложения ({reason}). {}",
+                                    reason_suffix(&def)
+                                ),
+                            },
+                            other => other,
                         }
-                        ToolStatus::PathBroken { reason } => ToolStatus::ManualInstall {
-                            reason: format!(
-                                "Установка найдена, но бинарник не отвечает на пробу — его каталог, скорее всего, не в PATH приложения ({reason}). {}",
-                                reason_suffix(&def)
-                            ),
-                        },
-                        other => other,
+                    } else {
+                        status
                     }
                 } else {
                     status

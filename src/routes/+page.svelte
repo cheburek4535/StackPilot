@@ -143,6 +143,12 @@
 
   const healthOk = $derived(health !== null && health.tools.length > 0 && health.tools.every((t) => t.ok));
   const healthFailing = $derived(health !== null && health.tools.some((t) => !t.ok));
+
+  /** Recent projects that have a saved DevLauncher profile — only these are
+   *  shown, so projects without a launch profile stay out of Home. */
+  const visibleRecents = $derived(
+    $recentProjects.filter((ref) => profileForRef(ref) !== null),
+  );
 </script>
 
 <PageContainer width="wide">
@@ -212,11 +218,11 @@
         title={i18n.t("home.recent_projects") as TranslationKey}
         description={i18n.t("home.recent_desc") as TranslationKey}
       >
-        {#if $recentProjects.length === 0}
+        {#if visibleRecents.length === 0}
           <p class="sp-none">{i18n.t("home.no_recent") as TranslationKey}</p>
         {:else}
           <div class="sp-recent-list" id="recent">
-            {#each $recentProjects.slice(0, 5) as ref}
+            {#each visibleRecents.slice(0, 5) as ref}
               {@const matched = profileForRef(ref)}
               <div class="sp-recent-row">
                 <div class="sp-recent-main">
@@ -313,7 +319,7 @@
       </Card>
     </div>
 
-    {#if !project && $recentProjects.length === 0}
+    {#if !project && visibleRecents.length === 0}
       {#snippet emptyAction()}
         <Button variant="primary" icon="folder" onclick={openFolder}>{i18n.t("home.open_folder") as TranslationKey}</Button>
         <Button variant="secondary" icon="sparkles" href="/create">{i18n.t("home.new_project") as TranslationKey}</Button>

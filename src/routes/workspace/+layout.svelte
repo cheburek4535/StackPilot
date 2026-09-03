@@ -14,8 +14,7 @@
     reloadWorkspaceContext,
     clearWorkspaceProject,
   } from "$lib/modules/workspace/context";
-  import { openInVSCode } from "$lib/modules/workspace/api";
-  import { notifyInfo, notifySuccess, notifyError } from "$lib/core/toasts";
+  import { notifyInfo } from "$lib/core/toasts";
   import type { WorkspaceAssistantContext } from "$lib/modules/assistant/types";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -61,21 +60,6 @@
     goto(id === "dashboard" ? "/workspace" : `/workspace/${id}`);
   }
 
-  async function openInVsCodeSafe(path: string) {
-    try {
-      await openInVSCode(path);
-      notifySuccess(
-        i18n.t("ws.toast_vscode"),
-        i18n.t("ws.toast_opening"),
-      );
-    } catch (e) {
-      notifyError(
-        i18n.t("ws.toast_vscode"),
-        i18n.t("ws.toast_failed", { err: String(e) }),
-      );
-    }
-  }
-
   async function closeWorkspace() {
     await clearWorkspaceProject();
     notifyInfo(i18n.t("ws.toast_workspace"), i18n.t("ws.toast_closed"));
@@ -111,16 +95,6 @@
         >
           {i18n.t("ws.assistant") as TranslationKey}
         </Button>
-        {#if project?.project_path}
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="external"
-            onclick={() => openInVsCodeSafe(project!.project_path!)}
-          >
-            {i18n.t("ws.open_vscode") as TranslationKey}
-          </Button>
-        {/if}
         {#if project}
           <Button variant="ghost" size="sm" icon="x" onclick={closeWorkspace}>
             {i18n.t("ws.close_workspace") as TranslationKey}

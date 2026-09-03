@@ -11,27 +11,27 @@
  */
 
 :root {
-  /* ---- Accent palette (neon, developer-oriented) ---- */
-  --sp-violet: #a78bfa;
-  --sp-violet-strong: #8b5cf6;
-  --sp-violet-deep: #6d28d9;
-  --sp-cyan: #22d3ee;
-  --sp-blue: #60a5fa;
-  --sp-blue-strong: #3b82f6;
-  --sp-lime: #a3e635;
+  /* ---- Accent palette (deep, professional — GitHub/Docker/Gemini mood) ---- */
+  --sp-violet: #a08be8;
+  --sp-violet-strong: #7c5ef0;
+  --sp-violet-deep: #5b46b8;
+  --sp-cyan: #25b5d0;
+  --sp-blue: #6f9ee8;
+  --sp-blue-strong: #3b78d4;
+  --sp-lime: #a3d95c;
   --sp-lime-deep: #65a30d;
-  --sp-red: #f87171;
-  --sp-amber: #fbbf24;
+  --sp-red: #ef5f5f;
+  --sp-amber: #f0a92e;
 
   /* ---- Semantic ---- */
-  --sp-success: var(--sp-lime);
-  --sp-info: var(--sp-cyan);
-  --sp-warning: var(--sp-amber);
-  --sp-danger: var(--sp-red);
-  --sp-accent: var(--sp-violet);
-  --sp-accent-strong: var(--sp-violet-strong);
-  --sp-accent-soft: rgba(139, 92, 246, 0.16);
-  --sp-accent-border: rgba(139, 92, 246, 0.4);
+  --sp-success: #84cc16;
+  --sp-info: #06b6d4;
+  --sp-warning: #f59e0b;
+  --sp-danger: #ef4444;
+  --sp-accent: #f59e0b;
+  --sp-accent-strong: #c98209;
+  --sp-accent-soft: rgba(245, 158, 11, 0.16);
+  --sp-accent-border: rgba(245, 158, 11, 0.4);
 
   /* ---- Typography ---- */
   --sp-font-sans:
@@ -41,9 +41,9 @@
     "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular,
     "Consolas", "Liberation Mono", monospace;
 
-  --sp-text-1: #eceef4;
-  --sp-text-2: #a7adbc;
-  --sp-text-3: #6f7691;
+  --sp-text-1: #e6e9ef;
+  --sp-text-2: #98a2b3;
+  --sp-text-3: #5b6472;
 
   --sp-fs-xs: 0.75rem;
   --sp-fs-sm: 0.8125rem;
@@ -81,35 +81,35 @@
   --sp-radius-full: 9999px;
 
   /* ---- Elevation ---- */
-  --sp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
-  --sp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --sp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --sp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45), 0 4px 16px rgba(0, 0, 0, 0.35);
   --sp-shadow-3:
-    0 8px 24px rgba(0, 0, 0, 0.4), 0 16px 48px rgba(0, 0, 0, 0.3);
+    0 8px 24px rgba(0, 0, 0, 0.55), 0 16px 48px rgba(0, 0, 0, 0.45);
   --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
-    0 4px 20px rgba(139, 92, 246, 0.25);
+    0 4px 20px rgba(217, 119, 6, 0.28);
 
   /* ---- Focus ---- */
-  --sp-focus-ring: 0 0 0 2px var(--sp-bg-0), 0 0 0 4px var(--sp-violet);
+  --sp-focus-ring: 0 0 0 2px var(--sp-bg-0), 0 0 0 4px var(--sp-accent);
 
-  /* ---- Surfaces (deep neutral, no tinted layers) ---- */
-  --sp-bg-0: #0c0d11;
-  --sp-bg-1: #13151b;
-  --sp-bg-2: #1a1d26;
-  --sp-bg-3: #222632;
-  --sp-glass-bg: rgba(26, 29, 38, 0.72);
-  --sp-glass-strong: rgba(15, 17, 23, 0.86);
-  --sp-border: rgba(255, 255, 255, 0.08);
-  --sp-border-strong: rgba(255, 255, 255, 0.14);
-  --sp-border-faint: rgba(255, 255, 255, 0.04);
+  /* ---- Surfaces (deep, blue-tinted neutral — no flat plastic layers) ---- */
+  --sp-bg-0: #08090c;
+  --sp-bg-1: #0e1016;
+  --sp-bg-2: #161a23;
+  --sp-bg-3: #1e2330;
+  --sp-glass-bg: rgba(14, 16, 22, 0.82);
+  --sp-glass-strong: rgba(10, 12, 16, 0.9);
+  --sp-border: rgba(148, 163, 184, 0.1);
+  --sp-border-strong: rgba(148, 163, 184, 0.18);
+  --sp-border-faint: rgba(148, 163, 184, 0.05);
 
-  --sp-code-bg: rgba(255, 255, 255, 0.06);
+  --sp-code-bg: rgba(148, 163, 184, 0.08);
 
   /* ---- App chrome ---- */
   --sp-topbar-h: 3.25rem;
   --sp-sidebar-w: 14.5rem;
 
-  --sp-scrollbar-thumb: rgba(255, 255, 255, 0.18);
-  --sp-scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+  --sp-scrollbar-thumb: rgba(148, 163, 184, 0.22);
+  --sp-scrollbar-thumb-hover: rgba(148, 163, 184, 0.34);
 }
 
 /*
@@ -118,9 +118,9 @@
  * backend `AppSettings.theme = "light"` value is honored.
  */
 :root[data-theme="light"] {
-  --sp-violet: #7c3aed;
-  --sp-violet-strong: #6d28d9;
-  --sp-violet-deep: #5b21b6;
+  --sp-violet: #6d55c9;
+  --sp-violet-strong: #5b46b8;
+  --sp-violet-deep: #453190;
   --sp-cyan: #0891b2;
   --sp-blue: #2563eb;
   --sp-blue-strong: #1d4ed8;
@@ -129,16 +129,16 @@
   --sp-red: #dc2626;
   --sp-amber: #b45309;
 
-  --sp-success: var(--sp-lime);
-  --sp-info: var(--sp-cyan);
-  --sp-warning: var(--sp-amber);
-  --sp-danger: var(--sp-red);
-  --sp-accent: var(--sp-violet);
-  --sp-accent-strong: var(--sp-violet-strong);
-  --sp-accent-soft: rgba(109, 40, 217, 0.1);
-  --sp-accent-border: rgba(109, 40, 217, 0.35);
+  --sp-success: #65a30d;
+  --sp-info: #0891b2;
+  --sp-warning: #d97706;
+  --sp-danger: #dc2626;
+  --sp-accent: #f59e0b;
+  --sp-accent-strong: #c98209;
+  --sp-accent-soft: rgba(217, 119, 6, 0.12);
+  --sp-accent-border: rgba(217, 119, 6, 0.35);
 
-  --sp-text-1: #16181f;
+  --sp-text-1: #181a1f;
   --sp-text-2: #4b5162;
   --sp-text-3: #7a8094;
 
@@ -146,9 +146,9 @@
   --sp-shadow-2: 0 2px 8px rgba(15, 20, 40, 0.08);
   --sp-shadow-3: 0 8px 24px rgba(15, 20, 40, 0.12);
   --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
-    0 4px 20px rgba(109, 40, 217, 0.15);
+    0 4px 20px rgba(217, 119, 6, 0.15);
 
-  --sp-bg-0: #f4f6fa;
+  --sp-bg-0: #f5f7fb;
   --sp-bg-1: #ffffff;
   --sp-bg-2: #f0f2f7;
   --sp-bg-3: #e6e9f1;

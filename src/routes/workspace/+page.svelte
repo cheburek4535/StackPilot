@@ -72,6 +72,9 @@
   let activeRun = $state<LaunchRun | null>(null);
   let actionResults = $state<Map<string, string>>(new Map());
   let watching = $state(false);
+  /** The profile launcher widget starts collapsed — it lives at the bottom of
+   *  the dashboard and expands only on demand or when a launch begins. */
+  let profilesExpanded = $state(false);
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -82,19 +85,20 @@
   const erroredCount = $derived(processes.filter((p) => isProcessFailed(p.status)).length);
   const restarts = $derived(processes.reduce((sum, p) => sum + p.restarts, 0));
 
-  const boundProfiles = $derived(
-    project?.project_path
-      ? profiles.filter((p) => p.project_path === project.project_path)
-      : [],
-  );
-  const unboundProfiles = $derived(
-    project?.project_path
-      ? profiles.filter((p) => p.project_path !== project.project_path)
-      : profiles,
+  /** Recent projects that have a saved DevLauncher profile — only these are
+   *  shown, so projects without a launch profile stay out of the Workspace. */
+  const profiledRecents = $derived(
+    $recentProjects.filter(
+      (ref) => profiles.find((p) => p.project_path && p.project_path === ref.path) !== undefined,
+    ),
   );
 
   onMount(async () => {
-    await runStore.init();
+    try {
+      await runStore.init();
+    } catch {
+      // Non-critical — the dashboard works without the event store.
+    }
     await loadProfiles();
     // Deep links: /workspace?profile=<name>[&run=1]
     const want = $page.url.searchParams.get("profile");
@@ -176,6 +180,9 @@
     launchCurrent = null;
     actionResults = new Map();
     activeRun = null;
+    // The run state is rendered inside the launcher widget — open it so the
+    // user sees the run progress without extra clicks.
+    profilesExpanded = true;
 
     try {
       // Bind profile to workspace project.
@@ -220,6 +227,32 @@
       } catch {
         // Non-critical.
       }
+    }
+  }
+
+  /** Сделать профиль текущим проектом рабочего пространства. */
+  async function openInWorkspace(profile: LaunchProfile) {
+    if (profile.name === project?.profile_name) {
+      notifySuccess(i18n.t("ws.toast_project_opened") as TranslationKey, profile.name);
+      return;
+    }
+    try {
+      await setCurrentProject(
+        profile.name,
+        profile.project_path ?? null,
+        profile.description,
+        [],
+      );
+      await reloadWorkspaceContext();
+      notifySuccess(i18n.t("ws.toast_project_opened") as TranslationKey, profile.name);
+    } catch (e) {
+      notifyError(
+        i18n.t("ws.toast_project_opened") as TranslationKey,
+        i18n.t("ws.toast_open_failed", {
+          path: profile.project_path ?? profile.name,
+          err: String(e),
+        }) as TranslationKey,
+      );
     }
   }
 
@@ -343,8 +376,8 @@
   {:else if !project}
     <div class="sp-empty-wrap">
       {#snippet emptyAction()}
-        <Button variant="primary" icon="folder" href="#recent-projects">
-          {i18n.t("ws.select_recent") as TranslationKey}
+        <Button variant="primary" icon="layers" href="/devlauncher/profiles">
+          {i18n.t("devl.profiles") as TranslationKey}
         </Button>
         <Button variant="secondary" icon="folder" onclick={openFolder}>
           {i18n.t("ws.open_folder") as TranslationKey}
@@ -361,14 +394,14 @@
       />
     </div>
 
-    {#if $recentProjects.length > 0}
+    {#if profiledRecents.length > 0}
       <div class="sp-recent-section" id="recent-projects">
         <Card
           title={i18n.t("ws.recent_projects") as TranslationKey}
           description={i18n.t("ws.recent_desc") as TranslationKey}
         >
           <div class="sp-recent-list">
-            {#each $recentProjects as ref}
+            {#each profiledRecents as ref}
               <div class="sp-recent-row">
                 <div class="sp-recent-main">
                   <div class="sp-recent-name-row">
@@ -425,8 +458,15 @@
             {i18n.t("ws.opened", { when: formatDateTime(project.opened_at) }) as TranslationKey}
           </p>
         </div>
-        {#if project.project_path}
-          <div class="sp-hero-actions">
+        <div class="sp-hero-actions">
+          <Button
+            variant="primary"
+            icon="layers"
+            href={`/devlauncher/profiles/${encodeURIComponent(project.profile_name)}`}
+          >
+            {i18n.t("ws.open_in_devlauncher") as TranslationKey}
+          </Button>
+          {#if project.project_path}
             <Button
               variant="secondary"
               icon="external"
@@ -441,8 +481,8 @@
             >
               {i18n.t("ws.browse_files") as TranslationKey}
             </Button>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </div>
     </Card>
 
@@ -489,43 +529,190 @@
 
     <div class="sp-grid">
       <Card
-        title={i18n.t("ws.profile_launcher") as TranslationKey}
-        description={i18n.t("ws.profile_launcher_desc") as TranslationKey}
+        title={i18n.t("ws.stat_running") as TranslationKey}
+        description={i18n.t("ws.overview_desc") as TranslationKey}
       >
-        {#if profiles.length === 0}
+        {#if processes.length === 0}
           <div class="sp-inline-empty">
-            <p>{i18n.t("ws.profiles_empty") as TranslationKey}</p>
+            <p>{i18n.t("ws.no_processes") as TranslationKey}</p>
             <Button
               size="sm"
               variant="secondary"
-              icon="search"
-              href="/devlauncher/analyze"
+              icon="terminal"
+              href="/workspace/logs"
             >
-              {i18n.t("ws.analyze_project") as TranslationKey}
+              {i18n.t("ws.open_runtime") as TranslationKey}
             </Button>
           </div>
         {:else}
+          <div class="sp-proc-list">
+            {#each processes as p}
+              <div class="sp-proc-row">
+                <span class="sp-proc-icon" aria-hidden="true">
+                  <Icon name={statusIcon(p.status)} size={14} />
+                </span>
+                <div class="sp-proc-main">
+                  <span class="sp-proc-label">{p.label}</span>
+                  <span class="sp-proc-meta">
+                    {i18n.t("ws.pid", { pid: p.pid }) as TranslationKey} · {formatDuration(p.duration_secs)}
+                    {#if p.run_id}
+                      · <span class="sp-proc-run">run #{p.run_id.slice(0, 8)}</span>
+                    {/if}
+                    {#if p.command}
+                      · <span class="sp-proc-cmd">{p.command}</span>
+                    {/if}
+                  </span>
+                </div>
+                <Badge tone={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="x"
+                  disabled={!isProcessRunning(p.status)}
+                  onclick={() => handleKill(p)}
+                >
+                </Button>
+              </div>
+            {/each}
+          </div>
+          {#if erroredCount > 0}
+            <p class="sp-proc-warn">
+              {i18n.t("ws.errored_count", { n: erroredCount }) as TranslationKey}
+            </p>
+          {/if}
+        {/if}
+      </Card>
+    </div>
+
+    <div class="sp-grid">
+      <Card
+        title={i18n.t("ws.session_title") as TranslationKey}
+        description={i18n.t("ws.session_desc") as TranslationKey}
+      >
+        {#if !session}
+          <div class="sp-inline-empty">
+            <p>{i18n.t("ws.no_session") as TranslationKey}</p>
+          </div>
+        {:else}
+          <div class="sp-session-grid">
+            <div class="sp-session-item">
+              <span class="sp-session-label">{i18n.t("ws.started") as TranslationKey}</span>
+              <span class="sp-session-value">
+                {formatDateTime(session.started_at)}
+              </span>
+            </div>
+            <div class="sp-session-item">
+              <span class="sp-session-label">{i18n.t("ws.time_total") as TranslationKey}</span>
+              <span class="sp-session-value">
+                {formatDuration(session.total_duration_secs ?? session.duration_secs)}
+              </span>
+            </div>
+            <div class="sp-session-item">
+              <span class="sp-session-label">{i18n.t("ws.time_session") as TranslationKey}</span>
+              <span class="sp-session-value">
+                {formatDuration(session.duration_secs)}
+              </span>
+            </div>
+            <div class="sp-session-item">
+              <span class="sp-session-label">{i18n.t("ws.processes") as TranslationKey}</span>
+              <span class="sp-session-value">{session.process_count}</span>
+            </div>
+            <div class="sp-session-item">
+              <span class="sp-session-label">{i18n.t("ws.errors") as TranslationKey}</span>
+              <span class="sp-session-value" class:sp-session-err={session.error_count > 0}>
+                {session.error_count}
+              </span>
+            </div>
+          </div>
+        {/if}
+      </Card>
+
+      <Card
+        title={i18n.t("ws.problems") as TranslationKey}
+        description={i18n.t("ws.problems_desc") as TranslationKey}
+      >
+        <div class="sp-inline-empty">
+          <p>
+            {erroredCount > 0
+              ? i18n.t("ws.errored_count", { n: erroredCount })
+              : (i18n.t("ws.no_problems") as TranslationKey)}
+          </p>
+          <Button size="sm" variant="secondary" icon="alert" href="/workspace/problems">
+            {i18n.t("ws.problems") as TranslationKey}
+          </Button>
+        </div>
+      </Card>
+    </div>
+
+    <!-- Профили: один сворачиваемый виджет в самом низу, чтобы не
+         засорять дашборд. Клик по шапке раскрывает список — каждый профиль
+         можно открыть в рабочем пространстве или запустить. -->
+    <section class="sp-launch-widget" class:sp-launch-widget-open={profilesExpanded}>
+      <button
+        class="sp-launch-widget-head"
+        onclick={() => (profilesExpanded = !profilesExpanded)}
+        aria-expanded={profilesExpanded}
+      >
+        <span class="sp-launch-widget-heading">
+          <span class="sp-launch-widget-title">
+            {i18n.t("ws.profile_launcher") as TranslationKey}
+          </span>
+          <span class="sp-launch-widget-desc">
+            {#if profiles.length === 0}
+              {i18n.t("ws.profiles_empty") as TranslationKey}
+            {:else if !profilesExpanded}
+              {i18n.t("ws.profiles_collapsed_hint") as TranslationKey}
+            {:else}
+              {i18n.t("devl.profiles_count", { n: profiles.length }) as TranslationKey}
+            {/if}
+          </span>
+        </span>
+        {#if profiles.length > 0}
+          <span class="sp-launch-widget-toggle">
+            <span class="sp-launch-widget-count">{profiles.length}</span>
+            <Icon name={profilesExpanded ? "chevronUp" : "chevronDown"} size={16} />
+          </span>
+        {/if}
+      </button>
+
+      {#if profiles.length === 0}
+        <div class="sp-inline-empty">
+          <p>{i18n.t("ws.profiles_empty") as TranslationKey}</p>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon="search"
+            href="/devlauncher/analyze"
+          >
+            {i18n.t("ws.analyze_project") as TranslationKey}
+          </Button>
+        </div>
+      {:else if profilesExpanded}
+        <div class="sp-launch-widget-body">
           <div class="sp-profiles">
-            {#each [...boundProfiles, ...unboundProfiles] as profile}
-              {@const isBound = profile.project_path === project.project_path}
+            {#each profiles as profile}
               <div class="sp-profile-row">
                 <div class="sp-profile-main">
                   <span class="sp-profile-label">{profile.name}</span>
                   <span class="sp-profile-desc">
                     {profile.description}
-                    {#if isBound}
+                    {#if profile.project_path === project.project_path}
                       · <Badge tone="cyan">{i18n.t("devl.has_path") as TranslationKey}</Badge>
                     {/if}
                   </span>
+                  {#if profile.project_path && profile.project_path !== project.project_path}
+                    <span class="sp-profile-path">{profile.project_path}</span>
+                  {/if}
                 </div>
                 <div class="sp-profile-actions">
                   <Button
                     size="sm"
                     variant="ghost"
-                    icon="bookmark"
-                    href={`/devlauncher/profiles/${encodeURIComponent(profile.name)}`}
+                    icon="folder"
+                    disabled={launching}
+                    onclick={() => openInWorkspace(profile)}
                   >
-                    {i18n.t("ws.manage_profiles") as TranslationKey}
+                    {i18n.t("devl.open_in_workspace") as TranslationKey}
                   </Button>
                   <Button
                     size="sm"
@@ -618,118 +805,9 @@
               {/if}
             </div>
           {/if}
-        {/if}
-      </Card>
-
-      <Card
-        title={i18n.t("ws.stat_running") as TranslationKey}
-        description={i18n.t("ws.overview_desc") as TranslationKey}
-      >
-        {#if processes.length === 0}
-          <div class="sp-inline-empty">
-            <p>{i18n.t("ws.no_processes") as TranslationKey}</p>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon="terminal"
-              href="/workspace/logs"
-            >
-              {i18n.t("ws.open_runtime") as TranslationKey}
-            </Button>
-          </div>
-        {:else}
-          <div class="sp-proc-list">
-            {#each processes as p}
-              <div class="sp-proc-row">
-                <span class="sp-proc-icon" aria-hidden="true">
-                  <Icon name={statusIcon(p.status)} size={14} />
-                </span>
-                <div class="sp-proc-main">
-                  <span class="sp-proc-label">{p.label}</span>
-                  <span class="sp-proc-meta">
-                    {i18n.t("ws.pid", { pid: p.pid }) as TranslationKey} · {formatDuration(p.duration_secs)}
-                    {#if p.run_id}
-                      · <span class="sp-proc-run">run #{p.run_id.slice(0, 8)}</span>
-                    {/if}
-                    {#if p.command}
-                      · <span class="sp-proc-cmd">{p.command}</span>
-                    {/if}
-                  </span>
-                </div>
-                <Badge tone={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon="x"
-                  disabled={!isProcessRunning(p.status)}
-                  onclick={() => handleKill(p)}
-                >
-                </Button>
-              </div>
-            {/each}
-          </div>
-          {#if erroredCount > 0}
-            <p class="sp-proc-warn">
-              {i18n.t("ws.errored_count", { n: erroredCount }) as TranslationKey}
-            </p>
-          {/if}
-        {/if}
-      </Card>
-    </div>
-
-    <div class="sp-grid">
-      <Card
-        title={i18n.t("ws.session_title") as TranslationKey}
-        description={i18n.t("ws.session_desc") as TranslationKey}
-      >
-        {#if !session}
-          <div class="sp-inline-empty">
-            <p>{i18n.t("ws.no_session") as TranslationKey}</p>
-          </div>
-        {:else}
-          <div class="sp-session-grid">
-            <div class="sp-session-item">
-              <span class="sp-session-label">{i18n.t("ws.started") as TranslationKey}</span>
-              <span class="sp-session-value">
-                {formatDateTime(session.started_at)}
-              </span>
-            </div>
-            <div class="sp-session-item">
-              <span class="sp-session-label">{i18n.t("ws.duration") as TranslationKey}</span>
-              <span class="sp-session-value">
-                {formatDuration(session.duration_secs)}
-              </span>
-            </div>
-            <div class="sp-session-item">
-              <span class="sp-session-label">{i18n.t("ws.processes") as TranslationKey}</span>
-              <span class="sp-session-value">{session.process_count}</span>
-            </div>
-            <div class="sp-session-item">
-              <span class="sp-session-label">{i18n.t("ws.errors") as TranslationKey}</span>
-              <span class="sp-session-value" class:sp-session-err={session.error_count > 0}>
-                {session.error_count}
-              </span>
-            </div>
-          </div>
-        {/if}
-      </Card>
-
-      <Card
-        title={i18n.t("ws.problems") as TranslationKey}
-        description={i18n.t("ws.problems_desc") as TranslationKey}
-      >
-        <div class="sp-inline-empty">
-          <p>
-            {erroredCount > 0
-              ? i18n.t("ws.errored_count", { n: erroredCount })
-              : (i18n.t("ws.no_problems") as TranslationKey)}
-          </p>
-          <Button size="sm" variant="secondary" icon="alert" href="/workspace/problems">
-            {i18n.t("ws.problems") as TranslationKey}
-          </Button>
         </div>
-      </Card>
-    </div>
+      {/if}
+    </section>
   {/if}
 </PageContainer>
 
@@ -889,26 +967,26 @@
 
   .sp-stat-icon-lime {
     color: var(--sp-success);
-    background: rgba(163, 230, 53, 0.12);
-    border: 1px solid rgba(163, 230, 53, 0.3);
+    background: rgba(132, 204, 22, 0.12);
+    border: 1px solid rgba(132, 204, 22, 0.3);
   }
 
   .sp-stat-icon-violet {
     color: var(--sp-violet);
-    background: rgba(139, 92, 246, 0.12);
-    border: 1px solid rgba(139, 92, 246, 0.3);
+    background: rgba(160, 139, 232, 0.12);
+    border: 1px solid rgba(160, 139, 232, 0.3);
   }
 
   .sp-stat-icon-amber {
     color: var(--sp-warning);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.3);
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.3);
   }
 
   .sp-stat-icon-cyan {
     color: var(--sp-info);
-    background: rgba(34, 211, 238, 0.12);
-    border: 1px solid rgba(34, 211, 238, 0.3);
+    background: rgba(6, 182, 212, 0.12);
+    border: 1px solid rgba(6, 182, 212, 0.3);
   }
 
   .sp-stat-text {
@@ -1242,6 +1320,90 @@
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-semibold);
     color: var(--sp-text-2);
+  }
+
+  /* profile launcher widget (collapsed by default, bottom of the dashboard) */
+
+  .sp-launch-widget {
+    margin: var(--sp-4) 0;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    background: var(--sp-bg-1);
+    box-shadow: var(--sp-shadow-2);
+    overflow: hidden;
+  }
+
+  .sp-launch-widget-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    width: 100%;
+    padding: var(--sp-4) var(--sp-5);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--sp-font-sans);
+    transition: background-color 0.15s ease;
+  }
+
+  .sp-launch-widget-head:hover {
+    background: var(--sp-bg-2);
+  }
+
+  .sp-launch-widget-heading {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
+
+  .sp-launch-widget-title {
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    line-height: var(--sp-lh-tight);
+  }
+
+  .sp-launch-widget-desc {
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+    line-height: var(--sp-lh-normal);
+  }
+
+  .sp-launch-widget-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: 0 0 auto;
+    color: var(--sp-text-3);
+  }
+
+  .sp-launch-widget-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.6rem;
+    height: 1.6rem;
+    padding: 0 var(--sp-1);
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-accent-soft);
+    color: var(--sp-accent);
+    font-size: var(--sp-fs-xs);
+    font-weight: var(--sp-fw-semibold);
+  }
+
+  .sp-launch-widget-body {
+    padding: 0 var(--sp-5) var(--sp-5);
+    border-top: 1px solid var(--sp-border-faint);
+  }
+
+  .sp-profile-path {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    word-break: break-all;
   }
 
   @keyframes sp-pulse {

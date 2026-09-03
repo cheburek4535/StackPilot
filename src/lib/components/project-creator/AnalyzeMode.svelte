@@ -76,11 +76,11 @@
   .section-title { font-weight: 600; font-size: 0.9rem; color: var(--sp-text-2); margin-bottom: 0.3rem; }
   .tech-tags, .hint-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .tech-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-accent-soft); color: var(--sp-text-2); }
-  .tech-tag.certaion { background: rgba(163, 230, 53, 0.2); color: #fff; }
+  .tech-tag.certaion { background: rgba(132, 204, 22, 0.2); color: #fff; }
   .tech-tag.likely { background: var(--sp-accent-soft); }
   .tech-tag.possible { background: var(--sp-bg-2); }
   .hint-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-bg-2); color: var(--sp-text-3); }
-  .hint-tag.docker { background: rgba(34, 211, 238, 0.15); color: var(--sp-info); }
+  .hint-tag.docker { background: rgba(6, 182, 212, 0.15); color: var(--sp-info); }
   .analyzed-path { font-size: 0.85rem; color: var(--sp-accent-strong); margin-top: 0.3rem; }
   .btn-primary { background: var(--sp-accent-strong); color: #fff; padding: 0.6rem 1.5rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
 </style>

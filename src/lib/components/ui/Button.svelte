@@ -201,14 +201,14 @@
   }
 
   .sp-btn-danger {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--sp-danger);
-    border-color: rgba(248, 113, 113, 0.35);
+    border-color: rgba(239, 68, 68, 0.35);
   }
 
   .sp-btn-danger:hover:not(.sp-btn-disabled) {
-    background: rgba(248, 113, 113, 0.2);
-    border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.55);
   }
 
   .sp-btn-subtle {

@@ -64,7 +64,11 @@ export type ProjectContext = {
 
 export type SessionInfo = {
   started_at: string;
+  /** Current session uptime (since this session was opened). */
   duration_secs: number;
+  /** All-time accumulated time for this project (persisted locally across
+   *  sessions), including the current session's elapsed time. */
+  total_duration_secs: number;
   process_count: number;
   error_count: number;
 };

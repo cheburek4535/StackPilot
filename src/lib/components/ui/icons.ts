@@ -39,6 +39,8 @@ export const ICON_PATHS = {
   plus: ["M12 5v14", "M5 12h14"],
   chevronLeft: ["m15 18-6-6 6-6"],
   chevronRight: ["m9 18 6-6-6-6"],
+  chevronDown: ["m6 9 6 6 6-6"],
+  chevronUp: ["m6 15 6-6 6 6"],
   play: ["M6 4.5 19 12 6 19.5z"],
   folder: [
     "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",

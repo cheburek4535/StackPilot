@@ -541,14 +541,14 @@
 
   .warning-amber {
     color: var(--sp-amber);
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.3);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
   }
 
   .warning-red {
     color: var(--sp-danger);
-    background: rgba(248, 113, 113, 0.08);
-    border: 1px solid rgba(248, 113, 113, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
   }
 
   .confirm {
@@ -573,8 +573,8 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-sm);
     color: var(--sp-danger);
-    background: rgba(248, 113, 113, 0.08);
-    border: 1px solid rgba(248, 113, 113, 0.28);
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.28);
     border-radius: var(--sp-radius-md);
   }
 </style>

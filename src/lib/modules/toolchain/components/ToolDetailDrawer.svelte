@@ -212,7 +212,14 @@
             <h2 class="title">{tool.display}</h2>
             <span class="tool-id">{tool.tool_id}</span>
             <div class="badges">
-              <StateBadge state={tool.state} />
+              <StateBadge
+                state={tool.state}
+                overrideLabel={
+                  tool.state.kind === "missing" && tool.bundled_with
+                    ? (i18n.t("tc.install.bundled_with", { tool: tool.bundled_with }) as TranslationKey)
+                    : null
+                }
+              />
               {#if provenance}
                 <Badge tone={provenance.tone}>{provenance.label}</Badge>
               {/if}
@@ -991,8 +998,8 @@
     font-family: var(--sp-font-mono);
     font-size: var(--sp-fs-xs);
     color: var(--sp-danger);
-    background: rgba(248, 113, 113, 0.06);
-    border: 1px solid rgba(248, 113, 113, 0.25);
+    background: rgba(239, 68, 68, 0.06);
+    border: 1px solid rgba(239, 68, 68, 0.25);
     border-radius: var(--sp-radius-md);
     padding: var(--sp-2) var(--sp-3);
     white-space: pre-wrap;
@@ -1025,13 +1032,13 @@
     padding: var(--sp-2) var(--sp-5);
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-2);
-    background: rgba(34, 211, 238, 0.06);
+    background: rgba(6, 182, 212, 0.06);
     border-bottom: 1px solid var(--sp-border-faint);
   }
 
   .details-error {
     color: var(--sp-danger);
-    background: rgba(248, 113, 113, 0.07);
+    background: rgba(239, 68, 68, 0.07);
   }
 
   .details-error-text {
@@ -1055,7 +1062,7 @@
   }
 
   .details-retry:hover {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
   }
 
   .foot {

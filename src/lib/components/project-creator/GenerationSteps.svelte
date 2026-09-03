@@ -158,7 +158,7 @@
   }
 
   .gs-step-removed {
-    background: rgba(248, 113, 113, 0.06);
+    background: rgba(239, 68, 68, 0.06);
     opacity: 0.5;
     text-decoration: line-through;
   }
@@ -240,17 +240,17 @@
   }
 
   .gs-remove-btn:hover {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--sp-red);
   }
 
   .gs-remove-btn-active {
     color: var(--sp-red);
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(239, 68, 68, 0.12);
   }
 
   .gs-remove-btn-active:hover {
-    background: rgba(163, 230, 53, 0.12);
+    background: rgba(132, 204, 22, 0.12);
     color: var(--sp-success);
   }
 </style>

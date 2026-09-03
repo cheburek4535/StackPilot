@@ -177,6 +177,22 @@ describe("buildMarketplaceItems — работает без снапшота", (
     expect(buildMarketplaceItems({ android }, null, "windows")[0].applicability).toBe("manual_only");
   });
 
+  it("bundled-тул (pip с python) — не ручная установка, а «в комплекте»", () => {
+    const pip = def({
+      id: "pip",
+      display: "pip",
+      manual_install: "Идёт вместе с python",
+      bundled_with: "python",
+      sources: { windows: [], linux: [], macos: [] },
+    });
+    const item = buildMarketplaceItems({ pip }, null, "windows")[0];
+    expect(item.applicability).toBe("built_in");
+    expect(item.installable).toBe(false);
+    // Без bundled_with поведение прежнее — ручная установка.
+    const noHost = def({ ...pip, id: "manual", bundled_with: null });
+    expect(buildMarketplaceItems({ noHost }, null, "windows")[0].applicability).toBe("manual_only");
+  });
+
   it("платформы берутся из заявленной availability и источников", () => {
     expect(platformsOfDefinition(def())).toEqual(["windows", "linux", "macos"]);
     const xcode = def({
@@ -514,5 +530,18 @@ describe("marketplaceAction — правдивое действие карточ
     expect(
       marketplaceAction(item({ scan: null, applicability: "no_source", installable: false })).kind,
     ).toBe("no_source");
+  });
+
+  it("bundled-тул без установки — «в комплекте с <хостом>», а не «только вручную»", () => {
+    const act = marketplaceAction(
+      item({
+        def: def({ id: "pip", bundled_with: "python", manual_install: "вместе с python" }),
+        scan: null,
+        installable: false,
+        applicability: "built_in",
+      }),
+    );
+    expect(act.kind).toBe("built_in");
+    expect(act.label).toContain("python");
   });
 });

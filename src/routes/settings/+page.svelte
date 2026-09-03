@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount } from "svelte";
   import {
     getSettings,
@@ -83,7 +83,7 @@
       draft = structuredClone(s);
       customHex = /^#([0-9a-f]{6})$/i.test(s.accent_color)
         ? s.accent_color
-        : (ACCENT_PRESETS[s.accent_color] ?? ACCENT_PRESETS.violet);
+        : (ACCENT_PRESETS[s.accent_color] ?? ACCENT_PRESETS.orange);
       preview();
       void refreshPathCheck("vscode_path", s.vscode_path);
       void refreshPathCheck("browser_path", s.browser_path);
@@ -145,7 +145,7 @@
     draft = clone(saved);
     customHex = /^#([0-9a-f]{6})$/i.test(saved.accent_color)
       ? saved.accent_color
-      : (ACCENT_PRESETS[saved.accent_color] ?? ACCENT_PRESETS.violet);
+      : (ACCENT_PRESETS[saved.accent_color] ?? ACCENT_PRESETS.orange);
     preview();
   }
 
@@ -270,7 +270,7 @@
         max_tokens: ai.max_tokens,
         timeout_secs: ai.timeout_secs,
         page_context: ai.page_context,
-        authorization: ai.api_key ? `Bearer ${ai.api_key.slice(0, 6)}вЂ¦` : null,
+        authorization: ai.api_key ? `Bearer ${ai.api_key.slice(0, 6)}…` : null,
         system_prompt: ai.system_prompt || "(empty)",
       },
       null,
@@ -287,7 +287,7 @@
   />
 
   {#if loading}
-    <LoadingState label={`${i18n.t("settings.loading")}вЂ¦`} />
+    <LoadingState label={`${i18n.t("settings.loading")}…`} />
   {:else if draft}
     <div class="sp-sticky">
       <div class="sp-minitabs" role="tablist">
@@ -357,8 +357,8 @@
             <div class="identity-text">
               <strong>{draft.personal.name || draft.personal.username || "StackPilot"}</strong>
               <span class="sp-hint">
-                {draft.personal.username || "вЂ”"}
-                {#if draft.personal.email} В· {draft.personal.email}{/if}
+                {draft.personal.username || "—"}
+                {#if draft.personal.email} · {draft.personal.email}{/if}
               </span>
             </div>
           </div>
@@ -488,7 +488,7 @@
             <div class="field-text">
               <span class="field-label">{i18n.t("settings.about.data_dir")}</span>
               <span class="sp-hint field-desc">
-                <code class="data-dir">{dataDir || "вЂ¦"}</code>
+                <code class="data-dir">{dataDir || "…"}</code>
               </span>
             </div>
             <div class="field-ctrl">
@@ -995,7 +995,7 @@
   }
 
   .sp-minitab-active {
-    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(34, 211, 238, 0.06));
+    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(6, 182, 212, 0.06));
     color: var(--sp-accent);
     box-shadow: inset 0 0 0 1px var(--sp-accent-border);
   }
@@ -1318,7 +1318,7 @@
     font-weight: var(--sp-fw-bold);
     font-size: var(--sp-fs-lg);
     color: var(--sp-accent);
-    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(34, 211, 238, 0.08));
+    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(6, 182, 212, 0.08));
     border: 1px solid var(--sp-accent-border);
   }
 
@@ -1392,11 +1392,11 @@
   }
 
   .tp-dark {
-    background: #0a0b0f;
+    background: #08090c;
   }
 
   .tp-light {
-    background: #f4f6fa;
+    background: #f5f7fb;
   }
 
   .tp-title {
@@ -1443,7 +1443,7 @@
   }
 
   .danger-card {
-    border-color: rgba(248, 113, 113, 0.35);
+    border-color: rgba(239, 68, 68, 0.35);
   }
 
   .ai-banner {
@@ -1452,8 +1452,8 @@
     gap: var(--sp-4);
     padding: var(--sp-5) var(--sp-6);
     border-radius: var(--sp-radius-lg);
-    background: linear-gradient(135deg, rgba(251, 191, 36, 0.1), rgba(248, 113, 113, 0.1));
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(239, 68, 68, 0.1));
+    border: 1px solid rgba(245, 158, 11, 0.4);
     box-shadow: var(--sp-shadow-1);
     animation: sp-rise-in 0.2s ease;
   }
@@ -1467,8 +1467,8 @@
     flex: 0 0 auto;
     border-radius: var(--sp-radius-md);
     color: var(--sp-amber);
-    background: rgba(251, 191, 36, 0.14);
-    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(245, 158, 11, 0.14);
+    border: 1px solid rgba(245, 158, 11, 0.35);
   }
 
   .ai-banner-text {
