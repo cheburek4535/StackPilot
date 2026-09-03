@@ -1,9 +1,9 @@
 <script lang="ts">
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
-  // Режим «Управлять всем»: поиск, рейло фильтров и сортировка над полным
-  // каталогом. Фильтрация/сортировка — единственное, что решает фронтенд;
-  // статусы и факты приходят только из снапшота бэкенда.
+  // Режим «Управлять всем»: поиск, компактные фильтры-меню и сортировка над
+  // полным каталогом. Фильтрация/сортировка — единственное, что решает
+  // фронтенд; статусы и факты приходят только из снапшота бэкенда.
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import ErrorState from "$lib/components/ui/ErrorState.svelte";
@@ -16,7 +16,6 @@
   import {
     applyCatalogFilters,
     availableCategories,
-    defaultCatalogFilters,
     sortCatalogTools,
   } from "../filters";
   import {
@@ -24,7 +23,11 @@
     allToolStateKinds,
     capabilityLabel,
   } from "../format";
-  import type { CatalogSort, ExecutionMode, HealthState } from "../types";
+  import type {
+    CatalogSort,
+    ExecutionMode,
+    HealthState,
+  } from "../types";
 
   let {
     onplan,
@@ -35,7 +38,7 @@
   } = $props();
 
   let sort = $state<CatalogSort>("status");
-  let railOpen = $state(false);
+  let openMenu = $state<string | null>(null);
   let recheckingIds = $state<Set<string>>(new Set());
 
   const snapshot = $derived(toolchain.liveSnapshot);
@@ -58,7 +61,6 @@
     return counts;
   });
 
-  /** Счётчики для каждой группы фильтров — только по текущему набору. */
   const healthCounts = $derived.by(() => {
     const counts = new Map<string, number>();
     for (const t of snapshot?.tools ?? []) {
@@ -206,10 +208,88 @@
     { value: "category", label: i18n.t("tc.ui.sort.category") as TranslationKey },
     { value: "catalog", label: i18n.t("tc.ui.sort.catalog") as TranslationKey },
   ];
+
+  // ---- Активные фильтры (лёгкие теги с очисткой) ----
+
+  const activeTagRows = $derived.by(() => {
+    const f = toolchain.filters;
+    const rows: { key: string; label: string; clear: () => void }[] = [];
+    for (const kind of f.states) {
+      const info = allToolStateKinds().find((s) => s.kind === kind)?.info;
+      if (info) {
+        rows.push({
+          key: `state-${kind}`,
+          label: info.label,
+          clear: () => toolchain.setFilters({ states: f.states.filter((x) => x !== kind) }),
+        });
+      }
+    }
+    for (const kind of f.health) {
+      const opt = HEALTH_OPTIONS.find((o) => o.kind === kind);
+      if (opt) {
+        rows.push({
+          key: `health-${kind}`,
+          label: opt.label,
+          clear: () => toolchain.setFilters({ health: f.health.filter((x) => x !== kind) }),
+        });
+      }
+    }
+    for (const cat of f.categories) {
+      rows.push({
+        key: `cat-${cat}`,
+        label: cat,
+        clear: () => toolchain.setFilters({ categories: f.categories.filter((x) => x !== cat) }),
+      });
+    }
+    for (const kind of f.provenance) {
+      const info = allProvenanceKinds().find((p) => p.kind === kind)?.info;
+      if (info) {
+        rows.push({
+          key: `prov-${kind}`,
+          label: info.label,
+          clear: () => toolchain.setFilters({ provenance: f.provenance.filter((x) => x !== kind) }),
+        });
+      }
+    }
+    for (const flag of f.capabilities) {
+      rows.push({
+        key: `cap-${flag}`,
+        label: capabilityLabel(flag),
+        clear: () => toolchain.setFilters({ capabilities: f.capabilities.filter((x) => x !== flag) }),
+      });
+    }
+    for (const mode of f.execution_modes) {
+      const opt = EXECUTION_OPTIONS.find((o) => o.mode === mode);
+      if (opt) {
+        rows.push({
+          key: `exec-${mode}`,
+          label: opt.label,
+          clear: () => toolchain.setFilters({ execution_modes: f.execution_modes.filter((x) => x !== mode) }),
+        });
+      }
+    }
+    for (const q of QUICK_FILTERS) {
+      if (f[q.key]) {
+        rows.push({
+          key: `quick-${q.key}`,
+          label: q.label,
+          clear: () => toolchain.setFilters({ [q.key]: false }),
+        });
+      }
+    }
+    return rows;
+  });
+
+  const hasActiveFilters = $derived(activeTagRows.length > 0);
+  const resultsHidden = $derived(
+    toolchain.filters.search.length > 0 ||
+      activeTagRows.length > 0 ||
+      visibleTools.length !== totalTools,
+  );
 </script>
 
 <div class="manage">
-  <!-- ===== Панель поиска и сортировки ===== -->
+  <!-- ===== Единая строка поиска / фильтров / сортировки ===== -->
   <div class="toolbar">
     <div class="search">
       <Icon name="search" size={16} />
@@ -230,8 +310,218 @@
       {/if}
     </div>
 
+    <div class="menus">
+      {#if snapshot}
+        <!-- Состояния -->
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="menu-btn"
+            class:menu-active={toolchain.filters.states.length > 0 || openMenu === "states"}
+            onclick={() => (openMenu = openMenu === "states" ? null : "states")}
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "states"}
+          >
+            <span>{i18n.t("tc.ui.status") as TranslationKey}</span>
+            {#if toolchain.filters.states.length > 0}
+              <span class="menu-badge">{toolchain.filters.states.length}</span>
+            {/if}
+            <span class="caret" aria-hidden="true"></span>
+          </button>
+          {#if openMenu === "states"}
+            <div class="menu-panel" role="menu">
+              {#each allToolStateKinds() as { kind, info } (kind)}
+                {@const count = stateCounts.get(kind) ?? 0}
+                {#if count > 0}
+                  <label class="menu-row">
+                    <input
+                      type="checkbox"
+                      checked={toolchain.filters.states.includes(kind)}
+                      onchange={() =>
+                        toolchain.setFilters({
+                          states: toggleInArray(toolchain.filters.states, kind),
+                        })}
+                    />
+                    <span class="menu-label">{info.label}</span>
+                    <span class="menu-count">{count}</span>
+                  </label>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Категории -->
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="menu-btn"
+            class:menu-active={toolchain.filters.categories.length > 0 || openMenu === "categories"}
+            onclick={() => (openMenu = openMenu === "categories" ? null : "categories")}
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "categories"}
+          >
+            <span>{i18n.t("tc.ui.categories") as TranslationKey}</span>
+            {#if toolchain.filters.categories.length > 0}
+              <span class="menu-badge">{toolchain.filters.categories.length}</span>
+            {/if}
+            <span class="caret" aria-hidden="true"></span>
+          </button>
+          {#if openMenu === "categories"}
+            <div class="menu-panel" role="menu">
+              {#each categories as cat (cat)}
+                <label class="menu-row">
+                  <input
+                    type="checkbox"
+                    checked={toolchain.filters.categories.includes(cat)}
+                    onchange={() =>
+                      toolchain.setFilters({
+                        categories: toggleInArray(toolchain.filters.categories, cat),
+                      })}
+                  />
+                  <span class="menu-label">{cat}</span>
+                  <span class="menu-count">{categoryCounts.get(cat) ?? 0}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Здоровье -->
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="menu-btn"
+            class:menu-active={toolchain.filters.health.length > 0 || openMenu === "health"}
+            onclick={() => (openMenu = openMenu === "health" ? null : "health")}
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "health"}
+          >
+            <span>{i18n.t("tc.ui.health") as TranslationKey}</span>
+            {#if toolchain.filters.health.length > 0}
+              <span class="menu-badge">{toolchain.filters.health.length}</span>
+            {/if}
+            <span class="caret" aria-hidden="true"></span>
+          </button>
+          {#if openMenu === "health"}
+            <div class="menu-panel" role="menu">
+              {#each HEALTH_OPTIONS as opt (opt.kind)}
+                {@const count = healthCounts.get(opt.kind) ?? 0}
+                <label class="menu-row" class:menu-row-disabled={count === 0}>
+                  <input
+                    type="checkbox"
+                    disabled={count === 0}
+                    checked={toolchain.filters.health.includes(opt.kind)}
+                    onchange={() =>
+                      toolchain.setFilters({
+                        health: toggleInArray(toolchain.filters.health, opt.kind),
+                      })}
+                  />
+                  <span class="menu-label">{opt.label}</span>
+                  <span class="menu-count">{count}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Происхождение -->
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="menu-btn"
+            class:menu-active={toolchain.filters.provenance.length > 0 || openMenu === "provenance"}
+            onclick={() => (openMenu = openMenu === "provenance" ? null : "provenance")}
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "provenance"}
+          >
+            <span>{i18n.t("tc.ui.origin") as TranslationKey}</span>
+            {#if toolchain.filters.provenance.length > 0}
+              <span class="menu-badge">{toolchain.filters.provenance.length}</span>
+            {/if}
+            <span class="caret" aria-hidden="true"></span>
+          </button>
+          {#if openMenu === "provenance"}
+            <div class="menu-panel" role="menu">
+              {#each allProvenanceKinds() as { kind, info } (kind)}
+                {@const count = provenanceCounts.get(kind) ?? 0}
+                <label class="menu-row" class:menu-row-disabled={count === 0}>
+                  <input
+                    type="checkbox"
+                    disabled={count === 0}
+                    checked={toolchain.filters.provenance.includes(kind)}
+                    onchange={() =>
+                      toolchain.setFilters({
+                        provenance: toggleInArray(toolchain.filters.provenance, kind),
+                      })}
+                  />
+                  <span class="menu-label">{info.label}</span>
+                  <span class="menu-count">{count}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Прочее: возможности, исполнение -->
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="menu-btn"
+            class:menu-active={(toolchain.filters.capabilities.length > 0 || toolchain.filters.execution_modes.length > 0) || openMenu === "more"}
+            onclick={() => (openMenu = openMenu === "more" ? null : "more")}
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "more"}
+          >
+            <span>{i18n.t("tc.ui.more") as TranslationKey}</span>
+            {#if toolchain.filters.capabilities.length > 0 || toolchain.filters.execution_modes.length > 0}
+              <span class="menu-badge">{toolchain.filters.capabilities.length + toolchain.filters.execution_modes.length}</span>
+            {/if}
+            <span class="caret" aria-hidden="true"></span>
+          </button>
+          {#if openMenu === "more"}
+            <div class="menu-panel" role="menu">
+              <span class="menu-group">{i18n.t("tc.ui.execution") as TranslationKey}</span>
+              {#each EXECUTION_OPTIONS as opt (opt.mode)}
+                {@const count = executionCounts[opt.mode]}
+                <label class="menu-row" class:menu-row-disabled={count === 0}>
+                  <input
+                    type="checkbox"
+                    disabled={count === 0}
+                    checked={toolchain.filters.execution_modes.includes(opt.mode)}
+                    onchange={() =>
+                      toolchain.setFilters({
+                        execution_modes: toggleInArray(toolchain.filters.execution_modes, opt.mode),
+                      })}
+                  />
+                  <span class="menu-label">{opt.label}</span>
+                  <span class="menu-count">{count}</span>
+                </label>
+              {/each}
+              <span class="menu-group">{i18n.t("tc.ui.capabilities") as TranslationKey}</span>
+              {#each capabilityOptions as flag (flag)}
+                {@const count = capabilityCounts.get(flag) ?? 0}
+                <label class="menu-row" class:menu-row-disabled={count === 0}>
+                  <input
+                    type="checkbox"
+                    disabled={count === 0}
+                    checked={toolchain.filters.capabilities.includes(flag)}
+                    onchange={() =>
+                      toolchain.setFilters({
+                        capabilities: toggleInArray(toolchain.filters.capabilities, flag),
+                      })}
+                  />
+                  <span class="menu-label">{capabilityLabel(flag)}</span>
+                  <span class="menu-count">{count}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
     <label class="sort">
-      <span class="sort-label">{i18n.t("tc.ui.sorting") as TranslationKey}</span>
       <select
         value={sort}
         onchange={(e) => (sort = e.currentTarget.value as CatalogSort)}
@@ -242,238 +532,124 @@
         {/each}
       </select>
     </label>
-
-    <div class="rail-toggle-wrap">
-      <Button variant="ghost" size="sm" icon={railOpen ? "x" : "layers"} onclick={() => (railOpen = !railOpen)}>
-        {i18n.t("tc.ui.filters") as TranslationKey}
-      </Button>
-    </div>
   </div>
 
-  <div class="content">
-    <!-- ===== Рейло фильтров ===== -->
-    <aside class="rail" class:rail-open={railOpen} aria-label={i18n.t("tc.ui.catalog_filters") as TranslationKey}>
-      <div class="rail-head">
-        <span>{i18n.t("tc.ui.filters") as TranslationKey}</span>
-        <Button variant="ghost" size="sm" onclick={() => toolchain.resetFilters()}>
-          {i18n.t("tc.ui.reset_all") as TranslationKey}
-        </Button>
-      </div>
+  {#if openMenu}
+    <button
+      type="button"
+      class="menu-backdrop"
+      aria-label={i18n.t("tc.ui.clear") as TranslationKey}
+      onclick={() => (openMenu = null)}
+    ></button>
+  {/if}
 
-      <div class="rail-body">
-        <!-- Состояния -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.status") as TranslationKey}</legend>
-          {#each allToolStateKinds() as { kind, info } (kind)}
-            {@const count = stateCounts.get(kind) ?? 0}
-            {#if count > 0}
-              <label class="filter-row">
-                <input
-                  type="checkbox"
-                  checked={toolchain.filters.states.includes(kind)}
-                  onchange={() =>
-                    toolchain.setFilters({
-                      states: toggleInArray(toolchain.filters.states, kind),
-                    })}
-                />
-                <span class="filter-label">{info.label}</span>
-                <span class="filter-count">{count}</span>
-              </label>
-            {/if}
-          {/each}
-        </fieldset>
-
-        <!-- Здоровье -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.health") as TranslationKey}</legend>
-          {#each HEALTH_OPTIONS as opt (opt.kind)}
-            {@const count = healthCounts.get(opt.kind) ?? 0}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters.health.includes(opt.kind)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    health: toggleInArray(toolchain.filters.health, opt.kind),
-                  })}
-              />
-              <span class="filter-label">{opt.label}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Категории -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.categories") as TranslationKey}</legend>
-          {#each categories as cat (cat)}
-            <label class="filter-row">
-              <input
-                type="checkbox"
-                checked={toolchain.filters.categories.includes(cat)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    categories: toggleInArray(toolchain.filters.categories, cat),
-                  })}
-              />
-              <span class="filter-label">{cat}</span>
-              <span class="filter-count">{categoryCounts.get(cat) ?? 0}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Происхождение -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.origin") as TranslationKey}</legend>
-          {#each allProvenanceKinds() as { kind, info } (kind)}
-            {@const count = provenanceCounts.get(kind) ?? 0}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters.provenance.includes(kind)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    provenance: toggleInArray(toolchain.filters.provenance, kind),
-                  })}
-              />
-              <span class="filter-label">{info.label}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Возможности платформы -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.capabilities") as TranslationKey}</legend>
-          {#each capabilityOptions as flag (flag)}
-            {@const count = capabilityCounts.get(flag) ?? 0}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters.capabilities.includes(flag)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    capabilities: toggleInArray(toolchain.filters.capabilities, flag),
-                  })}
-              />
-              <span class="filter-label">{capabilityLabel(flag)}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Режим исполнения -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.execution") as TranslationKey}</legend>
-          {#each EXECUTION_OPTIONS as opt (opt.mode)}
-            {@const count = executionCounts[opt.mode]}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters.execution_modes.includes(opt.mode)}
-                onchange={() =>
-                  toolchain.setFilters({
-                    execution_modes: toggleInArray(toolchain.filters.execution_modes, opt.mode),
-                  })}
-              />
-              <span class="filter-label">{opt.label}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-
-        <!-- Быстрые фильтры -->
-        <fieldset>
-          <legend>{i18n.t("tc.ui.quick_filters") as TranslationKey}</legend>
-          {#each QUICK_FILTERS as opt (opt.key)}
-            {@const count = quickFilterCount(opt.key)}
-            <label class="filter-row" class:filter-disabled={count === 0}>
-              <input
-                type="checkbox"
-                disabled={count === 0}
-                checked={toolchain.filters[opt.key]}
-                onchange={() =>
-                  toolchain.setFilters({ [opt.key]: !toolchain.filters[opt.key] })}
-              />
-              <span class="filter-label">{opt.label}</span>
-              <span class="filter-count">{count}</span>
-            </label>
-          {/each}
-        </fieldset>
-      </div>
-    </aside>
-
-    <!-- ===== Сетка карточек ===== -->
-    <div class="results">
-      <p class="results-count" role="status">
-        {visibleTools.length} {i18n.t("tc.ui.of") as TranslationKey} {totalTools} {i18n.t("tc.ui.tools") as TranslationKey}
-        {#if visibleTools.length !== totalTools}
-          <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
-            {i18n.t("tc.ui.reset_filters") as TranslationKey}
-          </button>
+  <!-- ===== Быстрые фильтры (лёгкие чипы) ===== -->
+  <div class="chips">
+    {#each QUICK_FILTERS as opt (opt.key)}
+      {@const count = quickFilterCount(opt.key)}
+      {@const active = toolchain.filters[opt.key]}
+      <button
+        type="button"
+        class="chip"
+        class:chip-active={active}
+        disabled={count === 0 && !active}
+        onclick={() => toolchain.setFilters({ [opt.key]: !active })}
+      >
+        {opt.label}
+        {#if count > 0}
+          <span class="chip-count">{count}</span>
         {/if}
-      </p>
+      </button>
+    {/each}
+  </div>
 
-      {#if toolchain.snapshotLoading && !snapshot}
-        <LoadingState label={i18n.t("tc.ui.loading_env") as TranslationKey} />
-      {:else if toolchain.snapshotError && !snapshot}
-        <ErrorState
-          title={i18n.t("tc.ui.load_error") as TranslationKey}
-          message={toolchain.snapshotError}
-          retry={() => void toolchain.refreshSnapshot()}
-        />
-      {:else if !snapshot || snapshot.tools.length === 0}
-        <EmptyState
-          icon="wrench"
-          title={i18n.t("tc.ui.no_data_title") as TranslationKey}
-          description={i18n.t("tc.ui.no_data_desc") as TranslationKey}
-        >
-          {#snippet action()}
-            <Button variant="primary" icon="refresh" loading={toolchain.snapshotLoading} onclick={() => void toolchain.ensureScanRunning()}>
-              {i18n.t("tc.ui.run_scan") as TranslationKey}
-            </Button>
-          {/snippet}
-        </EmptyState>
-      {:else if visibleTools.length === 0}
-        <EmptyState
-          compact
-          icon="search"
-          title={i18n.t("tc.ui.no_results") as TranslationKey}
-          description={i18n.t("tc.ui.no_results_desc") as TranslationKey}
-        >
-          {#snippet action()}
-            <Button variant="secondary" size="sm" icon="refresh" onclick={() => toolchain.resetFilters()}>
-              {i18n.t("tc.ui.reset_filters") as TranslationKey}
-            </Button>
-          {/snippet}
-        </EmptyState>
-      {:else}
-        <div class="grid">
-          {#each visibleTools as tool (tool.tool_id)}
-            <ToolCard
-              {tool}
-              def={toolchain.definitionFor(tool.tool_id)}
-              busy={recheckingIds.has(tool.tool_id)}
-              ondetails={(id) => toolchain.selectTool(id)}
-              onplan={onplan}
-              onrecheck={handleRecheck}
-              onuninstall={(id) => toolchain.uninstallTool(id)}
-            />
-          {/each}
-        </div>
-      {/if}
-
-      {#if snapshot && snapshot.tools.some((t) => t.state.kind === "scan_pending")}
-        <p class="scan-note" role="status">
-          <Icon name="clock" size={13} />
-          {i18n.t("tc.ui.scanning_note") as TranslationKey}
-        </p>
-      {/if}
+  <!-- ===== Активные фильтры: теги с очисткой ===== -->
+  {#if hasActiveFilters}
+    <div class="tags">
+      {#each activeTagRows as tag (tag.key)}
+        <span class="tag">
+          {tag.label}
+          <button
+            type="button"
+            class="tag-clear"
+            aria-label={i18n.t("tc.ui.clear") as TranslationKey}
+            onclick={tag.clear}
+          >
+            <Icon name="x" size={11} />
+          </button>
+        </span>
+      {/each}
+      <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
+        {i18n.t("tc.ui.reset_all") as TranslationKey}
+      </button>
     </div>
+  {/if}
+
+  <div class="results">
+    <p class="results-count" role="status">
+      {visibleTools.length} {i18n.t("tc.ui.of") as TranslationKey} {totalTools} {i18n.t("tc.ui.tools") as TranslationKey}
+      {#if resultsHidden}
+        <button type="button" class="link-btn" onclick={() => toolchain.resetFilters()}>
+          {i18n.t("tc.ui.reset_filters") as TranslationKey}
+        </button>
+      {/if}
+    </p>
+
+    {#if toolchain.snapshotLoading && !snapshot}
+      <LoadingState label={i18n.t("tc.ui.loading_env") as TranslationKey} />
+    {:else if toolchain.snapshotError && !snapshot}
+      <ErrorState
+        title={i18n.t("tc.ui.load_error") as TranslationKey}
+        message={toolchain.snapshotError}
+        retry={() => void toolchain.refreshSnapshot()}
+      />
+    {:else if !snapshot || snapshot.tools.length === 0}
+      <EmptyState
+        icon="wrench"
+        title={i18n.t("tc.ui.no_data_title") as TranslationKey}
+        description={i18n.t("tc.ui.no_data_desc") as TranslationKey}
+      >
+        {#snippet action()}
+          <Button variant="primary" icon="refresh" loading={toolchain.snapshotLoading} onclick={() => void toolchain.ensureScanRunning()}>
+            {i18n.t("tc.ui.run_scan") as TranslationKey}
+          </Button>
+        {/snippet}
+      </EmptyState>
+    {:else if visibleTools.length === 0}
+      <EmptyState
+        compact
+        icon="search"
+        title={i18n.t("tc.ui.no_results") as TranslationKey}
+        description={i18n.t("tc.ui.no_results_desc") as TranslationKey}
+      >
+        {#snippet action()}
+          <Button variant="secondary" size="sm" icon="refresh" onclick={() => toolchain.resetFilters()}>
+            {i18n.t("tc.ui.reset_filters") as TranslationKey}
+          </Button>
+        {/snippet}
+      </EmptyState>
+    {:else}
+      <div class="list">
+        {#each visibleTools as tool (tool.tool_id)}
+          <ToolCard
+            {tool}
+            def={toolchain.definitionFor(tool.tool_id)}
+            busy={recheckingIds.has(tool.tool_id)}
+            ondetails={(id) => toolchain.selectTool(id)}
+            onplan={onplan}
+            onrecheck={handleRecheck}
+            onuninstall={(id) => toolchain.uninstallTool(id)}
+          />
+        {/each}
+      </div>
+    {/if}
+
+    {#if snapshot && snapshot.tools.some((t) => t.state.kind === "scan_pending")}
+      <p class="scan-note" role="status">
+        <Icon name="clock" size={13} />
+        {i18n.t("tc.ui.scanning_note") as TranslationKey}
+      </p>
+    {/if}
   </div>
 </div>
 
@@ -481,14 +657,14 @@
   .manage {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-4);
+    gap: var(--sp-3);
     min-width: 0;
   }
 
   .toolbar {
     display: flex;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-2);
     flex-wrap: wrap;
   }
 
@@ -496,12 +672,12 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    flex: 1 1 18rem;
-    min-width: 14rem;
-    padding: var(--sp-2) var(--sp-3);
+    flex: 1 1 16rem;
+    min-width: 12rem;
+    padding: var(--sp-1) var(--sp-2);
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-md);
-    background: var(--sp-glass-bg);
+    background: var(--sp-bg-1);
     color: var(--sp-text-3);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
@@ -525,144 +701,247 @@
     color: var(--sp-text-3);
   }
 
-  .sort {
+  .menus {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+  }
+
+  .menu-wrap {
+    position: relative;
+  }
+
+  .menu-btn {
     display: inline-flex;
     align-items: center;
-    gap: var(--sp-2);
-  }
-
-  .sort-label {
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-    white-space: nowrap;
-  }
-
-  .sort select {
+    gap: var(--sp-1);
     padding: var(--sp-1) var(--sp-2);
-    border-radius: var(--sp-radius-sm);
     border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    font-weight: var(--sp-fw-medium);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .menu-btn:hover,
+  .menu-btn.menu-active {
+    border-color: var(--sp-border-strong);
     background: var(--sp-bg-2);
     color: var(--sp-text-1);
-    font-size: var(--sp-fs-sm);
   }
 
-  .content {
-    display: grid;
-    grid-template-columns: 16rem minmax(0, 1fr);
-    gap: var(--sp-5);
-    align-items: start;
+  .menu-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 var(--sp-1);
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-accent-soft);
+    color: var(--sp-accent);
+    font-size: 0.625rem;
+    font-weight: var(--sp-fw-semibold);
   }
 
-  @media (max-width: 980px) {
-    .content {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .rail {
-      display: none;
-    }
-    .rail.rail-open {
-      display: block;
-    }
+  .caret {
+    width: 0;
+    height: 0;
+    margin-left: var(--sp-1);
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid currentColor;
+    opacity: 0.7;
   }
 
-  @media (min-width: 981px) {
-    .rail-toggle-wrap {
-      display: none;
-    }
+  .menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    border: none;
+    padding: 0;
+    background: transparent;
+    cursor: default;
   }
 
-  .rail {
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-lg);
-    background: var(--sp-bg-1);
-    overflow: hidden;
-    max-height: 70vh;
-    position: sticky;
-    top: 0;
+  .menu-panel {
+    position: absolute;
+    top: calc(100% + var(--sp-1));
+    left: 0;
+    z-index: 100;
+    min-width: 15rem;
+    max-width: 20rem;
+    max-height: min(24rem, 60vh);
+    overflow-y: auto;
+    padding: var(--sp-2);
+    background: var(--sp-glass-strong);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--sp-border-strong);
+    border-radius: var(--sp-radius-md);
+    box-shadow: var(--sp-shadow-2);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
   }
 
-  .rail-head {
+  .menu-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-3) var(--sp-4);
-    border-bottom: 1px solid var(--sp-border-faint);
-    font-size: var(--sp-fs-sm);
-    font-weight: var(--sp-fw-semibold);
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-1);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    cursor: pointer;
+    user-select: none;
+    border-radius: var(--sp-radius-xs);
+  }
+
+  .menu-row:hover {
+    background: var(--sp-bg-2);
     color: var(--sp-text-1);
   }
 
-  .rail-body {
-    padding: var(--sp-2) var(--sp-4) var(--sp-4);
-    overflow-y: auto;
-    max-height: calc(70vh - 3.5rem);
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-3);
+  .menu-row input {
+    accent-color: var(--sp-accent-strong);
+    width: 0.85rem;
+    height: 0.85rem;
+    flex: 0 0 auto;
   }
 
-  fieldset {
-    border: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-1);
+  .menu-row-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
-  legend {
-    padding: 0;
-    margin-bottom: var(--sp-1);
-    font-size: var(--sp-fs-xs);
+  .menu-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .menu-count {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--sp-text-3);
+  }
+
+  .menu-group {
+    padding: var(--sp-1) var(--sp-1) 0;
+    font-size: 0.625rem;
     font-weight: var(--sp-fw-semibold);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--sp-text-3);
   }
 
-  .filter-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    padding: var(--sp-1) 0;
+  .sort select {
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-1);
     font-size: var(--sp-fs-xs);
-    color: var(--sp-text-2);
-    cursor: pointer;
-    user-select: none;
+    max-width: 10rem;
   }
 
-  .filter-row:hover {
+  .chips {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: 0 var(--sp-2);
+    height: 1.5rem;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-full);
+    background: transparent;
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .chip:hover:not(:disabled) {
+    border-color: var(--sp-border-strong);
     color: var(--sp-text-1);
   }
 
-  .filter-row input {
-    accent-color: var(--sp-accent-strong);
-    width: 0.85rem;
-    height: 0.85rem;
+  .chip-active {
+    background: var(--sp-accent-soft);
+    border-color: var(--sp-accent-border);
+    color: var(--sp-accent);
   }
 
-  .filter-disabled {
+  .chip:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
 
-  .filter-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
+  .chip-count {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
   }
 
-  .filter-count {
-    margin-left: auto;
-    font-variant-numeric: tabular-nums;
+  .tags {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: 0 var(--sp-1) 0 var(--sp-2);
+    height: 1.5rem;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-bg-1);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    white-space: nowrap;
+  }
+
+  .tag-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
+    border: none;
+    border-radius: var(--sp-radius-full);
+    background: transparent;
     color: var(--sp-text-3);
+    cursor: pointer;
+  }
+
+  .tag-clear:hover {
+    background: var(--sp-bg-3);
+    color: var(--sp-text-1);
   }
 
   .results {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-3);
+    gap: var(--sp-2);
     min-width: 0;
   }
 
@@ -672,10 +951,11 @@
     color: var(--sp-text-3);
   }
 
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
-    gap: var(--sp-4);
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 0;
   }
 
   .scan-note {

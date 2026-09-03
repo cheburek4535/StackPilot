@@ -35,63 +35,55 @@
     display: inline-flex;
     align-items: center;
     gap: var(--sp-1);
-    padding: 0.125rem var(--sp-2);
-    border-radius: var(--sp-radius-full);
+    padding: 0.0625rem 0.375rem;
+    border-radius: var(--sp-radius-sm);
     font-family: var(--sp-font-sans);
     font-size: var(--sp-fs-xs);
-    font-weight: var(--sp-fw-semibold);
-    line-height: 1.4;
+    font-weight: var(--sp-fw-medium);
+    line-height: 1.5;
     letter-spacing: 0.01em;
     white-space: nowrap;
-    border: 1px solid transparent;
   }
 
   .sp-badge-dot {
-    width: 0.4rem;
-    height: 0.4rem;
+    width: 0.3125rem;
+    height: 0.3125rem;
     border-radius: var(--sp-radius-full);
     background: currentColor;
   }
 
   .sp-badge-neutral {
-    background: var(--sp-bg-2);
+    background: rgba(255, 255, 255, 0.08);
     color: var(--sp-text-2);
-    border-color: var(--sp-border);
   }
 
   .sp-badge-violet {
-    background: rgba(139, 92, 246, 0.14);
+    background: rgba(139, 92, 246, 0.12);
     color: var(--sp-violet);
-    border-color: rgba(139, 92, 246, 0.3);
   }
 
   .sp-badge-cyan {
     background: rgba(34, 211, 238, 0.12);
     color: var(--sp-cyan);
-    border-color: rgba(34, 211, 238, 0.3);
   }
 
   .sp-badge-blue {
     background: rgba(96, 165, 250, 0.12);
     color: var(--sp-blue);
-    border-color: rgba(96, 165, 250, 0.3);
   }
 
   .sp-badge-lime {
     background: rgba(163, 230, 53, 0.12);
     color: var(--sp-lime);
-    border-color: rgba(163, 230, 53, 0.3);
   }
 
   .sp-badge-amber {
     background: rgba(251, 191, 36, 0.12);
     color: var(--sp-amber);
-    border-color: rgba(251, 191, 36, 0.3);
   }
 
   .sp-badge-red {
     background: rgba(248, 113, 113, 0.12);
     color: var(--sp-red);
-    border-color: rgba(248, 113, 113, 0.3);
   }
 </style>

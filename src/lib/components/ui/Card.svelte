@@ -5,7 +5,7 @@
   export type CardPadding = "sm" | "md" | "lg" | "none";
 
   let {
-    variant = "glass",
+    variant = "elevated",
     padding = "md",
     class: klass = "",
     title,
@@ -51,8 +51,6 @@
 
   .sp-card-glass {
     background: var(--sp-glass-bg);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
     box-shadow: var(--sp-shadow-1);
   }
 

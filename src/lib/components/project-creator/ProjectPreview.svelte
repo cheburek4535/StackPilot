@@ -396,17 +396,19 @@
 
   .pp-split {
     display: flex;
-    gap: 2px;
+    gap: 0;
     height: 320px;
     min-height: 0;
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    overflow: hidden;
   }
 
   .pp-tree-pane {
     flex: 1;
     min-width: 0;
-    overflow-y: auto;
+    overflow: auto;
     background: var(--sp-bg-2);
-    border-radius: var(--sp-radius-sm);
     padding: var(--sp-2);
   }
 
@@ -414,12 +416,15 @@
     flex: 0 0 45%;
   }
 
+  .pp-tree-pane + .pp-preview-pane {
+    border-left: 1px solid var(--sp-border);
+  }
+
   .pp-preview-pane {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     background: var(--sp-bg-2);
-    border-radius: var(--sp-radius-sm);
   }
 
   .pp-empty-tree {

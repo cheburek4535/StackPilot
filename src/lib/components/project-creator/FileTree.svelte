@@ -116,7 +116,7 @@
     background: none;
     color: var(--sp-text-1);
     font-family: var(--sp-font-mono);
-    font-size: var(--sp-fs-xs);
+    font-size: var(--sp-fs-sm);
     text-align: left;
     cursor: pointer;
     border-radius: var(--sp-radius-sm);

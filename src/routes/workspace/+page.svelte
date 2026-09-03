@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -14,7 +15,13 @@
     workspaceContext,
     reloadWorkspaceContext,
   } from "$lib/modules/workspace/context";
-  import { listProcesses, getSessionInfo } from "$lib/modules/workspace/api";
+  import {
+    listProcesses,
+    getSessionInfo,
+    killProcess,
+    setCurrentProject,
+    openInVSCode,
+  } from "$lib/modules/workspace/api";
   import type { TrackedProcess, SessionInfo } from "$lib/modules/workspace/types";
   import {
     statusTone,
@@ -25,9 +32,29 @@
     isProcessRunning,
     isProcessFailed,
   } from "$lib/modules/workspace/status";
+  import {
+    listProfiles,
+    executeAction,
+    startFileWatcher,
+    stopFileWatcher,
+  } from "$lib/modules/devlauncher/api";
+  import type {
+    LaunchProfile,
+    LaunchProfileV2,
+    LaunchRun,
+    ActionStatus,
+  } from "$lib/modules/devlauncher/types";
+  import {
+    isV2Profile,
+    isRunTerminal,
+    runStatusLabel,
+    stepStatusClass,
+  } from "$lib/modules/devlauncher/types";
+  import * as runStore from "$lib/modules/devlauncher/runStore";
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
   import type { RecentProjectRef } from "$lib/core/recent";
+  import { selectFolder } from "$lib/modules/project_creator/api";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -38,9 +65,54 @@
   let openingPath = $state<string | null>(null);
   let pollId: ReturnType<typeof setInterval> | null = null;
 
+  let profiles = $state<LaunchProfile[]>([]);
+  let launching = $state(false);
+  let launchingName = $state<string | null>(null);
+  let launchCurrent = $state<string | null>(null);
+  let activeRun = $state<LaunchRun | null>(null);
+  let actionResults = $state<Map<string, string>>(new Map());
+  let watching = $state(false);
+
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
   const wsError = $derived($workspaceContext.error);
+
+  const runningProcs = $derived(processes.filter((p) => isProcessRunning(p.status)));
+  const runningCount = $derived(runningProcs.length);
+  const erroredCount = $derived(processes.filter((p) => isProcessFailed(p.status)).length);
+  const restarts = $derived(processes.reduce((sum, p) => sum + p.restarts, 0));
+
+  const boundProfiles = $derived(
+    project?.project_path
+      ? profiles.filter((p) => p.project_path === project.project_path)
+      : [],
+  );
+  const unboundProfiles = $derived(
+    project?.project_path
+      ? profiles.filter((p) => p.project_path !== project.project_path)
+      : profiles,
+  );
+
+  onMount(async () => {
+    await runStore.init();
+    await loadProfiles();
+    // Deep links: /workspace?profile=<name>[&run=1]
+    const want = $page.url.searchParams.get("profile");
+    if (want) {
+      const found = profiles.find((p) => p.name === want);
+      if (found && $page.url.searchParams.get("run") === "1") {
+        await launchProfile(found);
+      }
+    }
+  });
+
+  onDestroy(() => {
+    stopPolling();
+    runStore.destroy();
+    if (watching) {
+      stopFileWatcher().catch(() => {});
+    }
+  });
 
   $effect(() => {
     if (project && !dataLoaded) {
@@ -55,13 +127,8 @@
     }
   });
 
-  onDestroy(() => {
-    stopPolling();
-  });
-
   /** Живое обновление: таймеры (процессы, сессия) считаются на бэкенде,
-   *  поэтому страница опрашивает их, пока открыта. Раз в 2 секунды —
-   *  статусы процессов и длительность сессии обновляются без перезахода. */
+   *  поэтому страница опрашивает их, пока открыта. */
   function startPolling() {
     if (pollId) return;
     pollId = setInterval(() => {
@@ -85,24 +152,162 @@
     session = sess;
   }
 
-  const runningProcs = $derived(processes.filter((p) => isProcessRunning(p.status)));
-  const runningCount = $derived(runningProcs.length);
-  const erroredCount = $derived(processes.filter((p) => isProcessFailed(p.status)).length);
-  const restarts = $derived(processes.reduce((sum, p) => sum + p.restarts, 0));
+  async function loadProfiles() {
+    try {
+      profiles = await listProfiles();
+    } catch {
+      profiles = [];
+    }
+  }
+
+  function formatResultSafe(r: ActionStatus): string {
+    if ("Success" in r) return `✓ ${r.Success.message}`;
+    if ("Failed" in r) return `✗ ${r.Failed.error}`;
+    if ("Skipped" in r) return `— ${r.Skipped.reason}`;
+    return "?";
+  }
+
+  /** Запуск профиля: V2 использует event-driven оркестратор,
+   *  legacy — пошаговый executeAction. */
+  async function launchProfile(profile: LaunchProfile) {
+    if (launching) return;
+    launching = true;
+    launchingName = profile.name;
+    launchCurrent = null;
+    actionResults = new Map();
+    activeRun = null;
+
+    try {
+      // Bind profile to workspace project.
+      if (profile.project_path && profile.name !== project?.profile_name) {
+        await setCurrentProject(profile.name, profile.project_path, profile.description, []);
+        await reloadWorkspaceContext();
+      }
+    } catch {
+      // Non-critical — launch continues without binding.
+    }
+
+    if (isV2Profile(profile) && profile.id && profile.schema_version) {
+      try {
+        const v2Profile = profile as unknown as LaunchProfileV2;
+        const run = await runStore.launchRun(v2Profile);
+        activeRun = run;
+        pollRun(run.run_id);
+      } catch (e) {
+        notifyError(i18n.t("devl.launch_failed") as TranslationKey, String(e));
+      }
+    } else {
+      for (const action of profile.actions) {
+        if (!action.enabled) continue;
+        launchCurrent = action.label;
+        try {
+          const result = await executeAction(action);
+          actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
+        } catch (e) {
+          actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);
+        }
+      }
+      launchCurrent = null;
+    }
+
+    launching = false;
+    launchingName = null;
+    // File watcher for live-reload.
+    if (profile.project_path) {
+      try {
+        await startFileWatcher(profile.project_path);
+        watching = true;
+      } catch {
+        // Non-critical.
+      }
+    }
+  }
+
+  /** Poll a V2 run for updates (supplements event-driven updates). */
+  async function pollRun(runId: string) {
+    try {
+      const run = await runStore.fetchRun(runId);
+      if (run) {
+        activeRun = run;
+        if (!isRunTerminal(run.status) && launching) {
+          setTimeout(() => pollRun(runId), 1000);
+        }
+      }
+    } catch {
+      // Non-critical.
+    }
+  }
+
+  /** Cancel the active V2 run. Idempotent — safe after terminal state. */
+  async function cancelRun() {
+    await runStore.cancelCurrentRun();
+    if (activeRun) {
+      const updated = await runStore.fetchRun(activeRun.run_id);
+      if (updated) activeRun = updated;
+    }
+  }
+
+  /** Stop all processes of a run without cancelling the run itself. */
+  async function stopRun(runId: string) {
+    try {
+      await runStore.stopProcesses(runId);
+      if (activeRun?.run_id === runId) {
+        const updated = await runStore.fetchRun(runId);
+        if (updated) activeRun = updated;
+      }
+    } catch { /* non-critical */ }
+  }
+
+  async function handleKill(proc: TrackedProcess) {
+    try {
+      await killProcess(proc.id);
+      notifySuccess(i18n.t("ws.toast_killed") as TranslationKey, proc.label);
+      loadData();
+    } catch (e) {
+      notifyError(
+        i18n.t("ws.toast_killed") as TranslationKey,
+        i18n.t("ws.toast_kill_failed", { err: String(e) }) as TranslationKey,
+      );
+    }
+  }
 
   async function openRecent(ref: RecentProjectRef) {
     openingPath = ref.path;
     try {
       await openProject(ref.path);
       await reloadWorkspaceContext();
-      notifySuccess(i18n.t("ws.toast_project_opened"), ref.name);
+      notifySuccess(i18n.t("ws.toast_project_opened") as TranslationKey, ref.name);
     } catch (e) {
       notifyError(
-        i18n.t("ws.toast_project_opened"),
-        i18n.t("ws.toast_open_failed", { path: ref.path, err: String(e) }),
+        i18n.t("ws.toast_project_opened") as TranslationKey,
+        i18n.t("ws.toast_open_failed", { path: ref.path, err: String(e) }) as TranslationKey,
       );
     }
     openingPath = null;
+  }
+
+  async function openFolder() {
+    try {
+      const path = await selectFolder();
+      if (!path) return;
+      await openProject(path);
+      await reloadWorkspaceContext();
+      notifySuccess(i18n.t("ws.toast_project_opened") as TranslationKey, path);
+    } catch (e) {
+      notifyError(
+        i18n.t("ws.toast_project_opened") as TranslationKey,
+        i18n.t("ws.toast_open_failed", { path: "—", err: String(e) }) as TranslationKey,
+      );
+    }
+  }
+
+  async function openInVsCodeSafe(path: string) {
+    try {
+      await openInVSCode(path);
+      notifySuccess("VS Code", i18n.t("ws.toast_opening") as TranslationKey);
+    } catch (e) {
+      notifyError("VS Code", i18n.t("ws.toast_failed", { err: String(e) }) as TranslationKey);
+    }
   }
 
   function formatWhen(iso: string): string {
@@ -138,8 +343,11 @@
   {:else if !project}
     <div class="sp-empty-wrap">
       {#snippet emptyAction()}
-        <Button variant="primary" icon="layers" href="/devlauncher">
-          {i18n.t("ws.open_devlauncher") as TranslationKey}
+        <Button variant="primary" icon="folder" href="#recent-projects">
+          {i18n.t("ws.select_recent") as TranslationKey}
+        </Button>
+        <Button variant="secondary" icon="folder" onclick={openFolder}>
+          {i18n.t("ws.open_folder") as TranslationKey}
         </Button>
         <Button variant="secondary" icon="sparkles" href="/create">
           {i18n.t("ws.open_project_creator") as TranslationKey}
@@ -154,7 +362,7 @@
     </div>
 
     {#if $recentProjects.length > 0}
-      <div class="sp-recent-section">
+      <div class="sp-recent-section" id="recent-projects">
         <Card
           title={i18n.t("ws.recent_projects") as TranslationKey}
           description={i18n.t("ws.recent_desc") as TranslationKey}
@@ -188,9 +396,9 @@
     {/if}
   {:else}
     <PageHeader
-      title={i18n.t("ws.overview_title") as TranslationKey}
-      description={i18n.t("ws.overview_desc") as TranslationKey}
-      icon="layers"
+      title={i18n.t("ws.dashboard") as TranslationKey}
+      description={i18n.t("ws.dashboard_desc") as TranslationKey}
+      icon="home"
     />
 
     <Card variant="elevated" padding="lg">
@@ -221,10 +429,10 @@
           <div class="sp-hero-actions">
             <Button
               variant="secondary"
-              icon="bookmark"
-              onclick={() => goto(`/devlauncher/profiles/${encodeURIComponent(project.profile_name)}`)}
+              icon="external"
+              onclick={() => openInVsCodeSafe(project!.project_path!)}
             >
-              {i18n.t("ws.open_profile") as TranslationKey}
+              {i18n.t("ws.open_vscode") as TranslationKey}
             </Button>
             <Button
               variant="secondary"
@@ -281,24 +489,157 @@
 
     <div class="sp-grid">
       <Card
+        title={i18n.t("ws.profile_launcher") as TranslationKey}
+        description={i18n.t("ws.profile_launcher_desc") as TranslationKey}
+      >
+        {#if profiles.length === 0}
+          <div class="sp-inline-empty">
+            <p>{i18n.t("ws.profiles_empty") as TranslationKey}</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="search"
+              href="/devlauncher/analyze"
+            >
+              {i18n.t("ws.analyze_project") as TranslationKey}
+            </Button>
+          </div>
+        {:else}
+          <div class="sp-profiles">
+            {#each [...boundProfiles, ...unboundProfiles] as profile}
+              {@const isBound = profile.project_path === project.project_path}
+              <div class="sp-profile-row">
+                <div class="sp-profile-main">
+                  <span class="sp-profile-label">{profile.name}</span>
+                  <span class="sp-profile-desc">
+                    {profile.description}
+                    {#if isBound}
+                      · <Badge tone="cyan">{i18n.t("devl.has_path") as TranslationKey}</Badge>
+                    {/if}
+                  </span>
+                </div>
+                <div class="sp-profile-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="bookmark"
+                    href={`/devlauncher/profiles/${encodeURIComponent(profile.name)}`}
+                  >
+                    {i18n.t("ws.manage_profiles") as TranslationKey}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon="play"
+                    loading={launching && launchingName === profile.name}
+                    disabled={launching}
+                    onclick={() => launchProfile(profile)}
+                  >
+                    {i18n.t("devl.launch", { name: profile.name }) as TranslationKey}
+                  </Button>
+                </div>
+              </div>
+            {/each}
+          </div>
+
+          {#if launchCurrent}
+            <p class="sp-launch-current">▶ {launchCurrent}…</p>
+          {/if}
+          {#if actionResults.size > 0}
+            <div class="sp-action-results">
+              {#each [...actionResults.entries()] as [id, result]}
+                <div class="sp-action-result {result.startsWith("✗") ? "err" : result.startsWith("—") ? "skip" : "ok"}">
+                  {id}: {result}
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if watching}
+            <div class="sp-watcher-status">
+              <span class="sp-watcher-dot"></span>
+              {i18n.t("devl.watching") as TranslationKey}
+            </div>
+          {/if}
+
+          {#if activeRun}
+            <div class="sp-run-card">
+              <div class="sp-run-header">
+                <h5 class="sp-sub-title" style="margin:0">
+                  {i18n.t("devl.run") as TranslationKey} — {activeRun.profile_name}
+                </h5>
+                <div class="sp-run-actions">
+                  {#if !isRunTerminal(activeRun.status)}
+                    <Button variant="danger" size="sm" icon="x" onclick={cancelRun}>
+                      {i18n.t("devl.cancel_run") as TranslationKey}
+                    </Button>
+                  {:else}
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon="x"
+                      onclick={() => stopRun(activeRun!.run_id)}
+                    >
+                      {i18n.t("devl.stop_processes") as TranslationKey}
+                    </Button>
+                  {/if}
+                  <Badge tone={activeRun.status === "succeeded" ? "lime" : activeRun.status === "failed" ? "red" : activeRun.status === "cancelled" ? "amber" : activeRun.status === "partial_success" ? "amber" : "violet"}>
+                    {runStatusLabel(activeRun.status)}
+                  </Badge>
+                </div>
+              </div>
+              <div class="sp-run-steps">
+                {#each activeRun.steps as step}
+                  <div class="sp-step-row {stepStatusClass(step.status)}">
+                    <span class="sp-step-status">
+                      {#if step.status === "pending"}○
+                      {:else if step.status === "running"}◉
+                      {:else if step.status === "succeeded"}✓
+                      {:else if step.status === "failed"}✗
+                      {:else if step.status === "skipped"}—
+                      {:else if step.status === "cancelled"}⊘
+                      {:else if step.status === "retrying"}↻
+                      {:else}?{/if}
+                    </span>
+                    <span class="sp-step-id">{step.step_id}</span>
+                    {#if step.error}
+                      <span class="sp-step-error">{step.error}</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              {#if activeRun.diagnostics.length > 0}
+                <div class="sp-run-diagnostics">
+                  {#each activeRun.diagnostics as diag}
+                    <p class="sp-diag {diag.severity === "error" ? "sp-diag-err" : diag.severity === "warning" ? "sp-diag-warn" : "sp-diag-info"}">
+                      [{diag.source}] {diag.message}
+                    </p>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+      </Card>
+
+      <Card
         title={i18n.t("ws.stat_running") as TranslationKey}
         description={i18n.t("ws.overview_desc") as TranslationKey}
       >
-        {#if runningProcs.length === 0}
+        {#if processes.length === 0}
           <div class="sp-inline-empty">
             <p>{i18n.t("ws.no_processes") as TranslationKey}</p>
             <Button
               size="sm"
               variant="secondary"
               icon="terminal"
-              onclick={() => goto("/workspace/runtime")}
+              href="/workspace/logs"
             >
               {i18n.t("ws.open_runtime") as TranslationKey}
             </Button>
           </div>
         {:else}
           <div class="sp-proc-list">
-            {#each runningProcs as p}
+            {#each processes as p}
               <div class="sp-proc-row">
                 <span class="sp-proc-icon" aria-hidden="true">
                   <Icon name={statusIcon(p.status)} size={14} />
@@ -316,6 +657,14 @@
                   </span>
                 </div>
                 <Badge tone={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="x"
+                  disabled={!isProcessRunning(p.status)}
+                  onclick={() => handleKill(p)}
+                >
+                </Button>
               </div>
             {/each}
           </div>
@@ -326,7 +675,9 @@
           {/if}
         {/if}
       </Card>
+    </div>
 
+    <div class="sp-grid">
       <Card
         title={i18n.t("ws.session_title") as TranslationKey}
         description={i18n.t("ws.session_desc") as TranslationKey}
@@ -361,6 +712,22 @@
             </div>
           </div>
         {/if}
+      </Card>
+
+      <Card
+        title={i18n.t("ws.problems") as TranslationKey}
+        description={i18n.t("ws.problems_desc") as TranslationKey}
+      >
+        <div class="sp-inline-empty">
+          <p>
+            {erroredCount > 0
+              ? i18n.t("ws.errored_count", { n: erroredCount })
+              : (i18n.t("ws.no_problems") as TranslationKey)}
+          </p>
+          <Button size="sm" variant="secondary" icon="alert" href="/workspace/problems">
+            {i18n.t("ws.problems") as TranslationKey}
+          </Button>
+        </div>
       </Card>
     </div>
   {/if}
@@ -568,6 +935,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
     gap: var(--sp-4);
+    margin-bottom: var(--sp-4);
   }
 
   .sp-inline-empty {
@@ -584,6 +952,196 @@
     font-size: var(--sp-fs-sm);
     color: var(--sp-text-3);
   }
+
+  /* profiles launcher */
+
+  .sp-profiles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .sp-profile-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+  }
+
+  .sp-profile-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-profile-label {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .sp-profile-desc {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sp-profile-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex-shrink: 0;
+  }
+
+  .sp-launch-current {
+    margin: var(--sp-3) 0 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-accent);
+  }
+
+  .sp-action-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin-top: var(--sp-2);
+  }
+
+  .sp-action-result {
+    font-size: var(--sp-fs-xs);
+    padding: var(--sp-1) var(--sp-3);
+    word-break: break-all;
+  }
+
+  .sp-action-result.ok {
+    color: var(--sp-success);
+  }
+
+  .sp-action-result.err {
+    color: var(--sp-danger);
+  }
+
+  .sp-action-result.skip {
+    color: var(--sp-warning);
+  }
+
+  .sp-watcher-status {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-success);
+    margin-top: var(--sp-2);
+  }
+
+  .sp-watcher-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--sp-success);
+    animation: sp-pulse 2s ease-in-out infinite;
+  }
+
+  /* V2 run state */
+
+  .sp-run-card {
+    margin-top: var(--sp-3);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--sp-bg-1);
+  }
+
+  .sp-run-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+
+  .sp-run-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-run-steps {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-step-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-mono);
+  }
+
+  .sp-step-row.step-pending { opacity: 0.5; }
+  .sp-step-row.step-running { background: var(--sp-accent-soft); }
+  .sp-step-row.step-succeeded { color: var(--sp-success); }
+  .sp-step-row.step-failed { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .sp-step-row.step-skipped { color: var(--sp-warning); opacity: 0.7; }
+  .sp-step-row.step-cancelled { color: var(--sp-text-3); text-decoration: line-through; }
+  .sp-step-row.step-retrying { color: var(--sp-amber); }
+
+  .sp-step-status {
+    width: 1.2em;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .sp-step-id {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-step-error {
+    color: var(--sp-danger);
+    font-size: var(--sp-fs-2xs);
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-run-diagnostics {
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--sp-border);
+  }
+
+  .sp-diag {
+    margin: 0;
+    font-size: var(--sp-fs-xs);
+    font-family: var(--sp-font-mono);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--sp-radius-sm);
+  }
+
+  .sp-diag-err { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .sp-diag-warn { color: var(--sp-warning); background: rgba(251,191,36,0.08); }
+  .sp-diag-info { color: var(--sp-text-3); }
+
+  /* processes */
 
   .sp-proc-list {
     display: flex;
@@ -646,6 +1204,8 @@
     color: var(--sp-warning);
   }
 
+  /* session */
+
   .sp-session-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -675,5 +1235,17 @@
 
   .sp-session-err {
     color: var(--sp-danger);
+  }
+
+  .sp-sub-title {
+    margin: var(--sp-5) 0 var(--sp-3);
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-2);
+  }
+
+  @keyframes sp-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 </style>

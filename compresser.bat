@@ -32,7 +32,7 @@ echo [2/5] Running Repomix...
 echo        npx repomix --remove-comments
 echo.
 
-call npx repomix --remove-comments
+call npx repomix
 
 if %errorlevel% neq 0 (
     echo.

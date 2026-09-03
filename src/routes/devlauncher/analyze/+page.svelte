@@ -293,7 +293,7 @@
     {#if savedOk}
       <div class="msg success">
         {i18n.t("analyze.saved" as TranslationKey)}
-        <button class="link" onclick={() => goto("/devlauncher/profiles")}>{i18n.t("analyze.go_to_profiles" as TranslationKey)}</button>
+        <button class="link" onclick={() => goto("/workspace")}>{i18n.t("analyze.go_to_profiles" as TranslationKey)}</button>
       </div>
     {/if}
   </div>

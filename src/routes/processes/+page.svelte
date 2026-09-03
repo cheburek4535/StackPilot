@@ -7,7 +7,7 @@
 
   onMount(() => {
     const q = $page.url.search;
-    goto(`/devlauncher/processes${q}`, { replaceState: true });
+    goto(`/workspace/logs${q}`, { replaceState: true });
   });
 </script>
 

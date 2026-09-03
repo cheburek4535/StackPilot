@@ -1,9 +1,7 @@
 <script lang="ts">
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
-  import Badge from "$lib/components/ui/Badge.svelte";
   import Button from "$lib/components/ui/Button.svelte";
-  import Icon from "$lib/components/ui/Icon.svelte";
   import type { EnvironmentSnapshot } from "../types";
   import { formatAgeSeconds, formatSizeMb } from "../format";
 
@@ -37,168 +35,165 @@
       ? snapshot.disk.reduce((min, d) => (d.free_mb < min.free_mb ? d : min))
       : null
   );
-  const admin = $derived(snapshot?.admin ?? null);
+
+  const metrics = $derived.by(() => {
+    if (!snapshot) return [];
+    return [
+      { key: "installed", value: installedCount, label: i18n.t("tc.hero.installed") as TranslationKey },
+      { key: "updates", value: updatesCount, label: i18n.t("tc.hero.updates") as TranslationKey, tone: "updates" },
+      { key: "broken", value: brokenCount, label: i18n.t("tc.hero.broken_path") as TranslationKey, tone: "broken" },
+      disk
+        ? { key: "disk", value: formatSizeMb(disk.free_mb), label: i18n.t("tc.hero.free_space") as TranslationKey, tone: disk.free_mb < 5000 ? "broken" : "" }
+        : null,
+    ].filter((m) => m !== null) as {
+      key: string;
+      value: string | number;
+      label: string;
+      tone?: string;
+    }[];
+  });
 </script>
 
-<section class="hero" class:hero-empty={!snapshot} aria-label={i18n.t("tc.hero.env_state") as TranslationKey}>
-  <div class="hero-main">
-    <div class="hero-title">
-      <h2>{i18n.t("tc.hero.local_env") as TranslationKey}</h2>
-      {#if freshness === "stale"}
-        <Badge tone="amber">{i18n.t("tc.hero.outdated") as TranslationKey}</Badge>
-      {:else if freshness === "live"}
-        <Badge tone="cyan" dot>{i18n.t("tc.fresh") as TranslationKey}</Badge>
-      {/if}
-    </div>
-    <p class="last-scan">
-      {#if snapshot}{i18n.t("tc.hero.last_scan") as TranslationKey} {formatAgeSeconds(snapshot.age_seconds)}
-      {:else}
-        {i18n.t("tc.no_scan_yet") as TranslationKey}
-      {/if}
-    </p>
-
+<section class="metric-bar" aria-label={i18n.t("tc.hero.env_state") as TranslationKey}>
+  <div class="metrics">
     {#if snapshot}
-      <div class="stats-grid">
-        <div class="stat-card">
-          <span class="stat-value">{installedCount}</span>
-          <span class="stat-label">{i18n.t("tc.hero.installed") as TranslationKey}</span>
+      {#each metrics as m (m.key)}
+        <div class="metric" class:tone-updates={m.tone === "updates"} class:tone-broken={m.tone === "broken"}>
+          <span class="metric-value">{m.value}</span>
+          <span class="metric-label">{m.label}</span>
         </div>
-        {#if updatesCount > 0}
-          <div class="stat-card stat-cyan">
-            <span class="stat-value">{updatesCount}</span>
-            <span class="stat-label">{i18n.t("tc.hero.updates") as TranslationKey}</span>
-          </div>
-        {/if}
-        {#if brokenCount > 0}
-          <div class="stat-card stat-red">
-            <span class="stat-value">{brokenCount}</span>
-            <span class="stat-label">{i18n.t("tc.hero.needs_repair") as TranslationKey}</span>
-          </div>
-        {/if}
-      </div>
+      {/each}
+    {:else}
+      <span class="placeholder">{i18n.t("tc.no_scan_yet") as TranslationKey}</span>
     {/if}
   </div>
 
-  <div class="hero-side">
+  <div class="side">
     {#if snapshot}
-      <div class="sys-info">
-        
-        {#if disk}
-          <span class="sys-tag" class:warn-text={disk.free_mb < 5000}>
-            <Icon name="folder" size={14} /> {i18n.t("tc.hero.free") as TranslationKey} {formatSizeMb(disk.free_mb)}
-          </span>
+      <span class="meta">
+        <span
+          class="fresh-dot"
+          class:live={freshness === "live"}
+          class:stale={freshness === "stale"}
+          aria-hidden="true"
+        ></span>
+        {freshness === "stale"
+          ? (i18n.t("tc.data_stale") as TranslationKey)
+          : freshness === "live"
+            ? (i18n.t("tc.data_live") as TranslationKey)
+            : (i18n.t("tc.no_data") as TranslationKey)}
+        {#if snapshot}
+          · {formatAgeSeconds(snapshot.age_seconds)}
         {/if}
-      </div>
+      </span>
     {/if}
 
-    <div class="hero-actions">
-      {#if !snapshot}
-        <Button variant="primary" loading={scanning} onclick={onscan}>{i18n.t("tc.hero.start_scan") as TranslationKey}</Button>
-      {:else}
-        {#if updatesCount > 0}
-          <Button variant="primary" onclick={onupdates}>{i18n.t("tc.updates_btn", { n: updatesCount }) as TranslationKey}</Button>
-        {/if}
-        <Button variant="outline" onclick={onbuild}>{i18n.t("tc.build_for_project") as TranslationKey}</Button>
+    <div class="actions">
+      {#if snapshot && updatesCount > 0}
+        <Button variant="primary" size="sm" icon="refresh" onclick={onupdates}>
+          {i18n.t("tc.hero.update_all") as TranslationKey}
+        </Button>
       {/if}
+      <Button
+        variant={snapshot ? "outline" : "primary"}
+        size="sm"
+        icon="refresh"
+        loading={scanning}
+        onclick={onscan}
+      >
+        {i18n.t("tc.hero.scan_env") as TranslationKey}
+      </Button>
     </div>
   </div>
 </section>
 
 <style>
-  .hero {
+  .metric-bar {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    gap: var(--sp-6);
-    background: var(--sp-bg-2);
-    border: 1px solid var(--sp-border-faint);
-    border-radius: var(--sp-radius-lg);
-    padding: var(--sp-5);
-  }
-  .hero-empty {
-    align-items: center;
-  }
-  .hero-main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-  .hero-title {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-  }
-  .hero-title h2 {
-    margin: 0;
-    font-size: var(--sp-fs-lg);
-    font-weight: var(--sp-fw-semibold);
-    color: var(--sp-text-1);
-  }
-  .last-scan {
-    margin: 0;
-    font-size: var(--sp-fs-sm);
-    color: var(--sp-text-3);
-  }
-  .stats-grid {
-    display: flex;
     gap: var(--sp-4);
-    margin-top: var(--sp-4);
-  }
-  .stat-card {
-    display: flex;
-    flex-direction: column;
-    padding: var(--sp-3) var(--sp-4);
+    flex-wrap: wrap;
+    padding: var(--sp-2) var(--sp-3);
     background: var(--sp-bg-1);
     border: 1px solid var(--sp-border-faint);
     border-radius: var(--sp-radius-md);
-    min-width: 120px;
   }
-  .stat-cyan {
-    border-color: rgba(6, 182, 212, 0.3);
-    background: rgba(6, 182, 212, 0.05);
-  }
-  .stat-cyan .stat-value { color: var(--sp-cyan); }
-  .stat-red {
-    border-color: rgba(248, 113, 113, 0.3);
-    background: rgba(248, 113, 113, 0.05);
-  }
-  .stat-red .stat-value { color: var(--sp-danger); }
-  .stat-value {
-    font-size: var(--sp-fs-2xl);
-    font-weight: var(--sp-fw-bold);
-    color: var(--sp-text-1);
-    line-height: 1;
-  }
-  .stat-label {
-    margin-top: var(--sp-1);
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-2);
-  }
-  .hero-side {
+
+  .metrics {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: center;
-    gap: var(--sp-4);
+    align-items: center;
+    gap: var(--sp-6);
+    flex-wrap: wrap;
+    min-width: 0;
   }
-  .sys-info {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
+
+  .metric {
+    display: inline-flex;
+    align-items: baseline;
     gap: var(--sp-1);
+    white-space: nowrap;
   }
-  .sys-tag {
+
+  .metric-value {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    font-variant-numeric: tabular-nums;
+    color: var(--sp-text-1);
+  }
+
+  .metric-label {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .tone-updates .metric-value {
+    color: var(--sp-amber);
+  }
+
+  .tone-broken .metric-value {
+    color: var(--sp-danger);
+  }
+
+  .placeholder {
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+  }
+
+  .side {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    flex-wrap: wrap;
+  }
+
+  .meta {
     display: inline-flex;
     align-items: center;
     gap: var(--sp-1);
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
+    white-space: nowrap;
   }
-  .warn-text {
-    color: var(--sp-warning);
+
+  .fresh-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-text-3);
   }
-  .hero-actions {
+
+  .fresh-dot.live {
+    background: var(--sp-lime);
+  }
+
+  .fresh-dot.stale {
+    background: var(--sp-amber);
+  }
+
+  .actions {
     display: flex;
-    gap: var(--sp-3);
+    align-items: center;
+    gap: var(--sp-2);
   }
 </style>

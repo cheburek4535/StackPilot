@@ -219,7 +219,7 @@
     actionResults = new Map(results);
     currentAction = null;
     runningAll = false;
-    goto("/devlauncher/processes");
+    goto("/workspace/logs");
   }
 
   /** Poll a V2 run for updates. */
@@ -347,7 +347,7 @@
   }
 
   function goBack() {
-    goto("/devlauncher/profiles");
+    goto("/workspace");
   }
 
   async function handleDelete() {
@@ -355,7 +355,7 @@
     if (!confirm(i18n.t("devl.confirm_delete", { name: profile.name }))) return;
     try {
       await deleteProfile(profile.name);
-      goto("/devlauncher/profiles");
+      goto("/workspace");
     } catch (e) {
       errorMsg = i18n.t("devl.toast_delete_failed", { err: String(e) }) as TranslationKey;
     }

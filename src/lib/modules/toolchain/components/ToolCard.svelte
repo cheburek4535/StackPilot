@@ -1,14 +1,12 @@
 <script lang="ts">
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
-  // Карточка инструмента каталога. Действия правдивы относительно
+  // Компактная строка инструмента каталога. Действия правдивы относительно
   // возможностей платформы (capabilities бэкенда); мутации НЕ запускаются
   // из клика — они открывают экран проверки плана.
-  import Badge from "$lib/components/ui/Badge.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import IconButton from "$lib/components/ui/IconButton.svelte";
   import TechIcon from "$lib/components/TechIcon.svelte";
-  import StateBadge from "./StateBadge.svelte";
   import type { OperationKind, ToolDefinition, ToolScanResult } from "../types";
   import {
     formatSizeMb,
@@ -41,7 +39,6 @@
   type PrimaryAction =
     | { kind: "plan"; operation: CardPlanOp; label: string }
     | { kind: "recheck"; label: string }
-    | { kind: "details"; label: string }
     | null;
 
   const action = $derived.by<PrimaryAction>(() => {
@@ -63,13 +60,47 @@
     ) {
       return { kind: "recheck", label: busy ? (i18n.t("tc.state.scanning") as TranslationKey) : (i18n.t("tc.op.health_check") as TranslationKey) };
     }
-    if (
-      (s === "manual_install" || s === "unsupported_platform") &&
-      tool.capabilities.manual_instructions_available
-    ) {
-      return { kind: "details", label: i18n.t("tc.install.docs") as TranslationKey };
-    }
     return null;
+  });
+
+  type StatusLine = { tone: string; filled: boolean; label: string; title: string };
+
+  const status = $derived.by<StatusLine>(() => {
+    const s = tool.state.kind;
+    const base = (tone: string, filled: boolean, label: string, title?: string): StatusLine => ({
+      tone,
+      filled,
+      label,
+      title: title ?? label,
+    });
+    switch (s) {
+      case "update_available":
+        return base("amber", true, i18n.t("tc.card.status.update_to", { version: tool.state.recommended }) as TranslationKey);
+      case "installed_healthy":
+        return base("lime", true, i18n.t("tc.state.installed") as TranslationKey);
+      case "installed_health_unknown":
+        return base("cyan", true, i18n.t("tc.state.health_unknown") as TranslationKey);
+      case "installed_unhealthy":
+        return base("red", true, i18n.t("tc.state.unhealthy") as TranslationKey);
+      case "path_broken":
+        return base("red", true, i18n.t("tc.state.path_broken") as TranslationKey, i18n.t("tc.card.path_warning") as TranslationKey);
+      case "missing":
+        return base("neutral", false, i18n.t("tc.state.missing") as TranslationKey);
+      case "scan_pending":
+        return base("cyan", false, i18n.t("tc.state.scanning") as TranslationKey);
+      case "scan_failed":
+        return base("amber", true, i18n.t("tc.state.scan_error") as TranslationKey);
+      case "manual_install":
+        return base("violet", true, i18n.t("tc.state.manual") as TranslationKey);
+      case "docker_managed":
+        return base("blue", true, i18n.t("tc.state.docker") as TranslationKey);
+      case "built_in_system":
+        return base("neutral", true, i18n.t("tc.state.builtin") as TranslationKey);
+      case "unsupported_platform":
+        return base("neutral", true, i18n.t("tc.state.unsupported") as TranslationKey);
+      default:
+        return base("neutral", false, i18n.t("tc.state.unknown") as TranslationKey);
+    }
   });
 
   const version = $derived(toolStateVersion(tool.state));
@@ -86,83 +117,70 @@
       tool.state.kind === "installed_health_unknown" ||
       tool.state.kind === "installed_unhealthy";
     if (!installed || version || versionInfo || updateTarget) return null;
-    return {
-      text: i18n.t("tc.install.version_unknown") as TranslationKey,
-      title:
-        i18n.t("tc.install.version_unknown") as TranslationKey,
-    };
+    return i18n.t("tc.install.version_unknown") as TranslationKey;
   });
+  const recommended = $derived(def?.versions?.recommended ?? null);
   const provenance = $derived(provenanceInfo(tool.provenance));
+  const sizeText = $derived(def ? formatSizeMb(def.size_mb) : null);
   const hasPathProblem = $derived(
     tool.path_findings.length > 0 || tool.state.kind === "path_broken",
   );
+
+  const currentVersionText = $derived.by(() => {
+    if (version) return version;
+    if (versionInfo) return `${versionInfo.text}${versionInfo.parsed ? "" : "*"}`;
+    if (versionUnknownExplanation) return versionUnknownExplanation;
+    return tool.state.kind === "docker_managed" ? "docker-compose" : "—";
+  });
 </script>
 
-<article class="card">
-  <header class="head">
-    <TechIcon icon={tool.icon} alt="" size="md" />
+<article class="row">
+  <div class="main">
+    <TechIcon icon={tool.icon} alt="" size="sm" class="tool-icon" />
     <div class="title-wrap">
       <button type="button" class="title-btn" onclick={() => ondetails(tool.tool_id)}>
         <span class="title">{tool.display}</span>
       </button>
-      <span class="category">{tool.category || def?.category || ""}</span>
-    </div>
-    <StateBadge state={tool.state} />
-  </header>
-
-  {#if def?.description}
-    <p class="description">{i18n.t(def.description as TranslationKey)}</p>
-  {/if}
-
-  <dl class="meta">
-    <div class="meta-item" title={version ?? versionInfo?.text ?? undefined}>
-      <dt>{i18n.t("tc.card.version") as TranslationKey}</dt>
-      <dd>
-        {#if updateTarget}
-          <span class="update-line" title={`${version || versionInfo?.text || "?"} → ${updateTarget}`}>
-            <span class="update-cur">{version || versionInfo?.text || "?"}</span>
-            <span aria-hidden="true">→</span>
-            <span class="update-target">{updateTarget}</span>
-          </span>
-        {:else if version}
-          {version}
-        {:else if versionInfo}
-          <span title={versionInfo.parsed ? (i18n.t("tc.score_parsed") as TranslationKey) : (i18n.t("tc.score_raw") as TranslationKey)}>
-            {versionInfo.text}{versionInfo.parsed ? "" : "*"}
-          </span>
-        {:else if versionUnknownExplanation}
-          <span title={versionUnknownExplanation.title}>
-            {versionUnknownExplanation.text}
-          </span>
-        {:else}
-          {tool.state.kind === "docker_managed" ? "docker-compose" : "—"}
+      <span class="sub">
+        <span class="category">{tool.category || def?.category || ""}</span>
+        {#if provenance.label}
+          <span class="sub-sep" aria-hidden="true">·</span>
+          <span>{provenance.label}</span>
         {/if}
-      </dd>
+        {#if sizeText}
+          <span class="sub-sep" aria-hidden="true">·</span>
+          <span>{sizeText}</span>
+        {/if}
+      </span>
     </div>
-    <div class="meta-item" title={provenance.label}>
-      <dt>{i18n.t("tc.card.source") as TranslationKey}</dt>
-      <dd class="ellipsis">{provenance.label}</dd>
-    </div>
-    <div class="meta-item" title={def ? formatSizeMb(def.size_mb) : undefined}>
-      <dt>{i18n.t("tc.install.size") as TranslationKey}</dt>
-      <dd>{def ? formatSizeMb(def.size_mb) : "—"}</dd>
-    </div>
-  </dl>
+  </div>
 
-  <div class="flags">
-    {#if hasPathProblem}
-      <Badge tone="amber"><span title={i18n.t("tc.card.path_warning") as TranslationKey}>{i18n.t("tc.card.path_broken") as TranslationKey}</span></Badge>
-    {/if}
-    {#if tool.health?.state.kind === "unhealthy"}
-      <Badge tone="red" dot>{i18n.t("tc.health.unhealthy") as TranslationKey}</Badge>
-    {:else if tool.health?.state.kind === "degraded"}
-      <Badge tone="cyan" dot>{i18n.t("tc.card.degraded") as TranslationKey}</Badge>
-    {:else if tool.health?.state.kind === "healthy"}
-      <Badge tone="lime" dot>{i18n.t("tc.card.healthy") as TranslationKey}</Badge>
+  <div class="versions">
+    {#if updateTarget}
+      <span class="v-cur mono">{currentVersionText}</span>
+      <span class="v-arrow" aria-hidden="true">→</span>
+      <span class="v-target mono">{updateTarget}</span>
+    {:else}
+      <span class="v-cur mono">{currentVersionText}</span>
+      {#if recommended}
+        <span class="v-rec">
+          <span class="rec-label">{i18n.t("tc.install.recommended") as TranslationKey}:</span>
+          <span class="mono rec-value">{recommended}</span>
+        </span>
+      {/if}
     {/if}
   </div>
 
-  <footer class="foot">
+  <div
+    class={"status st-" + status.tone}
+    class:st-hollow={!status.filled}
+    title={status.title}
+  >
+    <span class="dot" aria-hidden="true"></span>
+    <span class="status-text">{status.label}</span>
+  </div>
+
+  <div class="actions">
     {#if action?.kind === "plan"}
       <Button
         variant={action.operation === "repair_path" ? "secondary" : "primary"}
@@ -172,66 +190,66 @@
         {action.label}
       </Button>
     {:else if action?.kind === "recheck"}
-      <Button
-        variant="secondary"
+      <IconButton
+        icon="refresh"
+        label={action.label}
         size="sm"
-        loading={busy}
+        disabled={busy}
         onclick={() => onrecheck(tool.tool_id)}
-      >
-        {action.label}
-      </Button>
-    {:else if action?.kind === "details"}
-      <Button variant="secondary" size="sm" onclick={() => ondetails(tool.tool_id)}>
-        {action.label}
-      </Button>
-    {:else}
-      <Button variant="ghost" size="sm" onclick={() => ondetails(tool.tool_id)}>
-        {i18n.t("tc.card.details") as TranslationKey}
-      </Button>
+      />
     {/if}
-      {#if onuninstall && tool.state.kind !== "missing" && tool.state.kind !== "unsupported_platform" && tool.state.kind !== "built_in_system" && tool.state.kind !== "docker_managed"}
-        <IconButton icon="trash" label={i18n.t("tc.uninstall.confirm", { tool: tool.display }) as TranslationKey} variant="ghost" onclick={() => onuninstall?.(tool.tool_id)} />
-      {/if}
-
-    <span class="spacer"></span>
+    {#if onuninstall && tool.state.kind !== "missing" && tool.state.kind !== "unsupported_platform" && tool.state.kind !== "built_in_system" && tool.state.kind !== "docker_managed"}
+      <IconButton icon="trash" label={i18n.t("tc.uninstall.confirm", { tool: tool.display }) as TranslationKey} variant="ghost" onclick={() => onuninstall?.(tool.tool_id)} />
+    {/if}
+    {#if hasPathProblem && tool.state.kind !== "path_broken"}
+      <IconButton
+        icon="alert"
+        label={i18n.t("tc.card.path_warning") as TranslationKey}
+        size="sm"
+        variant="ghost"
+        onclick={() => ondetails(tool.tool_id)}
+      />
+    {/if}
     <IconButton
       icon="chevronRight"
       label={i18n.t("tc.card.more_info", { name: tool.display }) as TranslationKey}
       size="sm"
       onclick={() => ondetails(tool.tool_id)}
     />
-  </footer>
+  </div>
 </article>
 
 <style>
-  .card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-3);
-    height: 100%;
-    min-height: 0;
-    padding: var(--sp-4);
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-lg);
-    background: var(--sp-glass-bg);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow: var(--sp-shadow-1);
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .card:hover {
-    border-color: var(--sp-border-strong);
-    box-shadow: var(--sp-shadow-2);
-  }
-
-  .head {
+  .row {
     display: flex;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-4);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border-faint);
+    border-radius: var(--sp-radius-md);
+    transition: border-color 0.15s ease, background-color 0.15s ease;
     min-width: 0;
+  }
+
+  .row:hover {
+    border-color: var(--sp-border);
+    background: var(--sp-bg-2);
+  }
+
+  .main {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: 0 1 auto;
+    min-width: 13rem;
+    max-width: 100%;
+  }
+
+  .tool-icon {
+    width: 24px !important;
+    height: 24px !important;
+    flex: 0 0 auto;
   }
 
   .title-wrap {
@@ -239,7 +257,6 @@
     flex-direction: column;
     gap: 0;
     min-width: 0;
-    flex: 1 1 auto;
   }
 
   .title-btn {
@@ -256,128 +273,154 @@
 
   .title {
     display: block;
-    font-size: var(--sp-fs-md);
-    font-weight: var(--sp-fw-semibold);
+    font-size: 0.875rem;
+    font-weight: var(--sp-fw-bold);
     color: var(--sp-text-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .category {
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-    text-transform: capitalize;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .description {
-    margin: 0;
-    font-size: var(--sp-fs-sm);
-    color: var(--sp-text-2);
-    line-height: var(--sp-lh-normal);
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .meta {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--sp-2) var(--sp-3);
-    margin: 0;
-    padding: var(--sp-2) 0;
-    border-top: 1px solid var(--sp-border-faint);
-    border-bottom: 1px solid var(--sp-border-faint);
-  }
-
-  .meta-item {
-    min-width: 0;
-  }
-
-  .meta-item dt {
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-  }
-
-  .meta-item dd {
-    margin: 0;
-    font-size: var(--sp-fs-xs);
-    font-weight: var(--sp-fw-medium);
-    color: var(--sp-text-2);
-    font-family: var(--sp-font-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .update-line {
-    display: inline-flex;
+  .sub {
+    display: flex;
     align-items: center;
     gap: var(--sp-1);
-    max-width: 100%;
-    color: var(--sp-amber);
-  }
-
-  .update-cur {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    min-width: 0;
   }
 
-  .update-target {
+  .category {
+    text-transform: capitalize;
+  }
+
+  .sub-sep {
+    opacity: 0.6;
+  }
+
+  .versions {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-1);
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .mono {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+  }
+
+  .v-cur {
+    color: var(--sp-text-1);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .v-arrow {
+    color: var(--sp-text-3);
+    flex: 0 0 auto;
+  }
+
+  .v-target {
+    color: var(--sp-amber);
     font-weight: var(--sp-fw-semibold);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
   }
 
-  .ellipsis {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--sp-font-sans) !important;
-  }
-
-  .flags {
-    display: flex;
-    flex-wrap: wrap;
+  .v-rec {
+    display: inline-flex;
+    align-items: baseline;
     gap: var(--sp-1);
-    min-height: 1.25rem;
+    margin-left: var(--sp-3);
     min-width: 0;
   }
 
-  .flags :global(.sp-badge) {
-    max-width: 100%;
+  .rec-label {
+    color: var(--sp-text-3);
+  }
+
+  .rec-value {
+    color: var(--sp-text-2);
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .flags :global(.sp-badge-label) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .foot {
-    display: flex;
+  .status {
+    display: inline-flex;
     align-items: center;
     gap: var(--sp-2);
-    margin-top: auto;
+    flex: 0 0 auto;
+    min-width: 8rem;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    white-space: nowrap;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-text-3);
+    flex: 0 0 auto;
+  }
+
+  .st-hollow .dot {
+    background: transparent;
+    border: 1px solid var(--sp-text-3);
+  }
+
+  .status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
     min-width: 0;
   }
 
-  .foot :global(button) {
+  .st-lime .dot { background: var(--sp-lime); }
+  .st-lime { color: var(--sp-lime); }
+  .st-cyan .dot { background: var(--sp-cyan); }
+  .st-cyan { color: var(--sp-cyan); }
+  .st-amber .dot { background: var(--sp-amber); }
+  .st-amber { color: var(--sp-amber); }
+  .st-red .dot { background: var(--sp-danger); }
+  .st-red { color: var(--sp-danger); }
+  .st-violet .dot { background: var(--sp-violet); }
+  .st-violet { color: var(--sp-violet); }
+  .st-blue .dot { background: var(--sp-blue); }
+  .st-blue { color: var(--sp-blue); }
+  .st-neutral { color: var(--sp-text-2); }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    flex: 0 0 auto;
     min-width: 0;
   }
 
-  .spacer {
-    flex: 1 1 auto;
+  .actions :global(button) {
+    min-width: 0;
+  }
+
+  @media (max-width: 900px) {
+    .row {
+      flex-wrap: wrap;
+    }
+
+    .versions {
+      order: 3;
+      flex-basis: 100%;
+      padding-left: calc(var(--sp-2) + 24px + var(--sp-2));
+    }
+
+    .status {
+      margin-left: auto;
+    }
   }
 </style>

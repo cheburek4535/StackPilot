@@ -23,13 +23,10 @@
   let { children }: { children: Snippet } = $props();
 
   const tabs: TabDef[] = [
-    { id: "overview", label: i18n.t("ws.overview") as TranslationKey, icon: "home" },
-    { id: "runtime", label: i18n.t("ws.runtime") as TranslationKey, icon: "play" },
-    { id: "session", label: i18n.t("ws.session") as TranslationKey, icon: "clock" },
+    { id: "dashboard", label: i18n.t("ws.dashboard") as TranslationKey, icon: "home" },
+    { id: "files", label: i18n.t("ws.files") as TranslationKey, icon: "folder" },
     { id: "logs", label: i18n.t("ws.logs") as TranslationKey, icon: "terminal" },
     { id: "problems", label: i18n.t("ws.problems") as TranslationKey, icon: "alert" },
-    { id: "info", label: i18n.t("ws.info") as TranslationKey, icon: "info" },
-    { id: "files", label: i18n.t("ws.files") as TranslationKey, icon: "folder" },
   ];
 
   let assistantOpen = $state(false);
@@ -42,20 +39,14 @@
 
   const activeTab = $derived(
     pathname === "/workspace"
-      ? "overview"
-      : pathname.startsWith("/workspace/runtime")
-        ? "runtime"
-        : pathname.startsWith("/workspace/session")
-          ? "session"
-          : pathname.startsWith("/workspace/logs")
-            ? "logs"
-            : pathname.startsWith("/workspace/problems")
-              ? "problems"
-              : pathname.startsWith("/workspace/info")
-                ? "info"
-                : pathname.startsWith("/workspace/files")
-                  ? "files"
-                  : "overview",
+      ? "dashboard"
+      : pathname.startsWith("/workspace/files")
+        ? "files"
+        : pathname.startsWith("/workspace/logs")
+          ? "logs"
+          : pathname.startsWith("/workspace/problems")
+            ? "problems"
+            : "dashboard",
   );
 
   const project = $derived($workspaceContext.project);
@@ -67,7 +58,7 @@
   });
 
   function onTab(id: string) {
-    goto(id === "overview" ? "/workspace" : `/workspace/${id}`);
+    goto(id === "dashboard" ? "/workspace" : `/workspace/${id}`);
   }
 
   async function openInVsCodeSafe(path: string) {

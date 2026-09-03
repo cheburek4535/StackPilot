@@ -2323,11 +2323,14 @@ function resetAll() {
                   title={altInfo?.detail}
                   onclick={() => clickFramework(fw.id)}
                 >
+                  {#if selectedFrameworks.includes(fw.id)}
+                    <span class="card-check" aria-hidden="true">✓</span>
+                  {/if}
                   <TechIcon icon={fw.icon} alt={i18n.t(fw.label as TranslationKey)} size="lg" />
                   <h3>{i18n.t(fw.label as TranslationKey)}</h3>
                   <p>{i18n.t(fw.description as TranslationKey)}</p>
                   {#if selectedFrameworks.includes(fw.id) && summary}
-                    <span class="fw-lang-chip selected">✓ {summary}</span>
+                    <span class="fw-lang-chip selected">{summary}</span>
                   {:else}
                     <span class="fw-lang-chip">{fwLangsLabel(fw)}</span>
                   {/if}
@@ -2644,6 +2647,9 @@ function resetAll() {
                             title={blockedDetail ?? undefined}
                             onclick={() => toggleLang("backend", lang.id)}
                           >
+                            {#if backendLangs.includes(lang.id)}
+                              <span class="card-check" aria-hidden="true">✓</span>
+                            {/if}
                             <TechIcon icon={lang.icon} alt={i18n.t(lang.label as TranslationKey)} size="lg" />
                             <h3>{i18n.t(lang.label as TranslationKey)}</h3>
                             {#if backendLangs.includes(lang.id)}
@@ -2674,6 +2680,9 @@ function resetAll() {
                             disabled={blockedReason !== null}
                             onclick={() => toggleLang("frontend", lang.id)}
                           >
+                            {#if frontendLangs.includes(lang.id)}
+                              <span class="card-check" aria-hidden="true">✓</span>
+                            {/if}
                             <TechIcon icon={lang.icon} alt={i18n.t(lang.label as TranslationKey)} size="lg" />
                             <h3>{i18n.t(lang.label as TranslationKey)}</h3>
                             {#if lang.category === "static"}
@@ -2997,6 +3006,14 @@ function resetAll() {
             </div>
           </div>
 
+          <button
+            class="ctx-cta"
+            onclick={() => goPhase(2)}
+            disabled={!!stackError}
+            title={stackError ?? undefined}
+          >
+            {i18n.t("create.review_create") as TranslationKey}
+          </button>
         </aside>
       </div>
       {/if}
@@ -3031,24 +3048,106 @@ function resetAll() {
 /* ---- Конструктор: две колонки ---- */
 .builder { display: grid; grid-template-columns: 1fr 320px; gap: 1.5rem; align-items: start; }
 .builder-left { min-width: 0; }
-.builder-context { position: sticky; top: 1rem; border: 1px solid var(--sp-border-strong); border-radius: 12px; background: var(--sp-bg-1); padding: 1rem; }
-.ctx-title { font-weight: 700; font-size: 1rem; margin: 0 0 0.75rem; color: var(--sp-text-1); }
+.builder-context {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--sp-border);
+  border-radius: 12px;
+  background: var(--sp-bg-1);
+  padding: 0.85rem;
+}
+.ctx-title {
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0 0 0.25rem;
+  padding-bottom: 0.6rem;
+  color: var(--sp-text-3);
+  border-bottom: 1px solid var(--sp-border-faint);
+}
 .ctx-group { display: flex; flex-direction: column; }
-.ctx-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--sp-border-faint); }
+.ctx-row { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--sp-border-faint); }
 .ctx-row:last-child { border-bottom: none; }
-.ctx-label { flex: 0 0 90px; font-weight: 600; color: var(--sp-text-3); font-size: 0.8rem; }
-.ctx-value { flex: 1; font-size: 0.85rem; color: var(--sp-text-1); overflow-wrap: anywhere; }
-.btn-change { background: none; border: 1px solid var(--sp-border-strong); color: var(--sp-text-3); padding: 0.2rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.75rem; flex: 0 0 auto; }
-.btn-change:hover { border-color: var(--sp-accent-strong); color: #fff; }
+.ctx-label {
+  flex: 0 0 88px;
+  font-weight: 600;
+  color: var(--sp-text-3);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 0.15rem;
+}
+.ctx-value { flex: 1; font-size: 0.82rem; color: var(--sp-text-1); overflow-wrap: anywhere; }
+.btn-change {
+  background: none;
+  border: none;
+  color: var(--sp-accent);
+  padding: 0.1rem 0.15rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+.btn-change:hover { color: var(--sp-accent-strong); text-decoration: underline; opacity: 1; }
+.ctx-cta {
+  margin-top: 0.85rem;
+  width: 100%;
+  background: var(--sp-accent-strong);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  box-shadow: var(--sp-shadow-1);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.ctx-cta:hover { background: var(--sp-accent); box-shadow: var(--sp-shadow-accent); }
+.ctx-cta:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ---- Фазы ---- */
-.phase-nav { display: flex; gap: 0.75rem; margin-bottom: 1.75rem; flex-wrap: wrap; }
-.phase-item { display: flex; align-items: center; gap: 0.4rem; background: none; border: none; cursor: pointer; color: var(--sp-text-3); font-size: 0.85rem; padding: 0.25rem 0.5rem; border-radius: 6px; }
+/* ---- Фазы (slim stepper) ---- */
+.phase-nav { display: flex; align-items: center; gap: 0; margin-bottom: 1.75rem; flex-wrap: wrap; }
+.phase-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--sp-text-3);
+  font-size: 0.8rem;
+  padding: 0.3rem 0.75rem;
+}
+.phase-item + .phase-item::before {
+  content: "";
+  width: 26px;
+  height: 1px;
+  background: var(--sp-border-strong);
+  margin-right: 0.75rem;
+  flex-shrink: 0;
+}
 .phase-item:hover { color: var(--sp-text-2); }
 .phase-item.active { color: #fff; }
-.phase-item.active .phase-circle { background: var(--sp-accent-strong); color: #fff; }
-.phase-item.done .phase-circle { background: var(--sp-success); color: #fff; }
-.phase-circle { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--sp-bg-2); font-weight: 700; font-size: 0.8rem; }
+.phase-item.active .phase-circle { background: var(--sp-accent-strong); color: #fff; box-shadow: 0 0 0 3px var(--sp-accent-soft); }
+.phase-item.done .phase-circle { background: var(--sp-success); color: #0c0d11; }
+.phase-circle {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sp-bg-2);
+  border: 1px solid var(--sp-border);
+  font-weight: 700;
+  font-size: 0.7rem;
+  transition: background 0.15s, border-color 0.15s;
+}
 .phase-label { font-weight: 600; }
 
 /* ---- Стороны (Stack) ---- */
@@ -3063,10 +3162,10 @@ function resetAll() {
   border-radius: 10px;
   padding: 0.7rem 0.9rem;
   margin: 0 0 1rem;
-  background: rgba(24, 24, 44, 0.6);
+  background: var(--sp-bg-1);
 }
-.arch-integrated { border-color: rgba(0, 184, 148, 0.45); background: rgba(0, 184, 148, 0.07); }
-.arch-decoupled { border-color: rgba(108, 92, 231, 0.5); background: rgba(108, 92, 231, 0.08); }
+.arch-integrated { border-color: rgba(163, 230, 53, 0.35); background: rgba(163, 230, 53, 0.05); }
+.arch-decoupled { border-color: var(--sp-accent-border); background: var(--sp-accent-soft); }
 .arch-body { flex: 1; min-width: 0; }
 .arch-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: var(--sp-text-1); }
 .arch-integrated .arch-title { color: var(--sp-success); }
@@ -3078,7 +3177,7 @@ function resetAll() {
 .fw-level {
   border: 1px solid var(--sp-border);
   border-radius: 10px;
-  background: rgba(26, 26, 46, 0.55);
+  background: var(--sp-bg-2);
   margin-bottom: 0.75rem;
 }
 .fw-level > summary {
@@ -3101,7 +3200,7 @@ function resetAll() {
 }
 .fw-level[open] > summary::before { transform: rotate(90deg); }
 .fw-level[open] > summary { border-bottom-color: var(--sp-border); }
-.fw-level > summary:hover { background: rgba(108, 92, 231, 0.08); }
+.fw-level > summary:hover { background: rgba(255, 255, 255, 0.03); }
 .fw-level-title { font-weight: 700; font-size: 0.9rem; color: var(--sp-text-1); }
 .fw-level-toolbar { display: flex; justify-content: flex-end; padding: 0.45rem 0.9rem 0; }
 .fw-level-action { margin-left: 0.5rem; border: 1px solid var(--sp-accent-border); border-radius: 6px; padding: 0.2rem 0.45rem; background: transparent; color: var(--sp-text-2); cursor: pointer; font-size: 0.68rem; white-space: nowrap; }
@@ -3117,13 +3216,47 @@ function resetAll() {
 .fw-level-note { margin: 0; padding: 0.4rem 0.9rem 0.6rem; font-size: 0.75rem; color: var(--sp-text-3); }
 .fw-level .fw-grid { margin-bottom: 0; padding: 0.9rem; padding-top: 0.2rem; }
 
-/* ---- Карточки ---- */
+/* ---- Карточки (unified selectable card) ---- */
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
-.card { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; padding: 1rem; border: 1px solid var(--sp-border-strong); border-radius: 10px; background: var(--sp-bg-1); cursor: pointer; transition: all 0.15s; text-align: center; color: var(--sp-text-1); }
-.card:hover { border-color: var(--sp-accent-strong); background: var(--sp-bg-2); }
-.card.selected { border-color: var(--sp-accent-strong); background: var(--sp-accent-soft); box-shadow: 0 0 0 2px var(--sp-accent-strong); }
-.card.blocked { opacity: 0.55; cursor: not-allowed; border-color: var(--sp-border-strong); background: var(--sp-bg-1); }
-.card.blocked:hover { border-color: var(--sp-border-strong); background: var(--sp-bg-1); }
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  border: 1px solid var(--sp-border);
+  border-radius: 10px;
+  background: var(--sp-bg-1);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  text-align: center;
+  color: var(--sp-text-1);
+}
+.card:hover { border-color: var(--sp-accent-border); background: var(--sp-bg-2); }
+.card.selected {
+  border-color: var(--sp-accent);
+  background: var(--sp-accent-soft);
+  box-shadow: var(--sp-shadow-accent);
+}
+.card.blocked { opacity: 0.4; cursor: not-allowed; border-color: var(--sp-border); background: var(--sp-bg-1); }
+.card.blocked:hover { border-color: var(--sp-border); background: var(--sp-bg-1); }
+.card-check {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--sp-accent-strong);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  box-shadow: var(--sp-shadow-1);
+}
 
 /* Утилиты блокировки (клиентская оболочка): карточка видна, но явно
    недоступна — «не молча некликабельна», с подписью и тултипом. */
@@ -3224,8 +3357,8 @@ function resetAll() {
   gap: 1rem;
   margin-top: 1.25rem;
   padding: 0.75rem 1rem;
-  background: rgba(21, 21, 46, 0.95);
-  border: 1px solid var(--sp-border-strong);
+  background: var(--sp-glass-strong);
+  border: 1px solid var(--sp-border);
   border-radius: 10px;
   backdrop-filter: blur(4px);
   z-index: 40;
@@ -3248,20 +3381,18 @@ function resetAll() {
   position: relative;
   border: 1px solid var(--sp-border);
   border-radius: 12px;
-  background: rgba(24, 24, 44, 0.6);
+  background: var(--sp-bg-1);
   margin-bottom: 1rem;
 }
 .territory-head {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
+  padding: 0.7rem 1rem;
+  background: var(--sp-bg-2);
   border-bottom: 1px solid var(--sp-border);
   border-radius: 11px 11px 0 0;
 }
-.territory-backend .territory-head { background: rgba(108, 92, 231, 0.12); border-bottom-color: rgba(108, 92, 231, 0.35); }
-.territory-frontend .territory-head { background: rgba(46, 196, 182, 0.1); border-bottom-color: rgba(46, 196, 182, 0.3); }
-.territory-either .territory-head { background: rgba(241, 196, 15, 0.08); border-bottom-color: rgba(241, 196, 15, 0.3); }
 .territory-title-wrap { flex: 1; min-width: 0; }
 .territory-title { margin: 0; font-size: 0.95rem; font-weight: 700; color: var(--sp-text-1); }
 .territory-desc { margin: 0.15rem 0 0; font-size: 0.78rem; color: var(--sp-text-3); }
@@ -3380,7 +3511,7 @@ function resetAll() {
 .review-hint { color: var(--sp-text-3); font-size: 0.8rem; margin: 0.5rem 0 0; }
 
 /* ---- Проблемы стека ---- */
-.stack-issues { border: 1px solid rgba(231, 76, 60, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: rgba(248, 113, 113, 0.1); }
+.stack-issues { border: 1px solid rgba(248, 113, 113, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: rgba(248, 113, 113, 0.1); }
 .stack-issues p { margin: 0.3rem 0; font-size: 0.8rem; }
 
 /* ---- Summary ---- */

@@ -111,11 +111,11 @@
       border-color 0.15s ease,
       color 0.15s ease,
       box-shadow 0.15s ease,
-      transform 0.1s ease;
+      filter 0.1s ease;
   }
 
   .sp-btn:active:not(.sp-btn-disabled) {
-    transform: translateY(1px);
+    filter: brightness(0.92);
   }
 
   .sp-btn-disabled {
@@ -185,19 +185,19 @@
   }
 
   .sp-btn-ghost:hover:not(.sp-btn-disabled) {
-    background: var(--sp-accent-soft);
+    background: var(--sp-bg-2);
     color: var(--sp-text-1);
   }
 
   .sp-btn-outline {
     background: transparent;
-    color: var(--sp-accent);
-    border-color: var(--sp-accent-border);
+    color: var(--sp-text-2);
+    border-color: var(--sp-border);
   }
 
   .sp-btn-outline:hover:not(.sp-btn-disabled) {
-    background: var(--sp-accent-soft);
-    color: var(--sp-accent-strong);
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
   }
 
   .sp-btn-danger {

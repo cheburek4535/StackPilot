@@ -9,6 +9,7 @@
   import { getSettings } from "$lib/core/api";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
+  import { workspaceContext } from "$lib/modules/workspace/context";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
   import Icon from "./Icon.svelte";
@@ -31,6 +32,9 @@
   });
 
   const pathname = $derived($page.url.pathname);
+
+  // The project section is emphasized only when a project is actually open.
+  const hasProject = $derived($workspaceContext.project !== null);
 
   // Remember the last visited route (UI-local, for restore-on-restart).
   $effect(() => {
@@ -61,6 +65,7 @@
             <div
               class="sp-nav-group"
               class:sp-nav-group-active={isNavGroupActive(group, pathname)}
+              class:sp-nav-group-muted={group.id === "project" && !hasProject}
             >
               <span class="sp-nav-group-label">{i18n.t(group.label as TranslationKey)}</span>
               {#each group.items as item}
@@ -76,6 +81,10 @@
       </nav>
 
       <div class="sp-sidebar-footer">
+        <a class="sp-getting-started" href="/roadmap">
+          <Icon name="map" size={15} />
+          <span>{i18n.t("nav.roadmap")}</span>
+        </a>
         <button
           class="sp-getting-started"
           onclick={() => reopenOnboarding()}
@@ -128,10 +137,8 @@
     gap: var(--sp-4);
     height: var(--sp-topbar-h);
     padding: 0 var(--sp-4);
-    background: var(--sp-glass-strong);
+    background: var(--sp-bg-1);
     border-bottom: 1px solid var(--sp-border);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
     z-index: 10;
   }
 
@@ -227,24 +234,50 @@
   }
 
   .sp-nav-group-active .sp-nav-group-label {
-    color: var(--sp-accent);
+    color: var(--sp-text-1);
+  }
+
+  /* The project section is de-emphasized until a project is open. */
+  .sp-nav-group-muted .sp-nav-group-label {
+    color: var(--sp-text-3);
+  }
+
+  .sp-nav-group-muted .sp-nav-item {
+    opacity: 0.55;
+  }
+
+  .sp-nav-group-muted .sp-nav-item:hover {
+    opacity: 1;
   }
 
   .sp-nav-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--sp-3);
     padding: var(--sp-2) var(--sp-3);
-    border-radius: var(--sp-radius-md);
-    border: 1px solid transparent;
+    border-radius: var(--sp-radius-sm);
     color: var(--sp-text-2);
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-medium);
     text-decoration: none;
     transition:
       background-color 0.15s ease,
-      color 0.15s ease,
-      border-color 0.15s ease;
+      color 0.15s ease;
+  }
+
+  .sp-nav-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 2px;
+    height: 0.875rem;
+    border-radius: 1px;
+    transform: translateY(-50%);
+    background: var(--sp-accent);
+    opacity: 0;
+    transition: opacity 0.15s ease;
   }
 
   .sp-nav-item:hover {
@@ -254,14 +287,17 @@
   }
 
   .sp-nav-item-active {
-    background: var(--sp-accent-soft);
-    border-color: var(--sp-accent-border);
-    color: var(--sp-accent);
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
+  }
+
+  .sp-nav-item-active::before {
+    opacity: 1;
   }
 
   .sp-nav-item-active:hover {
-    background: var(--sp-accent-soft);
-    color: var(--sp-accent);
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
   }
 
   .sp-nav-item-label {
@@ -270,6 +306,9 @@
 
   .sp-sidebar-footer {
     flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
     padding: var(--sp-3);
     border-top: 1px solid var(--sp-border-faint);
   }
@@ -287,6 +326,8 @@
     font-family: var(--sp-font-sans);
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-medium);
+    text-align: left;
+    text-decoration: none;
     cursor: pointer;
     transition: background-color 0.15s ease, color 0.15s ease;
   }

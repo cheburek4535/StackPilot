@@ -5,7 +5,7 @@
   import type { TranslationKey } from "$lib/core/i18n.svelte";
 
   onMount(() => {
-    goto("/devlauncher/profiles", { replaceState: true });
+    goto("/workspace", { replaceState: true });
   });
 </script>
 

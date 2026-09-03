@@ -44,9 +44,9 @@
     display: inline-flex;
     align-items: center;
     gap: var(--sp-1);
-    padding: var(--sp-1);
+    padding: 0.125rem;
     background: var(--sp-bg-1);
-    border: 1px solid var(--sp-border);
+    border: 1px solid var(--sp-border-faint);
     border-radius: var(--sp-radius-md);
     width: max-content;
     max-width: 100%;

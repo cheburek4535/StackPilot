@@ -29,6 +29,12 @@
   let logs = $state<ProcessLogs | null>(null);
   let logsLoading = $state(false);
   let logsError = $state("");
+  /** Deep link target (?log=<process_id>) — applied once processes load. */
+  let pendingLogId = $state<string | null>(
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("log")
+      : null,
+  );
 
   let autoRefreshId: ReturnType<typeof setInterval> | null = null;
 
@@ -73,6 +79,13 @@
   async function loadProcesses() {
     try {
       processes = await listProcesses();
+      if (pendingLogId) {
+        const target = processes.find((p) => p.id === pendingLogId);
+        if (target) {
+          selectProcess(target.id);
+        }
+        pendingLogId = null;
+      }
     } catch (e) {
       error = i18n.t("devl.load_processes_failed", { err: String(e) });
     }

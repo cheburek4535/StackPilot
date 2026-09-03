@@ -38,12 +38,31 @@
   .prompt { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.4rem; }
   .hint { color: var(--sp-text-3); margin-bottom: 1.5rem; font-size: 0.95rem; }
   .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.9rem; }
-  .preset-card { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.1rem; border: 1px solid var(--sp-border-strong); border-radius: 12px; background: var(--sp-bg-1); text-align: center; color: var(--sp-text-1); }
-  .preset-card:hover { border-color: var(--sp-accent-strong); }
+  .preset-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1.1rem;
+    border: 1px solid var(--sp-border);
+    border-radius: 12px;
+    background: var(--sp-bg-1);
+    text-align: center;
+    color: var(--sp-text-1);
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  }
+  .preset-card:hover { border-color: var(--sp-accent-border); background: var(--sp-bg-2); }
   .preset-card h3 { margin: 0; font-size: 1rem; }
   .preset-desc { font-size: 0.8rem; color: var(--sp-text-3); margin: 0; }
   .preset-stack { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center; min-height: 1.4rem; }
-  .preset-chip { font-size: 0.72rem; background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.15rem 0.5rem; border-radius: 10px; }
+  .preset-chip {
+    font-size: 0.72rem;
+    background: var(--sp-bg-2);
+    color: var(--sp-text-2);
+    border: 1px solid var(--sp-border);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+  }
   .preset-apply { width: 100%; }
   .btn-primary { background: var(--sp-accent-strong); color: #fff; padding: 0.6rem 1.5rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
 </style>

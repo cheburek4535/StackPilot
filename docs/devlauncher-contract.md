@@ -225,7 +225,7 @@ pub enum CompletionPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FailurePolicy {
-    /// Stop the entire run. Default for steps with dependents.
+    /// Stop the entire run. Only when a profile opts in explicitly.
     StopRun,
     /// Continue executing independent steps but skip dependents.
     SkipDependents,
@@ -234,7 +234,11 @@ pub enum FailurePolicy {
 }
 ```
 
-Default: `StopRun` for steps with dependents, `WarnAndContinue` for leaf steps.
+Default: `SkipDependents` for steps with dependents, `WarnAndContinue` for leaf
+steps. A failed step must only ever skip its own downstream chain — a hard
+`StopRun` abort (which kills every in-flight process, including a `docker
+compose up` that is still starting containers) is reserved for profiles that
+set it explicitly.
 
 ### RetryPolicy
 

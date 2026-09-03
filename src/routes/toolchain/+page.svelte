@@ -333,7 +333,7 @@
   }
 
   .hero-block {
-    margin-bottom: var(--sp-5);
+    margin-bottom: var(--sp-4);
   }
 
   .active-op {
