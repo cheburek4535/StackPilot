@@ -330,6 +330,7 @@ pub fn project_execution_snapshot(
 /// и возвращает capped=true (фронтенд показывает «N+»).
 #[tauri::command]
 pub async fn count_project_files(path: String) -> Result<ProjectFileCount, String> {
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let path_buf = PathBuf::from(&path);
     tauri::async_runtime::spawn_blocking(move || {
         if !path_buf.is_dir() {

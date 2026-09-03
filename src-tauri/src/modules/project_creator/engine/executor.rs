@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+use crate::modules::project_creator::engine::network;
 use crate::modules::project_creator::engine::paths;
 use crate::modules::project_creator::engine::process::{
     command_display, local_time, CommandRunner, ExecutionEventSink, InteractiveRules,
@@ -134,17 +135,59 @@ impl StepExecutor {
         let start = std::time::Instant::now();
         let command_text = command_display(command, &spec.args);
 
-        match self.command_runner.run(spec, Some(&sink)).await {
-            Ok(output) => StepResult {
-                step_id: step_id(step),
-                label: step_label(step),
-                status: StepStatus::Success {
-                    message: format!("Command '{}' completed successfully", command_text),
-                },
-                duration_ms: output.duration_ms,
-            },
-            Err(error) => failed_result(step, start, error.format_command_error()),
-        }
+        // Сетевые действия (скачивание пакетов/провайдеров с реестра) могут
+        // «внезапно» провалиться из-за сети, а не кода: таким командам даётся
+        // несколько попыток с паузой. Повтор идёт ТОЛЬКО при сетевом маркере в
+        // диагностике — битая конфигурация (ENOENT, синтаксис манифеста и т.п.)
+        // не ждёт и падает сразу. Устойчивый сетевой сбой получает развёрнутый
+        // совет и НЕ останавливает генерацию (см. step_should_abort в engine).
+        let max_attempts = if network::is_network_command(command, &spec.args) {
+            network::NETWORK_MAX_ATTEMPTS
+        } else {
+            1
+        };
+        let mut attempt = 0u32;
+        let final_error: String = 'retry: loop {
+            attempt += 1;
+            match self.command_runner.run(spec.clone(), Some(&sink)).await {
+                Ok(output) => {
+                    return StepResult {
+                        step_id: step_id(step),
+                        label: step_label(step),
+                        status: StepStatus::Success {
+                            message: format!("Command '{}' completed successfully", command_text),
+                        },
+                        duration_ms: output.duration_ms,
+                    }
+                }
+                Err(error) => {
+                    let formatted = error.format_command_error();
+                    let is_network_failure =
+                        max_attempts > 1 && network::has_network_failure_markers(&formatted);
+                    if attempt >= max_attempts || !is_network_failure {
+                        if is_network_failure {
+                            break 'retry format!(
+                                "{formatted}\n\n{}\n",
+                                network::network_failure_hint(command, &spec.args)
+                            );
+                        }
+                        break 'retry formatted;
+                    }
+                    let _ = sink
+                        .emit_stdout(&format!(
+                            "\n[{}] '{}' hit a network error (attempt {}/{}), retrying after {} ms...\n",
+                            step_id(step),
+                            command_text,
+                            attempt,
+                            max_attempts,
+                            network::NETWORK_RETRY_BACKOFF.as_millis()
+                        ))
+                        .await;
+                    tokio::time::sleep(network::NETWORK_RETRY_BACKOFF).await;
+                }
+            }
+        };
+        failed_result(step, start, final_error)
     }
 
     /// Выполнить шаг Generate: диспетчеризация во встроенные генераторы
@@ -226,18 +269,56 @@ impl StepExecutor {
         // стримится в UI тем же механизмом, что и вывод Step::Command.
         let sink = Self::sink_for_step(tx, step, index, plan.step_count());
 
-        let outcome = match self.generators.get(generator_id) {
-            Some(generator) => {
-                generator
-                    .generate_with_sink(
-                        &plan.context,
-                        &plan.project_path,
-                        generator_config,
-                        Some(&sink),
-                    )
-                    .await
+        // Scaffold/spring-boot качают каркас из сети — им, как и сетевым
+        // Step::Command, даётся несколько попыток при сетевом маркере сбоя;
+        // устойчивый сетевой сбой получает совет и не останавливает генерацию.
+        let is_network_generator = network::is_network_generator(generator_id, generator_config);
+        let max_attempts = if is_network_generator {
+            network::NETWORK_MAX_ATTEMPTS
+        } else {
+            1
+        };
+        let (hint_command, hint_args) = network::generator_command_and_args(generator_config);
+        let mut attempt = 0u32;
+        let outcome = 'retry: loop {
+            attempt += 1;
+            let result = match self.generators.get(generator_id) {
+                Some(generator) => {
+                    generator
+                        .generate_with_sink(
+                            &plan.context,
+                            &plan.project_path,
+                            generator_config,
+                            Some(&sink),
+                        )
+                        .await
+                }
+                None => Err(format!("Unknown generator '{}'", generator_id)),
+            };
+            match result {
+                Ok(report) => break 'retry Ok(report),
+                Err(error) => {
+                    let is_network_failure =
+                        is_network_generator && network::has_network_failure_markers(&error);
+                    if attempt >= max_attempts || !is_network_failure {
+                        if is_network_failure {
+                            break 'retry Err(format!(
+                                "{error}\n\n{}\n",
+                                network::network_failure_hint(&hint_command, &hint_args)
+                            ));
+                        }
+                        break 'retry Err(error);
+                    }
+                    let _ = sink
+                        .emit_stdout(&format!(
+                            "\n[{}] generator '{generator_id}' hit a network error (attempt {attempt}/{max_attempts}), retrying after {} ms...\n",
+                            step_id(step),
+                            network::NETWORK_RETRY_BACKOFF.as_millis()
+                        ))
+                        .await;
+                    tokio::time::sleep(network::NETWORK_RETRY_BACKOFF).await;
+                }
             }
-            None => Err(format!("Unknown generator '{}'", generator_id)),
         };
 
         let (status, progress_msg) = match outcome {

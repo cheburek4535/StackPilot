@@ -102,17 +102,39 @@ fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
         .project
         .get_current()
         .and_then(|ctx| ctx.project_path);
-    let ActionType::RunCommand { working_dir, .. } = &mut action.action_type else {
-        return;
-    };
-    let Some(dir) = working_dir else { return };
-    let Some(base) = project_path else { return };
-    let path = Path::new(dir);
-    if path.is_relative() {
-        *dir = PathBuf::from(base)
-            .join(path)
-            .to_string_lossy()
-            .into_owned();
+    match &mut action.action_type {
+        ActionType::RunCommand { working_dir, .. } => {
+            let Some(dir) = working_dir else { return };
+            let Some(base) = project_path else { return };
+            let path = Path::new(dir);
+            if path.is_relative() {
+                *dir = PathBuf::from(base)
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+        ActionType::OpenApplication {
+            ref mut args_list,
+            ref mut args,
+            ..
+        } => {
+            let Some(base) = project_path else { return };
+            let base_str = PathBuf::from(base).to_string_lossy().into_owned();
+            if let Some(list) = args_list {
+                for arg in list.iter_mut() {
+                    if arg == "." {
+                        *arg = base_str.clone();
+                    }
+                }
+            }
+            if let Some(single) = args {
+                if single == "." {
+                    *single = base_str;
+                }
+            }
+        }
+        _ => {}
     }
 }
 

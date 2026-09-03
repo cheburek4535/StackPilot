@@ -1,5 +1,6 @@
 pub mod content;
 pub mod executor;
+mod network;
 pub mod paths;
 pub mod preflight;
 pub mod process;
@@ -68,6 +69,41 @@ impl DefaultRecipeEngine {
 /// причиной — см. execute().
 fn is_finalize_step(id: &str) -> bool {
     matches!(id, "git_add" | "git_commit" | "readme")
+}
+
+/// Должен ли Failed-результат шага прервать пайплайн (overall → Aborted).
+///
+/// Правило on_error (Abort) сохраняется для всех ошибок КРОМЕ сетевых:
+/// устойчивый сбой именно сети/реестра (registry.terraform.io недоступен,
+/// npm/pip не могут скачать пакеты и т.п.) — это проблема окружения, а не
+/// проекта. Для него движок уже сделал повторы (executor) и добавил совет,
+/// и генерация НЕ должна обрываться из-за недоступного реестра:
+/// файлы созданы, команду пользователь повторит вручную. Об этом говорит
+/// сетевой маркер в тексте ошибки + команда, классифицированная как сетевая.
+fn step_should_abort(step: &Step, status: &StepStatus) -> bool {
+    let network_error = match status {
+        StepStatus::Failed { error } => network::has_network_failure_markers(error),
+        _ => false,
+    };
+    match step {
+        Step::Command { command, args, on_error: ErrorMode::Abort, .. }
+            if network_error && network::is_network_command(command, args) =>
+        {
+            false
+        }
+        Step::Generate {
+            generator_id,
+            generator_config,
+            on_error: ErrorMode::Abort,
+            ..
+        } if network_error && network::is_network_generator(generator_id, generator_config) => false,
+        Step::Command { on_error: ErrorMode::Abort, .. }
+        | Step::WriteFile { on_error: ErrorMode::Abort, .. }
+        | Step::CreateDirectory { on_error: ErrorMode::Abort, .. }
+        | Step::Generate { on_error: ErrorMode::Abort, .. }
+        | Step::Parallel { on_error: ErrorMode::Abort, .. } => true,
+        _ => false,
+    }
 }
 
 /// Файл-цель шага уже существует в проекте (реальная проверка fs, пути
@@ -468,6 +504,8 @@ impl RecipeEngine for DefaultRecipeEngine {
                 })
                 .await;
 
+            let abort = is_failure && step_should_abort(&step, &result.status);
+
             results.push(StepResult {
                 duration_ms: duration,
                 ..result
@@ -475,18 +513,9 @@ impl RecipeEngine for DefaultRecipeEngine {
 
             if is_failure {
                 saw_failure = true;
-                let abort = matches!(
-                    &step,
-                    Step::Command { on_error: ErrorMode::Abort, .. }
-                    | Step::WriteFile { on_error: ErrorMode::Abort, .. }
-                    // | Step::RenderTemplate { on_error: ErrorMode::Abort, .. }
-                    | Step::CreateDirectory { on_error: ErrorMode::Abort, .. }
-                    | Step::Generate { on_error: ErrorMode::Abort, .. }
-                    | Step::Parallel { on_error: ErrorMode::Abort, .. }
-                );
-                if abort {
-                    aborted = true;
-                }
+            }
+            if abort {
+                aborted = true;
             }
         }
 
@@ -11932,6 +11961,11 @@ mod tests {
     struct MockCommandRunner {
         calls: std::sync::Mutex<Vec<(String, Vec<String>)>>,
         fail_commands: Vec<String>,
+        /// Обычный провал (пустые хвосты — без сетевых маркеров).
+        network_fail_commands: Vec<String>,
+        /// Сколько раз сетевая команда падает до успешного ответа
+        /// (0/не задано — падает всегда).
+        fail_times: std::sync::Mutex<std::collections::HashMap<String, u32>>,
     }
 
     #[async_trait::async_trait]
@@ -11945,7 +11979,31 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((spec.command.clone(), spec.args.clone()));
-            if self.fail_commands.contains(&spec.command) {
+            let is_net = self.network_fail_commands.contains(&spec.command);
+            let is_plain = self.fail_commands.contains(&spec.command);
+            let fail_now = if is_plain {
+                true
+            } else if is_net {
+                match self.fail_times.lock().unwrap().get_mut(&spec.command) {
+                    Some(remaining) if *remaining > 0 => {
+                        *remaining -= 1;
+                        true
+                    }
+                    Some(_) => false,
+                    None => true,
+                }
+            } else {
+                false
+            };
+            if fail_now {
+                let stderr_tail = if is_net {
+                    "Error: Failed to query available provider packages\n\
+                     could not connect to registry.terraform.io: failed to request discovery document:\n\
+                     GET https://registry.terraform.io/.well-known/terraform.json giving up after 4 attempts: context deadline exceeded"
+                        .to_string()
+                } else {
+                    String::new()
+                };
                 return Err(ProcessExecutionError {
                     kind: ProcessErrorKind::Exit {
                         code: "1".to_string(),
@@ -11953,8 +12011,8 @@ mod tests {
                     command: spec.command.clone(),
                     args: spec.args.clone(),
                     working_dir: spec.working_dir.clone().unwrap_or_default(),
-                    stdout_tail: String::new(),
-                    stderr_tail: String::new(),
+                    stdout_tail: "mocked".to_string(),
+                    stderr_tail,
                 });
             }
             Ok(ProcessOutput {
@@ -12033,6 +12091,186 @@ mod tests {
         let calls = mock.calls.lock().unwrap();
         let commands: Vec<&str> = calls.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(commands, vec!["echo", "boom"], "все CLI идут через мок");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Единичный Command-шаг с заданной командой/аргументами и режимом ошибки.
+    fn plan_with_command(
+        dir_name: &str,
+        command: &str,
+        arg: &str,
+        on_error: ErrorMode,
+    ) -> (ExecutionPlan, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_net_{dir_name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = ExecutionPlan {
+            recipe: Recipe {
+                id: "test".into(),
+                name: "Test recipe".into(),
+                description: String::new(),
+                tags: vec![],
+                steps: vec![],
+                dependencies: vec![],
+            },
+            context: WizardContext::default(),
+            project_path: dir.clone(),
+            steps: vec![Step::Command {
+                id: "net_step".into(),
+                label: "Network step".into(),
+                description: String::new(),
+                command: command.into(),
+                args: vec![arg.into()],
+                working_dir: None,
+                env: None,
+                timeout_secs: Some(10),
+                condition: None,
+                on_error,
+                interactive: vec![],
+            }],
+            dependencies: vec![],
+            layout_summary: LayoutSummary {
+                class: "custom".to_string(),
+                generated_directories: vec![],
+                root_owner: None,
+                framework_placement: vec![],
+            },
+        };
+        (plan, dir)
+    }
+
+    #[tokio::test]
+    async fn execute_retries_network_command_then_succeeds() {
+        // Сетевой сбой (недоступный registry.terraform.io) транзиентен по
+        // своему характеру: движок повторяет команду, а не верит первому
+        // провалу. Первые 2 попытки падают, третья успешна.
+        let mock = Arc::new(MockCommandRunner {
+            network_fail_commands: vec!["terraform".to_string()],
+            fail_times: std::sync::Mutex::new(
+                [("terraform".to_string(), 2u32)].into_iter().collect(),
+            ),
+            ..Default::default()
+        });
+        let engine = DefaultRecipeEngine::with_executor(Arc::new(
+            executor::StepExecutor::with_command_runner(mock.clone()),
+        ));
+        let (plan, dir) = plan_with_command(
+            "retry_ok",
+            "terraform",
+            "init",
+            ErrorMode::Abort,
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(&result.step_results[0].status, StepStatus::Success { .. }),
+            "{:?}",
+            result.step_results[0].status
+        );
+        assert_eq!(
+            mock.calls.lock().unwrap().len(),
+            network::NETWORK_MAX_ATTEMPTS as usize,
+            "сетевая команда повторяется до успеха"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_network_failure_does_not_abort_and_gives_advice() {
+        // Устойчивый сетевой сбой (все повторы исчерпаны) НЕ останавливает
+        // генерацию даже для Abort-шага: это проблема окружения (реестр
+        // недоступен), а не проекта. Итог — PartialFailure + понятный совет.
+        let mock = Arc::new(MockCommandRunner {
+            network_fail_commands: vec!["terraform".to_string()],
+            ..Default::default()
+        });
+        let engine = DefaultRecipeEngine::with_executor(Arc::new(
+            executor::StepExecutor::with_command_runner(mock.clone()),
+        ));
+        let (plan, dir) = plan_with_command(
+            "net_persistent",
+            "terraform",
+            "init",
+            ErrorMode::Abort,
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.overall, OverallStatus::PartialFailure { .. }),
+            "{:?}",
+            result.overall
+        );
+        let error = match &result.step_results[0].status {
+            StepStatus::Failed { error } => error,
+            other => panic!("шаг обязан провалиться: {:?}", other),
+        };
+        assert!(
+            error.contains("registry.terraform.io") && error.contains("VPN"),
+            "в ошибке обязан быть совет: {error}"
+        );
+        assert_eq!(
+            mock.calls.lock().unwrap().len(),
+            network::NETWORK_MAX_ATTEMPTS as usize,
+            "повторы исчерпаны до совета"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_aborts_on_non_network_failure_even_for_network_command() {
+        // Та же сетевая команда (npm), но сбой НЕ сетевой (пустые хвосты,
+        // без маркеров): повтор не нужен, Abort-семантика рецепта сохраняется.
+        let mock = Arc::new(MockCommandRunner {
+            fail_commands: vec!["npm".to_string()],
+            ..Default::default()
+        });
+        let engine = DefaultRecipeEngine::with_executor(Arc::new(
+            executor::StepExecutor::with_command_runner(mock.clone()),
+        ));
+        let (plan, dir) = plan_with_command("net_code_err", "npm", "install", ErrorMode::Abort);
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.overall, OverallStatus::Aborted { .. }),
+            "{:?}",
+            result.overall
+        );
+        assert_eq!(
+            mock.calls.lock().unwrap().len(),
+            1,
+            "не-сетевой сбой не повторяется"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_aborts_on_non_network_command_failure() {
+        // Не сетевая команда (echo) в Abort-режиме по-прежнему останавливает
+        // пайплайн — «генерация продолжается после сетевого сбоя» не должна
+        // маскировать реальные ошибки рецепта.
+        let mock = Arc::new(MockCommandRunner {
+            fail_commands: vec!["boom".to_string()],
+            ..Default::default()
+        });
+        let engine = DefaultRecipeEngine::with_executor(Arc::new(
+            executor::StepExecutor::with_command_runner(mock.clone()),
+        ));
+        let (plan, dir) = plan_with_command("abort_plain", "boom", "x", ErrorMode::Abort);
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.overall, OverallStatus::Aborted { .. }),
+            "{:?}",
+            result.overall
+        );
+        assert_eq!(
+            mock.calls.lock().unwrap().len(),
+            1,
+            "не-сетевая команда не повторяется"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

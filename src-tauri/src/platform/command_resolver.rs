@@ -449,6 +449,19 @@ pub fn resolve_command_target(command: &str) -> (String, Vec<String>) {
     }
 
     if let Some(shell) = resolved.shell {
+        // Windows batch shims (npm.cmd, code.cmd, ...) must NOT be wrapped
+        // into a pre-built `cmd /C "<line>"` here. That single argv entry
+        // contains spaces, so `std::process::Command` re-quotes it and the
+        // final command line becomes `cmd /C ""C:\...\npm.cmd" install"`,
+        // which cmd breaks at the first space (`'C:\Program' is not
+        // recognized` → exit 1) — the real reason `npm install` steps died
+        // with "Process exited with error code 1" on every profile. Return
+        // the shim path + args and let the process manager invoke it through
+        // `cmd /C` with a RAW command tail (see `resolve_spawn_plan` /
+        // `batch_shim_cmd_line`), which quotes the line exactly once.
+        if cfg!(target_os = "windows") && shell == ShellKind::Cmd {
+            return (resolved.program, resolved.args);
+        }
         let (exe, flag) = super::shell::shell_executable(shell);
         let line = shell_script_line(&resolved.program, &resolved.args, shell);
         return (exe.to_string(), vec![flag.to_string(), line]);
@@ -493,6 +506,10 @@ pub fn shell_script_line(program: &str, args: &[String], shell: ShellKind) -> St
 /// - Single-quoted strings are literal (no escape processing).
 /// - Double-quoted strings allow `\"` escaping.
 /// - Backslash escapes the next character outside quotes.
+///   EXCEPT on Windows, where `\` is a path separator and is always kept
+///   literal — old profiles carry commands like `cmd /C "python -m venv
+///   .venv && .venv\Scripts\python.exe -m pip install ..."` and stripping
+///   the separators turned them into `.venvScriptspython.exe` (exit 1).
 /// - Spaces separate tokens outside quotes.
 ///
 /// This does NOT use `split_whitespace`.
@@ -511,7 +528,7 @@ fn tokenize_command_string(input: &str) -> Vec<String> {
             '"' if !in_single_quote => {
                 in_double_quote = !in_double_quote;
             }
-            '\\' if !in_single_quote => {
+            '\\' if !in_single_quote && cfg!(not(target_os = "windows")) => {
                 if let Some(&next) = chars.peek() {
                     chars.next();
                     current.push(next);
@@ -565,8 +582,32 @@ mod tests {
 
     #[test]
     fn tokenize_backslash_escape() {
+        // On Unix `\` escapes the next character (so `hello\ world` is one
+        // token). On Windows `\` is a path separator — never an escape — so
+        // the backslash is kept and the space still splits the tokens.
         let tokens = tokenize_command_string(r#"echo hello\ world"#);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(tokens, vec!["echo", "hello world"]);
+        #[cfg(target_os = "windows")]
+        assert_eq!(tokens, vec!["echo", r"hello\", "world"]);
+    }
+
+    #[test]
+    fn tokenize_preserves_windows_backslash_paths() {
+        #[cfg(target_os = "windows")]
+        {
+            let tokens = tokenize_command_string(
+                r#"cmd /C "python -m venv .venv && .venv\Scripts\python.exe -m pip install -r requirements.txt""#,
+            );
+            assert_eq!(
+                tokens,
+                vec![
+                    "cmd",
+                    "/C",
+                    r"python -m venv .venv && .venv\Scripts\python.exe -m pip install -r requirements.txt"
+                ]
+            );
+        }
     }
 
     #[test]
@@ -713,5 +754,50 @@ mod tests {
             result.command.args,
             vec!["compose", "-f", "docker-compose.yml", "up", "-d"]
         );
+    }
+
+    /// Regression test for the `npm install` → exit code 1 bug: on Windows a
+    /// batch shim (npm.cmd, code.cmd, ...) must be returned as the program
+    /// itself so the process manager wraps it through `cmd /C` with a RAW
+    /// command tail. Pre-wrapping it into `cmd /C "<quoted line>"` made
+    /// `std::process::Command` double-quote the line, so cmd broke it at the
+    /// first space and every install step died with `'C:\Program' is not
+    /// recognized`.
+    #[test]
+    fn resolve_command_target_never_prewraps_windows_batch_shims() {
+        // Backslash Windows path: the tokenizer must preserve `\` (it is a
+        // path separator, not a shell escape on Windows) and the batch shim
+        // must NOT be pre-wrapped into a `cmd /C "<quoted line>"` string.
+        let (program, args) = resolve_command_target(r"C:\fake\tools\npm.cmd install");
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(program, r"C:\fake\tools\npm.cmd");
+            assert_eq!(args, vec!["install"]);
+            assert!(
+                !program.eq_ignore_ascii_case("cmd"),
+                "batch shims must not be pre-wrapped into cmd /C"
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (program, args);
+        }
+    }
+
+    #[test]
+    fn resolve_command_target_wraps_shell_syntax_on_unix() {
+        // Unix-style shell syntax still routes through the platform shell
+        // (guarded: the assertion only holds on non-Windows).
+        let (program, args) = resolve_command_target("echo hello | grep hello");
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(!program.is_empty());
+            assert_eq!(args.len(), 2);
+            assert!(args[0].starts_with('-'));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (program, args);
+        }
     }
 }

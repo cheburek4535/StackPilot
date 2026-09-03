@@ -191,6 +191,10 @@ pub fn resolve_windows_program_name(command: &str) -> String {
             format!("{trimmed}.cmd")
         }
         "composer" => "composer.bat".to_string(),
+        "mix" => "mix.bat".to_string(),
+        "flutter" => "flutter.bat".to_string(),
+        "mvnw" => "mvnw.cmd".to_string(),
+        "gradlew" => "gradlew.bat".to_string(),
         _ => trimmed.to_string(),
     }
 }

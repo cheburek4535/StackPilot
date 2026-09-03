@@ -972,22 +972,20 @@ impl StepKind {
     /// Default failure policy for a step given its dependency state.
     ///
     /// Leaf steps (no dependents) default to `WarnAndContinue`: their
-    /// failure is isolated to themselves. Readiness waits with dependents
-    /// default to `SkipDependents`: a failed infra wait (Docker daemon,
-    /// a port that never opens) makes its own dependents useless, but it
-    /// must not take down independent branches of the run. Other steps
-    /// with dependents (builds, service starts) default to `StopRun`:
-    /// everything downstream depends on their success.
+    /// failure is isolated to themselves. Every step WITH dependents
+    /// defaults to `SkipDependents`: a failed step (install, build, docker
+    /// compose, readiness wait) makes only its own downstream chain useless,
+    /// but it must NEVER take down independent branches of the run — most
+    /// importantly, a failing leaf must not abort a `docker compose up` that
+    /// is still bringing the project's containers up. A hard `StopRun` abort
+    /// (which kills every in-flight process and marks all concurrent steps as
+    /// "Run aborted by a failing step; process terminated") is reserved for
+    /// profiles that explicitly opt in via `failure_policy`.
     pub fn default_failure_policy(&self, has_dependents: bool) -> FailurePolicy {
         if !has_dependents {
             return FailurePolicy::WarnAndContinue;
         }
-        match self {
-            StepKind::WaitForDocker { .. } | StepKind::WaitForPort { .. } => {
-                FailurePolicy::SkipDependents
-            }
-            _ => FailurePolicy::StopRun,
-        }
+        FailurePolicy::SkipDependents
     }
 }
 

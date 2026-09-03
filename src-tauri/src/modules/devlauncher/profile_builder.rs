@@ -337,6 +337,8 @@ fn is_backend_framework(fw: &str) -> bool {
             | "flask"
             | "django"
             | "litestar"
+            | "laravel"
+            | "symfony"
             | "gin"
             | "echo"
             | "fiber"
@@ -370,10 +372,14 @@ fn is_frontend_framework(fw: &str) -> bool {
             | "vue"
             | "svelte"
             | "angular"
+            | "android"
             | "solid"
             | "expo"
             | "electron"
             | "react-native"
+            | "flutter"
+            | "maui"
+            | "swiftui"
     )
 }
 
@@ -386,9 +392,80 @@ fn side_dir(ctx: &WizardContext, side: &str) -> Option<String> {
     let has_backend = !backend_frameworks(ctx).is_empty();
     let has_frontend = !frontend_frameworks(ctx).is_empty();
     if has_backend && has_frontend {
-        Some(format!("./{}", side))
+        // Only use a split-side directory when it actually exists.  Profiles
+        // can be rebuilt for an integrated/existing project whose context
+        // still lists both frameworks; blindly forcing `./backend` or
+        // `./frontend` makes every npm/composer command fail with ENOENT.
+        if let Some(root) = ctx.project_path.as_ref() {
+            let candidate = root.join(side);
+            if candidate.is_dir() {
+                return Some(format!("./{}", side));
+            }
+            None
+        } else {
+            Some(format!("./{}", side))
+        }
     } else {
         None
+    }
+}
+
+/// Pick the Go package containing the executable entry point.  Go projects
+/// commonly keep binaries under `cmd/<name>/main.go`; `go run .` only works
+/// when `main.go` is at the module root.
+fn go_run_command(ctx: &WizardContext, working_dir: Option<&str>) -> String {
+    let Some(root) = ctx.project_path.as_ref() else {
+        return "go run .".to_string();
+    };
+    let dir = working_dir
+        .map(|d| root.join(d))
+        .unwrap_or_else(|| root.clone());
+if dir.join("main.go").is_file() {
+        return "go run .".to_string();
+    }
+    let cmd_root = dir.join("cmd");
+    if !cmd_root.is_dir() {
+        return "go run .".to_string();
+    }
+    if cmd_root.join("main.go").is_file() {
+        return "go run ./cmd".to_string();
+    }
+    let mut candidates = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cmd_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("main.go").is_file() {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates.sort();
+    candidates
+        .first()
+        .and_then(|p| p.strip_prefix(&dir).ok())
+        .map(|p| format!("go run ./{}", p.to_string_lossy().replace('\\', "/")))
+        .unwrap_or_else(|| "go run .".to_string())
+}
+
+/// Choose the package manager already used by a side of the project.  A
+/// generated profile must respect pnpm/yarn/bun lockfiles; running `npm
+/// install` against those projects can rewrite the lockfile or fail on
+/// workspace-only manifests.
+fn node_install_command(ctx: &WizardContext, working_dir: Option<&str>) -> String {
+    let Some(root) = ctx.project_path.as_ref() else {
+        return "npm install".to_string();
+    };
+    let dir = working_dir
+        .map(|d| root.join(d))
+        .unwrap_or_else(|| root.clone());
+    if dir.join("pnpm-lock.yaml").is_file() {
+        "pnpm install".to_string()
+    } else if dir.join("yarn.lock").is_file() {
+        "yarn install".to_string()
+    } else if dir.join("bun.lockb").is_file() || dir.join("bun.lock").is_file() {
+        "bun install".to_string()
+    } else {
+        "npm install".to_string()
     }
 }
 
@@ -416,7 +493,7 @@ fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
 /// usable, while generated Django projects never leak into system Python.
 fn python_command(_dir: Option<&str>, args: &str) -> String {
     if cfg!(target_os = "windows") {
-        ".venv\\Scripts\\python.exe ".to_string() + args
+        ".venv/Scripts/python.exe ".to_string() + args
     } else {
         "./.venv/bin/python ".to_string() + args
     }
@@ -424,7 +501,7 @@ fn python_command(_dir: Option<&str>, args: &str) -> String {
 
 fn python_install_command() -> String {
     if cfg!(target_os = "windows") {
-        "cmd /C \"python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"".to_string()
+        "cmd /C \"python -m venv .venv && .venv/Scripts/python.exe -m pip install -r requirements.txt\"".to_string()
     } else {
         "sh -c \"python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt\"".to_string()
     }
@@ -684,9 +761,9 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install backend dependencies",
-                    "npm install",
+                    &node_install_command(ctx, dir.as_deref()),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -698,7 +775,11 @@ pub fn build_profile_v2_from_context(
                         "npm run dev"
                     },
                     dir.as_deref(),
-                    vec![install],
+                    {
+                        let mut deps = infra.clone();
+                        deps.push(install);
+                        deps
+                    },
                     "high",
                 );
                 let port = 3000;
@@ -728,7 +809,7 @@ pub fn build_profile_v2_from_context(
                     "Install Python dependencies",
                     &python_install_command(),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let cmd = if fw == "fastapi" {
@@ -773,7 +854,7 @@ pub fn build_profile_v2_from_context(
                     "Install Python dependencies",
                     &python_install_command(),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let migrate = one_shot_step(
@@ -813,7 +894,7 @@ pub fn build_profile_v2_from_context(
                 let start = service_step(
                     &mut g,
                     "Start Go backend",
-                    "go run .",
+                    &go_run_command(ctx, dir.as_deref()),
                     dir.as_deref(),
                     infra,
                     "high",
@@ -837,6 +918,52 @@ pub fn build_profile_v2_from_context(
                     "swag default /swagger/index.html",
                 );
                 let _ = docs;
+            }
+            "symfony" | "laravel" => {
+                // Composer installs are one-shot; the development server is
+                // long-running and must be started from the PHP side's
+                // directory. Symfony CLI is preferred when installed, while
+                // the built-in PHP server keeps the profile usable on hosts
+                // that only have PHP + Composer.
+                let install = one_shot_step(
+                    &mut g,
+                    "Install PHP dependencies",
+                    "composer install --no-interaction",
+                    dir.as_deref(),
+                    infra.clone(),
+                    true,
+                );
+                let server = if fw == "symfony" && resolve_app("symfony").is_some() {
+                    "symfony server:start --no-tls --allow-http --port=8000"
+                } else if fw == "laravel" {
+                    "php artisan serve --host=127.0.0.1 --port=8000"
+                } else {
+                    "php -S 127.0.0.1:8000 -t public"
+                };
+                let start = service_step(
+                    &mut g,
+                    if fw == "symfony" {
+                        "Start Symfony backend"
+                    } else {
+                        "Start Laravel backend"
+                    },
+                    server,
+                    dir.as_deref(),
+                    vec![install],
+                    "high",
+                );
+                let wait = wait_port_step(
+                    &mut g,
+                    &format!(
+                        "Wait for {} backend port",
+                        if fw == "symfony" { "Symfony" } else { "Laravel" }
+                    ),
+                    8000,
+                    WAIT_PORT_TIMEOUT_SECS,
+                    start,
+                    "medium",
+                );
+                backend_waits.push(wait);
             }
             "axum" | "actix" | "rocket" | "warp" | "tauri" => {
                 let cmd = if fw == "tauri" {
@@ -872,7 +999,7 @@ pub fn build_profile_v2_from_context(
                     "Install Java dependencies",
                     &java_wrapper_command(ctx, if gradle { "build -x test" } else { "package -DskipTests" }),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -926,7 +1053,7 @@ pub fn build_profile_v2_from_context(
                     "Install Ruby dependencies",
                     "bundle install",
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -954,6 +1081,7 @@ pub fn build_profile_v2_from_context(
     // --- 4. Frontend services (parallel roots unless they need infra) ---
     for fw in &frontend_frameworks(ctx) {
         let dir = side_dir(ctx, "frontend");
+        let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
             | "vite-svelte" | "react" | "vue" | "svelte" | "solid" => {
@@ -972,9 +1100,9 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install frontend dependencies",
-                    "npm install",
+                    &node_install_command(ctx, dir.as_deref()),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -1006,9 +1134,9 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install frontend dependencies",
-                    "npm install",
+                    &node_install_command(ctx, dir.as_deref()),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -1060,9 +1188,9 @@ pub fn build_profile_v2_from_context(
                 let install = one_shot_step(
                     &mut g,
                     "Install Electron dependencies",
-                    "npm install",
+                    &node_install_command(ctx, dir.as_deref()),
                     dir.as_deref(),
-                    Vec::new(),
+                    infra.clone(),
                     true,
                 );
                 let start = service_step(
@@ -1081,7 +1209,8 @@ pub fn build_profile_v2_from_context(
 
     // --- 5. Language fallback when no frameworks were selected ---
     if !has_backend && !has_frontend {
-        build_language_steps(ctx, &mut g);
+        let infra: Vec<String> = compose.clone().into_iter().collect();
+        build_language_steps(ctx, &mut g, &infra);
     }
 
     // --- 6. Open a plain terminal for ad-hoc commands ---
@@ -1120,7 +1249,7 @@ pub fn build_profile_v2_from_context(
     }
 }
 
-fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
+fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder, infra: &[String]) {
     for lang in &ctx.languages {
         match lang.as_str() {
             "python" => {
@@ -1129,7 +1258,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
                     "Install Python dependencies",
                     &python_install_command(),
                     None,
-                    Vec::new(),
+                    infra.to_vec(),
                     true,
                 );
                 let start = service_step(
@@ -1143,8 +1272,14 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
                 let _ = start;
             }
             "go" => {
-                let start =
-                    service_step(g, "Run Go project", "go run .", None, Vec::new(), "medium");
+                let start = service_step(
+                    g,
+                    "Run Go project",
+                    &go_run_command(ctx, None),
+                    None,
+                    Vec::new(),
+                    "medium",
+                );
                 let wait = wait_port_step(
                     g,
                     "Wait for Go port",
@@ -1167,12 +1302,12 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder) {
                 let _ = start;
             }
             "typescript" | "javascript" => {
-                let install = one_shot_step(
+let install = one_shot_step(
                     g,
                     "Install Node.js dependencies",
-                    "npm install",
+                    &node_install_command(ctx, None),
                     None,
-                    Vec::new(),
+                    infra.to_vec(),
                     true,
                 );
                 let start = service_step(

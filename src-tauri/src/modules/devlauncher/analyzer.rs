@@ -262,6 +262,14 @@ pub struct RubyProject {
     pub manifest: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComposerProject {
+    pub dir: PathBuf,
+    pub manifest: PathBuf,
+    pub is_symfony: bool,
+    pub is_laravel: bool,
+}
+
 /// A single service parsed from a docker-compose file. The compose file is
 /// the source of truth for what runs in containers: ports are explicit
 /// `ports:` mappings and build contexts tell us which local directories are
@@ -326,6 +334,7 @@ pub struct ProjectModel {
     pub maven_projects: Vec<MavenProject>,
     pub dotnet_projects: Vec<DotnetProject>,
     pub ruby_projects: Vec<RubyProject>,
+    pub composer_projects: Vec<ComposerProject>,
     pub compose_files: Vec<ComposeFile>,
     pub dockerfiles: Vec<DockerfileEntry>,
     pub makefiles: Vec<PathBuf>,
@@ -460,6 +469,13 @@ impl ProjectModel {
                             dir,
                             manifest: path,
                         });
+                    }
+                }
+                "composer.json" => {
+                    if seen_dirs.insert(dir.clone()) {
+                        model
+                            .composer_projects
+                            .push(parse_composer_project(&dir, &path));
                     }
                 }
                 "Makefile" | "makefile" | "GNUmakefile" => {
@@ -955,6 +971,18 @@ fn parse_python_project(dir: &Path, kind: PythonKind) -> PythonProject {
         }
     }
     p
+}
+
+fn parse_composer_project(dir: &Path, manifest: &Path) -> ComposerProject {
+    let content = fs::read_to_string(manifest).unwrap_or_default().to_ascii_lowercase();
+    ComposerProject {
+        dir: dir.to_path_buf(),
+        manifest: manifest.to_path_buf(),
+        is_symfony: content.contains("symfony/")
+            || content.contains("symfony/framework-bundle"),
+        is_laravel: content.contains("laravel/")
+            || content.contains("laravel/framework"),
+    }
 }
 
 fn parse_gradle_project(dir: &Path, manifest: &Path) -> GradleProject {
@@ -1703,7 +1731,6 @@ fn generate_steps(
         // is DISABLED (with a warning) instead of silently omitted; the
         // daemon wait below depends on it either way, so a disabled open
         // step does not block the wait.
-        let docker_open_id = format!("step_{:03}", steps.len() + 1);
         match resolve_docker_desktop() {
             Some((resolved, args)) => {
                 steps.push(PendingStep::open_app(
@@ -1728,10 +1755,11 @@ fn generate_steps(
             }
         }
         docker_wait_id = Some(format!("step_{:03}", steps.len() + 1));
-        steps.push(PendingStep::wait_docker(
-            WAIT_DOCKER_TIMEOUT_SECS,
-            Some(&docker_open_id),
-        ));
+        // The daemon check is self-healing (it can launch Docker Desktop), so
+        // it must not be blocked by the best-effort GUI launch above.  Store
+        // and portable installs often report a transient launch error even
+        // though the daemon becomes ready a few seconds later.
+        steps.push(PendingStep::wait_docker(WAIT_DOCKER_TIMEOUT_SECS, None));
 
         let has_db = model.compose_files.iter().any(|c| !c.db_ports.is_empty());
         if has_db {
@@ -1882,7 +1910,8 @@ fn generate_steps(
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
         }
-        let mut step = PendingStep::run(&label, "go run .", Some(&go.dir), root, true);
+        let go_command = go_run_command(&go.dir);
+        let mut step = PendingStep::run(&label, &go_command, Some(&go.dir), root, true);
         if let Some(cid) = &compose_id {
             step.depends_on.push(cid.clone());
         }
@@ -2121,7 +2150,12 @@ fn generate_steps(
         if let Some(cid) = &compose_id {
             step.depends_on.push(cid.clone());
         }
+        let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
+        let mut wait = PendingStep::wait_port("127.0.0.1", 5000, WAIT_PORT_TIMEOUT_SECS, &id);
+        wait.label = "Wait for .NET port 5000".to_string();
+        wait = wait.with_metadata("confidence", "low");
+        steps.push(wait);
     }
 
     for ruby in &model.ruby_projects {
@@ -2152,7 +2186,52 @@ fn generate_steps(
         steps.push(wait);
     }
 
-    // --- 5. Node packages: backend first, then frontend, deduplicated ---
+    // --- 5. PHP Composer applications (Symfony/Laravel) ---
+    for php in &model.composer_projects {
+        if !php.is_symfony && !php.is_laravel {
+            continue;
+        }
+        let framework = if php.is_symfony { "Symfony" } else { "Laravel" };
+        let dir_label = rel_label(&php.dir, root);
+        let label = if dir_label == "root" {
+            format!("Start {} backend", framework)
+        } else {
+            format!("Start {} backend ({})", framework, dir_label)
+        };
+        if !known.insert(("run".to_string(), label.clone())) {
+            continue;
+        }
+
+        let install_id = format!("step_{:03}", steps.len() + 1);
+        steps.push(PendingStep::run(
+            &format!("Install {} dependencies", framework),
+            "composer install --no-interaction",
+            Some(&php.dir),
+            root,
+            false,
+        ));
+
+        let command = if php.is_symfony && resolve_app("symfony").is_some() {
+            "symfony server:start --no-tls --allow-http --port=8000"
+        } else if php.is_laravel {
+            "php artisan serve --host=127.0.0.1 --port=8000"
+        } else {
+            "php -S 127.0.0.1:8000 -t public"
+        };
+        let mut start = PendingStep::run(&label, command, Some(&php.dir), root, true);
+        start.depends_on.push(install_id);
+        if let Some(cid) = &compose_id {
+            start.depends_on.push(cid.clone());
+        }
+        let start_id = format!("step_{:03}", steps.len() + 1);
+        steps.push(start);
+        let mut wait = PendingStep::wait_port("127.0.0.1", 8000, WAIT_PORT_TIMEOUT_SECS, &start_id);
+        wait.label = format!("Wait for {} backend port 8000", framework);
+        wait = wait.with_metadata("confidence", "medium");
+        steps.push(wait);
+    }
+
+    // --- 6. Node packages: backend first, then frontend, deduplicated ---
     let mut node_backends: Vec<&NodePackage> = model
         .node_packages
         .iter()
@@ -2388,7 +2467,8 @@ fn generate_steps(
         + model.gradle_projects.len()
         + model.maven_projects.len()
         + model.dotnet_projects.len()
-        + model.ruby_projects.len();
+        + model.ruby_projects.len()
+        + model.composer_projects.len();
     diagnostics.push(AnalysisDiagnostic::new(
         DiagnosticSeverity::Info,
         AnalysisConfidence::High,
@@ -2400,6 +2480,50 @@ fn generate_steps(
     ));
 
     finalize_steps(steps, diagnostics)
+}
+
+/// Select a runnable Go package inside a module.  A common layout keeps the
+/// executable under `cmd/<name>/main.go`; `go run .` in the module root then
+/// fails with "no Go files".  Prefer the root package, then the conventional
+/// `cmd` tree, while retaining the root command as a fallback for projects
+/// whose entry point is generated at runtime.
+fn go_run_command(module_dir: &Path) -> String {
+if module_dir.join("main.go").is_file() {
+        return "go run .".to_string();
+    }
+
+    let cmd_root = module_dir.join("cmd");
+    if !cmd_root.is_dir() {
+        return "go run .".to_string();
+    }
+
+    if cmd_root.join("main.go").is_file() {
+        return "go run ./cmd".to_string();
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for entry in WalkDir::new(&cmd_root)
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if entry.file_type().is_file()
+            && entry.file_name().to_string_lossy().eq_ignore_ascii_case("main.go")
+        {
+            if let Some(parent) = entry.path().parent() {
+                candidates.push(parent.to_path_buf());
+            }
+        }
+    }
+    candidates.sort();
+    if let Some(entry_dir) = candidates.first() {
+        if let Ok(relative) = entry_dir.strip_prefix(module_dir) {
+            let rel = relative.to_string_lossy().replace('\\', "/");
+            return format!("go run ./{}", rel.trim_start_matches("./"));
+        }
+    }
+    "go run .".to_string()
 }
 
 fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {

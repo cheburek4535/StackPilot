@@ -752,27 +752,36 @@ impl RunOrchestrator {
                 .await
             }
             StepKind::OpenApplication { path, args } => {
-                let args_refs: Vec<&str> = args
-                    .as_ref()
-                    .map(|a| a.iter().map(|s| s.as_str()).collect())
-                    .unwrap_or_default();
-
+                // Application resolution is structured: Store/MSIX launchers
+                // (and other wrappers) may need their own arguments.  The old
+                // path-only lookup discarded those arguments, so Docker
+                // Desktop could appear in the plan but fail to launch.
+                let mut resolved_args: Vec<String> = args.clone().unwrap_or_default();
                 let resolved = if path.contains('/') || path.contains('\\') {
                     path.clone()
+                } else if let Some(p) = crate::platform::ide::resolve_ide_executable(path) {
+                    p
                 } else {
-                    match crate::platform::ide::resolve_ide_executable(path) {
-                        Some(p) => p,
-                        None => {
-                            return StepCompletion {
-                                step_id: step.id.clone(),
-                                success: false,
-                                error: Some(format!("Application '{}' not found", path)),
-                                process_id: None,
-                                attempt_number: 0,
-                            };
-                        }
+                    let launcher = crate::platform::app_launcher::resolve_application(path, None, None);
+                    if !launcher.found {
+                        return StepCompletion {
+                            step_id: step.id.clone(),
+                            success: false,
+                            error: Some(format!("Application '{}' not found", path)),
+                            process_id: None,
+                            attempt_number: 0,
+                        };
                     }
+                    // Launcher arguments must precede user-supplied args
+                    // (e.g. `explorer shell:AppsFolder\\...`).
+                    if !launcher.args.is_empty() {
+                        let mut launcher_args = launcher.args;
+                        launcher_args.append(&mut resolved_args);
+                        resolved_args = launcher_args;
+                    }
+                    launcher.program
                 };
+                let args_refs: Vec<&str> = resolved_args.iter().map(|s| s.as_str()).collect();
 
                 match process_manager.launch_detached(&resolved, &args_refs, working_dir) {
                     Ok(()) => StepCompletion {
@@ -957,6 +966,27 @@ impl RunOrchestrator {
                 process_id: None,
                 attempt_number: 0,
             };
+        }
+
+        // The working directory must exist BEFORE the spawn attempt. A stale
+        // profile pointing at a removed/renamed directory would otherwise
+        // surface as a confusing "Process exited with error code 1" (the
+        // spawned shell cannot chdir, so a batch shim like npm.cmd starts in
+        // the wrong place and dies instantly). Fail loudly with the real path
+        // so the user can fix the profile instead of the whole run dying.
+        if let Some(dir) = working_dir {
+            if !std::path::Path::new(dir).is_dir() {
+                return StepCompletion {
+                    step_id: step_id.to_string(),
+                    success: false,
+                    error: Some(format!(
+                        "Working directory '{}' does not exist",
+                        dir
+                    )),
+                    process_id: None,
+                    attempt_number: 0,
+                };
+            }
         }
 
         // Effective environment: run-level overlay (environment binding)
@@ -2017,18 +2047,37 @@ impl RunOrchestrator {
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
         process_manager: &Arc<dyn ProcessManager>,
     ) {
-        // A Failed (abort) or Cancelled run must not leave processes
-        // "running": kill every process the run spawned, so the process
-        // list and the run status never contradict each other. Partial
-        // success keeps long-running services up (that is the point).
+        // A Failed (abort) or Cancelled run must not leave the processes of
+        // the failed/in-flight steps running — but it must also NOT tear down
+        // services that already came up. Killing every process on a Failed
+        // run is what destroyed an already-starting `docker compose up` when
+        // an unrelated leaf step (e.g. `npm install`) failed: the containers
+        // never got to start. So:
+        //   - Cancelled  (user asked to stop) → kill everything.
+        //   - Failed     → kill only processes NOT owned by a Succeeded step;
+        //                 keep the infra/services that are already running.
         if matches!(final_status, RunStatus::Failed | RunStatus::Cancelled) {
+            let keep_alive: HashSet<String> = {
+                let run = handle.run.lock().expect("run lock poisoned");
+                if final_status == RunStatus::Cancelled {
+                    HashSet::new()
+                } else {
+                    run.steps
+                        .iter()
+                        .filter(|s| s.status == StepStatus::Succeeded)
+                        .filter_map(|s| s.process_id.clone())
+                        .collect()
+                }
+            };
             let ids: Vec<String> = handle
                 .process_ids
                 .lock()
                 .expect("process_ids lock poisoned")
                 .clone();
             for proc_id in &ids {
-                let _ = process_manager.kill(proc_id);
+                if !keep_alive.contains(proc_id) {
+                    let _ = process_manager.kill(proc_id);
+                }
             }
         }
 
@@ -2445,11 +2494,41 @@ fn default_wait_retry_policy() -> RetryPolicy {
 ///   raised to the floor, with an informational diagnostic.
 /// - Readiness waits without a retry policy get a default backoff retry so
 ///   a stale profile still survives cold starts.
+/// - A stored `StopRun` failure policy is downgraded to `SkipDependents`
+///   for every step EXCEPT the docker compose bootstrap. Profiles generated
+///   before the resilience rework baked `StopRun` into every step that had
+///   dependents, so a failing `npm install` hard-aborted the whole run and
+///   killed a still-starting `docker compose up` — the exact symptom where
+///   "Start Docker Compose" dies with the generic "Run aborted by a failing
+///   step; process terminated" while docker itself was never at fault.
 fn normalize_profile_for_run(
     mut profile: LaunchProfileV2,
     diagnostics: &mut Vec<super::validation::ProfileValidationDiagnostic>,
 ) -> LaunchProfileV2 {
     for step in &mut profile.steps {
+        // Legacy StopRun downgrade (see doc comment above).
+        if step.failure_policy == Some(FailurePolicy::StopRun) {
+            let is_compose_bootstrap = matches!(
+                &step.kind,
+                StepKind::RunCommand { command, .. }
+                    if command.trim_start().starts_with("docker compose")
+                        || command.trim_start().starts_with("docker-compose")
+            );
+            if !is_compose_bootstrap {
+                step.failure_policy = Some(FailurePolicy::SkipDependents);
+                diagnostics.push(super::validation::ProfileValidationDiagnostic {
+                    severity: DiagnosticSeverity::Info,
+                    code: "FAILURE_POLICY_DOWNGRADED".to_string(),
+                    message:
+                        "Failure policy downgraded from StopRun to SkipDependents: a failing \
+                         step must not abort the run and kill already-started infrastructure"
+                            .to_string(),
+                    step_id: Some(step.id.clone()),
+                    field: Some("failure_policy".to_string()),
+                });
+            }
+        }
+
         let is_wait = matches!(
             step.kind,
             StepKind::WaitForPort { .. } | StepKind::WaitForUrl { .. }
@@ -2670,7 +2749,7 @@ fn build_effective_overlay(
 
 /// Short grace period after a `ProcessStarted`-style spawn: the child must
 /// still be alive for the step to count as started.
-const START_PROBE_GRACE_MS: u64 = 1500;
+const START_PROBE_GRACE_MS: u64 = 4000;
 
 /// Check that a freshly-spawned process is still alive after a short grace
 /// period. Returns:
@@ -3157,6 +3236,46 @@ mod tests {
         let normalized = normalize_profile_for_run(profile, &mut diagnostics);
         assert_eq!(normalized.steps[0].timeout, Some(300));
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn normalize_profile_downgrades_legacy_stop_run_for_install_steps() {
+        // A legacy profile that baked `StopRun` into an `npm install` step
+        // must not hard-abort the run (and kill a still-starting docker
+        // compose) when the install fails. Run-time normalization rewrites
+        // it to SkipDependents; the docker compose bootstrap keeps StopRun.
+        let mut install = make_step("install", vec!["compose"]);
+        install.failure_policy = Some(FailurePolicy::StopRun);
+        install.kind = StepKind::RunCommand {
+            command: "npm install".to_string(),
+            command_spec: None,
+        };
+        let mut compose = make_step("compose", vec![]);
+        compose.failure_policy = Some(FailurePolicy::StopRun);
+        compose.kind = StepKind::RunCommand {
+            command: "docker compose up -d".to_string(),
+            command_spec: None,
+        };
+
+        let profile = valid_profile(vec![install, compose]);
+        let mut diagnostics = Vec::new();
+        let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+
+        let normalized_install = normalized.steps.iter().find(|s| s.id == "install").unwrap();
+        assert_eq!(
+            normalized_install.failure_policy,
+            Some(FailurePolicy::SkipDependents),
+            "install steps are downgraded so a failure never aborts the run"
+        );
+        let normalized_compose = normalized.steps.iter().find(|s| s.id == "compose").unwrap();
+        assert_eq!(
+            normalized_compose.failure_policy,
+            Some(FailurePolicy::StopRun),
+            "the docker compose bootstrap keeps its hard-abort policy"
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.code == "FAILURE_POLICY_DOWNGRADED"));
     }
 
     // -------------------------------------------------------------------
@@ -4315,14 +4434,16 @@ mod tests {
     /// Test: Failure policy defaults based on step kind and dependencies.
     #[test]
     fn test_failure_policy_defaults() {
-        // Non-wait steps with dependents default to StopRun
+        // Non-wait steps with dependents default to SkipDependents: a failing
+        // install/build/service must skip its own chain, never abort the run
+        // and kill already-started infrastructure (e.g. docker compose).
         assert_eq!(
             StepKind::RunCommand {
                 command: "x".to_string(),
                 command_spec: None,
             }
             .default_failure_policy(true),
-            FailurePolicy::StopRun
+            FailurePolicy::SkipDependents
         );
         // Readiness waits with dependents default to SkipDependents so a
         // failed infra wait does not take down independent branches
