@@ -362,6 +362,29 @@
     reloadWorkspaceContext();
     loadData();
   }
+/** Live project status — "running" (active DevLauncher run) or "open"
+   *  (current workspace project). No badge otherwise. */
+  function refStatus(ref: RecentProjectRef): "running" | "open" | null {
+    const matched = profiles.find(
+      (p) => p.project_path && p.project_path === ref.path,
+    );
+    if (matched && runStore.getActiveRuns().some((r) => r.profile_name === matched.name)) {
+      return "running";
+    }
+    if (
+      project &&
+      (ref.path === project.project_path ||
+        (matched !== undefined && matched.name === project.profile_name))
+    ) {
+      return "open";
+    }
+    return null;
+  }
+
+  const statusBadge = $derived<Record<string, { tone: "lime" | "cyan"; label: string }>>({
+    running: { tone: "lime", label: i18n.t("home.status_running") as TranslationKey },
+    open: { tone: "cyan", label: i18n.t("home.status_open") as TranslationKey },
+  });
 </script>
 
 <PageContainer width="wide">
@@ -406,7 +429,10 @@
                 <div class="sp-recent-main">
                   <div class="sp-recent-name-row">
                     <strong class="sp-recent-name">{ref.name}</strong>
-                    <Badge tone="neutral">{ref.source}</Badge>
+                    {#if refStatus(ref)}
+                      {@const badge = statusBadge[refStatus(ref)!]}
+                      <Badge tone={badge.tone}>{badge.label}</Badge>
+                    {/if}
                   </div>
                   <span class="sp-recent-path">{ref.path}</span>
                   <span class="sp-recent-when">{formatWhen(ref.at)}</span>
@@ -696,9 +722,6 @@
                   <span class="sp-profile-label">{profile.name}</span>
                   <span class="sp-profile-desc">
                     {profile.description}
-                    {#if profile.project_path === project.project_path}
-                      · <Badge tone="cyan">{i18n.t("devl.has_path") as TranslationKey}</Badge>
-                    {/if}
                   </span>
                   {#if profile.project_path && profile.project_path !== project.project_path}
                     <span class="sp-profile-path">{profile.project_path}</span>

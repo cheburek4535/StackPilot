@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -121,6 +122,51 @@ impl RunOrchestrator {
         // default retry policy so a stale profile still launches reliably.
         let profile = normalize_profile_for_run(profile, &mut validation.diagnostics);
 
+        // Docker compose bootstrap preflight: a compose step whose config
+        // file does not exist can never succeed — docker dies immediately
+        // with the cryptic "no configuration file provided: not found" and
+        // the StopRun policy aborts the whole run. Skip such steps up front
+        // (with a clear diagnostic) so the rest of the run proceeds.
+        let missing_compose: HashSet<String> = profile
+            .steps
+            .iter()
+            .filter(|s| s.enabled && is_compose_bootstrap_step(s))
+            .filter(|s| {
+                let working_dir = match s.working_directory.as_deref() {
+                    Some(dir) => {
+                        resolve_working_directory(profile.project_root.as_deref(), Some(dir))
+                    }
+                    None => profile.project_root.clone(),
+                };
+                working_dir
+                    .as_deref()
+                    .and_then(|dir| {
+                        crate::platform::docker_service::DockerService::find_compose_file(
+                            Path::new(dir),
+                        )
+                    })
+                    .is_none()
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        for step in &profile.steps {
+            if !missing_compose.contains(&step.id) {
+                continue;
+            }
+            validation.diagnostics.push(validation::ProfileValidationDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                code: "COMPOSE_FILE_MISSING".to_string(),
+                message: format!(
+                    "Step '{}' skipped: no docker compose configuration file found in its \
+                     working directory (expected compose.yaml, compose.yml, \
+                     docker-compose.yaml or docker-compose.yml)",
+                    step.label
+                ),
+                step_id: Some(step.id.clone()),
+                field: Some("working_directory".to_string()),
+            });
+        }
+
         let run_id = generate_stable_id();
         let now = default_now_iso();
 
@@ -128,10 +174,10 @@ impl RunOrchestrator {
             .steps
             .iter()
             .map(|s| {
-                let status = if s.enabled {
-                    StepStatus::Pending
-                } else {
+                let status = if !s.enabled || missing_compose.contains(&s.id) {
                     StepStatus::Skipped
+                } else {
+                    StepStatus::Pending
                 };
                 StepExecutionState {
                     step_id: s.id.clone(),
@@ -988,6 +1034,24 @@ impl RunOrchestrator {
                 };
             }
         }
+
+        // docker compose resolves its configuration file from the process
+        // working directory. Pin the file with `-f` so the step never depends
+        // on the cwd, and fail with an actionable message instead of docker's
+        // cryptic "no configuration file provided: not found" when the file
+        // disappeared between profile creation and execution.
+        let (program, args) = match pin_docker_compose_config(program, args, working_dir) {
+            Ok(pinned) => pinned,
+            Err(msg) => {
+                return StepCompletion {
+                    step_id: step_id.to_string(),
+                    success: false,
+                    error: Some(msg),
+                    process_id: None,
+                    attempt_number: 0,
+                };
+            }
+        };
 
         // Effective environment: run-level overlay (environment binding)
         // merged with the step's own `environment` map.
@@ -2488,6 +2552,72 @@ fn default_wait_retry_policy() -> RetryPolicy {
     }
 }
 
+/// Whether a command is a docker compose bootstrap invocation.
+fn is_compose_bootstrap_command(command: &str) -> bool {
+    let trimmed = command.trim_start();
+    trimmed.starts_with("docker compose") || trimmed.starts_with("docker-compose")
+}
+
+/// Whether a step is a docker compose bootstrap (its command invokes
+/// `docker compose` / `docker-compose`).
+fn is_compose_bootstrap_step(step: &LaunchStep) -> bool {
+    match &step.kind {
+        StepKind::RunCommand { command, .. } => is_compose_bootstrap_command(command),
+        _ => false,
+    }
+}
+
+/// Rewrite a docker compose invocation to pin its configuration file with
+/// `-f`, so the step never depends on the process working directory to
+/// find its config. Commands that are not docker compose, or that already
+/// carry an explicit file flag, are returned unchanged.
+fn pin_docker_compose_config(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&str>,
+) -> Result<(String, Vec<String>), String> {
+    let exe = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let is_compose = exe.starts_with("docker-compose")
+        || (exe == "docker" || exe == "docker.exe")
+            && args.first().map(|a| a == "compose").unwrap_or(false);
+    if !is_compose
+        || args
+            .iter()
+            .any(|a| a == "-f" || a == "--file" || a.starts_with("--file="))
+    {
+        return Ok((program.to_string(), args.to_vec()));
+    }
+    let dir = working_dir.ok_or_else(|| {
+        "docker compose step has no working directory to locate its configuration file".to_string()
+    })?;
+    match crate::platform::docker_service::DockerService::find_compose_file(Path::new(dir)) {
+        Some(file) => {
+            let file = file.to_string_lossy().into_owned();
+            let mut pinned = Vec::with_capacity(args.len() + 3);
+            if exe.starts_with("docker-compose") {
+                pinned.push("-f".to_string());
+                pinned.push(file);
+                pinned.extend(args.iter().cloned());
+            } else {
+                pinned.push("compose".to_string());
+                pinned.push("-f".to_string());
+                pinned.push(file);
+                pinned.extend(args.iter().skip(1).cloned());
+            }
+            Ok((program.to_string(), pinned))
+        }
+        None => Err(format!(
+            "docker compose could not find a configuration file in '{}' (expected \
+             compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml)",
+            dir
+        )),
+    }
+}
+
 /// Normalize a profile for execution (never persisted back):
 ///
 /// - `WaitForPort` / `WaitForUrl` steps with a timeout below the floor are
@@ -2510,9 +2640,7 @@ fn normalize_profile_for_run(
         if step.failure_policy == Some(FailurePolicy::StopRun) {
             let is_compose_bootstrap = matches!(
                 &step.kind,
-                StepKind::RunCommand { command, .. }
-                    if command.trim_start().starts_with("docker compose")
-                        || command.trim_start().starts_with("docker-compose")
+                StepKind::RunCommand { command, .. } if is_compose_bootstrap_command(command)
             );
             if !is_compose_bootstrap {
                 step.failure_policy = Some(FailurePolicy::SkipDependents);
@@ -3102,6 +3230,232 @@ mod tests {
         let profile = valid_profile(vec![make_step("a", vec!["b"]), make_step("b", vec!["a"])]);
         let result = orchestrator.create_run(profile);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_run_skips_compose_step_without_config_file() {
+        struct MockPM;
+        impl ProcessManager for MockPM {
+            fn spawn_and_track(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: Option<&str>,
+                _: &str,
+                _: Option<String>,
+            ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+                todo!()
+            }
+            fn spawn_and_track_with_overlay(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: Option<&str>,
+                _: &str,
+                _: Option<String>,
+                _: &EnvironmentOverlay,
+            ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+                todo!()
+            }
+            fn spawn_visible(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: Option<&str>,
+                _: &str,
+                _: Option<String>,
+                _: Option<&EnvironmentOverlay>,
+            ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+                todo!()
+            }
+            fn launch_detached(&self, _: &str, _: &[&str], _: Option<&str>) -> Result<(), String> {
+                todo!()
+            }
+            fn spawn_and_track_owned(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: Option<&str>,
+                _: &str,
+                _: Option<String>,
+                _: Option<String>,
+                _: Option<String>,
+            ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+                todo!()
+            }
+            fn spawn_visible_owned(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: Option<&str>,
+                _: &str,
+                _: Option<String>,
+                _: Option<&EnvironmentOverlay>,
+                _: Option<String>,
+                _: Option<String>,
+            ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+                todo!()
+            }
+            fn list(&self) -> Vec<crate::modules::workspace::models::TrackedProcess> {
+                todo!()
+            }
+            fn kill(&self, _: &str) -> Result<(), String> {
+                todo!()
+            }
+            fn refresh_status(
+                &self,
+                _: &str,
+            ) -> Result<crate::modules::workspace::models::ProcessStatus, String> {
+                todo!()
+            }
+            fn get_logs(
+                &self,
+                _: &str,
+            ) -> Result<crate::modules::workspace::models::ProcessLogs, String> {
+                todo!()
+            }
+            fn get_log_buffer(
+                &self,
+                _: &str,
+            ) -> Option<Arc<crate::modules::workspace::models::BoundedLogBuffer>> {
+                None
+            }
+            fn get_log_truncation(
+                &self,
+                _: &str,
+            ) -> Option<(
+                crate::modules::workspace::models::LogTruncation,
+                crate::modules::workspace::models::LogTruncation,
+            )> {
+                None
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_nocompose_{}",
+            std::process::id()
+        ));
+        let empty_dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_empty_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n",
+        )
+        .unwrap();
+
+        let mut with_file = make_step("compose_ok", vec![]);
+        with_file.kind = StepKind::RunCommand {
+            command: "docker compose up -d".to_string(),
+            command_spec: None,
+        };
+        with_file.working_directory = Some(dir.to_string_lossy().into_owned());
+        let mut without_file = make_step("compose_missing", vec![]);
+        without_file.kind = StepKind::RunCommand {
+            command: "docker compose up -d".to_string(),
+            command_spec: None,
+        };
+        without_file.working_directory = Some(empty_dir.to_string_lossy().into_owned());
+
+        let mut profile = valid_profile(vec![with_file, without_file]);
+        profile.project_root = Some(dir.to_string_lossy().into_owned());
+
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
+        let run = orchestrator.create_run(profile).unwrap();
+        let by_id = |id: &str| run.steps.iter().find(|s| s.step_id == id).unwrap();
+        assert_eq!(by_id("compose_ok").status, StepStatus::Pending);
+        assert_eq!(by_id("compose_missing").status, StepStatus::Skipped);
+        assert!(run
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("no docker compose configuration file")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty_dir);
+    }
+
+    #[test]
+    fn pin_compose_config_pins_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_pin_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n",
+        )
+        .unwrap();
+
+        let (program, args) = pin_docker_compose_config(
+            "docker",
+            &["compose".to_string(), "up".to_string(), "-d".to_string()],
+            Some(dir.to_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(program, "docker");
+        assert_eq!(args[0], "compose");
+        assert_eq!(args[1], "-f");
+        assert!(Path::new(&args[2]).is_file());
+        assert_eq!(&args[3..], &["up", "-d"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pin_compose_config_preserves_explicit_file_flag() {
+        let (program, args) = pin_docker_compose_config(
+            "docker",
+            &[
+                "compose".to_string(),
+                "-f".to_string(),
+                "my-compose.yml".to_string(),
+                "up".to_string(),
+                "-d".to_string(),
+            ],
+            Some("C:\\nonexistent"),
+        )
+        .unwrap();
+        assert_eq!(program, "docker");
+        assert_eq!(args[0], "compose");
+        assert_eq!(args[1], "-f");
+        assert_eq!(args[2], "my-compose.yml");
+    }
+
+    #[test]
+    fn pin_compose_config_errors_when_file_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_pin_empty_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = pin_docker_compose_config(
+            "docker",
+            &["compose".to_string(), "up".to_string(), "-d".to_string()],
+            Some(dir.to_str().unwrap()),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("could not find a configuration file"),
+            "{}",
+            err
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pin_compose_config_ignores_non_compose_commands() {
+        let (program, args) = pin_docker_compose_config(
+            "docker",
+            &["ps".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(program, "docker");
+        assert_eq!(args, vec!["ps".to_string()]);
     }
 
     #[test]

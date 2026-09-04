@@ -11,6 +11,14 @@ use std::time::Duration;
 
 use super::command_resolver::resolve_executable;
 
+/// Canonical docker compose file names, in docker's own discovery order.
+pub const COMPOSE_FILE_NAMES: &[&str] = &[
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+];
+
 // ---------------------------------------------------------------------------
 // Docker status classification
 // ---------------------------------------------------------------------------
@@ -334,6 +342,46 @@ impl DockerService {
         let _ = child.wait();
         let stderr = err_buf.to_lowercase();
         classify_docker_error(&stderr, os)
+    }
+
+    /// Locate a docker-compose configuration file for `dir`. The directory
+    /// itself is searched first (docker compose's own default lookup order);
+    /// when the file lives one level down (infra/, deploy/, docker/), the
+    /// shallow scan finds it too. Common build/source directories that never
+    /// host compose files are skipped. Returns the absolute path of the file,
+    /// or None when the project has no compose configuration.
+    pub fn find_compose_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        if !dir.is_dir() {
+            return None;
+        }
+        for name in COMPOSE_FILE_NAMES {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        let mut subdirs: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter(|e| {
+                if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    return false;
+                }
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                !matches!(name.as_str(), "node_modules" | ".git")
+            })
+            .map(|e| e.path())
+            .collect();
+        subdirs.sort();
+        for subdir in subdirs {
+            for name in COMPOSE_FILE_NAMES {
+                let candidate = subdir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
     }
 
     /// Check if a Docker Compose file exists at the given path.

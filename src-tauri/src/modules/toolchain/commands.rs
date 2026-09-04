@@ -1414,6 +1414,38 @@ mod pc_compat_tests {
     }
 }
 
+/// Проверяет, доступен ли исполняемый файл в PATH (через --version).
+fn command_exists(program: &str) -> bool {
+    std::process::Command::new(program)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Запускает программу удаления и возвращает осмысленную ошибку при провале.
+fn run_uninstall_program(program: &str, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = if stderr.trim().is_empty() { stdout } else { stderr };
+    let tail: Vec<&str> = text.lines().rev().take(6).collect();
+    let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+    Err(format!(
+        "{program} завершился с кодом {}.\n{}",
+        out.status.code().unwrap_or(-1),
+        tail
+    ))
+}
+
 #[tauri::command]
 pub async fn tcx_uninstall_tool(
     state: State<'_, ToolchainState>,
@@ -1423,48 +1455,64 @@ pub async fn tcx_uninstall_tool(
         return Err(format!("Неизвестный инструмент: {tool_id}"));
     };
 
-    // We will just do a "soft uninstall" by pretending it's uninstalled or delegating to the user.
-    // For a real uninstall, we'd invoke winget or the uninstaller, but for now we just return Ok(true)
-    // and let the frontend update its state if needed, or return an error saying it's manual.
-    // Let's actually execute winget if it has a PkgManager source.
-    let os_sources = match crate::modules::toolchain::platforms::current_platform()
-        .os_name()
-        .as_str()
-    {
+    let os = crate::modules::toolchain::platforms::current_platform().os_name();
+    let os_sources: &[crate::modules::toolchain::models::InstallSource] = match os.as_str() {
         "windows" => &def.sources.windows,
         "linux" => &def.sources.linux,
         "macos" => &def.sources.macos,
-        _ => &[] as &[crate::modules::toolchain::models::InstallSource],
+        _ => &[],
     };
 
-    let mut pkg_id = None;
-    for source in os_sources {
-        if matches!(
-            source.kind,
-            crate::modules::toolchain::models::InstallSourceKind::PkgManager
-        ) {
-            pkg_id = Some(source.id.clone());
-            break;
+    let Some(pkg) = os_sources
+        .iter()
+        .find(|s| matches!(s.kind, InstallSourceKind::PkgManager))
+    else {
+        return Err(match os.as_str() {
+            "windows" => format!(
+                "Для инструмента «{}» нет winget-пакета — удалите его вручную через «Установка и удаление программ» Windows.",
+                def.display
+            ),
+            "macos" => format!(
+                "Для инструмента «{}» нет пакета Homebrew — удалите его вручную (brew uninstall или переместите приложение в корзину).",
+                def.display
+            ),
+            "linux" => format!(
+                "Для инструмента «{}» нет системного пакета — удалите его вручную менеджером пакетов вашего дистрибутива.",
+                def.display
+            ),
+            _ => "Удаление инструментов на этой ОС не поддерживается.".to_string(),
+        });
+    };
+
+    let pkg_id = pkg.id.as_str();
+    match os.as_str() {
+        "windows" => {
+            run_uninstall_program(
+                "winget",
+                &["uninstall", "--id", pkg_id, "--silent", "--accept-source-agreements"],
+            )?;
+        }
+        "macos" => {
+            run_uninstall_program("brew", &["uninstall", pkg_id])?;
+        }
+        "linux" => {
+            if command_exists("apt-get") {
+                run_uninstall_program("apt-get", &["remove", "-y", pkg_id])?;
+            } else if command_exists("dnf") {
+                run_uninstall_program("dnf", &["remove", "-y", pkg_id])?;
+            } else if command_exists("pacman") {
+                run_uninstall_program("pacman", &["-R", "--noconfirm", pkg_id])?;
+            } else {
+                return Err(
+                    "Не найден менеджер пакетов (apt-get/dnf/pacman) — удалите инструмент вручную."
+                        .to_string(),
+                );
+            }
+        }
+        _ => {
+            return Err("Удаление инструментов на этой ОС не поддерживается.".to_string());
         }
     }
 
-    if let Some(id) = pkg_id {
-        // try to run winget uninstall
-        let _ = std::process::Command::new("winget")
-            .args(&[
-                "uninstall",
-                "--id",
-                &id,
-                "--silent",
-                "--accept-source-agreements",
-            ])
-            .output();
-        return Ok(true);
-    }
-
-    // For other tools (script, url, qt), we'd need to remove folders.
-    Err(
-        "Удаление этого инструмента пока требует ручного удаления через Панель управления Windows."
-            .to_string(),
-    )
+    Ok(true)
 }

@@ -7437,16 +7437,15 @@ def get_db():
                 });
             }
             "prisma" => {
-                // Интерактивный `npx prisma init` спрашивает пакетный
-                // менеджер и БД («Next, choose how you want to set up your
-                // database») и повисает на вводе. Провайдер передаётся
-                // флагом --datasource-provider, npx — с --yes, а CI=1
-                // проставляется executor'ом для всех команд.
-                //
-                // Новые версии Prisma (6.16+) после init разворачивают в
-                // проекте каталог AI-навыков (.agents/, .claude/,
-                // .windsurf/ + skills-lock.json — десятки тысяч файлов).
-                // --no-skills отключает установку.
+                // `npx prisma init` (без версии) скачивает ПОСЛЕДНЮЮ версию
+                // CLI и в Prisma 8+ упал бы: там удалены флаги
+                // --datasource-provider и --no-skills (теперь --skills=none).
+                // Версия пинится на 6.x — она совпадает с декларируемой в
+                // package.json зависимостью (^6.1.0), не интерактивна под
+                // CI=1 и генерирует классическую раскладку
+                // (prisma/schema.prisma + .env). Флага --no-skills у 6.x нет,
+                // поэтому агентные артефакты при необходимости чистит
+                // Rust-генератор prisma_cleanup ниже.
                 let provider = if context.tools.iter().any(|t| t == "postgresql") {
                     "postgresql"
                 } else if context.tools.iter().any(|t| t == "mysql") {
@@ -7482,11 +7481,10 @@ def get_db():
                     command: "npx".into(),
                     args: vec![
                         "--yes".into(),
-                        "prisma".into(),
+                        "prisma@6".into(),
                         "init".into(),
                         "--datasource-provider".into(),
                         provider.into(),
-                        "--no-skills".into(),
                     ],
                     // init читает/патчит package.json JS-сегмента (backend/
                     // в split-раскладке): рабочая директория — каталог
@@ -10502,6 +10500,9 @@ mod tests {
     fn prisma_init_is_non_interactive() {
         // Prisma не должен спрашивать «how to set up your database»:
         // провайдер передаётся флагом, npx — с --yes / CI=1 (executor).
+        // Версия пинится на 6.x: в Prisma 8+ флаги --datasource-provider и
+        // --no-skills удалены, а 6.x совпадает с декларируемой в
+        // package.json зависимостью (^6.1.0).
         let mut ctx = context();
         ctx.tools = vec!["prisma".into(), "postgresql".into()];
 
@@ -10515,16 +10516,20 @@ mod tests {
             Step::Command { command, args, .. } => {
                 assert_eq!(command, "npx");
                 assert!(args.contains(&"--yes".to_string()), "{args:?}");
+                assert!(
+                    args.contains(&"prisma@6".to_string()),
+                    "prisma init обязан быть запинен на 6.x (не latest): {args:?}"
+                );
                 let provider = args
                     .iter()
                     .position(|a| a == "--datasource-provider")
                     .map(|i| args[i + 1].as_str());
                 assert_eq!(provider, Some("postgresql"), "{args:?}");
-                // Prisma 6.16+ разворачивает AI-навыки (.agents/.claude/...,
-                // десятки тысяч файлов) — отключаем флагом
+                // У 6.x нет флага --no-skills (и в 8+ его тоже нет) —
+                // агентные артефакты чистит Rust-генератор prisma_cleanup.
                 assert!(
-                    args.contains(&"--no-skills".to_string()),
-                    "prisma init без --no-skills: {args:?}"
+                    !args.contains(&"--no-skills".to_string()),
+                    "prisma@6 не знает флага --no-skills: {args:?}"
                 );
             }
             _ => panic!("prisma_init — Command"),
@@ -15498,14 +15503,13 @@ mod tests {
         let prisma = find_step(&recipe, "prisma_init");
         let (pcmd, pargs) = command_of(prisma);
         assert_eq!(pcmd, "npx");
-        assert!(pargs.contains(&"prisma".to_string()), "{pargs:?}");
+        assert!(pargs.contains(&"prisma@6".to_string()), "{pargs:?}");
         assert!(pargs.contains(&"init".to_string()), "{pargs:?}");
         assert!(
             pargs.contains(&"--datasource-provider".to_string()),
             "{pargs:?}"
         );
         assert!(pargs.contains(&"sqlite".to_string()), "{pargs:?}");
-        assert!(pargs.contains(&"--no-skills".to_string()), "{pargs:?}");
         let prisma_wd = wd_of(prisma);
         assert_eq!(prisma_wd, ".", "prisma init работает в корне проекта: {prisma_wd}");
         assert_eq!(

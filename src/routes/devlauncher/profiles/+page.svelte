@@ -198,12 +198,6 @@
             <div class="sp-profile-main">
               <div class="sp-profile-name-row">
                 <strong class="sp-profile-name">{profile.name}</strong>
-                {#if isV2Profile(profile)}
-                  <Badge tone="violet">V2</Badge>
-                {/if}
-                {#if profile.project_path}
-                  <Badge tone="cyan">{i18n.t("devl.has_path") as TranslationKey}</Badge>
-                {/if}
               </div>
               {#if profile.description}
                 <span class="sp-profile-desc">{profile.description}</span>

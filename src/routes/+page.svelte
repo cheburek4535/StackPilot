@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { goto } from "$app/navigation";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
@@ -14,8 +14,8 @@
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
   import type { RecentProjectRef } from "$lib/core/recent";
-  import { listProfiles } from "$lib/modules/devlauncher/api";
-  import type { LaunchProfile } from "$lib/modules/devlauncher/types";
+  import { listProfiles, listActiveRuns } from "$lib/modules/devlauncher/api";
+  import type { LaunchProfile, LaunchRun } from "$lib/modules/devlauncher/types";
   import { getHealthReport } from "$lib/modules/toolchain/api";
   import type { HealthReport } from "$lib/modules/toolchain/types";
   import { selectFolder } from "$lib/modules/project_creator/api";
@@ -31,17 +31,28 @@
   let profiles = $state<LaunchProfile[]>([]);
   let health = $state<HealthReport | null>(null);
   let healthError = $state(false);
-
-  const sourceColors: Record<string, "violet" | "neutral" | "cyan" | "lime"> = {
-    created: "violet",
-    open: "neutral",
-    profile: "cyan",
-    confirmed: "lime",
-  };
+  let activeRuns = $state<LaunchRun[]>([]);
+  let runsPollId: ReturnType<typeof setInterval> | null = null;
 
   onMount(async () => {
-    await Promise.all([loadProject(), loadProfiles(), loadHealth()]);
+    await Promise.all([loadProject(), loadProfiles(), loadHealth(), loadActiveRuns()]);
+    runsPollId = setInterval(() => loadActiveRuns(), 3000);
   });
+
+  onDestroy(() => {
+    if (runsPollId) {
+      clearInterval(runsPollId);
+      runsPollId = null;
+    }
+  });
+
+  async function loadActiveRuns() {
+    try {
+      activeRuns = await listActiveRuns();
+    } catch {
+      // Non-critical — badges fall back to no "running" state.
+    }
+  }
 
   async function loadProject() {
     try {
@@ -136,9 +147,25 @@
     return i18n.t("home.days_ago", { n: days });
   }
 
-  function sourceLabel(source: string): string {
-    const key = `home.source_${source}` as TranslationKey;
-    return i18n.t(key) || source;
+  /** Live project status — only two states are ever shown:
+   *  "running" (active DevLauncher run) and "open" (current workspace project).
+   *  Everything else shows no badge at all. */
+  function refStatus(ref: RecentProjectRef): "running" | "open" | null {
+    const matched = profileForRef(ref);
+    if (
+      matched &&
+      activeRuns.some((r) => r.profile_name === matched.name)
+    ) {
+      return "running";
+    }
+    if (
+      project &&
+      (ref.path === project.project_path ||
+        (matched !== null && matched.name === project.profile_name))
+    ) {
+      return "open";
+    }
+    return null;
   }
 
   const healthOk = $derived(health !== null && health.tools.length > 0 && health.tools.every((t) => t.ok));
@@ -149,6 +176,11 @@
   const visibleRecents = $derived(
     $recentProjects.filter((ref) => profileForRef(ref) !== null),
   );
+
+  const statusBadge = $derived<Record<string, { tone: "lime" | "cyan"; label: string }>>({
+    running: { tone: "lime", label: i18n.t("home.status_running") as TranslationKey },
+    open: { tone: "cyan", label: i18n.t("home.status_open") as TranslationKey },
+  });
 </script>
 
 <PageContainer width="wide">
@@ -228,9 +260,10 @@
                 <div class="sp-recent-main">
                   <div class="sp-recent-name-row">
                     <strong class="sp-recent-name">{ref.name}</strong>
-                    <Badge tone={sourceColors[ref.source] ?? "neutral"}>
-                      {sourceLabel(ref.source)}
-                    </Badge>
+                    {#if refStatus(ref)}
+                      {@const badge = statusBadge[refStatus(ref)!]}
+                      <Badge tone={badge.tone}>{badge.label}</Badge>
+                    {/if}
                   </div>
                   <span class="sp-recent-path">{ref.path}</span>
                   <span class="sp-recent-when">{formatWhen(ref.at)}</span>

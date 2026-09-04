@@ -415,9 +415,6 @@
       <div>
         <h1>{profile.name}</h1>
         <p class="desc">{profile.description}</p>
-        {#if isV2}
-          <span class="v2-badge">V2</span>
-        {/if}
       </div>
       <div class="header-actions">
         <button class="danger-outline" onclick={handleDelete} disabled={runningAll}>
@@ -634,18 +631,6 @@
     gap: 0.5rem;
     align-items: center;
     flex-wrap: wrap;
-  }
-
-  .v2-badge {
-    display: inline-block;
-    font-size: var(--sp-fs-xs);
-    font-weight: var(--sp-fw-bold);
-    padding: 0.1rem 0.4rem;
-    border-radius: var(--sp-radius-xs);
-    background: rgba(139,92,246,0.14);
-    color: var(--sp-violet);
-    margin-left: 0.5rem;
-    vertical-align: middle;
   }
 
   .danger-outline {

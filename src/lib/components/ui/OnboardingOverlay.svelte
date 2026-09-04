@@ -16,7 +16,49 @@
     icon: IconName;
     titleKey: string;
     bodyKeys: string[];
+    /** True for the slide that renders the user-path scheme instead of text. */
+    scheme?: boolean;
   };
+
+  /** Scheme node — one step of the recommended first-run path. */
+  type SchemeNode = {
+    icon: IconName;
+    titleKey: string;
+    bodyKey: string;
+  };
+
+  const SCHEME_NODES: SchemeNode[] = [
+    {
+      icon: "sparkles",
+      titleKey: "onboarding.scheme_node1_title",
+      bodyKey: "onboarding.scheme_node1_body",
+    },
+    {
+      icon: "search",
+      titleKey: "onboarding.scheme_node2_title",
+      bodyKey: "onboarding.scheme_node2_body",
+    },
+    {
+      icon: "wrench",
+      titleKey: "onboarding.scheme_node3_title",
+      bodyKey: "onboarding.scheme_node3_body",
+    },
+    {
+      icon: "layers",
+      titleKey: "onboarding.scheme_node4_title",
+      bodyKey: "onboarding.scheme_node4_body",
+    },
+    {
+      icon: "play",
+      titleKey: "onboarding.scheme_node5_title",
+      bodyKey: "onboarding.scheme_node5_body",
+    },
+    {
+      icon: "folder",
+      titleKey: "onboarding.scheme_node6_title",
+      bodyKey: "onboarding.scheme_node6_body",
+    },
+  ];
 
   const STEPS: Step[] = [
     {
@@ -25,19 +67,35 @@
       bodyKeys: ["onboarding.step1_body1", "onboarding.step1_body2"],
     },
     {
-      icon: "layers",
+      icon: "map",
       titleKey: "onboarding.step2_title",
       bodyKeys: ["onboarding.step2_body1", "onboarding.step2_body2"],
+      scheme: true,
     },
     {
-      icon: "clock",
+      icon: "sparkles",
       titleKey: "onboarding.step3_title",
-      bodyKeys: ["onboarding.step3_body1", "onboarding.step3_body2"],
+      bodyKeys: ["onboarding.step3_body1", "onboarding.step3_body2", "onboarding.step3_body3"],
+    },
+    {
+      icon: "play",
+      titleKey: "onboarding.step4_title",
+      bodyKeys: ["onboarding.step4_body1", "onboarding.step4_body2"],
     },
     {
       icon: "folder",
-      titleKey: "onboarding.step4_title",
-      bodyKeys: ["onboarding.step4_body1", "onboarding.step4_body2"],
+      titleKey: "onboarding.step5_title",
+      bodyKeys: ["onboarding.step5_body1", "onboarding.step5_body2"],
+    },
+    {
+      icon: "wrench",
+      titleKey: "onboarding.step6_title",
+      bodyKeys: ["onboarding.step6_body1", "onboarding.step6_body2"],
+    },
+    {
+      icon: "shield",
+      titleKey: "onboarding.step7_title",
+      bodyKeys: ["onboarding.step7_body1", "onboarding.step7_body2"],
     },
   ];
 
@@ -63,11 +121,41 @@
           <Icon name={step.icon} size={26} />
         </div>
         <h2 class="sp-ob-title">{i18n.t(step.titleKey as TranslationKey)}</h2>
-        <div class="sp-ob-text">
-          {#each step.bodyKeys as bodyKey}
-            <p>{i18n.t(bodyKey as TranslationKey)}</p>
-          {/each}
-        </div>
+        {#if step.scheme}
+          <div class="sp-ob-text">
+            {#each step.bodyKeys as bodyKey}
+              <p>{i18n.t(bodyKey as TranslationKey)}</p>
+            {/each}
+          </div>
+          <ol class="sp-ob-scheme">
+            {#each SCHEME_NODES as node, i}
+              <li class="sp-ob-scheme-node">
+                <span class="sp-ob-scheme-node-head">
+                  <span class="sp-ob-scheme-icon" aria-hidden="true">
+                    <Icon name={node.icon} size={15} />
+                  </span>
+                  <span class="sp-ob-scheme-title">
+                    {i18n.t(node.titleKey as TranslationKey)}
+                  </span>
+                  {#if i === 0}
+                    <span class="sp-ob-scheme-start">
+                      {i18n.t("onboarding.scheme_start") as TranslationKey}
+                    </span>
+                  {/if}
+                </span>
+                <span class="sp-ob-scheme-body">
+                  {i18n.t(node.bodyKey as TranslationKey)}
+                </span>
+                {#if i < SCHEME_NODES.length - 1}
+                  <span class="sp-ob-scheme-arrow" aria-hidden="true">
+                    <Icon name="chevronDown" size={14} />
+                  </span>
+                {/if}
+              </li>
+            {/each}
+          </ol>
+          <p class="sp-ob-scheme-tip">{i18n.t("onboarding.step2_tip") as TranslationKey}</p>
+        {/if}
       </div>
 
       <div class="sp-ob-dots" aria-hidden="true">
@@ -153,7 +241,10 @@
 
   .sp-ob-panel {
     position: relative;
-    width: min(30rem, 100%);
+    width: min(46rem, 100%);
+    max-height: min(44rem, calc(100vh - var(--sp-12)));
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
     background: var(--sp-glass-strong);
     border: 1px solid var(--sp-border-strong);
@@ -173,11 +264,13 @@
   }
 
   .sp-ob-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    padding: var(--sp-8) var(--sp-8) var(--sp-4);
+    padding: var(--sp-7) var(--sp-8) var(--sp-3);
   }
 
   .sp-ob-icon {
@@ -195,7 +288,7 @@
     color: var(--sp-accent);
     border: 1px solid var(--sp-accent-border);
     box-shadow: var(--sp-shadow-1);
-    margin-bottom: var(--sp-5);
+    margin-bottom: var(--sp-4);
   }
 
   .sp-ob-title {
@@ -220,12 +313,97 @@
     line-height: var(--sp-lh-normal);
   }
 
+  /* Scheme slide */
+
+  .sp-ob-scheme {
+    margin: var(--sp-4) auto 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 30rem;
+    text-align: left;
+  }
+
+  .sp-ob-scheme-node {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-ob-scheme-node-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+  }
+
+  .sp-ob-scheme-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: var(--sp-radius-sm);
+    background: var(--sp-accent-soft);
+    color: var(--sp-accent);
+    flex-shrink: 0;
+  }
+
+  .sp-ob-scheme-title {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sp-ob-scheme-start {
+    font-size: var(--sp-fs-2xs);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-success);
+    background: rgba(163, 230, 53, 0.12);
+    border: 1px solid rgba(163, 230, 53, 0.3);
+    border-radius: var(--sp-radius-full);
+    padding: 0.125rem 0.5rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .sp-ob-scheme-body {
+    padding: 0 var(--sp-3);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    line-height: var(--sp-lh-normal);
+  }
+
+  .sp-ob-scheme-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sp-text-3);
+    opacity: 0.6;
+    margin: var(--sp-1) 0;
+  }
+
+  .sp-ob-scheme-tip {
+    margin: var(--sp-4) 0 0;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-warning);
+    line-height: var(--sp-lh-normal);
+  }
+
   .sp-ob-dots {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: var(--sp-2);
     padding: var(--sp-3) 0;
+    flex-shrink: 0;
   }
 
   .sp-ob-dot {
@@ -247,6 +425,7 @@
     justify-content: space-between;
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-6) var(--sp-6);
+    flex-shrink: 0;
   }
 
   .sp-ob-nav {

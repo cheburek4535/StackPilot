@@ -1,6 +1,7 @@
 use crate::modules::devlauncher::analyzer::{AnalysisConfidence, AnalysisDiagnostic};
 use crate::modules::devlauncher::models::*;
 use crate::modules::project_creator::models::WizardContext;
+use crate::platform::docker_service::DockerService;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -671,23 +672,51 @@ pub fn build_profile_v2_from_context(
         }
         docker_wait = Some(wait_docker_step(&mut g));
 
-        compose = Some(g.push(
-            "Start Docker Compose",
-            StepKind::RunCommand {
-                command: "docker compose up -d".to_string(),
-                command_spec: None,
-            },
-            vec![docker_wait.clone().unwrap()],
-            None,
-            Some(Visibility::Captured),
-            Some(ExecutionMode::OneShot),
-            Some(CompletionPolicy::ExitSuccess),
-            None,
-            true,
-            meta(&[("kind", "infrastructure")]),
-        ));
+        // The compose bootstrap must be anchored to a REAL configuration
+        // file. The wizard writes docker-compose.yaml at the project root,
+        // but generation can be skipped and users can move or delete the
+        // file; `docker compose up` in a directory without one dies with
+        // the cryptic "no configuration file provided: not found". Pin the
+        // file with `-f` and omit the step (with a diagnostic) when it is
+        // missing — the run then continues with the local install/start
+        // steps instead of aborting on a file that does not exist.
+        let compose_file = ctx
+            .project_path
+            .as_ref()
+            .and_then(|root| DockerService::find_compose_file(root));
+        if let Some(file) = compose_file {
+            let compose_dir = file.parent().map(|p| p.to_string_lossy().into_owned());
+            let command = format!("docker compose -f \"{}\" up -d", file.display());
+            compose = Some(g.push(
+                "Start Docker Compose",
+                StepKind::RunCommand {
+                    command,
+                    command_spec: None,
+                },
+                vec![docker_wait.clone().unwrap()],
+                compose_dir,
+                Some(Visibility::Captured),
+                Some(ExecutionMode::OneShot),
+                Some(CompletionPolicy::ExitSuccess),
+                None,
+                true,
+                meta(&[("kind", "infrastructure")]),
+            ));
+        } else {
+            diagnostics.push(AnalysisDiagnostic::new(
+                DiagnosticSeverity::Warning,
+                AnalysisConfidence::High,
+                "Docker is enabled but the project has no docker compose configuration \
+                 (compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml). \
+                 The 'Start Docker Compose' step and container readiness waits were \
+                 skipped; local install/start steps will run without containers."
+                    .to_string(),
+                None,
+            ));
+        }
 
-        // Database readiness waits for compose-managed tools.
+        // Database readiness waits for compose-managed tools — only when the
+        // compose bootstrap exists (a missing compose file means no services).
         let mut db_waits: Vec<String> = Vec::new();
         for tool in &ctx.tools {
             if !is_docker_tool(tool) {
@@ -706,6 +735,10 @@ pub fn build_profile_v2_from_context(
                 ));
                 continue;
             }
+            // Without a compose bootstrap there are no containers to wait for.
+            let Some(compose_id) = &compose else {
+                continue;
+            };
             let port = DOCKER_TOOL_PORTS
                 .iter()
                 .find(|(id, _)| id == tool)
@@ -719,7 +752,7 @@ pub fn build_profile_v2_from_context(
                 &format!("Wait for {} readiness", tool),
                 port,
                 60,
-                compose.clone().unwrap(),
+                compose_id.clone(),
                 "low",
             );
             db_waits.push(id);
@@ -1454,6 +1487,13 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        // The wizard writes docker-compose.yaml at the project root; the
+        // compose bootstrap step is only emitted when the file exists.
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  postgres:\n    image: postgres:16\n    ports:\n      - \"5432:5432\"\n",
+        )
+        .unwrap();
 
         let mut c = ctx(
             &["typescript", "go"],
@@ -1527,6 +1567,51 @@ mod tests {
         // Graph validates (no cycles, no missing deps).
         let result = crate::modules::devlauncher::validation::validate_profile_v2(&profile);
         assert!(result.valid, "{:?}", result.diagnostics);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn docker_without_compose_file_skips_compose_step() {
+        // A docker-enabled project whose compose file was never generated
+        // (or was deleted) must NOT get a "Start Docker Compose" step:
+        // `docker compose up` there dies with "no configuration file
+        // provided: not found" and aborts the whole run.
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_nocompose_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut c = ctx(
+            &["typescript", "go"],
+            &["expo", "gin"],
+            &["postgresql"],
+            true,
+        );
+        c.project_path = Some(dir.clone());
+        let (profile, diags) = build(&c);
+        let labels: Vec<&str> = profile.steps.iter().map(|s| s.label.as_str()).collect();
+        let has = |needle: &str| labels.iter().any(|l| l.contains(needle));
+
+        // No compose bootstrap, no container readiness waits.
+        assert!(!has("Start Docker Compose"), "{:?}", labels);
+        assert!(!has("postgresql readiness"), "{:?}", labels);
+        // The rest of the graph is intact.
+        assert!(has("Go backend"), "{:?}", labels);
+        assert!(has("Start Expo"), "{:?}", labels);
+        // A clear warning explains why containers were skipped.
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("no docker compose configuration")),
+            "{:?}",
+            diags
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
