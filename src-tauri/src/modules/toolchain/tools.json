@@ -2182,7 +2182,7 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/flutter"
+        "%USERPROFILE%/flutter/bin"
       ],
       "registry_keys": []
     },
@@ -2204,7 +2204,11 @@
           ],
           "extra_args": [],
           "dynamic_args": false,
-          "execution": "git_clone"
+          "execution": "git_clone",
+          "bootstrap": [
+            "flutter",
+            "--version"
+          ]
         }
       ],
       "linux": [

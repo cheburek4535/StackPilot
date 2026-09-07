@@ -2,14 +2,15 @@
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile } from "$lib/modules/devlauncher/api";
+  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2 } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
-  import type { LaunchProfile, ActionType, ActionStatus, LaunchRun } from "$lib/modules/devlauncher/types";
+  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun } from "$lib/modules/devlauncher/types";
   import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel } from "$lib/modules/devlauncher/types";
+  import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
-  import { notifyError } from "$lib/core/toasts";
+  import { notifyError, notifySuccess } from "$lib/core/toasts";
 
   let profile = $state<LaunchProfile | null>(null);
   let loading = $state(true);
@@ -30,6 +31,15 @@
 
   let profileName = $derived($page.params.name);
   const isV2 = $derived(profile ? isV2Profile(profile) : false);
+
+  /** V2 step graph of the loaded profile (present on V2 profiles returned
+   *  by the backend). */
+  let profileSteps = $derived<LaunchStep[]>(
+    (profile as LaunchProfile & { steps?: LaunchStep[] }).steps ?? [],
+  );
+  let showAddPanel = $state(false);
+  let addTpl = $state<AddTemplateDraft>(emptyAddTemplateDraft());
+  let savingActions = $state(false);
 
   let summary = $derived.by(() => {
     if (actionResults.size === 0) return null;
@@ -172,6 +182,88 @@
       actionResults = new Map(actionResults.set(actionId, msg));
     } catch (e) {
       actionResults = new Map(actionResults.set(actionId, `✗ ${e}`));
+    }
+  }
+
+  // ---- Action set editing (delete / add) ----
+
+  function actionLabel(actionId: string): string {
+    const step = profileSteps.find((s) => s.id === actionId);
+    if (step) return step.label;
+    const action = profile.actions.find((a) => a.id === actionId);
+    return action?.label ?? actionId;
+  }
+
+  /** Labels of the steps an action depends on (V2 graph), for display. */
+  function dependsLabels(actionId: string): string[] {
+    const step = profileSteps.find((s) => s.id === actionId);
+    return step?.depends_on?.map((dep) => actionLabel(dep)) ?? [];
+  }
+
+  async function saveEditedProfile(
+    nextActions: LaunchAction[],
+    nextSteps: LaunchStep[] | null,
+  ) {
+    if (!profile || savingActions) return;
+    savingActions = true;
+    try {
+      if (isV2) {
+        const v2: LaunchProfileV2 = {
+          schema_version: "2",
+          id: profile.id ?? "",
+          name: profile.name,
+          description: profile.description,
+          project_root: profile.project_path ?? null,
+          steps: nextSteps ?? [],
+          environment_binding_id: profile.environment_binding_id ?? null,
+          preferred_ide: profile.preferred_ide ?? null,
+        };
+        await saveProfileV2(v2);
+      } else {
+        await saveProfile({ ...profile, actions: nextActions });
+      }
+      notifySuccess(i18n.t("devl.actions_saved") as TranslationKey);
+      await loadProfile();
+      showAddPanel = false;
+      addTpl = emptyAddTemplateDraft();
+    } catch (e) {
+      notifyError(i18n.t("devl.save_actions_failed") as TranslationKey, String(e));
+    } finally {
+      savingActions = false;
+    }
+  }
+
+  async function removeAction(actionId: string) {
+    if (!profile || savingActions) return;
+    if (isV2) {
+      const { steps, removed } = deleteStepCascade(profileSteps, actionId);
+      const cascadeNote =
+        removed.length > 1
+          ? i18n.t("devl.delete_cascade_note", { n: removed.length - 1 })
+          : "";
+      if (
+        !confirm(
+          `${i18n.t("devl.delete_action_confirm", { label: actionLabel(actionId) })}${cascadeNote}`,
+        )
+      ) {
+        return;
+      }
+      await saveEditedProfile([], steps);
+    } else {
+      if (!confirm(i18n.t("devl.delete_action_confirm", { label: actionLabel(actionId) }))) {
+        return;
+      }
+      await saveEditedProfile(profile.actions.filter((a) => a.id !== actionId), null);
+    }
+  }
+
+  function addActionStep(tpl: AddTemplate) {
+    if (!profile || savingActions) return;
+    const step = buildStep(tpl, addTpl, profile.project_path ?? "");
+    if (isV2) {
+      void saveEditedProfile([], [...profileSteps, step]);
+    } else {
+      void saveEditedProfile([...profile.actions, stepToAction(step)], null);
     }
   }
 
@@ -526,7 +618,76 @@
 
     <!-- Legacy Actions (always shown for backward compatibility) -->
     <section>
-      <h2>{i18n.t("devl.actions", { n: profile.actions.length }) as TranslationKey}</h2>
+      <div class="actions-head">
+        <h2>{i18n.t("devl.actions", { n: profile.actions.length }) as TranslationKey}</h2>
+        <button
+          class="add-action-btn"
+          disabled={savingActions}
+          onclick={() => (showAddPanel = !showAddPanel)}
+          title={i18n.t("devl.add_action") as TranslationKey}
+        >
+          {showAddPanel ? "✕" : "+"}
+          <span>{showAddPanel ? (i18n.t("devl.close") as TranslationKey) : (i18n.t("devl.add_action") as TranslationKey)}</span>
+        </button>
+      </div>
+
+      {#if showAddPanel}
+        <div class="template-panel">
+          <div class="tpl-row">
+            <div class="tpl-body">
+              <div class="tpl-name">{i18n.t("devl.tpl.terminal_plain") as TranslationKey}</div>
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "terminal_plain" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">{i18n.t("devl.tpl.terminal_cmd") as TranslationKey}</div>
+              <input type="text" placeholder={i18n.t("devl.tpl.cmd_ph") as TranslationKey} bind:value={addTpl.command} />
+              <input type="text" placeholder={i18n.t("devl.tpl.wd_ph") as TranslationKey} bind:value={addTpl.workdir} />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "terminal_cmd" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">{i18n.t("devl.tpl.run_command") as TranslationKey}</div>
+              <input type="text" placeholder={i18n.t("devl.tpl.cmd_ph") as TranslationKey} bind:value={addTpl.command} />
+              <input type="text" placeholder={i18n.t("devl.tpl.wd_ph") as TranslationKey} bind:value={addTpl.workdir} />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "run_command" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">{i18n.t("devl.tpl.open_folder") as TranslationKey}</div>
+              <input type="text" placeholder={i18n.t("devl.tpl.path_ph") as TranslationKey} bind:value={addTpl.path} />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "open_folder" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields">
+              <div class="tpl-name">{i18n.t("devl.tpl.open_url") as TranslationKey}</div>
+              <input type="text" placeholder="https://localhost:3000/docs" bind:value={addTpl.url} />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "open_url" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields tpl-inline">
+              <div class="tpl-name">{i18n.t("devl.tpl.wait_port") as TranslationKey}</div>
+              <input type="text" placeholder="Host" bind:value={addTpl.host} class="tpl-sm" />
+              <input type="number" placeholder="Port" bind:value={addTpl.port} class="tpl-sm" />
+              <input type="number" placeholder={i18n.t("devl.tpl.timeout_ph") as TranslationKey} bind:value={addTpl.timeout} class="tpl-sm" />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "wait_port" })}>+</button>
+          </div>
+          <div class="tpl-row">
+            <div class="tpl-body tpl-fields tpl-inline">
+              <div class="tpl-name">{i18n.t("devl.tpl.delay") as TranslationKey}</div>
+              <input type="number" placeholder={i18n.t("devl.tpl.seconds_ph") as TranslationKey} bind:value={addTpl.seconds} class="tpl-sm" />
+            </div>
+            <button class="small-btn" onclick={() => addActionStep({ kind: "delay" })}>+</button>
+          </div>
+        </div>
+      {/if}
+
       <div class="action-list">
         {#each profile.actions as action}
           <div class="action-row" class:disabled={!action.enabled}>
@@ -535,6 +696,11 @@
               <span class="action-label">{action.label}</span>
               <span class="action-type">{actionTypeLabel(action.action_type)}</span>
               <span class="action-detail">{actionDetail(action.action_type)}</span>
+              {#if dependsLabels(action.id).length > 0}
+                <span class="action-deps">
+                  {i18n.t("devl.after") as TranslationKey} {dependsLabels(action.id).join(", ")}
+                </span>
+              {/if}
             </div>
             <div class="action-controls">
               <button
@@ -548,6 +714,14 @@
               <span class="toggle" class:active={action.enabled}>
                 {action.enabled ? (i18n.t("devl.on") as TranslationKey) : (i18n.t("devl.off") as TranslationKey)}
               </span>
+              <button
+                class="delete-btn"
+                disabled={savingActions}
+                onclick={() => removeAction(action.id)}
+                title={i18n.t("devl.delete_action") as TranslationKey}
+              >
+                🗑
+              </button>
             </div>
           </div>
           {#if actionResults.has(action.id)}
@@ -826,6 +1000,86 @@
   .result-row.ok { color: var(--sp-success); }
   .result-row.err { color: var(--sp-danger); }
   .result-row.skip { color: var(--sp-warning); }
+
+  /* Action set editing */
+  .actions-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .actions-head h2 { margin: 0; }
+
+  .add-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--sp-accent-border);
+    border-radius: var(--sp-radius-sm);
+    background: var(--sp-accent-soft);
+    color: var(--sp-accent);
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    cursor: pointer;
+    font-family: var(--sp-font-sans);
+  }
+  .add-action-btn:hover:not(:disabled) { background: var(--sp-accent-border); color: #fff; }
+  .add-action-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .template-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+  }
+  .tpl-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+  }
+  .tpl-body { flex: 1; min-width: 0; }
+  .tpl-name { font-size: var(--sp-fs-xs); font-weight: var(--sp-fw-semibold); color: var(--sp-text-1); }
+  .tpl-fields { display: flex; flex-direction: column; gap: 0.3rem; }
+  .tpl-fields input {
+    font-size: var(--sp-fs-xs);
+    padding: 0.25rem 0.45rem;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-xs);
+    color: var(--sp-text-1);
+    font-family: var(--sp-font-mono);
+  }
+  .tpl-fields.tpl-inline { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .tpl-inline .tpl-sm { width: 90px; }
+
+  .delete-btn {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--sp-radius-sm);
+    background: transparent;
+    cursor: pointer;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-danger);
+  }
+  .delete-btn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); }
+  .delete-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .action-deps {
+    display: block;
+    font-size: var(--sp-fs-2xs);
+    color: var(--sp-warning);
+    margin-top: 0.15rem;
+  }
 
   button.primary {
     padding: 0.5rem 1.2rem;

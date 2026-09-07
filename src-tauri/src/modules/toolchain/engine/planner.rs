@@ -960,6 +960,7 @@ mod tests {
             install_dir: None,
             needs_admin: None,
             execution: None,
+            bootstrap: None,
             sha256: sha256.map(str::to_string),
         }
     }

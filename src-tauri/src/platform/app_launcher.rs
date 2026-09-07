@@ -233,6 +233,130 @@ fn known_applications() -> Vec<KnownApp> {
         flatpak_ids: &[("dbeaver", "io.dbeaver.DBeaverCommunity")],
     });
 
+    // Browsers
+    apps.push(KnownApp {
+        name: "Google Chrome",
+        cli_names: &["chrome", "google-chrome", "google-chrome-stable"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["chrome.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Google Chrome.app", "Contents/MacOS/Google Chrome")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("google-chrome", "com.google.Chrome")],
+    });
+    apps.push(KnownApp {
+        name: "Microsoft Edge",
+        cli_names: &["msedge", "microsoft-edge", "edge"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["msedge.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Microsoft Edge.app", "Contents/MacOS/Microsoft Edge")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("microsoft-edge", "com.microsoft.Edge")],
+    });
+    apps.push(KnownApp {
+        name: "Mozilla Firefox",
+        cli_names: &["firefox"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["firefox.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Firefox.app", "Contents/MacOS/firefox")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("firefox", "org.mozilla.firefox")],
+    });
+    apps.push(KnownApp {
+        name: "Brave",
+        cli_names: &["brave", "brave-browser"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["brave.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Brave Browser.app", "Contents/MacOS/Brave Browser")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("brave", "com.brave.Browser")],
+    });
+    apps.push(KnownApp {
+        name: "Opera",
+        cli_names: &["opera", "opera-stable"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["opera.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Opera.app", "Contents/MacOS/Opera")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("opera", "com.opera.Opera")],
+    });
+    apps.push(KnownApp {
+        name: "Yandex Browser",
+        cli_names: &["yandex", "yandex-browser"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["browser.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Yandex.app", "Contents/MacOS/Yandex")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
+    });
+    apps.push(KnownApp {
+        name: "Chromium",
+        cli_names: &["chromium", "chromium-browser"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["chrome.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Chromium.app", "Contents/MacOS/Chromium")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("chromium", "org.chromium.Chromium")],
+    });
+
+    // Database viewers
+    apps.push(KnownApp {
+        name: "DataGrip",
+        cli_names: &["datagrip", "datagrip64"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["datagrip64.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("DataGrip.app", "Contents/MacOS/datagrip")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("datagrip", "com.jetbrains.DataGrip")],
+    });
+    apps.push(KnownApp {
+        name: "HeidiSQL",
+        cli_names: &["heidisql"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["heidisql.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
+    });
+    apps.push(KnownApp {
+        name: "TablePlus",
+        cli_names: &["tableplus"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["TablePlus.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("TablePlus.app", "Contents/MacOS/TablePlus")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
+    });
+    apps.push(KnownApp {
+        name: "DB Browser for SQLite",
+        cli_names: &["sqlitebrowser", "db-browser-for-sqlite"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["SQLiteBrowser.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("DB Browser for SQLite.app", "Contents/MacOS/DB Browser for SQLite")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("sqlitebrowser", "org.sqlitebrowser.sqlitebrowser")],
+    });
+    apps.push(KnownApp {
+        name: "pgAdmin 4",
+        cli_names: &["pgadmin4"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["pgAdmin4.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("pgAdmin 4.app", "Contents/MacOS/pgAdmin4")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
+    });
+
     apps
 }
 
@@ -359,6 +483,118 @@ pub fn resolve_application(
             "Application '{}' not found. Install it or use an absolute path.",
             trimmed
         )],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application detection (for selection UIs)
+// ---------------------------------------------------------------------------
+
+/// A detected application: stable id (CLI name), display name and the
+/// resolved executable path (or structured launcher for flatpak).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DetectedApp {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// All supported database viewer applications and their display names.
+pub fn db_viewer_candidates() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("dbeaver", "DBeaver"),
+        ("dbeaver-ce", "DBeaver"),
+        ("datagrip", "DataGrip"),
+        ("heidisql", "HeidiSQL"),
+        ("tableplus", "TablePlus"),
+        ("sqlitebrowser", "DB Browser for SQLite"),
+        ("pgadmin4", "pgAdmin 4"),
+    ]
+}
+
+/// All supported browser applications and their display names.
+pub fn browser_candidates() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("chrome", "Google Chrome"),
+        ("msedge", "Microsoft Edge"),
+        ("firefox", "Mozilla Firefox"),
+        ("brave", "Brave"),
+        ("opera", "Opera"),
+        ("yandex", "Yandex Browser"),
+        ("chromium", "Chromium"),
+    ]
+}
+
+/// Detect a single application by CLI name; `name` is the display name.
+pub fn detect_app(cli: &str, name: &str) -> Option<DetectedApp> {
+    let launcher = resolve_application(cli, None, None);
+    if !launcher.found {
+        return None;
+    }
+    let path = if launcher.is_flatpak {
+        format!("{} {}", launcher.program, launcher.args.join(" "))
+    } else {
+        launcher.program
+    };
+    Some(DetectedApp {
+        id: cli.to_string(),
+        name: name.to_string(),
+        path,
+    })
+}
+
+/// Detect every supported browser present on the host.
+pub fn detect_browsers() -> Vec<DetectedApp> {
+    let mut seen = std::collections::HashSet::new();
+    browser_candidates()
+        .iter()
+        .filter_map(|(cli, name)| detect_app(cli, name))
+        .filter(|app| seen.insert(app.path.clone()))
+        .collect()
+}
+
+/// Detect every supported database viewer present on the host.
+pub fn detect_db_viewers() -> Vec<DetectedApp> {
+    let mut seen = std::collections::HashSet::new();
+    db_viewer_candidates()
+        .iter()
+        .filter_map(|(cli, name)| detect_app(cli, name))
+        .filter(|app| seen.insert(app.path.clone()))
+        .collect()
+}
+
+/// Detect the user-configured VS Code (settings path) or the default CLI.
+pub fn detect_vscode(configured_path: Option<&str>) -> Option<DetectedApp> {
+    let cli = match configured_path {
+        Some(p) if !p.trim().is_empty() => p.trim(),
+        _ => "code",
+    };
+    detect_app(cli, "VS Code")
+}
+
+/// Open a URL in the configured browser (explicit path/CLI) or in the OS
+/// default browser when none is configured. Structured launchers (flatpak)
+/// are honored through `resolve_application`.
+pub fn open_url_in_browser(url: &str, browser_path: Option<&str>) -> Result<(), String> {
+    match browser_path {
+        Some(path) if !path.trim().is_empty() => {
+            let launcher = resolve_application(path, None, None);
+            if !launcher.found {
+                return Err(format!(
+                    "Configured browser '{}' was not found. Install it or fix the path in Settings.",
+                    path.trim()
+                ));
+            }
+            let mut args = launcher.args;
+            args.push(url.to_string());
+            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            std::process::Command::new(&launcher.program)
+                .args(&args_refs)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("Failed to launch browser '{}': {}", launcher.program, e))
+        }
+        _ => webbrowser::open(url).map_err(|e| format!("Failed to open browser: {}", e)),
     }
 }
 
@@ -605,6 +841,47 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
                 candidates.push(base.join("DBeaver").join("dbeaver.exe"));
                 candidates.push(base.join("Programs").join("DBeaver").join("dbeaver.exe"));
             }
+            "Google Chrome" => {
+                candidates.push(base.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+            }
+            "Microsoft Edge" => {
+                candidates.push(base.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+            }
+            "Mozilla Firefox" => {
+                candidates.push(base.join("Mozilla Firefox").join("firefox.exe"));
+            }
+            "Brave" => {
+                candidates.push(
+                    base.join("BraveSoftware")
+                        .join("Brave-Browser")
+                        .join("Application")
+                        .join("brave.exe"),
+                );
+            }
+            "Opera" => {
+                candidates.push(base.join("Opera").join("opera.exe"));
+            }
+            "Yandex Browser" => {
+                candidates.push(
+                    base.join("Yandex")
+                        .join("YandexBrowser")
+                        .join("Application")
+                        .join("browser.exe"),
+                );
+            }
+            "HeidiSQL" => {
+                candidates.push(base.join("HeidiSQL").join("heidisql.exe"));
+            }
+            "DB Browser for SQLite" => {
+                candidates.push(
+                    base.join("Programs")
+                        .join("DB Browser for SQLite")
+                        .join("DB Browser for SQLite.exe"),
+                );
+            }
+            "pgAdmin 4" => {
+                candidates.push(base.join("pgAdmin 4").join("bin").join("pgAdmin4.exe"));
+            }
             "Docker Desktop" => {
                 candidates.push(base.join("Docker").join("Docker Desktop.exe"));
             }
@@ -643,6 +920,43 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
             "DBeaver" => {
                 candidates.push(pf.join("DBeaver").join("dbeaver.exe"));
             }
+            "Google Chrome" => {
+                candidates.push(pf.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+            }
+            "Microsoft Edge" => {
+                candidates.push(pf.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+            }
+            "Mozilla Firefox" => {
+                candidates.push(pf.join("Mozilla Firefox").join("firefox.exe"));
+            }
+            "Brave" => {
+                candidates.push(
+                    pf.join("BraveSoftware")
+                        .join("Brave-Browser")
+                        .join("Application")
+                        .join("brave.exe"),
+                );
+            }
+            "Opera" => {
+                candidates.push(pf.join("Opera").join("opera.exe"));
+            }
+            "Yandex Browser" => {
+                candidates.push(
+                    pf.join("Yandex")
+                        .join("YandexBrowser")
+                        .join("Application")
+                        .join("browser.exe"),
+                );
+            }
+            "HeidiSQL" => {
+                candidates.push(pf.join("HeidiSQL").join("heidisql.exe"));
+            }
+            "DB Browser for SQLite" => {
+                candidates.push(pf.join("DB Browser for SQLite").join("DB Browser for SQLite.exe"));
+            }
+            "pgAdmin 4" => {
+                candidates.push(pf.join("pgAdmin 4").join("bin").join("pgAdmin4.exe"));
+            }
             "Docker Desktop" => {
                 candidates.push(pf.join("Docker").join("Docker").join("Docker Desktop.exe"));
                 candidates.push(
@@ -661,6 +975,9 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
         match app.name {
             "DBeaver" => {
                 candidates.push(pf86.join("DBeaver").join("dbeaver.exe"));
+            }
+            "HeidiSQL" => {
+                candidates.push(pf86.join("HeidiSQL").join("heidisql.exe"));
             }
             _ => {
                 for reg_name in app.registry_names {

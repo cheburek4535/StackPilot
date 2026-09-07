@@ -146,12 +146,12 @@ describe("taskActionLabel — малиформированные действи�
 });
 
 describe("noopReasonLabel — отсутствие/незнание причины честны", () => {
-  it("noop без reason и с мусорным reason дают разные честные тексты", () => {
-    expect(noopReasonLabel(undefined)).toContain("причина не указана");
-    expect(noopReasonLabel(null)).toContain("причина не указана");
-    expect(noopReasonLabel(42)).toContain("причина не указана");
-    expect(noopReasonLabel({})).toContain("причина не указана");
-    expect(noopReasonLabel({ who_knows: 1 })).toContain("неизвестная причина");
+  it("noop без reason и с мусорным reason не крашатся и честны", () => {
+    expect(noopReasonLabel(undefined)).toContain("причина неизвестна");
+    expect(noopReasonLabel(null)).toContain("причина неизвестна");
+    expect(noopReasonLabel(42)).toContain("причина неизвестна");
+    expect(noopReasonLabel({})).toContain("причина неизвестна");
+    expect(noopReasonLabel({ who_knows: 1 })).toContain("причина неизвестна");
     expect(noopReasonLabel("weird_string")).toContain("неизвестна");
   });
 });

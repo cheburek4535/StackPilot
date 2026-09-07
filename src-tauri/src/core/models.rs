@@ -56,6 +56,9 @@ impl Default for PersonalSettings {
 pub struct AppSettings {
     pub vscode_path: String,
     pub browser_path: String,
+    /// Selected database viewer (CLI name or absolute path). Empty = auto:
+    /// the first detected database application is used.
+    pub db_viewer_path: String,
     pub terminal: String,
     pub theme: String,
     pub language: String,

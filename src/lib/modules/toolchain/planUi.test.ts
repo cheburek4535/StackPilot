@@ -90,11 +90,11 @@ describe("docker-related tools install locally in standalone plans", () => {
 
   it("noop reasons render honestly even when malformed", () => {
     // Причина отсутствует/мусор — честный текст, не краш и не догадка.
-    expect(noopReasonLabel(undefined)).toContain("причина не указана");
-    expect(noopReasonLabel(null)).toContain("причина не указана");
-    expect(noopReasonLabel(42)).toContain("причина не указана");
-    expect(noopReasonLabel({})).toContain("причина не указана");
-    expect(noopReasonLabel({ unknown_reason: {} })).toContain("неизвестная причина");
+    expect(noopReasonLabel(undefined)).toContain("причина неизвестна");
+    expect(noopReasonLabel(null)).toContain("причина неизвестна");
+    expect(noopReasonLabel(42)).toContain("причина неизвестна");
+    expect(noopReasonLabel({})).toContain("причина неизвестна");
+    expect(noopReasonLabel({ unknown_reason: {} })).toContain("причина неизвестна");
     // Легаси-строковая форма docker_managed остаётся читаемой.
     expect(noopReasonLabel("docker_managed")).toContain("Docker");
   });

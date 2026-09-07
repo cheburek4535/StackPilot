@@ -45,6 +45,9 @@ struct RunHandle {
     /// Environment overlay (from the profile's environment binding) applied
     /// to every process-spawning step of this run.
     overlay: Option<EnvironmentOverlay>,
+    /// User-configured browser executable (from settings) used to open URL
+    /// steps; None = OS default browser.
+    browser_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -454,19 +457,64 @@ impl RunOrchestrator {
 
                     tokio::spawn(async move {
                         let _permit = semaphore.acquire().await.unwrap();
-                        let completion = Self::step_task(
-                            &run_id,
-                            &step,
-                            &profile,
-                            &process_manager,
-                            &app_handle,
-                            &cancelled,
-                            &cancel_notify,
-                            &session_id,
-                            &overlay,
-                            &handle,
-                        )
-                        .await;
+
+                        // Run the step in a child task and await its JoinHandle.
+                        // If `step_task` panics (an unwrap/expect in the process
+                        // or Docker path), the JoinHandle returns a `JoinError`
+                        // instead of a completion. Converting that into a Failed
+                        // completion guarantees the scheduler can never hang
+                        // waiting for a step that will never report back.
+                        let run_id_inner = run_id.clone();
+                        let step_inner = step.clone();
+                        let profile_inner = profile.clone();
+                        let pm_inner = process_manager.clone();
+                        let app_inner = app_handle.clone();
+                        let cancelled_inner = cancelled.clone();
+                        let notify_inner = cancel_notify.clone();
+                        let session_inner = session_id.clone();
+                        let overlay_inner = overlay.clone();
+                        let handle_inner = handle.clone();
+                        let step_id_owned = step.id.clone();
+                        let inner = tokio::spawn(async move {
+                            Self::step_task(
+                                &run_id_inner,
+                                &step_inner,
+                                &profile_inner,
+                                &pm_inner,
+                                &app_inner,
+                                &cancelled_inner,
+                                &notify_inner,
+                                &session_inner,
+                                &overlay_inner,
+                                &handle_inner,
+                            )
+                            .await
+                        });
+
+                        let completion = match inner.await {
+                            Ok(c) => c,
+                            Err(join_err) => {
+                                let msg = if join_err.is_panic() {
+                                    let payload = join_err.into_panic();
+                                    if let Some(s) = payload.downcast_ref::<&str>() {
+                                        format!("Step panicked: {}", s)
+                                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                                        format!("Step panicked: {}", s)
+                                    } else {
+                                        "Step panicked (no message)".to_string()
+                                    }
+                                } else {
+                                    format!("Step task failed: {}", join_err)
+                                };
+                                StepCompletion {
+                                    step_id: step_id_owned,
+                                    success: false,
+                                    error: Some(msg),
+                                    process_id: None,
+                                    attempt_number: 0,
+                                }
+                            }
+                        };
                         let _ = tx.send(completion);
                         drop(_permit);
                     });
@@ -747,6 +795,29 @@ impl RunOrchestrator {
                 // Visible-terminal steps resolve WITHOUT the batch-shim
                 // `cmd /C` wrapper — the terminal's own shell runs batch
                 // files natively (nested cmd breaks the command line).
+                //
+                // Docker preflight runs on the RAW command string (never the
+                // resolved program path): the resolver turns `docker` into
+                // `C:\Program Files\...\docker.exe`, which no longer starts
+                // with "docker", so a program-based check would silently skip
+                // the daemon preflight for every Docker step.
+                if let Err(msg) = preflight_check(command) {
+                    Self::emit_diagnostic(
+                        run_id,
+                        Some(&step.id),
+                        LogSource::Preflight,
+                        DiagnosticSeverity::Warning,
+                        msg.clone(),
+                        app_handle,
+                    );
+                    return StepCompletion {
+                        step_id: step.id.clone(),
+                        success: false,
+                        error: Some(msg),
+                        process_id: None,
+                        attempt_number: 0,
+                    };
+                }
                 let (program, args) = if let Some(spec) = command_spec {
                     (spec.program.clone(), spec.args.clone())
                 } else if matches!(visibility, Visibility::VisibleTerminal) {
@@ -1003,17 +1074,6 @@ impl RunOrchestrator {
         session_id: Option<&str>,
         handle: &Arc<RunHandle>,
     ) -> StepCompletion {
-        // Preflight for docker commands
-        if let Err(msg) = preflight_check(program) {
-            return StepCompletion {
-                step_id: step_id.to_string(),
-                success: false,
-                error: Some(msg),
-                process_id: None,
-                attempt_number: 0,
-            };
-        }
-
         // The working directory must exist BEFORE the spawn attempt. A stale
         // profile pointing at a removed/renamed directory would otherwise
         // surface as a confusing "Process exited with error code 1" (the
@@ -1241,6 +1301,7 @@ impl RunOrchestrator {
                     effective_timeout,
                     cancelled,
                     cancel_notify,
+                    tracked.tracking_quality.as_ref(),
                     process_manager,
                     app_handle,
                 )
@@ -1325,6 +1386,7 @@ impl RunOrchestrator {
                     u64::MAX,
                     cancelled,
                     cancel_notify,
+                    tracked.tracking_quality.as_ref(),
                     process_manager,
                     app_handle,
                 )
@@ -1492,6 +1554,7 @@ impl RunOrchestrator {
             effective_timeout,
             cancelled,
             cancel_notify,
+            tracked.tracking_quality.as_ref(),
             process_manager,
             app_handle,
         )
@@ -1509,6 +1572,7 @@ impl RunOrchestrator {
         timeout_secs: u64,
         cancelled: &Arc<AtomicBool>,
         cancel_notify: &Arc<Notify>,
+        tracking_quality: Option<&ProcessTrackingQuality>,
         process_manager: &Arc<dyn ProcessManager>,
         _app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
     ) -> StepCompletion {
@@ -1647,11 +1711,34 @@ impl RunOrchestrator {
                     };
                 }
                 None => {
-                    // Process not found — assume exited successfully
+                    // Process is no longer tracked. The process manager never
+                    // prunes entries, so a freshly-spawned id becoming "not
+                    // found" is anomalous and we cannot confirm the exit code.
+                    // For terminal-wrapper steps a clean detach is the NORMAL
+                    // case (the terminal owns the real process from here on).
+                    // For directly-tracked one-shots, report an error instead
+                    // of silently claiming success — that would mask a failed
+                    // `docker compose up` as a successful step.
+                    let is_wrapper = matches!(
+                        tracking_quality,
+                        Some(ProcessTrackingQuality::TerminalWrapper)
+                    );
+                    if is_wrapper {
+                        return StepCompletion {
+                            step_id: step_id.to_string(),
+                            success: true,
+                            error: None,
+                            process_id: Some(proc_id.to_string()),
+                            attempt_number: 0,
+                        };
+                    }
                     return StepCompletion {
                         step_id: step_id.to_string(),
-                        success: true,
-                        error: None,
+                        success: false,
+                        error: Some(format!(
+                            "Process '{}' is no longer tracked; cannot confirm its exit status",
+                            proc_id
+                        )),
                         process_id: Some(proc_id.to_string()),
                         attempt_number: 0,
                     };
@@ -2581,9 +2668,14 @@ fn pin_docker_compose_config(
         .next()
         .unwrap_or(program)
         .to_ascii_lowercase();
+    // Recognize both the bare `docker` and Windows batch shims
+    // (`docker.cmd`/`docker.bat`): the resolver may return a `.cmd`/`.bat`
+    // shim on Windows, and failing to recognize it silently drops the `-f`
+    // pin, leaving the step dependent on the process working directory.
+    let is_docker_cli =
+        exe == "docker" || exe == "docker.exe" || exe == "docker.cmd" || exe == "docker.bat";
     let is_compose = exe.starts_with("docker-compose")
-        || (exe == "docker" || exe == "docker.exe")
-            && args.first().map(|a| a == "compose").unwrap_or(false);
+        || (is_docker_cli && args.first().map(|a| a == "compose").unwrap_or(false));
     if !is_compose
         || args
             .iter()
@@ -2812,6 +2904,19 @@ fn self_emit_run_finished(
 // Preflight (delegated to Docker service)
 // ---------------------------------------------------------------------------
 
+/// Preflight a raw command string for Docker steps.
+///
+/// Operates on the RAW command (as the user wrote it), not the resolved
+/// program path: the resolver turns `docker` into `C:\Program Files\...\
+/// docker.exe`, which no longer starts with "docker" — a program-based check
+/// would silently skip the daemon preflight for every Docker step.
+///
+/// Fast-fails only on definitively-broken states (CLI missing, daemon down),
+/// with an actionable message instead of docker's cryptic pipe errors. A
+/// daemon that is still starting is deliberately allowed through: the
+/// `WaitForDocker` step (or docker's own retry) handles the transition, and
+/// failing here would abort the whole run (the compose bootstrap is StopRun)
+/// on a transient that resolves on its own.
 fn preflight_check(command: &str) -> Result<(), String> {
     let trimmed = command.trim_start();
     if !trimmed.starts_with("docker") {
@@ -2820,15 +2925,18 @@ fn preflight_check(command: &str) -> Result<(), String> {
 
     match crate::platform::docker_service::DockerService::preflight_for_command(command) {
         Ok(()) => Ok(()),
-        Err(diag) => Err(format!(
-            "{}: {}{}",
-            diag.status,
-            diag.message,
-            diag.suggested_action
-                .as_ref()
-                .map(|a| format!("\n{}", a))
-                .unwrap_or_default()
-        )),
+        Err(diag) => match diag.status {
+            crate::platform::docker_service::DockerStatus::DaemonStarting => Ok(()),
+            _ => Err(format!(
+                "{}: {}{}",
+                diag.status,
+                diag.message,
+                diag.suggested_action
+                    .as_ref()
+                    .map(|a| format!("\n{}", a))
+                    .unwrap_or_default()
+            )),
+        },
     }
 }
 
@@ -3456,6 +3564,67 @@ mod tests {
         .unwrap();
         assert_eq!(program, "docker");
         assert_eq!(args, vec!["ps".to_string()]);
+    }
+
+    #[test]
+    fn pin_compose_config_pins_windows_cmd_shim() {
+        // Windows may resolve `docker` to a `.cmd`/`.bat` batch shim. The
+        // `-f` pin must still be applied, otherwise the step silently depends
+        // on the process working directory.
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_pin_cmd_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n",
+        )
+        .unwrap();
+
+        for shim in ["docker.cmd", "docker.bat"] {
+            let program = format!("C:\\Tools\\Docker\\{}", shim);
+            let (program_out, args) = pin_docker_compose_config(
+                &program,
+                &["compose".to_string(), "up".to_string(), "-d".to_string()],
+                Some(dir.to_str().unwrap()),
+            )
+            .unwrap();
+            assert_eq!(program_out, program);
+            assert_eq!(args[0], "compose");
+            assert_eq!(args[1], "-f");
+            assert!(Path::new(&args[2]).is_file());
+            assert_eq!(&args[3..], &["up", "-d"]);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pin_compose_config_pins_bare_bat_shim() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_pin_bat_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n",
+        )
+        .unwrap();
+
+        let (program, args) = pin_docker_compose_config(
+            "docker.bat",
+            &["compose".to_string(), "up".to_string(), "-d".to_string()],
+            Some(dir.to_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(program, "docker.bat");
+        assert_eq!(args[0], "compose");
+        assert_eq!(args[1], "-f");
+        assert!(Path::new(&args[2]).is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -4323,7 +4492,9 @@ mod tests {
         let cancel_notify = Arc::new(Notify::new());
         let app_handle = Arc::new(Mutex::new(None));
 
-        // When process is not found, wait_for_process_exit should return success
+        // A directly-tracked (non-wrapper) process that vanishes without an
+        // exit status cannot be confirmed as successful — the step must fail
+        // (this is what would otherwise mask a failed `docker compose up`).
         let result = tokio::runtime::Runtime::new().unwrap().block_on(
             RunOrchestrator::wait_for_process_exit(
                 "run-1",
@@ -4332,12 +4503,31 @@ mod tests {
                 5,
                 &cancelled,
                 &cancel_notify,
+                None, // Exact tracking (no wrapper)
                 &pm,
                 &app_handle,
             ),
         );
-        assert!(result.success);
+        assert!(!result.success, "non-wrapper lost process must fail");
         assert!(result.process_id.is_some());
+        assert!(result.error.unwrap().contains("no longer tracked"));
+
+        // A terminal-wrapper process detaching cleanly is the NORMAL case
+        // (the terminal owns the real process from here on) — success.
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(
+            RunOrchestrator::wait_for_process_exit(
+                "run-1",
+                "step-1",
+                "nonexistent-process",
+                5,
+                &cancelled,
+                &cancel_notify,
+                Some(&ProcessTrackingQuality::TerminalWrapper),
+                &pm,
+                &app_handle,
+            ),
+        );
+        assert!(result.success, "terminal wrapper detach is a successful launch");
     }
 
     /// Test 11: Legacy run_profile compatibility — verify V2 conversion.

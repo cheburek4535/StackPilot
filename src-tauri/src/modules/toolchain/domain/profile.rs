@@ -566,6 +566,7 @@ mod tests {
                     needs_admin: None,
                     file_name: None,
                     execution: None,
+                    bootstrap: None,
                     sha256: None,
                 }],
                 linux: vec![],

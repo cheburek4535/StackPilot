@@ -253,60 +253,27 @@ impl DockerService {
         if cli_check.status == DockerStatus::CliMissing {
             return cli_check;
         }
-        let cli = Self::resolve_cli()
-            .expect("check_cli said CLI exists, resolve_cli must agree")
-            .to_string_lossy()
-            .into_owned();
+        // `check_cli` and `resolve_cli` must agree; a divergence here is a
+        // hard failure, never a panic — a panic inside the async wait path
+        // would hang the whole run (the step task never completes).
+        let Some(cli) = Self::resolve_cli() else {
+            return DockerDiagnostic {
+                status: DockerStatus::CliMissing,
+                message: "Docker CLI not found on PATH".to_string(),
+                suggested_action: cli_check.suggested_action,
+                detected_os: os,
+            };
+        };
 
         // Run `docker version --format {{.Server.Version}}` and poll with
         // `try_wait` so the attempt itself cannot block past `timeout`.
-        let mut child = match std::process::Command::new(&cli)
-            .args(["version", "--format", "{{.Server.Version}}"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return DockerDiagnostic {
-                    status: DockerStatus::DaemonUnavailable,
-                    message: format!("Failed to execute Docker CLI ({}): {}", cli, e),
-                    suggested_action: Some(
-                        "Ensure Docker is installed and accessible on PATH.".to_string(),
-                    ),
-                    detected_os: os,
-                };
-            }
-        };
-
-        let deadline = std::time::Instant::now() + timeout;
-        let exit = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break None;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return DockerDiagnostic {
-                        status: DockerStatus::DaemonUnavailable,
-                        message: format!("Failed to check Docker CLI: {}", e),
-                        suggested_action: None,
-                        detected_os: os,
-                    };
-                }
-            }
-        };
-
-        let Some(status) = exit else {
-            // The attempt timed out: the daemon may still be booting.
-            return DockerDiagnostic {
+        match run_cli_bounded(
+            &cli,
+            &["version", "--format", "{{.Server.Version}}"],
+            timeout,
+        ) {
+            // The attempt timed out / was killed: the daemon may still be booting.
+            None => DockerDiagnostic {
                 status: DockerStatus::DaemonStarting,
                 message: format!(
                     "Docker daemon did not answer within {}s (still starting?)",
@@ -314,34 +281,26 @@ impl DockerService {
                 ),
                 suggested_action: None,
                 detected_os: os,
-            };
-        };
-
-        if status.success() {
-            let mut out = String::new();
-            if let Some(mut stdout) = child.stdout.take() {
-                use std::io::Read;
-                let _ = stdout.read_to_string(&mut out);
-            }
-            let version = out.trim().to_string();
-            if !version.is_empty() {
-                return DockerDiagnostic {
+            },
+            // A successful `docker version` means the engine responded. The
+            // version may legitimately be empty on some configs — that is
+            // still a ready daemon, not an error.
+            Some((true, out, _)) => {
+                let version = out.trim().to_string();
+                let suffix = if version.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (v{})", version)
+                };
+                DockerDiagnostic {
                     status: DockerStatus::DaemonReady,
-                    message: format!("Docker daemon is running (v{})", version),
+                    message: format!("Docker daemon is running{}", suffix),
                     suggested_action: None,
                     detected_os: os,
-                };
+                }
             }
+            Some((false, _, err)) => classify_docker_error(&err.to_lowercase(), os),
         }
-
-        let mut err_buf = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            use std::io::Read;
-            let _ = stderr.read_to_string(&mut err_buf);
-        }
-        let _ = child.wait();
-        let stderr = err_buf.to_lowercase();
-        classify_docker_error(&stderr, os)
     }
 
     /// Locate a docker-compose configuration file for `dir`. The directory
@@ -420,6 +379,9 @@ impl DockerService {
         let start = tokio::time::Instant::now();
         let deadline = start + check.timeout;
         let mut auto_launched = false;
+        // Log each missing service/port only once (not on every poll).
+        let mut logged_service_wait = false;
+        let mut logged_port_wait = false;
 
         loop {
             if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -447,6 +409,15 @@ impl DockerService {
                 // If service name is specified, check that too.
                 if let Some(ref service) = check.service_name {
                     if !is_service_running(service) {
+                        if !logged_service_wait {
+                            logged_service_wait = true;
+                            eprintln!(
+                                "[docker] daemon ready but service '{}' not running; \
+                                 waiting (bounded by {}s)",
+                                service,
+                                check.timeout.as_secs()
+                            );
+                        }
                         // Daemon ready but service not running — keep waiting.
                         if tokio::time::Instant::now() >= deadline {
                             return DockerReadinessResult {
@@ -470,6 +441,15 @@ impl DockerService {
                 // If port check is specified, verify it.
                 if let Some(port) = check.port_check {
                     if !is_port_open(port) {
+                        if !logged_port_wait {
+                            logged_port_wait = true;
+                            eprintln!(
+                                "[docker] daemon ready but port {} not listening; \
+                                 waiting (bounded by {}s)",
+                                port,
+                                check.timeout.as_secs()
+                            );
+                        }
                         if tokio::time::Instant::now() >= deadline {
                             return DockerReadinessResult {
                                 status: DockerStatus::DaemonStarting,
@@ -502,7 +482,10 @@ impl DockerService {
             // as soon as `docker version` answers.
             if check.auto_launch && !auto_launched {
                 auto_launched = true;
-                let _ = Self::try_launch_docker();
+                eprintln!("[docker] daemon not ready; attempting to auto-launch");
+                if let Err(diag) = Self::try_launch_docker() {
+                    eprintln!("[docker] auto-launch failed: {}", diag);
+                }
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -574,7 +557,8 @@ impl DockerService {
                             ),
                         ));
                     }
-                    Self::docker_desktop_start();
+                    eprintln!("[docker] launched Docker Desktop via '{}'", launcher.program);
+                    Self::best_effort_engine_start();
                     return Ok(());
                 }
                 // 2. Well-known install locations.
@@ -596,13 +580,14 @@ impl DockerService {
                                 Some("Start Docker Desktop manually.".to_string()),
                             ));
                         }
-                        Self::docker_desktop_start();
+                        eprintln!("[docker] launched Docker Desktop via '{}'", candidate);
+                        Self::best_effort_engine_start();
                         return Ok(());
                     }
                 }
                 // 3. The GUI is not installed, but the CLI may still exist
                 // (Docker Engine / docker-machine): start the engine CLI.
-                Self::docker_desktop_start();
+                Self::best_effort_engine_start();
                 Err(err_diag(
                     "Docker Desktop not found; cannot auto-launch the daemon".to_string(),
                     Some(
@@ -619,7 +604,8 @@ impl DockerService {
                         Some("Start Docker Desktop from /Applications manually.".to_string()),
                     ));
                 }
-                Self::docker_desktop_start();
+                eprintln!("[docker] launched Docker Desktop via `open -a Docker`");
+                Self::best_effort_engine_start();
                 Ok(())
             }
             crate::platform::host::HostOs::Linux => {
@@ -631,7 +617,8 @@ impl DockerService {
                             Some("Start Docker Desktop manually.".to_string()),
                         ));
                     }
-                    Self::docker_desktop_start();
+                    eprintln!("[docker] launched Docker Desktop via `docker-desktop`");
+                    Self::best_effort_engine_start();
                     return Ok(());
                 }
                 // 2. systemd service (rootless attempts are harmless: the
@@ -640,6 +627,7 @@ impl DockerService {
                 if resolve_executable("systemctl", None).is_some() {
                     let _ =
                         spawn_detached("systemctl", &["start".to_string(), "docker".to_string()]);
+                    eprintln!("[docker] attempted `systemctl start docker`");
                     return Ok(());
                 }
                 Err(err_diag(
@@ -654,21 +642,58 @@ impl DockerService {
         }
     }
 
+    /// Fire the `docker desktop start` engine bootstrap and log any failure.
+    /// The launch itself is best-effort — the daemon wait loop reports the
+    /// authoritative state — so a failure here is a log line, not an abort.
+    fn best_effort_engine_start() {
+        match Self::docker_desktop_start() {
+            Ok(()) => {}
+            Err(diag) => eprintln!("[docker] engine start failed: {}", diag),
+        }
+    }
+
     /// Best-effort start of the Docker Desktop ENGINE when the GUI is
     /// already running but the daemon pipe/endpoint is missing (the WSL2
     /// backend frequently ends up in this state after sleep or a crash).
     /// `docker desktop start` (Docker Desktop 4.26+) boots the engine
     /// without restarting the GUI and is idempotent. Older versions print
     /// an unknown-command error to stderr (discarded) — harmless.
-    fn docker_desktop_start() {
+    ///
+    /// Returns `Ok(())` when a launch attempt was made; `Err` carries a
+    /// structured diagnostic when the CLI is unavailable or the spawn failed.
+    fn docker_desktop_start() -> Result<(), DockerDiagnostic> {
+        let os = crate::platform::host::current_os();
         let Some(cli) = Self::resolve_cli() else {
-            return;
+            return Err(DockerDiagnostic {
+                status: DockerStatus::DaemonUnavailable,
+                message: "Docker CLI not found; cannot start the Docker Desktop engine".to_string(),
+                suggested_action: Some(
+                    "Install Docker Desktop or start it manually, then retry the profile."
+                        .to_string(),
+                ),
+                detected_os: os,
+            });
         };
-        let _ = std::process::Command::new(&cli)
+        match std::process::Command::new(&cli)
             .args(["desktop", "start"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
+            .spawn()
+        {
+            Ok(_) => {
+                eprintln!(
+                    "[docker] started Desktop engine via `{} desktop start`",
+                    cli.display()
+                );
+                Ok(())
+            }
+            Err(e) => Err(DockerDiagnostic {
+                status: DockerStatus::DaemonUnavailable,
+                message: format!("Failed to start Docker Desktop engine: {}", e),
+                suggested_action: Some("Start Docker Desktop manually.".to_string()),
+                detected_os: os,
+            }),
+        }
     }
 
     /// Preflight check for Docker commands — validates daemon state
@@ -765,23 +790,98 @@ fn classify_docker_error(stderr: &str, os: crate::platform::host::HostOs) -> Doc
 }
 
 /// Check if a Docker service is running.
+///
+/// Uses the resolved CLI (never the bare `docker` name — GUI-launched apps
+/// may lack it on PATH), and each attempt is bounded so a hung `docker ps`
+/// cannot block the readiness wait loop indefinitely.
 fn is_service_running(service_name: &str) -> bool {
-    std::process::Command::new("docker")
-        .args([
+    let Some(cli) = DockerService::resolve_cli() else {
+        eprintln!("[docker] is_service_running: docker CLI not resolvable");
+        return false;
+    };
+    run_cli_bounded(
+        &cli,
+        &[
             "ps",
             "--filter",
             &format!("name={}", service_name),
             "--format",
             "{{.Names}}",
-        ])
+        ],
+        Duration::from_secs(5),
+    )
+    .map(|(_, out, _)| !out.trim().is_empty())
+    .unwrap_or(false)
+}
+
+/// Run a Docker CLI command with a hard per-attempt timeout.
+///
+/// Returns `Some((success, stdout, stderr))` when the process finished within
+/// `timeout`, or `None` when it was killed after exceeding the timeout (or
+/// could not be spawned). Spawn/poll failures are logged — never panicked.
+fn run_cli_bounded(
+    cli: &std::path::Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<(bool, String, String)> {
+    let mut child = match std::process::Command::new(cli)
+        .args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map(|out| {
-            let output = String::from_utf8_lossy(&out.stdout);
-            !output.trim().is_empty()
-        })
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[docker] failed to execute {} {}: {}",
+                cli.display(),
+                args.join(" "),
+                e
+            );
+            return None;
+        }
+    };
+
+    let deadline = std::time::Instant::now() + timeout;
+    let exit = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!(
+                    "[docker] failed to poll {} {}: {}",
+                    cli.display(),
+                    args.join(" "),
+                    e
+                );
+                break None;
+            }
+        }
+    };
+
+    let status = exit?;
+
+    let mut out = String::new();
+    let mut err = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        use std::io::Read;
+        let _ = stdout.read_to_string(&mut out);
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        use std::io::Read;
+        let _ = stderr.read_to_string(&mut err);
+    }
+    let _ = child.wait();
+    Some((status.success(), out, err))
 }
 
 /// Check if a TCP port is open on localhost.

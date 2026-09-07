@@ -1601,6 +1601,86 @@ async fn try_install_source(
         ensure_composer_bat_shim(source, index, total, task_id, tool_id, session_id, sink).await;
     }
 
+    // Первый запуск SDK (bootstrap из tools.json): flutter после git
+    // clone качает Dart SDK и строит снапшот тула МИНУТАМИ. Без этого
+    // шага verify и последующие сканы упираются в таймаут пробы 10с —
+    // «Установка не подтвердилась» при реально установленном SDK.
+    // Выполняется стримингом (piped_run): прогресс виден, отмена жива,
+    // искусственного таймаута нет — в отличие от проб скана.
+    if let Some(bootstrap) = source.bootstrap.as_deref() {
+        if bootstrap.is_empty() {
+            return Err(format!("{}: bootstrap в tools.json пустой", def.id));
+        }
+        sink.emit(console::event(
+            ToolchainEventType::TaskPhaseChanged {
+                phase: TaskPhase::Installing,
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+        ));
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!(
+                    "tc:info {}: первый запуск SDK (`{}`) — инициализация может занять несколько минут",
+                    def.display,
+                    bootstrap.join(" ")
+                ),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+        ));
+        let (program, args) = platforms::resolve_command(&bootstrap[0], &bootstrap[1..]);
+        let run = console::piped_run(
+            &program,
+            &args,
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+            &sink_dyn,
+            Arc::clone(abort),
+        )
+        .await;
+        let res = match run {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
+        if res.aborted {
+            return Err("Отменено пользователем".to_string());
+        }
+        if !res.success {
+            return match res.error_line {
+                Some(line) => Err(format!(
+                    "Инициализация {} не завершилась: {} (код {})",
+                    def.display,
+                    sink.redact(&line),
+                    res.code
+                )),
+                None => Err(format!(
+                    "Инициализация {} не завершилась (код {})",
+                    def.display, res.code
+                )),
+            };
+        }
+        sink.emit(console::event(
+            ToolchainEventType::TaskProgress {
+                line: format!("tc:ok {}: первый запуск SDK завершён", def.display),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+        ));
+    }
+
     // Проверка: пересканируем инструмент тем же discovery. Проба
     // known_paths умеет находить бинарь и без PATH (postgres).
     sink.emit(console::event(
@@ -1706,6 +1786,7 @@ mod tests {
                     needs_admin: None,
                     file_name: None,
                     execution: None,
+                    bootstrap: None,
                     sha256: None,
                 }],
                 linux: vec![],
@@ -1870,6 +1951,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
@@ -1897,6 +1979,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
@@ -1934,6 +2017,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
@@ -1961,6 +2045,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let phar = std::env::temp_dir().join("tc-tool-composer.phar");
@@ -1987,6 +2072,7 @@ mod tests {
             needs_admin: None,
             file_name: Some("composer.phar".to_string()),
             execution: Some(ExecutionKind::Phar),
+            bootstrap: None,
             sha256: None,
         };
         let phar = std::env::temp_dir().join("composer.phar");
@@ -2104,6 +2190,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-dotnet-install.ps1");
@@ -2136,6 +2223,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
@@ -2160,6 +2248,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
@@ -2199,6 +2288,54 @@ mod tests {
         );
     }
 
+    /// Регрессия каталога: known_paths обязаны указывать на КАТАЛОГ
+    /// БИНАРЯ (bin/), а не на корень SDK — иначе пробы known_paths
+    /// дают только след вместо рабочей улики, и PATH-диагностика
+    /// молчит. Плюс: git_clone_target при этом всё равно срезает bin
+    /// и клонирует КОРЕНЬ SDK.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn flutter_known_paths_point_at_bin_and_clone_target_stays_root() {
+        let flutter = defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == "flutter")
+            .unwrap();
+
+        let expanded = path_service::expand_env_vars(&flutter.detection.known_paths[0]);
+        assert!(
+            Path::new(&expanded)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("bin")),
+            "known_paths обязан указывать на bin/: {expanded}"
+        );
+
+        let source = &flutter.sources.windows[0];
+        let target = git_clone_target(&flutter, source).unwrap();
+        assert!(
+            Path::new(&target)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.eq_ignore_ascii_case("bin")),
+            "клонирование идёт в корень SDK, а не в bin: {target}"
+        );
+    }
+
+    /// Регрессия каталога: у git-источника flutter объявлен bootstrap
+    /// (первый запуск SDK качает Dart SDK минутами — без него verify
+    /// упирается в таймаут пробы 10с и ложно сообщает «не подтвердилось»).
+    #[test]
+    fn flutter_git_source_declares_first_run_bootstrap() {
+        let flutter = defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == "flutter")
+            .unwrap();
+        let source = &flutter.sources.windows[0];
+        assert_eq!(source.execution, Some(ExecutionKind::GitClone));
+        let bootstrap = source.bootstrap.as_deref().expect("bootstrap объявлен");
+        assert_eq!(bootstrap, &["flutter".to_string(), "--version".to_string()]);
+    }
+
     #[test]
     fn git_clone_target_prefers_install_dir() {
         let mut def = bare_def();
@@ -2214,6 +2351,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            bootstrap: None,
             sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
@@ -2236,6 +2374,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            bootstrap: None,
             sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
@@ -2258,6 +2397,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: Some(ExecutionKind::GitClone),
+            bootstrap: None,
             sha256: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
@@ -2310,6 +2450,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-gradle.zip");
@@ -2334,6 +2475,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
@@ -2370,6 +2512,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
@@ -2459,6 +2602,7 @@ mod tests {
                 needs_admin: None,
                 file_name: None,
                 execution: None,
+                bootstrap: None,
                 sha256: None,
             },
             def.sources.windows[0].clone(),
@@ -2518,6 +2662,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let bad2 = InstallSource {
@@ -2531,6 +2676,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         def.sources.windows = vec![bad, bad2];
@@ -2641,6 +2787,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let def = bare_def();
@@ -2675,6 +2822,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let def = bare_def();
@@ -2702,6 +2850,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         };
         let result = build_linux_pkg_command(&source, None);

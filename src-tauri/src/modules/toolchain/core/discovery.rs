@@ -303,6 +303,10 @@ fn known_path_found(def: &ToolDefinition) -> bool {
 /// Windows: бинарники имеют расширения (.exe, .cmd, .bat) — пробы
 /// из tools.json их не содержат, поэтому перебираем возможные.
 /// Использует effective_detection для платформенных переопределений.
+///
+/// known_paths может указывать на КОРЕНЬ SDK, а бинарь лежит на
+/// уровень ниже (flutter: %USERPROFILE%/flutter → bin/): пробуем
+/// и подкаталог bin/ каждого каталога.
 async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
     let exts: &[&str] = if cfg!(target_os = "windows") {
         &["", ".exe", ".cmd", ".bat"]
@@ -315,20 +319,31 @@ async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
         let Some(dir) = glob_first(&expand_env(known)) else {
             continue;
         };
-        for probe in &det.version_probes {
-            if probe.is_empty() {
-                continue;
-            }
-            for ext in exts {
-                let bin = dir.join(format!("{}{}", probe[0], ext));
-                if !bin.is_file() {
+        let mut candidates: Vec<std::path::PathBuf> = vec![dir.clone()];
+        let is_bin_dir = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("bin"));
+        let nested_bin = dir.join("bin");
+        if !is_bin_dir && nested_bin.is_dir() {
+            candidates.push(nested_bin);
+        }
+        for dir in &candidates {
+            for probe in &det.version_probes {
+                if probe.is_empty() {
                     continue;
                 }
-                // Полный путь без cmd-обёртки: std::process на Windows
-                // сам оборачивает .cmd/.bat в cmd /c, а пути с пробелами
-                // («Program Files») при этом не ломаются.
-                if let Some(out) = run_capture(&bin.to_string_lossy(), &probe[1..]).await {
-                    return Some(out);
+                for ext in exts {
+                    let bin = dir.join(format!("{}{}", probe[0], ext));
+                    if !bin.is_file() {
+                        continue;
+                    }
+                    // Полный путь без cmd-обёртки: std::process на Windows
+                    // сам оборачивает .cmd/.bat в cmd /c, а пути с пробелами
+                    // («Program Files») при этом не ломаются.
+                    if let Some(out) = run_capture(&bin.to_string_lossy(), &probe[1..]).await {
+                        return Some(out);
+                    }
                 }
             }
         }

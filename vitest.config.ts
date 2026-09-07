@@ -1,8 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { sveltekit } from "@sveltejs/kit/vite";
 
-// Изолированный конфиг для чистых юнит-тестов (без SvelteKit-
-// плагина: тестируются только pure-function модули без $lib-алиасов).
+// Изолированный конфиг для чистых юнит-тестов: sveltekit()-плагин
+// даёт $lib/$app-алиасы и компиляцию runes-модулей (i18n.svelte.ts).
 export default defineConfig({
+  plugins: [sveltekit()],
   test: {
     include: [
       "src/lib/modules/toolchain/*.test.ts",

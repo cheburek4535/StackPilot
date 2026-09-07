@@ -444,6 +444,70 @@ async fn probe_known_dir(
     } else {
         &[""]
     };
+
+    // known_paths может указывать на КОРЕНЬ SDK, а бинарь лежит на
+    // уровень ниже (flutter: %USERPROFILE%/flutter → bin/flutter.bat).
+    // Пробуем сам каталог, затем его подкаталог bin/ — иначе установка
+    // без PATH даёт лишь след (Footprint), а не рабочую улику, и PATH-
+    // диагностика молчит. Подкаталог не пробуем, если каталог сам
+    // является bin (там «bin/bin» не существует по построению).
+    let mut candidates: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    {
+        let is_bin_dir = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("bin"));
+        let nested_bin = dir.join("bin");
+        if !is_bin_dir && nested_bin.is_dir() {
+            candidates.push(nested_bin);
+        }
+    }
+
+    let mut best: Option<KnownDirProbe> = None;
+    for candidate in &candidates {
+        let probe = probe_known_dir_one(def, candidate, exts, process_entries).await;
+        // Приоритет улик между каталогами: рабочая → сломанная →
+        // след. След из корня не должен затирать «бинарь есть, но
+        // не отвечает» из bin/ (иначе PathBroken-улика теряется).
+        if best.as_ref().is_none_or(|b| probe_beats(b, &probe)) {
+            best = Some(probe);
+        }
+    }
+    best.unwrap_or_else(|| KnownDirProbe {
+        install: DetectedInstall {
+            raw_version: String::new(),
+            parsed_version: None,
+            location: dir.to_string_lossy().into_owned(),
+            evidence: EvidenceKind::Footprint,
+            reachable_via_path: dir_on_path(dir, process_entries),
+            path_scope: None,
+            probe_log: None,
+        },
+        broken_executable: None,
+    })
+}
+
+/// «Сильнее ли улика `candidate` улики `current`»: рабочая проба всегда
+/// сильнее; из не-рабочих — улика сломанного исполнения сильнее следа.
+fn probe_beats(current: &KnownDirProbe, candidate: &KnownDirProbe) -> bool {
+    let current_works = !current.install.raw_version.is_empty();
+    let candidate_works = !candidate.install.raw_version.is_empty();
+    if candidate_works != current_works {
+        return candidate_works;
+    }
+    if !candidate_works {
+        return candidate.broken_executable.is_some() && current.broken_executable.is_none();
+    }
+    false
+}
+
+/// Проба бинаря в ОДНОМ каталоге-кандидате (сам known_path или его bin/).
+async fn probe_known_dir_one(
+    def: &ToolDefinition,
+    dir: &Path,
+    exts: &[&str],
+    process_entries: &[String],
+) -> KnownDirProbe {
     let on_path = dir_on_path(dir, process_entries);
     // Найден ли хоть один кандидат-бинарь: отличает «каталог с бинарем,
     // который молчит» от «след без бинаря» (данные/остатки/ключ реестра).
@@ -764,15 +828,28 @@ async fn probe_health_at_known_paths(
     };
     for known in &def.detection.known_paths {
         for dir in glob_all(&expand_env(known)) {
-            for ext in exts {
-                let bin = dir.join(format!("{program}{ext}"));
-                if !bin.is_file() {
-                    continue;
-                }
-                let out =
-                    probe::run_probe(&bin.to_string_lossy(), args, HEALTH_CHECK_TIMEOUT).await;
-                if !out.not_found && !out.timed_out {
-                    return Some(out);
+            // SDK-корни (flutter: %USERPROFILE%/flutter → bin/): бинарь
+            // может лежать в подкаталоге bin, а не в самом каталоге.
+            let mut candidates: Vec<std::path::PathBuf> = vec![dir.clone()];
+            let is_bin_dir = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("bin"));
+            let nested_bin = dir.join("bin");
+            if !is_bin_dir && nested_bin.is_dir() {
+                candidates.push(nested_bin);
+            }
+            for dir in &candidates {
+                for ext in exts {
+                    let bin = dir.join(format!("{program}{ext}"));
+                    if !bin.is_file() {
+                        continue;
+                    }
+                    let out =
+                        probe::run_probe(&bin.to_string_lossy(), args, HEALTH_CHECK_TIMEOUT).await;
+                    if !out.not_found && !out.timed_out {
+                        return Some(out);
+                    }
                 }
             }
         }
@@ -1448,6 +1525,7 @@ mod tests {
                     needs_admin: None,
                     file_name: None,
                     execution: None,
+                    bootstrap: None,
                     sha256: None,
                 }],
                 linux: vec![],
@@ -2197,6 +2275,69 @@ mod tests {
 
         let _ = std::fs::remove_file(&bin);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Известный путь — КОРЕНЬ SDK, бинарь лежит в подкаталоге bin/
+    /// (паттерн flutter: %USERPROFILE%/flutter → bin/flutter.bat).
+    /// Проба обязана найти бинарь в bin/ и дать рабочую улику KnownPath
+    /// вместо следа Footprint — иначе установка без PATH молчит.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn known_path_sdk_root_finds_binary_in_bin_subdir() {
+        use std::io::Write as _;
+
+        let root = unique_temp_dir("sdkroot");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("sdk.cmd");
+        let mut f = std::fs::File::create(&bin).unwrap();
+        f.write_all(b"@echo off\r\necho 4.2.0\r\n").unwrap();
+        drop(f);
+
+        let mut def = empty_rules_def("fake-sdk-root");
+        def.detection.version_probes = vec![vec!["sdk".to_string()]];
+        // known_paths указывает НА КОРЕНЬ, а не на bin:
+        def.detection.known_paths = vec![root.to_string_lossy().into_owned()];
+        def.path_entries = vec![bin_dir.to_string_lossy().into_owned()];
+
+        let ctx = ScanContext::default();
+        let result = scan_tool(&def, &ctx).await;
+
+        assert!(
+            matches!(result.detection, DetectionOutcome::Detected),
+            "бинарь в bin/ известного корня обязан детектироваться: {:?}",
+            result.detection
+        );
+        assert_eq!(result.installs.len(), 1);
+        assert_eq!(result.installs[0].evidence, EvidenceKind::KnownPath);
+        assert_eq!(result.installs[0].parsed_version.as_deref(), Some("4.2.0"));
+        assert!(
+            result.installs[0]
+                .location
+                .to_ascii_lowercase()
+                .ends_with("sdk.cmd"),
+            "location — найденный бинарь: {}",
+            result.installs[0].location
+        );
+        assert!(!result.installs[0].reachable_via_path, "bin вне PATH");
+        // PATH-диагностика: каталог bin в path_entries отсутствует в PATH.
+        assert!(
+            result
+                .path_findings
+                .iter()
+                .any(|f| f.entry == bin_dir.to_string_lossy()),
+            "ожидали находку BinaryNotOnPath/EntryMissing: {:?}",
+            result.path_findings
+        );
+        assert_eq!(
+            result.state,
+            ToolState::InstalledHealthy {
+                version: "4.2.0".to_string()
+            }
+        );
+
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Бинарь есть в известном каталоге, но не отвечает на пробу:

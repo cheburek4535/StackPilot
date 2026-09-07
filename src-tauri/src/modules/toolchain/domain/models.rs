@@ -1074,6 +1074,7 @@ mod tests {
             install_dir: None,
             needs_admin: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         }];
         let pending_installable = ToolScanResult::pending(&installable, "windows", false, true);
@@ -1113,6 +1114,7 @@ mod tests {
             needs_admin: None,
             file_name: None,
             execution: None,
+            bootstrap: None,
             sha256: None,
         }];
         full.extended.declared_capabilities = DeclaredCapabilities {

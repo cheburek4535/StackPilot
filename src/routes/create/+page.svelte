@@ -57,7 +57,6 @@ import type {
 } from "$lib/modules/toolchain/compat";
 import { statusKind, taskStateKind, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
-import ProjectPreview from "$lib/components/project-creator/ProjectPreview.svelte";
 import { i18n } from "$lib/core/i18n.svelte";
 import type { TranslationKey } from "$lib/core/i18n.svelte";
 import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
@@ -80,6 +79,7 @@ let PresetsMode = $state<Component<any> | null>(null);
 let EnvPanel = $state<Component<any> | null>(null);
 let ExecPanel = $state<Component<any> | null>(null);
 let DevlDialogs = $state<Component<any> | null>(null);
+let PreviewPanel = $state<Component<any> | null>(null);
 
 // ---- Mode: Constructor | Templates | Analyze ----
 let mode = $state<"constructor" | "presets" | "analyze">("constructor");
@@ -325,6 +325,8 @@ function buildSnapshot(): Record<string, unknown> {
     envInstallDone,
     execOverallStatus,
     execProjectPath: execPlan?.project_path ?? null,
+    execPlan,
+    execResult,
   };
 }
 
@@ -516,11 +518,13 @@ onMount(async () => {
     import("$lib/components/project-creator/EnvironmentPanel.svelte"),
     import("$lib/components/project-creator/ExecutionPanel.svelte"),
     import("$lib/components/project-creator/DevLauncherDialogs.svelte"),
-  ]).then(([presets, env, exec, devl]) => {
+    import("$lib/components/project-creator/ProjectPreview.svelte"),
+  ]).then(([presets, env, exec, devl, preview]) => {
     PresetsMode = presets.default;
     EnvPanel = env.default;
     ExecPanel = exec.default;
     DevlDialogs = devl.default;
+    PreviewPanel = preview.default;
   });
 
   const saved = loadCreateSession();
@@ -548,22 +552,23 @@ onMount(async () => {
         console.error(e);
       }
     })(),
-    (async () => {
-      try {
-        hostOs = await getHostPlatform();
-      } catch (e) {
-        console.error("cannot detect host OS:", e);
-      }
-    })(),
   ]);
   // Не задерживаем первый интерактивный кадр маршрута восстановлением живых
   // сессий и проверкой toolchain: эти вызовы могут обращаться к Tauri долго.
-  // После отрисовки конструктора выполняем их в фоне.
+  // После отрисовки конструктора выполняем их в фоне. ОС (getHostPlatform)
+  // нужна только для блокировок фреймворков на фазе стека — тоже фон.
   queueMicrotask(async () => {
     await reSyncLiveSessions();
     await refreshInstalledTools();
     persistReady = true;
   });
+  void (async () => {
+    try {
+      hostOs = await getHostPlatform();
+    } catch (e) {
+      console.error("cannot detect host OS:", e);
+    }
+  })();
 });
 
 onDestroy(() => {
@@ -2867,20 +2872,22 @@ function resetAll() {
             </div>
 
             <div class="preview-section">
-              <ProjectPreview
-                {selectedType}
-                {backendLangs}
-                {frontendLangs}
-                {selectedFrameworks}
-                {selectedTools}
-                {envLocalInfra}
-                {testing}
-                {git}
-                {vscode}
-                projectName={projectName || ""}
-                projectFolder={selectedFolder || ""}
-                bind:removedStepIds
-              />
+              {#if PreviewPanel}
+                <PreviewPanel
+                  {selectedType}
+                  {backendLangs}
+                  {frontendLangs}
+                  {selectedFrameworks}
+                  {selectedTools}
+                  {envLocalInfra}
+                  {testing}
+                  {git}
+                  {vscode}
+                  projectName={projectName || ""}
+                  projectFolder={selectedFolder || ""}
+                  bind:removedStepIds
+                />
+              {/if}
             </div>
 
             {#if showConflictDialog}
@@ -3010,14 +3017,16 @@ function resetAll() {
             </div>
           </div>
 
-          <button
-            class="ctx-cta"
-            onclick={() => goPhase(2)}
-            disabled={!!stackError}
-            title={stackError ?? undefined}
-          >
-            {i18n.t("create.review_create") as TranslationKey}
-          </button>
+          {#if phase !== 2}
+            <button
+              class="ctx-cta"
+              onclick={() => goPhase(2)}
+              disabled={!!stackError}
+              title={stackError ?? undefined}
+            >
+              {i18n.t("create.review_create") as TranslationKey}
+            </button>
+          {/if}
         </aside>
       </div>
       {/if}

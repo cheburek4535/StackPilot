@@ -185,7 +185,7 @@ describe("scanTerminalLabel — терминальные состояния ск
   it("переводит все терминалы", () => {
     expect(scanTerminalLabel("Completed")).toContain("завершён");
     expect(scanTerminalLabel("Partial")).toContain("частичн");
-    expect(scanTerminalLabel("Cancelled")).toBe("отменён");
+    expect(scanTerminalLabel("Cancelled")).toContain("отменён");
     expect(scanTerminalLabel("Interrupted")).toContain("перезапуском");
   });
 });

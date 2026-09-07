@@ -141,6 +141,7 @@ mod tests {
                     install_dir: None,
                     needs_admin: None,
                     execution: None,
+                    bootstrap: None,
                     sha256: Some("aa".into()),
                 }],
                 linux: vec![],

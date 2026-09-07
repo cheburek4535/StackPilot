@@ -50,6 +50,7 @@ impl JsonSettingsService {
         AppSettings {
             vscode_path: "code".into(),
             browser_path: String::new(),
+            db_viewer_path: String::new(),
             terminal: String::new(),
             theme: "dark".into(),
             language: "ru".into(),
@@ -83,6 +84,7 @@ impl JsonSettingsService {
     fn normalize(mut s: AppSettings) -> AppSettings {
         s.vscode_path = s.vscode_path.trim().to_string();
         s.browser_path = s.browser_path.trim().to_string();
+        s.db_viewer_path = s.db_viewer_path.trim().to_string();
         s.terminal = s.terminal.trim().to_string();
 
         if !matches!(s.theme.as_str(), "system" | "light" | "dark") {

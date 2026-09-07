@@ -302,6 +302,14 @@ pub struct InstallSource {
     /// и для жёсткой гарантии поведения.
     #[serde(default)]
     pub execution: Option<ExecutionKind>,
+    /// Команда финализации установки: [программа, аргументы...].
+    /// Выполняется ПОСЛЕ обновления PATH и ДО verify. Нужна SDK,
+    /// чей первый запуск долгий: flutter после git clone качает
+    /// Dart SDK минутами, и без этого шага verify (и последующие
+    /// сканы) упираются в таймаут пробы 10с — «установка не
+    /// подтвердилась» при реально установленном SDK.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<Vec<String>>,
     /// SHA-256 скачанного файла (hex, нижний регистр). Задаётся в
     /// tools.json для Official/Script источников. None = источник
     /// БЕЗ контроля целостности: скачивание помечается как

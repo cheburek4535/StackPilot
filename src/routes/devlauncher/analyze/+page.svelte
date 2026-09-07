@@ -16,6 +16,12 @@
     type Visibility,
   } from "$lib/modules/devlauncher/types";
   import Icon from "$lib/components/ui/Icon.svelte";
+  import {
+    buildStep,
+    emptyAddTemplateDraft,
+    type AddTemplate,
+    type AddTemplateDraft,
+  } from "$lib/modules/devlauncher/stepBuilder";
 
   let projectPath = $state("");
   let draft = $state<DraftProfile | null>(null);
@@ -29,16 +35,7 @@
   let dragIndex = $state<number | null>(null);
   let dragOverIndex = $state<number | null>(null);
 
-  let addTpl = $state({
-    command: "",
-    workdir: "",
-    path: "",
-    url: "",
-    port: "8080",
-    host: "127.0.0.1",
-    timeout: "90",
-    seconds: "5",
-  });
+  let addTpl = $state<AddTemplateDraft>(emptyAddTemplateDraft());
 
   const failurePolicies: Array<{ key: FailurePolicy; label: string }> = [
     { key: "stop_run", label: failurePolicyLabel("stop_run") },
@@ -52,118 +49,9 @@
     { key: "detached", label: visibilityLabel("detached") },
   ];
 
-  type AddTemplate =
-    | { kind: "terminal_plain" }
-    | { kind: "terminal_cmd" }
-    | { kind: "run_command" }
-    | { kind: "open_folder" }
-    | { kind: "open_url" }
-    | { kind: "wait_port" }
-    | { kind: "delay" };
-
-  /** Build a new step from a micro-template. Working dir defaults to the
-   * analyzed project root so terminals/commands open in the right place. */
-  function buildStep(tpl: AddTemplate): LaunchStep {
-    const id = crypto.randomUUID();
-    const wd = projectPath || undefined;
-    const workdir = addTpl.workdir.trim() || wd;
-    switch (tpl.kind) {
-      case "terminal_plain":
-        return {
-          id,
-          label: "Открыть терминал",
-          enabled: true,
-          kind: { type: "open_terminal", command: "" },
-          depends_on: [],
-          working_directory: wd,
-          visibility: "visible_terminal",
-          execution_mode: "long_running",
-          completion: { type: "process_started" },
-        };
-      case "terminal_cmd": {
-        const command = addTpl.command.trim();
-        return {
-          id,
-          label: command ? `Терминал: ${command}` : "Открыть терминал",
-          enabled: true,
-          kind: { type: "open_terminal", command },
-          depends_on: [],
-          working_directory: workdir,
-          visibility: "visible_terminal",
-          execution_mode: "long_running",
-          completion: { type: "process_started" },
-        };
-      }
-      case "run_command": {
-        const command = addTpl.command.trim();
-        return {
-          id,
-          label: `Выполнить: ${command}`,
-          enabled: true,
-          kind: { type: "run_command", command },
-          depends_on: [],
-          working_directory: workdir,
-          visibility: "visible_terminal",
-          execution_mode: "long_running",
-          completion: { type: "process_started" },
-        };
-      }
-      case "open_folder": {
-        const path = addTpl.path.trim() || wd || "";
-        return {
-          id,
-          label: "Открыть папку",
-          enabled: true,
-          kind: { type: "open_folder", path },
-          depends_on: [],
-          working_directory: path || undefined,
-          completion: { type: "external_launch_accepted" },
-        };
-      }
-      case "open_url": {
-        const url = addTpl.url.trim();
-        return {
-          id,
-          label: `Открыть URL: ${url}`,
-          enabled: true,
-          kind: { type: "open_url", url },
-          depends_on: [],
-          completion: { type: "external_launch_accepted" },
-        };
-      }
-      case "wait_port": {
-        const port = parseInt(addTpl.port, 10) || 0;
-        const host = addTpl.host.trim() || "127.0.0.1";
-        const timeout = parseInt(addTpl.timeout, 10) || 90;
-        return {
-          id,
-          label: `Ожидание порта ${host}:${port}`,
-          enabled: true,
-          kind: { type: "wait_for_port", host, port },
-          depends_on: [],
-          timeout,
-          completion: { type: "port_open", host, port, timeout_secs: timeout },
-          retry_policy: { max_retries: 2, delay_ms: 2000, backoff_multiplier: 1.5 },
-        };
-      }
-      case "delay": {
-        const seconds = parseInt(addTpl.seconds, 10) || 5;
-        return {
-          id,
-          label: `Пауза ${seconds} сек`,
-          enabled: true,
-          kind: { type: "delay", seconds },
-          depends_on: [],
-          timeout: seconds + 10,
-          completion: { type: "delay_elapsed", seconds },
-        };
-      }
-    }
-  }
-
   function addStep(tpl: AddTemplate) {
     if (!draft) return;
-    const steps = [...draft.profile.steps, buildStep(tpl)];
+    const steps = [...draft.profile.steps, buildStep(tpl, addTpl, projectPath)];
     draft = { ...draft, profile: { ...draft.profile, steps } };
     addTpl = { ...addTpl, command: "", workdir: "", path: "", url: "" };
   }

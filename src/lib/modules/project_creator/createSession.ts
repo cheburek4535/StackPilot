@@ -48,6 +48,8 @@ const LIGHT_FIELDS = new Set<string>([
   "envInstallDone",
   "execOverallStatus",
   "execProjectPath",
+  "execPlan",
+  "execResult",
 ]);
 
 export function loadCreateSession(): CreateSessionData | null {
