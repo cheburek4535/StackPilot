@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { initTauriMock } from "./tauriMock";
-import type { AppSettings } from "./types";
+import type { AppSettings, DetectedApplications } from "./types";
 
 if (typeof window !== "undefined") {
   initTauriMock();
@@ -24,4 +24,9 @@ export async function checkPath(path: string): Promise<boolean> {
 
 export async function getAppDataDir(): Promise<string> {
   return invoke("get_app_data_dir");
+}
+
+/** Detect browsers, database viewers and VS Code available on the host. */
+export async function detectApplications(): Promise<DetectedApplications> {
+  return invoke("detect_applications");
 }

@@ -93,6 +93,7 @@ impl RunOrchestrator {
         }
     }
 
+    #[allow(dead_code)]
     pub fn create_run(
         &self,
         profile: LaunchProfileV2,
@@ -100,6 +101,7 @@ impl RunOrchestrator {
         self.create_run_with_session(profile, None)
     }
 
+    #[allow(dead_code)]
     pub fn create_run_with_session(
         &self,
         profile: LaunchProfileV2,
@@ -113,6 +115,37 @@ impl RunOrchestrator {
         profile: LaunchProfileV2,
         session_id: Option<String>,
         overlay: Option<EnvironmentOverlay>,
+    ) -> Result<LaunchRun, ProfileValidationResult> {
+        self.create_run_inner(profile, session_id, overlay, None)
+    }
+
+    /// Create a run with a user-configured browser for URL steps.
+    pub fn create_run_with_browser(
+        &self,
+        profile: LaunchProfileV2,
+        browser_path: Option<String>,
+    ) -> Result<LaunchRun, ProfileValidationResult> {
+        self.create_run_inner(profile, None, None, browser_path)
+    }
+
+    /// Create a run with a user-configured browser for URL steps, a workspace
+    /// session and an environment overlay.
+    pub fn create_run_with_browser_and_overlay(
+        &self,
+        profile: LaunchProfileV2,
+        session_id: Option<String>,
+        overlay: Option<EnvironmentOverlay>,
+        browser_path: Option<String>,
+    ) -> Result<LaunchRun, ProfileValidationResult> {
+        self.create_run_inner(profile, session_id, overlay, browser_path)
+    }
+
+    fn create_run_inner(
+        &self,
+        profile: LaunchProfileV2,
+        session_id: Option<String>,
+        overlay: Option<EnvironmentOverlay>,
+        browser_path: Option<String>,
     ) -> Result<LaunchRun, ProfileValidationResult> {
         let mut validation = validation::validate_profile_v2(&profile);
         if !validation.valid {
@@ -226,6 +259,7 @@ impl RunOrchestrator {
             session_id,
             process_ids: Arc::new(Mutex::new(Vec::new())),
             overlay,
+            browser_path,
         });
 
         self.runs
@@ -263,6 +297,7 @@ impl RunOrchestrator {
         let concurrency_limit = self.concurrency_limit;
         let run_id_owned = run_id.to_string();
         let session_id = handle.session_id.clone();
+        let browser_path = handle.browser_path.clone();
 
         tokio::spawn(async move {
             Self::scheduler_loop(
@@ -272,6 +307,7 @@ impl RunOrchestrator {
                 app_handle,
                 concurrency_limit,
                 session_id,
+                browser_path,
             )
             .await;
         });
@@ -361,6 +397,7 @@ impl RunOrchestrator {
         app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
         concurrency_limit: usize,
         session_id: Option<String>,
+        browser_path: Option<String>,
     ) {
         let handle = {
             let runs_guard = runs.read().expect("runs lock poisoned");
@@ -453,6 +490,7 @@ impl RunOrchestrator {
                     let profile = handle.profile.clone();
                     let session_id = session_id.clone();
                     let overlay = handle.overlay.clone();
+                    let browser_path = browser_path.clone();
                     let handle = handle.clone();
 
                     tokio::spawn(async move {
@@ -473,6 +511,7 @@ impl RunOrchestrator {
                         let notify_inner = cancel_notify.clone();
                         let session_inner = session_id.clone();
                         let overlay_inner = overlay.clone();
+                        let browser_inner = browser_path.clone();
                         let handle_inner = handle.clone();
                         let step_id_owned = step.id.clone();
                         let inner = tokio::spawn(async move {
@@ -486,6 +525,7 @@ impl RunOrchestrator {
                                 &notify_inner,
                                 &session_inner,
                                 &overlay_inner,
+                                &browser_inner,
                                 &handle_inner,
                             )
                             .await
@@ -743,6 +783,7 @@ impl RunOrchestrator {
         cancel_notify: &Arc<Notify>,
         session_id: &Option<String>,
         overlay: &Option<EnvironmentOverlay>,
+        browser_path: &Option<String>,
         handle: &Arc<RunHandle>,
     ) -> StepCompletion {
         // Check cancellation before starting
@@ -917,7 +958,10 @@ impl RunOrchestrator {
                     },
                 }
             }
-            StepKind::OpenUrl { url } => match webbrowser::open(url) {
+            StepKind::OpenUrl { url } => match crate::platform::app_launcher::open_url_in_browser(
+                url,
+                browser_path.as_deref(),
+            ) {
                 Ok(_) => StepCompletion {
                     step_id: step.id.clone(),
                     success: true,
@@ -5055,6 +5099,7 @@ mod tests {
                 session_id: None,
                 process_ids: Arc::new(Mutex::new(Vec::new())),
                 overlay: None,
+                browser_path: None,
             })
         }
 

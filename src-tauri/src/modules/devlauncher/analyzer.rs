@@ -69,9 +69,11 @@ pub struct AnalyzeOptions {
     pub max_depth: usize,
     /// User-configured VS Code CLI path (from settings).
     pub vscode_path: Option<String>,
+    /// User-configured database viewer CLI path (from settings).
+    pub db_viewer_path: Option<String>,
     /// Emit "open IDE" steps (only when the IDE is resolvable).
     pub include_ide_steps: bool,
-    /// Emit helper/tool steps (Docker Desktop, DBeaver, empty terminal).
+    /// Emit helper/tool steps (Docker Desktop, database viewer, empty terminal).
     pub include_tool_steps: bool,
 }
 
@@ -80,6 +82,7 @@ impl Default for AnalyzeOptions {
         Self {
             max_depth: 8,
             vscode_path: None,
+            db_viewer_path: None,
             include_ide_steps: true,
             include_tool_steps: true,
         }
@@ -1312,14 +1315,15 @@ fn android_studio_cli_name() -> &'static str {
     }
 }
 
-fn dbeaver_cli_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "dbeaver"
-    } else if cfg!(target_os = "macos") {
-        "dbeaver"
-    } else {
-        "dbeaver-ce"
+/// Resolve the first available database viewer: the user-configured path
+/// wins, otherwise the first supported candidate found on the host.
+fn resolve_db_viewer(preferred: Option<&str>) -> Option<(String, String)> {
+    for cli in super::profile_builder::db_viewer_candidates(preferred) {
+        if let Some(resolved) = resolve_app(&cli) {
+            return Some((resolved, super::profile_builder::db_viewer_display_name(&cli)));
+        }
     }
+    None
 }
 
 /// Resolve the Docker Desktop application for the "Open Docker Desktop"
@@ -1763,9 +1767,11 @@ fn generate_steps(
 
         let has_db = model.compose_files.iter().any(|c| !c.db_ports.is_empty());
         if has_db {
-            if let Some(resolved) = resolve_app(dbeaver_cli_name()) {
+            if let Some((resolved, display_name)) =
+                resolve_db_viewer(options.db_viewer_path.as_deref())
+            {
                 steps.push(PendingStep {
-                    label: "Open DBeaver".to_string(),
+                    label: format!("Open {}", display_name),
                     enabled: true,
                     kind: StepKind::OpenApplication {
                         path: resolved,
@@ -1784,7 +1790,7 @@ fn generate_steps(
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Info,
                     AnalysisConfidence::Medium,
-                    "DBeaver not found; database client step omitted".to_string(),
+                    "No supported database viewer found; database client step omitted".to_string(),
                     None,
                 ));
             }

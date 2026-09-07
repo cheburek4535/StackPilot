@@ -6,8 +6,9 @@
     resetSettings,
     checkPath,
     getAppDataDir,
+    detectApplications,
   } from "$lib/core/api";
-  import type { AppSettings } from "$lib/core/types";
+  import type { AppSettings, DetectedApplications } from "$lib/core/types";
   import { i18n, availableLocales } from "$lib/core/i18n.svelte";
   import type { Locale } from "$lib/core/i18n.svelte";
   import { applyTheme, applyUiPrefs, ACCENT_PRESETS } from "$lib/core/theme";
@@ -20,6 +21,7 @@
   import Badge from "$lib/components/ui/Badge.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import LoadingState from "$lib/components/ui/LoadingState.svelte";
+  import AppPicker from "$lib/components/ui/AppPicker.svelte";
   import type { IconName } from "$lib/components/ui/icons";
 
   type TabId = "general" | "system" | "display" | "behavior" | "ai" | "about";
@@ -37,8 +39,10 @@
   let pathChecks = $state<Record<string, boolean | null>>({
     vscode_path: null,
     browser_path: null,
+    db_viewer_path: null,
     terminal: null,
   });
+  let detectedApps = $state<DetectedApplications | null>(null);
 
   const dirty = $derived(
     !!saved && !!draft && JSON.stringify(saved) !== JSON.stringify(draft),
@@ -87,11 +91,17 @@
       preview();
       void refreshPathCheck("vscode_path", s.vscode_path);
       void refreshPathCheck("browser_path", s.browser_path);
+      void refreshPathCheck("db_viewer_path", s.db_viewer_path);
       void refreshPathCheck("terminal", s.terminal);
       try {
         dataDir = await getAppDataDir();
       } catch {
         dataDir = "";
+      }
+      try {
+        detectedApps = await detectApplications();
+      } catch {
+        detectedApps = null;
       }
     } catch (e) {
       notifyError(i18n.t("error.load"), String(e));
@@ -224,7 +234,13 @@
     }, 350);
   }
 
-  async function browseFor(field: "vscode_path" | "browser_path" | "terminal"): Promise<void> {
+  function onAppChange(field: "browser_path" | "db_viewer_path", path: string): void {
+    if (!draft) return;
+    draft[field] = path;
+    onPathInput(field, path);
+  }
+
+  async function browseFor(field: "vscode_path" | "browser_path" | "db_viewer_path" | "terminal"): Promise<void> {
     if (!draft) return;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -430,14 +446,15 @@
           </div>
           <div class="field field-stack">
             <label class="field-label" for="sp-browser">{i18n.t("settings.system.browser")}</label>
+            <AppPicker
+              apps={detectedApps?.browsers ?? []}
+              value={draft.browser_path}
+              onChange={(v) => onAppChange("browser_path", v)}
+              title={i18n.t("settings.system.browser")}
+              description={i18n.t("settings.apps.browser_desc")}
+              placeholder={i18n.t("settings.default.system")}
+            />
             <div class="path-row">
-              <input
-                id="sp-browser"
-                type="text"
-                placeholder={i18n.t("settings.default.system")}
-                bind:value={draft.browser_path}
-                oninput={(e) => onPathInput("browser_path", (e.currentTarget).value)}
-              />
               <span
                 class="path-dot"
                 class:path-ok={pathChecks.browser_path === true}
@@ -451,6 +468,35 @@
                 size="sm"
                 icon="folder"
                 onclick={() => browseFor("browser_path")}
+              >
+                {i18n.t("settings.system.browse")}
+              </Button>
+            </div>
+          </div>
+          <div class="field field-stack">
+            <label class="field-label" for="sp-db-viewer">{i18n.t("settings.system.db_viewer")}</label>
+            <AppPicker
+              apps={detectedApps?.db_viewers ?? []}
+              value={draft.db_viewer_path}
+              onChange={(v) => onAppChange("db_viewer_path", v)}
+              title={i18n.t("settings.system.db_viewer")}
+              description={i18n.t("settings.apps.db_viewer_desc")}
+              placeholder={i18n.t("settings.default.system")}
+            />
+            <div class="path-row">
+              <span
+                class="path-dot"
+                class:path-ok={pathChecks.db_viewer_path === true}
+                class:path-bad={pathChecks.db_viewer_path === false}
+                title={pathChecks.db_viewer_path === false
+                  ? i18n.t("settings.system.path_missing")
+                  : i18n.t("settings.system.path_ok")}
+              ></span>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="folder"
+                onclick={() => browseFor("db_viewer_path")}
               >
                 {i18n.t("settings.system.browse")}
               </Button>

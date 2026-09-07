@@ -29,6 +29,7 @@ pub trait LaunchEngine: Send + Sync {
         action: &LaunchAction,
         session_id: Option<String>,
         overlay: Option<&EnvironmentOverlay>,
+        browser_path: Option<&str>,
     ) -> Result<(ActionStatus, Option<String>), String>;
 
     /// Launch the preferred IDE for a project. This is called before running
@@ -64,6 +65,7 @@ impl LaunchEngine for ProcessLaunchEngine {
         action: &LaunchAction,
         session_id: Option<String>,
         overlay: Option<&EnvironmentOverlay>,
+        browser_path: Option<&str>,
     ) -> Result<(ActionStatus, Option<String>), String> {
         if !action.enabled {
             return Ok((
@@ -162,7 +164,10 @@ impl LaunchEngine for ProcessLaunchEngine {
                 ))
             }
 
-            ActionType::OpenUrl { url } => match webbrowser::open(url) {
+            ActionType::OpenUrl { url } => match crate::platform::app_launcher::open_url_in_browser(
+                url,
+                browser_path,
+            ) {
                 Ok(_) => Ok((
                     ActionStatus::Success {
                         message: format!("Browser opened: {}", url),

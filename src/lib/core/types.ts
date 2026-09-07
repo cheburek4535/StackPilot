@@ -17,9 +17,22 @@ export type PersonalSettings = {
   email: string;
 };
 
+export type DetectedApp = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export type DetectedApplications = {
+  browsers: DetectedApp[];
+  db_viewers: DetectedApp[];
+  vscode: DetectedApp | null;
+};
+
 export type AppSettings = {
   vscode_path: string;
   browser_path: string;
+  db_viewer_path: string;
   terminal: string;
   theme: string;
   language: string;

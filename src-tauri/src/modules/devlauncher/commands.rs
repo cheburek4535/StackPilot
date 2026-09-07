@@ -153,6 +153,7 @@ fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
 pub async fn execute_action(
     state: State<'_, DevLauncherState>,
     workspace: State<'_, WorkspaceState>,
+    settings: State<'_, SettingsState>,
     action: LaunchAction,
     session_id: Option<String>,
     environment_binding_id: Option<String>,
@@ -160,6 +161,7 @@ pub async fn execute_action(
     let engine = Arc::clone(&state.launch_engine);
     let mut action = action;
     resolve_working_dir(&mut action, &workspace);
+    let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
     // Процессы, запущенные из профиля, привязываются к текущей сессии —
     // иначе таймер сессии никогда не увидит их завершения. If no session is
     // active (the workspace was idle and the session auto-ended), restart it
@@ -199,7 +201,7 @@ pub async fn execute_action(
     let overlay_for_task = overlay.clone();
 
     let (status, proc_id) = tauri::async_runtime::spawn_blocking(move || {
-        engine.execute_action(&action, session_id, overlay_for_task.as_ref())
+        engine.execute_action(&action, session_id, overlay_for_task.as_ref(), browser_path.as_deref())
     })
     .await
     .map_err(|e| format!("Action task failed: {e}"))??;
@@ -236,11 +238,13 @@ pub async fn analyze_project_v2(
 ) -> Result<super::analyzer::DraftProfile, String> {
     let analyzer = Arc::clone(&state.analyzer_v2);
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
+    let db_viewer_path = settings.0.get_settings().ok().map(|s| s.db_viewer_path);
     tauri::async_runtime::spawn_blocking(move || {
         analyzer.analyze_draft(
             &path,
             &super::analyzer::AnalyzeOptions {
                 vscode_path,
+                db_viewer_path,
                 ..super::analyzer::AnalyzeOptions::default()
             },
         )
@@ -473,11 +477,13 @@ pub async fn run_profile(
 #[tauri::command]
 pub fn build_profile_from_context(
     state: State<'_, DevLauncherState>,
+    settings: State<'_, SettingsState>,
     context: WizardContext,
 ) -> Result<LaunchProfile, String> {
     let mut diagnostics = Vec::new();
+    let opts = builder_options_from_settings(&settings);
     let mut profile =
-        super::profile_builder::build_profile_v2_from_context(&context, &mut diagnostics);
+        super::profile_builder::build_profile_v2_from_context_with_options(&context, &mut diagnostics, &opts);
 
     // Check if a profile already exists for this project path
     if let Some(ref path) = profile.project_root {
@@ -498,11 +504,13 @@ pub fn build_profile_from_context(
 #[tauri::command]
 pub fn build_profile_v2_from_context(
     state: State<'_, DevLauncherState>,
+    settings: State<'_, SettingsState>,
     context: WizardContext,
 ) -> Result<LaunchProfileV2, String> {
     let mut diagnostics = Vec::new();
+    let opts = builder_options_from_settings(&settings);
     let mut profile =
-        super::profile_builder::build_profile_v2_from_context(&context, &mut diagnostics);
+        super::profile_builder::build_profile_v2_from_context_with_options(&context, &mut diagnostics, &opts);
 
     if let Some(ref path) = profile.project_root {
         if let Some(existing) = state.profile_manager.find_by_project_path_v2(path) {
@@ -556,11 +564,13 @@ pub fn validate_profile_v2(profile: LaunchProfileV2) -> Result<serde_json::Value
 #[tauri::command]
 pub fn create_run(
     state: State<'_, DevLauncherState>,
+    settings: State<'_, SettingsState>,
     profile: LaunchProfileV2,
 ) -> Result<LaunchRun, String> {
+    let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
     state
         .orchestrator
-        .create_run(profile)
+        .create_run_with_browser(profile, browser_path)
         .map_err(|validation| {
             let msgs: Vec<String> = validation
                 .diagnostics
@@ -652,9 +662,10 @@ pub async fn run_profile_v2(
         .session
         .get_session()
         .map(|s| s.started_at.clone());
+    let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
     let run = state
         .orchestrator
-        .create_run_with_session_and_overlay(profile, session_id, overlay)
+        .create_run_with_browser_and_overlay(profile, session_id, overlay, browser_path)
         .map_err(|v| {
             let msgs: Vec<String> = v
                 .diagnostics
@@ -725,11 +736,13 @@ pub async fn detect_project_profile(
 ) -> Result<super::analyzer::DraftProfile, String> {
     let analyzer = Arc::clone(&state.analyzer_v2);
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
+    let db_viewer_path = settings.0.get_settings().ok().map(|s| s.db_viewer_path);
     tauri::async_runtime::spawn_blocking(move || {
         analyzer.analyze_draft(
             &path,
             &super::analyzer::AnalyzeOptions {
                 vscode_path,
+                db_viewer_path,
                 ..super::analyzer::AnalyzeOptions::default()
             },
         )
@@ -813,6 +826,46 @@ pub fn resolve_application(name: String) -> Result<serde_json::Value, String> {
         "found": result.found,
         "diagnostics": result.diagnostics,
     }))
+}
+
+/// Detect applications available on the host for the browser / database
+/// viewer selection UIs: all supported browsers, all supported database
+/// viewers, and the user-configured VS Code (settings path or default).
+#[tauri::command]
+pub fn detect_applications(
+    settings: State<'_, SettingsState>,
+) -> Result<crate::platform::app_launcher::DetectedApplications, String> {
+    let configured_vscode = settings
+        .0
+        .get_settings()
+        .ok()
+        .and_then(|s| {
+            let p = s.vscode_path.trim().to_string();
+            if p.is_empty() {
+                None
+            } else {
+                Some(p)
+            }
+        });
+    Ok(crate::platform::app_launcher::DetectedApplications {
+        browsers: crate::platform::app_launcher::detect_browsers(),
+        db_viewers: crate::platform::app_launcher::detect_db_viewers(),
+        vscode: crate::platform::app_launcher::detect_vscode(configured_vscode.as_deref()),
+    })
+}
+
+/// Build profile-builder options from the user's settings: the configured
+/// VS Code path, the configured browser and the configured database viewer
+/// (empty = auto-detect at build time).
+fn builder_options_from_settings(
+    settings: &State<'_, SettingsState>,
+) -> super::profile_builder::ProfileBuildOptions {
+    let s = settings.0.get_settings().ok();
+    super::profile_builder::ProfileBuildOptions {
+        vscode: s.as_ref().map(|s| s.vscode_path.clone()),
+        browser: s.as_ref().map(|s| s.browser_path.clone()),
+        db_viewer: s.as_ref().map(|s| s.db_viewer_path.clone()),
+    }
 }
 
 /// Resolve the terminal backend configuration for the current platform.

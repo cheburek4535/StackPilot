@@ -2,6 +2,9 @@
 """
 Скрипт для удаления тестов из XML дампа Repomix.
 Также удаляет раздел "presets" из wizard_tree.json, если указан флаг -dp/--dp.
+
+Флаг -rn/--rename <name> записывает результат как <name>.xml
+(переопределяет -o/--output).
 """
 
 import re
@@ -11,6 +14,13 @@ import json
 import xml.sax.saxutils
 from pathlib import Path
 from typing import List, Tuple, Optional
+
+# Консольный вывод с эмодзи ломается под cp1251 (cmd -> python из bat)
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
 
 
 class RepomixTestCleaner:
@@ -300,6 +310,10 @@ def main():
         action='store_true',
         help='Remove presets section from wizard_tree.json'
     )
+    parser.add_argument(
+        '-rn', '--rename',
+        help='Write cleaned dump as <name>.xml (overrides -o/--output)'
+    )
 
     args = parser.parse_args()
 
@@ -308,7 +322,14 @@ def main():
         print(f"❌ File not found: {input_file}")
         sys.exit(1)
 
-    output_file = Path(args.output) if args.output else None
+    output_file = None
+    if args.rename:
+        out_name = args.rename
+        if not out_name.lower().endswith('.xml'):
+            out_name += '.xml'
+        output_file = input_file.parent / out_name
+    elif args.output:
+        output_file = Path(args.output)
 
     cleaner = RepomixTestCleaner(input_file, output_file, remove_presets=args.dp)
     cleaner.process()

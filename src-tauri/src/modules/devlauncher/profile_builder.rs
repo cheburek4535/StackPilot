@@ -549,6 +549,66 @@ fn resolve_app(name: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Builder options
+// ---------------------------------------------------------------------------
+
+/// User-configurable application choices used while building the graph.
+/// `None`/empty values mean "auto-detect at build time".
+#[derive(Debug, Clone, Default)]
+pub struct ProfileBuildOptions {
+    /// User-configured VS Code path/CLI (settings.vscode_path); falls back
+    /// to "code" when empty.
+    pub vscode: Option<String>,
+    /// User-configured browser path/CLI (settings.browser_path); URL steps
+    /// honor it at run time. Not used at build time.
+    pub browser: Option<String>,
+    /// User-configured database viewer path/CLI (settings.db_viewer_path);
+    /// the first resolvable candidate wins when empty.
+    pub db_viewer: Option<String>,
+}
+
+/// Ordered database viewer candidates: the user's configured choice first,
+/// then platform defaults. `None` entries are skipped.
+pub fn db_viewer_candidates(preferred: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(p) = preferred {
+        let p = p.trim();
+        if !p.is_empty() {
+            out.push(p.to_string());
+        }
+    }
+    if cfg!(target_os = "windows") {
+        out.extend(
+            ["dbeaver", "datagrip", "heidisql", "tableplus", "sqlitebrowser", "pgadmin4"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    } else if cfg!(target_os = "macos") {
+        out.extend(
+            ["dbeaver", "datagrip", "tableplus", "sqlitebrowser", "pgadmin4"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    } else {
+        out.extend(
+            ["dbeaver-ce", "dbeaver", "datagrip", "sqlitebrowser", "pgadmin4"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    }
+    out
+}
+
+/// Display name of a database viewer CLI name (for step labels).
+pub fn db_viewer_display_name(cli: &str) -> String {
+    crate::platform::app_launcher::db_viewer_candidates()
+        .iter()
+        .find(|(id, _)| id == &cli)
+        .map(|(_, name)| name.to_string())
+        .unwrap_or_else(|| cli.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
 
@@ -570,6 +630,30 @@ fn resolve_app(name: &str) -> Option<String> {
 pub fn build_profile_v2_from_context(
     ctx: &WizardContext,
     diagnostics: &mut Vec<AnalysisDiagnostic>,
+) -> LaunchProfileV2 {
+    build_profile_v2_from_context_with_options(ctx, diagnostics, &ProfileBuildOptions::default())
+}
+
+/// Build a coherent V2 step graph from a wizard context, honoring the
+/// user's application choices (VS Code path, database viewer).
+///
+/// The graph is structured like a real development session:
+///   1. IDE/tool windows open first (independent roots).
+///   2. Docker infrastructure: Docker Desktop → wait for daemon →
+///      compose up → wait for database readiness.
+///   3. Backend service starts (visible terminal), gated by the
+///      infrastructure they need.
+///   4. Readiness waits on backend ports, then API docs open.
+///   5. Frontend dev servers (visible terminal) run in parallel.
+///   6. A plain terminal is opened for ad-hoc commands.
+///
+/// Nothing is forced: IDE and tool steps are only emitted when the
+/// application is resolvable on the host; install/migrate actions are
+/// DISABLED by default (state-changing); the tools remain configurable.
+pub fn build_profile_v2_from_context_with_options(
+    ctx: &WizardContext,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+    opts: &ProfileBuildOptions,
 ) -> LaunchProfileV2 {
     let project_path = ctx
         .project_path
@@ -595,7 +679,12 @@ pub fn build_profile_v2_from_context(
     let has_frontend = !frontend_frameworks(ctx).is_empty();
 
     // --- 1. IDE / tool windows (roots) ---
-    let effective_vscode = "code";
+    let effective_vscode = opts
+        .vscode
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("code");
     let mut ide_opened = false;
     if let Some(resolved) = resolve_app(effective_vscode) {
         open_app_step(
@@ -758,28 +847,39 @@ pub fn build_profile_v2_from_context(
             db_waits.push(id);
         }
 
-        // DBeaver opens after the daemon is up (if resolvable).
+        // The database viewer opens after the daemon is up. Only when the
+        // project actually has database tools: a viewer step is added ONLY
+        // if at least one supported database application is resolvable —
+        // never a broken step for an unavailable app. The user-configured
+        // viewer (settings.db_viewer_path) wins; otherwise the first
+        // detected candidate is used.
         if !db_waits.is_empty() {
-            let dbeaver = if cfg!(target_os = "windows") {
-                "dbeaver"
-            } else {
-                "dbeaver-ce"
-            };
-            if let Some(resolved) = resolve_app(dbeaver) {
-                open_app_step(
-                    &mut g,
-                    "Open DBeaver",
-                    &resolved,
-                    Vec::new(),
-                    vec![docker_wait.clone().unwrap()],
-                );
-            } else {
-                diagnostics.push(AnalysisDiagnostic::new(
-                    DiagnosticSeverity::Info,
-                    AnalysisConfidence::Low,
-                    "DBeaver not resolvable; database client step omitted".to_string(),
-                    None,
-                ));
+            let mut viewer: Option<(String, String)> = None;
+            for cli in db_viewer_candidates(opts.db_viewer.as_deref()) {
+                if let Some(resolved) = resolve_app(&cli) {
+                    viewer = Some((resolved, db_viewer_display_name(&cli)));
+                    break;
+                }
+            }
+            match viewer {
+                Some((resolved, display_name)) => {
+                    open_app_step(
+                        &mut g,
+                        &format!("Open {}", display_name),
+                        &resolved,
+                        Vec::new(),
+                        vec![docker_wait.clone().unwrap()],
+                    );
+                }
+                None => {
+                    diagnostics.push(AnalysisDiagnostic::new(
+                        DiagnosticSeverity::Info,
+                        AnalysisConfidence::Low,
+                        "No supported database viewer found; database client step omitted"
+                            .to_string(),
+                        None,
+                    ));
+                }
             }
         }
     }

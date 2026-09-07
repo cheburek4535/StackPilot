@@ -11,6 +11,9 @@
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
   import { notifyError, notifySuccess } from "$lib/core/toasts";
+  import { getSettings, updateSettings, detectApplications } from "$lib/core/api";
+  import type { DetectedApplications } from "$lib/core/types";
+  import AppPicker from "$lib/components/ui/AppPicker.svelte";
 
   let profile = $state<LaunchProfile | null>(null);
   let loading = $state(true);
@@ -40,6 +43,12 @@
   let showAddPanel = $state(false);
   let addTpl = $state<AddTemplateDraft>(emptyAddTemplateDraft());
   let savingActions = $state(false);
+
+  // ---- Application selection (browser / database viewer) ----
+  let detectedApps = $state<DetectedApplications | null>(null);
+  let appBrowser = $state("");
+  let appDbViewer = $state("");
+  let appSaving = $state(false);
 
   let summary = $derived.by(() => {
     if (actionResults.size === 0) return null;
@@ -73,6 +82,7 @@
     if ($page.url.searchParams.get("run") === "1") {
       await runAll();
     }
+    void refreshDetectedApps();
   });
 
   onDestroy(() => {
@@ -188,6 +198,7 @@
   // ---- Action set editing (delete / add) ----
 
   function actionLabel(actionId: string): string {
+    if (!profile) return actionId;
     const step = profileSteps.find((s) => s.id === actionId);
     if (step) return step.label;
     const action = profile.actions.find((a) => a.id === actionId);
@@ -264,6 +275,40 @@
       void saveEditedProfile([], [...profileSteps, step]);
     } else {
       void saveEditedProfile([...profile.actions, stepToAction(step)], null);
+    }
+  }
+
+  // ---- Application selection (browser / database viewer) ----
+
+  async function refreshDetectedApps() {
+    try {
+      detectedApps = await detectApplications();
+    } catch {
+      detectedApps = null;
+    }
+    try {
+      const s = await getSettings();
+      appBrowser = s.browser_path ?? "";
+      appDbViewer = s.db_viewer_path ?? "";
+    } catch {
+      // ignore — pickers stay empty
+    }
+  }
+
+  async function saveAppSelection(field: "browser_path" | "db_viewer_path", path: string) {
+    if (appSaving) return;
+    appSaving = true;
+    try {
+      const s = await getSettings();
+      const next = { ...s, [field]: path };
+      const saved = await updateSettings(next);
+      if (field === "browser_path") appBrowser = saved.browser_path ?? "";
+      else appDbViewer = saved.db_viewer_path ?? "";
+      notifySuccess(i18n.t("devl.apps_saved") as TranslationKey);
+    } catch (e) {
+      notifyError(i18n.t("devl.apps_save_failed") as TranslationKey, String(e));
+    } finally {
+      appSaving = false;
     }
   }
 
@@ -733,6 +778,29 @@
       </div>
     </section>
 
+    <!-- Application selection -->
+    <section>
+      <div class="actions-head">
+        <h2>{i18n.t("devl.apps_title") as TranslationKey}</h2>
+      </div>
+      <div class="apps-grid">
+        <AppPicker
+          apps={detectedApps?.browsers ?? []}
+          value={appBrowser}
+          onChange={(v) => void saveAppSelection("browser_path", v)}
+          title={i18n.t("settings.system.browser")}
+          description={i18n.t("settings.apps.browser_desc")}
+        />
+        <AppPicker
+          apps={detectedApps?.db_viewers ?? []}
+          value={appDbViewer}
+          onChange={(v) => void saveAppSelection("db_viewer_path", v)}
+          title={i18n.t("settings.system.db_viewer")}
+          description={i18n.t("settings.apps.db_viewer_desc")}
+        />
+      </div>
+    </section>
+
     {#if summary}
       <div class="summary">
         <span class="summary-ok">✓ {summary.ok}</span>
@@ -1079,6 +1147,15 @@
     font-size: var(--sp-fs-2xs);
     color: var(--sp-warning);
     margin-top: 0.15rem;
+  }
+
+  .apps-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 720px) {
+    .apps-grid { grid-template-columns: 1fr; }
   }
 
   button.primary {

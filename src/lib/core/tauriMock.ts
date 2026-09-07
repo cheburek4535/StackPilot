@@ -34,6 +34,7 @@ export function initTauriMock() {
   const defaultSettings = () => ({
     vscode_path: "code",
     browser_path: "",
+    db_viewer_path: "",
     terminal: "",
     theme: "dark",
     language: "ru",
@@ -298,6 +299,17 @@ export function initTauriMock() {
 
     if (cmd === "get_app_data_dir") {
       return "~/AppData/Roaming/StackPilot (mock)";
+    }
+
+    if (cmd === "detect_applications") {
+      return {
+        browsers: [
+          { id: "chrome", name: "Google Chrome", path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" },
+          { id: "msedge", name: "Microsoft Edge", path: "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe" },
+        ],
+        db_viewers: [],
+        vscode: { id: "code", name: "VS Code", path: "code" },
+      };
     }
 
     // ==========================================

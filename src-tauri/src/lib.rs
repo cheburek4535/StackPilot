@@ -188,6 +188,7 @@ pub fn run() {
             modules::devlauncher::commands::get_platform_capabilities,
             modules::devlauncher::commands::resolve_application,
             modules::devlauncher::commands::resolve_terminal,
+            modules::devlauncher::commands::detect_applications,
             // Workspace commands
             modules::workspace::commands::spawn_process,
             modules::workspace::commands::list_processes,

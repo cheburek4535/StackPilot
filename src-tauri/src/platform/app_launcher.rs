@@ -499,6 +499,15 @@ pub struct DetectedApp {
     pub path: String,
 }
 
+/// Result of the `detect_applications` command: everything the selection
+/// UIs (Settings, profile page) need to let the user pick applications.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DetectedApplications {
+    pub browsers: Vec<DetectedApp>,
+    pub db_viewers: Vec<DetectedApp>,
+    pub vscode: Option<DetectedApp>,
+}
+
 /// All supported database viewer applications and their display names.
 pub fn db_viewer_candidates() -> &'static [(&'static str, &'static str)] {
     &[

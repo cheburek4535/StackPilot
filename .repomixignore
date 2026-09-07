@@ -1,36 +1,51 @@
-# Игнорируем скрипты очистки
+# =============================================================
+#  Repomix filter for StackPilot devlauncher
+#
+#  This file lives in the project ROOT and is the single source
+#  of truth for what repomix must skip.
+#
+#  compresser.bat copies it temporarily into every target
+#  subfolder before packing a folder dump, then deletes the
+#  copy right after repomix finishes.
+# =============================================================
+
+# ---- Pipeline scripts ----------------------------------------
 clean.py
 compresser.bat
 compresser.ps1
 rm-cleaner.bat
 repomix_clean.bat
 repomix_clean.ps1
-
-# Игнорируем временные файлы Repomix
-repomix-output.xml
-repomix-output.clean.xml
-repomix-output-clean.xml
-repomix.log
-
-# Игнорируем конфиги
-.repomixignore
-repomix.config.json
-repomix.config.js
-
-# Игнорируем папку с бэкапами
-.backup_original/
+dumper.bat
 *.tmp
 
+# ---- Repomix artifacts ----------------------------------------
+repomix-output*.xml
+repomix.log
+repomix.config.json
+repomix.config.jsonc
+repomix.config.js
+repomix.config.mjs
+repomix.config.ts
+.repomixignore
 
-# devlauncher/
-# workspace/
-# settings/
-# profiles/
-# processes/
-# analyze/
-# assistant/
+# ---- Build & dependency dirs (matched at any depth) -----------
+node_modules/
+dist/
+build/
+target/
+.next/
+.svelte-kit/
+out/
+coverage/
 
-toolchain/
-plugins/
+# ---- Editor / OS junk -----------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 
-
+# ---- Lockfiles / bulk metadata (token economy) ----------------
+package-lock.json
+bun.lock
+Cargo.lock
