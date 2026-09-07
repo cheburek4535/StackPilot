@@ -529,7 +529,15 @@
       "required_tools": [],
       "suppresses_language_scaffold": false,
       "kind": "app",
-      "recommends": []
+      "recommends": [],
+      "provides_capabilities": [],
+      "tool_warnings": {
+        "prisma": {
+          "reason": "Python-клиент Prisma находится на ранней стадии предрелиза — готовность к продакшену ограничена.",
+          "recommendation": "Для продакшен-проектов на Python рассмотрите SQLAlchemy."
+        }
+      },
+      "tool_conflicts": []
     },
     {
       "id": "django",
@@ -549,7 +557,8 @@
       ],
       "conflicts": [
         "fastapi",
-        "flask"
+        "flask",
+        "express"
       ],
       "knowledge_key": "django",
       "scaffold": "root",
@@ -557,7 +566,28 @@
       "required_tools": [],
       "suppresses_language_scaffold": false,
       "kind": "app",
-      "recommends": []
+      "recommends": [],
+      "provides_capabilities": [
+        "orm",
+        "migrations",
+        "admin",
+        "auth"
+      ],
+      "tool_warnings": {
+        "sqlalchemy": {
+          "reason": "Django включает собственный ORM — добавление SQLAlchemy создаст в проекте два ORM.",
+          "recommendation": "Используйте Django ORM в проектах на Django. SQLAlchemy стоит добавлять только ради сложных SQL-возможностей или поддержки устаревшей базы."
+        },
+        "alembic": {
+          "reason": "В Django встроены миграции, а Alembic предназначен для SQLAlchemy.",
+          "recommendation": "Используйте миграции Django (makemigrations/migrate). Alembic имеет смысл только вместе с SQLAlchemy."
+        },
+        "prisma": {
+          "reason": "Prisma в первую очередь предназначен для Node.js/TypeScript — поддержка Python ограничена.",
+          "recommendation": "Для Python-проектов используйте Django ORM или SQLAlchemy."
+        }
+      },
+      "tool_conflicts": []
     },
     {
       "id": "flask",
@@ -586,7 +616,10 @@
       "required_tools": [],
       "suppresses_language_scaffold": false,
       "kind": "app",
-      "recommends": []
+      "recommends": [],
+      "provides_capabilities": [],
+      "tool_warnings": {},
+      "tool_conflicts": []
     },
     {
       "id": "axum",
@@ -1886,7 +1919,15 @@
       "conflicts": [],
       "platforms": [],
       "for_languages": [],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "database",
+      "alternatives": [
+        "mysql",
+        "sqlite"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "redis",
@@ -1930,7 +1971,12 @@
       "for_languages": [
         "python"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "testing",
+      "alternatives": [],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "sqlalchemy",
@@ -1946,7 +1992,15 @@
       "for_languages": [
         "python"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "orm",
+      "alternatives": [
+        "prisma",
+        "django"
+      ],
+      "alternative_policy": "warn",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "alembic",
@@ -1964,7 +2018,15 @@
       "for_languages": [
         "python"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "migrations",
+      "alternatives": [
+        "django",
+        "prisma"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "ruff",
@@ -1987,7 +2049,7 @@
       "label": "NPM",
       "description": "wizard.tool.npm.desc",
       "icon": "npm.svg",
-      "category": "tooling",
+      "category": "package_manager",
       "knowledge_key": null,
       "requires_docker": false,
       "requires": [],
@@ -1997,7 +2059,12 @@
         "typescript",
         "javascript"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "package_manager",
+      "alternatives": [],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "gradle",
@@ -2058,7 +2125,15 @@
       "conflicts": [],
       "platforms": [],
       "for_languages": [],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "database",
+      "alternatives": [
+        "postgresql",
+        "sqlite"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "sqlite",
@@ -2072,7 +2147,15 @@
       "conflicts": [],
       "platforms": [],
       "for_languages": [],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "database",
+      "alternatives": [
+        "postgresql",
+        "mysql"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "firebase",
@@ -2224,9 +2307,22 @@
       "platforms": [],
       "for_languages": [
         "typescript",
-        "javascript"
+        "javascript",
+        "python"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "orm",
+      "alternatives": [
+        "sqlalchemy",
+        "drizzle",
+        "django"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [
+        "express",
+        "nextjs"
+      ],
+      "requires_capabilities": []
     },
     {
       "id": "drizzle",
@@ -2243,7 +2339,14 @@
         "typescript",
         "javascript"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "orm",
+      "alternatives": [
+        "prisma"
+      ],
+      "alternative_policy": "exclusive",
+      "for_frameworks": [],
+      "requires_capabilities": []
     },
     {
       "id": "opentelemetry",

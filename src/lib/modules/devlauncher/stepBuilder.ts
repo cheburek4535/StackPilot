@@ -119,7 +119,7 @@ export function buildStep(tpl: AddTemplate, draft: AddTemplateDraft, projectPath
         id,
         label: `Ожидание порта ${host}:${port}`,
         enabled: true,
-        kind: { type: "wait_for_port", host, port },
+        kind: { type: "wait_for_port", host, port, candidate_ports: [] },
         depends_on: [],
         timeout,
         completion: { type: "port_open", host, port, timeout_secs: timeout },

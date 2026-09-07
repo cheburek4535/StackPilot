@@ -334,26 +334,27 @@ impl Generator for SpringBootGenerator {
         // from an empty directory.  Flatten only when the target itself does
         // not already contain a project manifest.
         if !target.join("pom.xml").is_file() {
-            let nested = std::fs::read_dir(&target)
-                .ok()
-                .and_then(|entries| {
-                    let dirs: Vec<PathBuf> = entries
-                        .filter_map(Result::ok)
-                        .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e.path()))
-                        .collect();
-                    (dirs.len() == 1).then(|| dirs.into_iter().next().unwrap())
-                });
+            let nested = std::fs::read_dir(&target).ok().and_then(|entries| {
+                let dirs: Vec<PathBuf> = entries
+                    .filter_map(Result::ok)
+                    .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e.path()))
+                    .collect();
+                (dirs.len() == 1).then(|| dirs.into_iter().next().unwrap())
+            });
             if let Some(nested) = nested {
-                for entry in std::fs::read_dir(&nested)
-                    .map_err(|e| format!("SpringBootGenerator: failed to read nested archive directory: {e}"))?
-                {
-                    let entry = entry.map_err(|e| format!("SpringBootGenerator: failed to inspect archive output: {e}"))?;
+                for entry in std::fs::read_dir(&nested).map_err(|e| {
+                    format!("SpringBootGenerator: failed to read nested archive directory: {e}")
+                })? {
+                    let entry = entry.map_err(|e| {
+                        format!("SpringBootGenerator: failed to inspect archive output: {e}")
+                    })?;
                     let destination = target.join(entry.file_name());
                     if destination.exists() {
                         continue;
                     }
-                    std::fs::rename(entry.path(), destination)
-                        .map_err(|e| format!("SpringBootGenerator: failed to flatten archive: {e}"))?;
+                    std::fs::rename(entry.path(), destination).map_err(|e| {
+                        format!("SpringBootGenerator: failed to flatten archive: {e}")
+                    })?;
                 }
                 let _ = std::fs::remove_dir(&nested);
             }

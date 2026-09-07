@@ -557,7 +557,10 @@ impl DockerService {
                             ),
                         ));
                     }
-                    eprintln!("[docker] launched Docker Desktop via '{}'", launcher.program);
+                    eprintln!(
+                        "[docker] launched Docker Desktop via '{}'",
+                        launcher.program
+                    );
                     Self::best_effort_engine_start();
                     return Ok(());
                 }

@@ -739,9 +739,7 @@ mod tests {
                 // (checksum'ы ещё не заполнены); не блокирует CI на время
                 // наполнения данных. Реальная целостность установки
                 // (проверка sha256 в validate/installer) не меняется.
-                w.contains("бутстрап")
-                    || w.contains("registry_keys")
-                    || w.contains("Дубликат")
+                w.contains("бутстрап") || w.contains("registry_keys") || w.contains("Дубликат")
             })
             .collect();
         assert!(

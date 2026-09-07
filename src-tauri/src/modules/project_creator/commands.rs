@@ -62,6 +62,7 @@ pub fn validate_project_stack(
     backend_languages: Vec<String>,
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
+    tools: Vec<String>,
 ) -> Vec<super::validate::StackIssue> {
     super::validate::validate_context(
         state.wizard.get_wizard_tree(),
@@ -70,6 +71,7 @@ pub fn validate_project_stack(
             &backend_languages,
             &frontend_languages,
             &frameworks,
+            &tools,
         ),
         super::validate::current_os(),
     )
@@ -82,6 +84,7 @@ fn guard_context(
     backend_languages: &[String],
     frontend_languages: &[String],
     frameworks: &[String],
+    tools: &[String],
 ) -> WizardContext {
     let mut languages = backend_languages.to_vec();
     languages.extend(frontend_languages.iter().cloned());
@@ -94,7 +97,7 @@ fn guard_context(
         backend_languages: backend_languages.to_vec(),
         frontend_languages: frontend_languages.to_vec(),
         frameworks: frameworks.to_vec(),
-        tools: vec![],
+        tools: tools.to_vec(),
         local_infra_tools: vec![],
         features: vec![],
         infrastructure: vec![],
@@ -116,6 +119,7 @@ pub fn validate_project_stack_error(
     backend_languages: Vec<String>,
     frontend_languages: Vec<String>,
     frameworks: Vec<String>,
+    tools: Vec<String>,
 ) -> Option<String> {
     let issues = super::validate::validate_context(
         state.wizard.get_wizard_tree(),
@@ -124,6 +128,7 @@ pub fn validate_project_stack_error(
             &backend_languages,
             &frontend_languages,
             &frameworks,
+            &tools,
         ),
         super::validate::current_os(),
     );
@@ -336,7 +341,10 @@ pub async fn count_project_files(path: String) -> Result<ProjectFileCount, Strin
         if !path_buf.is_dir() {
             return Err(format!("Not a directory: {}", path_buf.display()));
         }
-        Ok(super::count_project_files_on_disk(&path_buf, super::FILE_COUNT_LIMIT))
+        Ok(super::count_project_files_on_disk(
+            &path_buf,
+            super::FILE_COUNT_LIMIT,
+        ))
     })
     .await
     .map_err(|e| format!("Count files task failed: {e}"))?

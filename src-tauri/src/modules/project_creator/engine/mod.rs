@@ -86,22 +86,40 @@ fn step_should_abort(step: &Step, status: &StepStatus) -> bool {
         _ => false,
     };
     match step {
-        Step::Command { command, args, on_error: ErrorMode::Abort, .. }
-            if network_error && network::is_network_command(command, args) =>
-        {
-            false
-        }
+        Step::Command {
+            command,
+            args,
+            on_error: ErrorMode::Abort,
+            ..
+        } if network_error && network::is_network_command(command, args) => false,
         Step::Generate {
             generator_id,
             generator_config,
             on_error: ErrorMode::Abort,
             ..
-        } if network_error && network::is_network_generator(generator_id, generator_config) => false,
-        Step::Command { on_error: ErrorMode::Abort, .. }
-        | Step::WriteFile { on_error: ErrorMode::Abort, .. }
-        | Step::CreateDirectory { on_error: ErrorMode::Abort, .. }
-        | Step::Generate { on_error: ErrorMode::Abort, .. }
-        | Step::Parallel { on_error: ErrorMode::Abort, .. } => true,
+        } if network_error && network::is_network_generator(generator_id, generator_config) => {
+            false
+        }
+        Step::Command {
+            on_error: ErrorMode::Abort,
+            ..
+        }
+        | Step::WriteFile {
+            on_error: ErrorMode::Abort,
+            ..
+        }
+        | Step::CreateDirectory {
+            on_error: ErrorMode::Abort,
+            ..
+        }
+        | Step::Generate {
+            on_error: ErrorMode::Abort,
+            ..
+        }
+        | Step::Parallel {
+            on_error: ErrorMode::Abort,
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -12106,10 +12124,8 @@ mod tests {
         arg: &str,
         on_error: ErrorMode,
     ) -> (ExecutionPlan, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "stackpilot_net_{dir_name}_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_net_{dir_name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let plan = ExecutionPlan {
@@ -12162,12 +12178,7 @@ mod tests {
         let engine = DefaultRecipeEngine::with_executor(Arc::new(
             executor::StepExecutor::with_command_runner(mock.clone()),
         ));
-        let (plan, dir) = plan_with_command(
-            "retry_ok",
-            "terraform",
-            "init",
-            ErrorMode::Abort,
-        );
+        let (plan, dir) = plan_with_command("retry_ok", "terraform", "init", ErrorMode::Abort);
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let result = engine.execute(plan, tx).await;
         assert!(
@@ -12195,12 +12206,8 @@ mod tests {
         let engine = DefaultRecipeEngine::with_executor(Arc::new(
             executor::StepExecutor::with_command_runner(mock.clone()),
         ));
-        let (plan, dir) = plan_with_command(
-            "net_persistent",
-            "terraform",
-            "init",
-            ErrorMode::Abort,
-        );
+        let (plan, dir) =
+            plan_with_command("net_persistent", "terraform", "init", ErrorMode::Abort);
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let result = engine.execute(plan, tx).await;
         assert!(
@@ -15511,7 +15518,10 @@ mod tests {
         );
         assert!(pargs.contains(&"sqlite".to_string()), "{pargs:?}");
         let prisma_wd = wd_of(prisma);
-        assert_eq!(prisma_wd, ".", "prisma init работает в корне проекта: {prisma_wd}");
+        assert_eq!(
+            prisma_wd, ".",
+            "prisma init работает в корне проекта: {prisma_wd}"
+        );
         assert_eq!(
             write_path_of(find_step(&recipe, "drizzle_config")),
             "drizzle.config.ts"
@@ -15970,7 +15980,10 @@ mod tests {
         let recipe = recipe_for(&mono, "myapp").expect("recipe must build");
         assert_file_not_exists(find_step(&recipe, "go_mod_init"), "go.mod");
         let mono_wd = wd_of(find_step(&recipe, "go_mod_init"));
-        assert_eq!(mono_wd, ".", "монолит: go mod init работает в корне проекта: {mono_wd}");
+        assert_eq!(
+            mono_wd, ".",
+            "монолит: go mod init работает в корне проекта: {mono_wd}"
+        );
     }
 
     #[test]

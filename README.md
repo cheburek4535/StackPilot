@@ -6,7 +6,6 @@
 
 > Локальное desktop-workspace для разработчика: соберите окружение, создайте или проанализируйте проект, запустите весь стек одной кнопкой и наблюдайте за процессами в одном месте.
 
-[![CI](https://github.com/cheburek4535/StackPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/cheburek4535/StackPilot/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2.x-24c8db.svg)](https://tauri.app/)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2.x-ff3e00.svg)](https://kit.svelte.dev/)
@@ -28,6 +27,7 @@ StackPilot объединяет терминал, менеджер пакето�
   - [DevLauncher](#devlauncher)
   - [Анализ проекта](#анализ-проекта)
   - [Project Creator](#project-creator)
+    - [Система совместимости инструментов](#система-совместимости-инструментов)
   - [Toolchain](#toolchain)
   - [Workspace](#workspace)
   - [Настройки](#настройки)
@@ -38,7 +38,7 @@ StackPilot объединяет терминал, менеджер пакето�
 - [Установка готового приложения](#установка-готового-приложения)
 - [Сборка из исходников](#сборка-из-исходников)
 - [Разработка интерфейса](#разработка-интерфейса)
-- [Тесты, проверки и CI](#тесты-проверки-и-ci)
+- [Тесты и проверки](#тесты-и-проверки)
 - [Структура репозитория](#структура-репозитория)
 - [Данные и приватность](#данные-и-приватность)
 - [Безопасность](#безопасность)
@@ -239,6 +239,20 @@ DevLauncher — центр запуска. Разделы:
 7. Подтвердите выполнение. Команды и запись файлов отображаются событиями по шагам.
 
 Генерация не стирает существующие файлы молча: шаги имеют `overwrite`, а preview показывает, что будет создано, изменено или пропущено. Для существующей папки сделайте backup и проверьте preview.
+
+### Система совместимости инструментов
+
+Project Creator включает интеллектуальную валидацию совместимости инструментов:
+
+- **Контроль зависимостей:** ловит недостающие зависимости (например, Alembic без SQLAlchemy);
+- **Обнаружение пересечения ответственностей:** предупреждает, когда несколько инструментов выполняют одну роль (например, Django ORM + SQLAlchemy);
+- **Предупреждения фреймворк↔инструмент:** объясняет, когда инструменты дублируют функции фреймворка;
+- **Постепенная обратная связь:** ошибки блокируют генерацию, предупреждения информируют.
+
+Подробная документация — в [`src-tauri/src/modules/project_creator/docs/`](src-tauri/src/modules/project_creator/docs/):
+- `TOOL_METADATA.md` — справочник по схеме метаданных;
+- `COMPATIBILITY_RULES.md` — логика валидации и правила решений;
+- `IMPLEMENTATION_CHECKLIST.md` — статус реализации и известные ограничения.
 
 ### Toolchain
 
@@ -510,7 +524,7 @@ Frontend находится в `src/`, маршруты — в `src/routes/`, к
 
 ---
 
-## Тесты, проверки и CI
+## Тесты и проверки
 
 ### Frontend
 
@@ -529,8 +543,6 @@ cargo fmt --check
 cargo check
 cargo test
 ```
-
-GitHub Actions (`.github/workflows/ci.yml`) запускает `cargo fmt --check` на Ubuntu и `cargo check`/`cargo test` на Windows, Ubuntu и macOS.
 
 Тесты, зависящие от сети, package manager, Docker или конкретной IDE, должны быть изолированы или явно помечены. Изменения shell/process/PATH должны иметь регрессионные тесты для Windows и Unix-ветки.
 
@@ -555,7 +567,6 @@ GitHub Actions (`.github/workflows/ci.yml`) запускает `cargo fmt --chec
 │           └── workspace/       # processes, logs, session, files
 ├── static/                      # логотипы, иконки и изображения каталога
 ├── docs/                        # контракты и progress-документы
-├── .github/workflows/ci.yml     # кросс-платформенный CI
 ├── package.json
 └── README.md
 ```
@@ -657,7 +668,7 @@ Toolchain может обращаться к официальным URL уста
 
 ### `cargo test` на Windows завершается `STATUS_ENTRYPOINT_NOT_FOUND`
 
-Тестовые бинарники требуют Windows SDK resource compiler (`rc.exe`) для common-controls manifest. Установите Windows SDK/Visual Studio Build Tools и повторите. CI запускает native jobs на Windows, Ubuntu и macOS.
+Тестовые бинарники требуют Windows SDK resource compiler (`rc.exe`) для common-controls manifest. Установите Windows SDK/Visual Studio Build Tools и повторите.
 
 ### После обновления пропали профили
 

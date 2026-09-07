@@ -23,8 +23,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::modules::project_creator::models::WizardContext;
+use crate::modules::project_creator::models::{
+    FrameworkDef, ToolDef, WizardContext, WizardTreeData,
+};
 
+use super::wizard_tree;
 use super::LayoutClass;
 use super::ProjectLayout;
 
@@ -194,6 +197,18 @@ pub fn generate_readme(
     context: &WizardContext,
     project_name: &str,
 ) -> String {
+    generate_readme_with_tree(wizard_tree(), layout, context, project_name)
+}
+
+/// Внутренняя точка входа с явным деревом (данные мастер-дерева) — публичная
+/// `generate_readme` использует каноническое дерево из wizard_tree.json,
+/// тесты могут подставить изменённую копию.
+fn generate_readme_with_tree(
+    tree: &WizardTreeData,
+    layout: &ProjectLayout,
+    context: &WizardContext,
+    project_name: &str,
+) -> String {
     let ctx = ReadmeContext {
         context,
         layout,
@@ -209,6 +224,9 @@ pub fn generate_readme(
     section_tools(&ctx, &mut doc);
     section_prerequisites(&ctx, &mut doc);
     section_quick_start(&ctx, &mut doc);
+    // Architectural Decisions документирует неочевидные решения стека и стоит
+    // ПОСЛЕ «Quick start» (как «Getting started»), но ДО первого кода/разработки.
+    section_architectural_decisions(&ctx, tree, &mut doc);
     section_first_code(&ctx, &mut doc);
     section_development(&ctx, &mut doc);
     section_building(&ctx, &mut doc);
@@ -218,6 +236,139 @@ pub fn generate_readme(
     section_mistakes(&ctx, &mut doc);
     section_next_steps(&ctx, &mut doc);
     doc.render(project_name)
+}
+
+// ============================================================================
+// Архитектурный анализ: неочевидные решения стека
+// ============================================================================
+
+/// Одно архитектурное решение, документированное в README: заголовок,
+/// контекст (почему связка спорная/дублирующая) и рекомендация.
+#[derive(Debug, Clone)]
+struct ArchitecturalDecision {
+    title: String,
+    reason: String,
+    recommendation: String,
+}
+
+/// Английские пояснения для известных спорных связок фреймворк↔инструмент.
+/// README генерируется на английском, а тексты tool_warnings в wizard_tree.json
+/// написаны для UI (русские). Для связок, реально заведённых в данные,
+/// авторский английский текст живёт здесь; для неизвестных связок
+/// analyze_architectural_decisions подставляет содержимое предупреждения
+/// как есть (fallback).
+fn decision_notes_known(fw_id: &str, tool_id: &str) -> Option<(&'static str, &'static str)> {
+    let (reason, recommendation) = match (fw_id, tool_id) {
+        ("django", "sqlalchemy") => (
+            "Django includes its own ORM — adding SQLAlchemy creates two ORMs in one project.",
+            "Use the Django ORM in Django projects. Add SQLAlchemy only when you need advanced \
+             SQL features or must reuse an existing SQLAlchemy-based data layer.",
+        ),
+        ("django", "alembic") => (
+            "Django has built-in migrations, while Alembic is a migration tool designed for \
+             SQLAlchemy projects.",
+            "Use Django's own migrations (`manage.py makemigrations` / `manage.py migrate`). \
+             Alembic only makes sense together with SQLAlchemy.",
+        ),
+        ("django", "prisma") => (
+            "Prisma is primarily designed for Node.js/TypeScript projects — its Python support \
+             is limited.",
+            "For Python projects use the Django ORM or SQLAlchemy.",
+        ),
+        ("fastapi", "prisma") => (
+            "Prisma's Python client is at an early pre-release stage — production readiness is \
+             limited.",
+            "Consider SQLAlchemy for production Python projects.",
+        ),
+        _ => return None,
+    };
+    Some((reason, recommendation))
+}
+
+/// Проанализировать стек на архитектурные решения, которые стоит
+/// задокументировать в README:
+///   - фреймворк предупреждает о спорном инструменте (FrameworkDef.tool_warnings);
+///   - несколько выбранных инструментов делят одну ответственность
+///     (ToolDef.responsibility) — их роли пересекаются.
+/// Детерминированно: фреймворки и инструменты обходятся в алфавитном порядке.
+fn analyze_architectural_decisions(
+    tree: &WizardTreeData,
+    frameworks: &[String],
+    tools: &[String],
+) -> Vec<ArchitecturalDecision> {
+    let mut decisions: Vec<ArchitecturalDecision> = Vec::new();
+
+    let mut selected_frameworks: Vec<&FrameworkDef> = frameworks
+        .iter()
+        .filter_map(|id| tree.frameworks.iter().find(|f| &f.id == id))
+        .collect();
+    selected_frameworks.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut selected_tools: Vec<&ToolDef> = tools
+        .iter()
+        .filter_map(|id| tree.tools.iter().find(|t| &t.id == id))
+        .collect();
+    selected_tools.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut tool_ids: Vec<&String> = tools.iter().collect();
+    tool_ids.sort_unstable();
+    tool_ids.dedup();
+
+    // Предупреждения «фреймворк ↔ инструмент» (tool_warnings фреймворка).
+    for fw in &selected_frameworks {
+        for tool_id in &tool_ids {
+            let Some(warning) = fw.tool_warnings.get(*tool_id) else {
+                continue;
+            };
+            let fw_label = fw.label.as_str();
+            // Метка инструмента; неизвестный id — сам id (fallback).
+            let tool_label = selected_tools
+                .iter()
+                .find(|t| &t.id == *tool_id)
+                .map(|t| t.label.as_str())
+                .unwrap_or(tool_id.as_str());
+            let (reason, recommendation) = decision_notes_known(&fw.id, tool_id)
+                .map(|(r, rec)| (r.to_string(), rec.to_string()))
+                .unwrap_or_else(|| (warning.reason.clone(), warning.recommendation.clone()));
+            decisions.push(ArchitecturalDecision {
+                title: format!("Using {} with {}", tool_label, fw_label),
+                reason,
+                recommendation,
+            });
+        }
+    }
+
+    // Инструменты с одинаковой ответственностью (ToolDef.responsibility).
+    let mut by_responsibility: BTreeMap<&str, Vec<&ToolDef>> = BTreeMap::new();
+    for tool in &selected_tools {
+        if let Some(resp) = &tool.responsibility {
+            by_responsibility
+                .entry(resp.as_str())
+                .or_default()
+                .push(tool);
+        }
+    }
+    for (responsibility, tools_in_group) in &by_responsibility {
+        if tools_in_group.len() > 1 {
+            let tool_names: Vec<&str> = tools_in_group.iter().map(|t| t.label.as_str()).collect();
+            decisions.push(ArchitecturalDecision {
+                title: format!(
+                    "Multiple {} tools: {}",
+                    responsibility,
+                    tool_names.join(", ")
+                ),
+                reason: format!(
+                    "This project uses multiple tools that provide {} functionality.",
+                    responsibility
+                ),
+                recommendation:
+                    "Ensure clear separation of concerns. Document which tool handles which \
+                     use case."
+                        .to_string(),
+            });
+        }
+    }
+
+    decisions
 }
 
 // ============================================================================
@@ -2468,6 +2619,34 @@ fn section_quick_start(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     doc.add("Quick start", body);
 }
 
+/// Секция «Architectural Decisions»: появляется ТОЛЬКО когда анализ нашёл
+/// неочевидные решения (спорные связки фреймворк↔инструмент или пересечение
+/// ответственностей инструментов). Чистый стек секции не получает.
+fn section_architectural_decisions(
+    ctx: &ReadmeContext,
+    tree: &WizardTreeData,
+    doc: &mut ReadmeDoc,
+) {
+    let decisions =
+        analyze_architectural_decisions(tree, &ctx.context.frameworks, &ctx.context.tools);
+    if decisions.is_empty() {
+        return;
+    }
+    let mut body = String::from(
+        "This section documents important architectural choices made in this project's \
+         technology stack:\n\n",
+    );
+    for decision in &decisions {
+        body.push_str(&format!("### {}\n\n", decision.title));
+        body.push_str(&format!("**Context:** {}\n\n", decision.reason));
+        body.push_str(&format!(
+            "**Recommendation:** {}\n\n",
+            decision.recommendation
+        ));
+    }
+    doc.add("Architectural Decisions", body);
+}
+
 /// Каталоги JS-части проекта (для npm install в quick start).
 fn js_package_dirs(ctx: &ReadmeContext) -> Vec<String> {
     let mut dirs: Vec<String> = Vec::new();
@@ -2931,6 +3110,15 @@ mod tests {
         generate_readme(&ProjectLayout::compute(ctx), ctx, "myapp")
     }
 
+    fn tree() -> WizardTreeData {
+        let raw = include_str!("../knowledge/wizard_tree.json");
+        serde_json::from_str(raw).expect("wizard_tree.json должен парситься")
+    }
+
+    fn render_with_tree(tree: &WizardTreeData, ctx: &WizardContext) -> String {
+        generate_readme_with_tree(tree, &ProjectLayout::compute(ctx), ctx, "myapp")
+    }
+
     #[test]
     fn aspnetcore_vue_typescript_postgresql_in_docker() {
         // 1. ASP.NET Core + Vue + TypeScript + PostgreSQL (Docker).
@@ -3195,5 +3383,158 @@ mod tests {
         // Локальный вариант ссылается на LOCAL_INFRA.md, docker-вариант — нет.
         assert!(md_local.contains("LOCAL_INFRA.md"), "{md_local}");
         assert!(!md_docker.contains("LOCAL_INFRA.md"), "{md_docker}");
+    }
+
+    #[test]
+    fn readme_with_django_sqlalchemy_documents_decision() {
+        // Django + SQLAlchemy: Django предупреждает о втором ORM в tool_warnings.
+        let ctx = ctx_with(
+            "rest-api",
+            &["python"],
+            &["python"],
+            &[],
+            &["django"],
+            &["sqlalchemy"],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        // Секция появилась и документирует выбор Django ORM vs SQLAlchemy.
+        assert!(md.contains("## Architectural Decisions"), "{md}");
+        assert!(md.contains("### Using SQLAlchemy with Django"), "{md}");
+        assert!(md.contains("two ORMs"), "{md}");
+        assert!(md.contains("Django ORM"), "{md}");
+        // Позиция: после Quick start, до первого кода.
+        let quick_start = md.find("## Quick start").expect("quick start");
+        let decisions = md.find("## Architectural Decisions").expect("decisions");
+        let first_code = md
+            .find("## Where to write your first code")
+            .expect("first code");
+        assert!(quick_start < decisions && decisions < first_code, "{md}");
+    }
+
+    #[test]
+    fn readme_without_decisions_has_no_section() {
+        // FastAPI + SQLAlchemy + Alembic — согласованный стек: предупреждений
+        // нет, ответственности не пересекаются (orm/migrations по одному).
+        let ctx = ctx_with(
+            "rest-api",
+            &["python"],
+            &["python"],
+            &[],
+            &["fastapi"],
+            &["sqlalchemy", "alembic"],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(!md.contains("## Architectural Decisions"), "{md}");
+    }
+
+    #[test]
+    fn readme_with_multiple_orm_tools_documents_overlap() {
+        // SQLAlchemy + Prisma делят ответственность "orm" — README объясняет
+        // пересечение ролей.
+        let ctx = ctx_with(
+            "rest-api",
+            &["python", "typescript"],
+            &["python"],
+            &["typescript"],
+            &[],
+            &["sqlalchemy", "prisma"],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(md.contains("## Architectural Decisions"), "{md}");
+        assert!(
+            md.contains("### Multiple orm tools: Prisma, SQLAlchemy"),
+            "{md}"
+        );
+        assert!(
+            md.contains("multiple tools that provide orm functionality"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn readme_with_django_alembic_documents_decision() {
+        // Django + Alembic: встроенные миграции Django против Alembic.
+        let ctx = ctx_with(
+            "rest-api",
+            &["python"],
+            &["python"],
+            &[],
+            &["django"],
+            &["alembic"],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(md.contains("## Architectural Decisions"), "{md}");
+        assert!(md.contains("### Using Alembic with Django"), "{md}");
+        assert!(md.contains("built-in migrations"), "{md}");
+    }
+
+    #[test]
+    fn unknown_warning_pair_falls_back_to_data_text() {
+        // Связки, которой нет в авторской английской таблице, документируются
+        // текстом предупреждения из данных дерева (fallback).
+        use crate::modules::project_creator::models::ToolWarningReason;
+        let mut custom_tree = tree();
+        custom_tree
+            .frameworks
+            .iter_mut()
+            .find(|f| f.id == "django")
+            .expect("django в дереве")
+            .tool_warnings
+            .insert(
+                "redis".to_string(),
+                ToolWarningReason {
+                    reason: "Custom pairing reason text".to_string(),
+                    recommendation: "Custom pairing recommendation text".to_string(),
+                },
+            );
+        let ctx = ctx_with(
+            "rest-api",
+            &["python"],
+            &["python"],
+            &[],
+            &["django"],
+            &["redis"],
+            &[],
+            false,
+        );
+        let md = render_with_tree(&custom_tree, &ctx);
+        assert!(md.contains("## Architectural Decisions"), "{md}");
+        assert!(md.contains("### Using Redis with Django"), "{md}");
+        assert!(md.contains("Custom pairing reason text"), "{md}");
+        assert!(md.contains("Custom pairing recommendation text"), "{md}");
+    }
+
+    #[test]
+    fn multiple_warnings_and_overlaps_all_documented() {
+        // Django + SQLAlchemy + Prisma: два предупреждения фреймворка +
+        // пересечение orm-ответственности — документируется всё.
+        let ctx = ctx_with(
+            "rest-api",
+            &["python", "typescript"],
+            &["python"],
+            &["typescript"],
+            &["django"],
+            &["sqlalchemy", "prisma"],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(md.contains("## Architectural Decisions"), "{md}");
+        assert!(md.contains("### Using SQLAlchemy with Django"), "{md}");
+        assert!(md.contains("### Using Prisma with Django"), "{md}");
+        assert!(
+            md.contains("### Multiple orm tools: Prisma, SQLAlchemy"),
+            "{md}"
+        );
+        // Детерминированность сохраняется и с секцией решений.
+        assert_eq!(md, render(&ctx), "{md}");
     }
 }

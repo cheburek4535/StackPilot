@@ -96,7 +96,7 @@ export type StepKind =
   | { type: "run_script"; script: string; shell?: string | null }
   | { type: "open_application"; path: string; args?: string[] | null }
   | { type: "open_url"; url: string }
-  | { type: "wait_for_port"; host: string; port: number }
+  | { type: "wait_for_port"; host: string; port: number; candidate_ports?: number[] }
   | { type: "wait_for_url"; url: string }
   | { type: "wait_for_docker" }
   | { type: "delay"; seconds: number }
@@ -379,7 +379,12 @@ export function stepKindSummary(kind: StepKind): string {
     case "run_script": return kind.script;
     case "open_application": return kind.path;
     case "open_url": return kind.url;
-    case "wait_for_port": return `${kind.host}:${kind.port}`;
+    case "wait_for_port": {
+      const extras = kind.candidate_ports?.length
+        ? ` (+${kind.candidate_ports.join(",")})`
+        : "";
+      return `${kind.host}:${kind.port}${extras}`;
+    }
     case "wait_for_url": return kind.url;
     case "wait_for_docker": return "daemon";
     case "delay": return `${kind.seconds}s`;

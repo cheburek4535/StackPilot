@@ -342,7 +342,10 @@ fn known_applications() -> Vec<KnownApp> {
         #[cfg(target_os = "windows")]
         registry_names: &["SQLiteBrowser.exe"],
         #[cfg(target_os = "macos")]
-        app_bundles: &[("DB Browser for SQLite.app", "Contents/MacOS/DB Browser for SQLite")],
+        app_bundles: &[(
+            "DB Browser for SQLite.app",
+            "Contents/MacOS/DB Browser for SQLite",
+        )],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[("sqlitebrowser", "org.sqlitebrowser.sqlitebrowser")],
     });
@@ -851,10 +854,20 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
                 candidates.push(base.join("Programs").join("DBeaver").join("dbeaver.exe"));
             }
             "Google Chrome" => {
-                candidates.push(base.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                candidates.push(
+                    base.join("Google")
+                        .join("Chrome")
+                        .join("Application")
+                        .join("chrome.exe"),
+                );
             }
             "Microsoft Edge" => {
-                candidates.push(base.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+                candidates.push(
+                    base.join("Microsoft")
+                        .join("Edge")
+                        .join("Application")
+                        .join("msedge.exe"),
+                );
             }
             "Mozilla Firefox" => {
                 candidates.push(base.join("Mozilla Firefox").join("firefox.exe"));
@@ -930,10 +943,20 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
                 candidates.push(pf.join("DBeaver").join("dbeaver.exe"));
             }
             "Google Chrome" => {
-                candidates.push(pf.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                candidates.push(
+                    pf.join("Google")
+                        .join("Chrome")
+                        .join("Application")
+                        .join("chrome.exe"),
+                );
             }
             "Microsoft Edge" => {
-                candidates.push(pf.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+                candidates.push(
+                    pf.join("Microsoft")
+                        .join("Edge")
+                        .join("Application")
+                        .join("msedge.exe"),
+                );
             }
             "Mozilla Firefox" => {
                 candidates.push(pf.join("Mozilla Firefox").join("firefox.exe"));
@@ -961,7 +984,10 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
                 candidates.push(pf.join("HeidiSQL").join("heidisql.exe"));
             }
             "DB Browser for SQLite" => {
-                candidates.push(pf.join("DB Browser for SQLite").join("DB Browser for SQLite.exe"));
+                candidates.push(
+                    pf.join("DB Browser for SQLite")
+                        .join("DB Browser for SQLite.exe"),
+                );
             }
             "pgAdmin 4" => {
                 candidates.push(pf.join("pgAdmin 4").join("bin").join("pgAdmin4.exe"));

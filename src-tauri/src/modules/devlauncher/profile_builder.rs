@@ -156,20 +156,27 @@ fn one_shot_step(
     )
 }
 
-/// A readiness wait on a TCP port.
+/// A readiness wait on a TCP port. `candidate_ports` are extra ports that
+/// also satisfy the wait (dev servers auto-increment when their primary port
+/// is taken); the step succeeds when any of them opens.
 fn wait_port_step(
     g: &mut GraphBuilder,
     label: &str,
     port: u16,
+    candidate_ports: &[u16],
     timeout_secs: u64,
     depends_on: String,
     confidence: &str,
 ) -> String {
+    let mut candidates: Vec<u16> = candidate_ports.to_vec();
+    candidates.retain(|p| *p != port);
+    candidates.dedup();
     let id = g.push(
         label,
         StepKind::WaitForPort {
             host: "127.0.0.1".to_string(),
             port,
+            candidate_ports: candidates.clone(),
         },
         vec![depends_on],
         None,
@@ -421,7 +428,7 @@ fn go_run_command(ctx: &WizardContext, working_dir: Option<&str>) -> String {
     let dir = working_dir
         .map(|d| root.join(d))
         .unwrap_or_else(|| root.clone());
-if dir.join("main.go").is_file() {
+    if dir.join("main.go").is_file() {
         return "go run .".to_string();
     }
     let cmd_root = dir.join("cmd");
@@ -474,8 +481,8 @@ fn node_install_command(ctx: &WizardContext, working_dir: Option<&str>) -> Strin
 /// on every host.  Unix-style `./gradlew` is not executable by `cmd.exe`, and
 /// Spring Initializr defaults to Maven even when Gradle is installed.
 fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
-    let use_gradle = ctx.tools.iter().any(|t| t == "gradle")
-        && !ctx.tools.iter().any(|t| t == "maven");
+    let use_gradle =
+        ctx.tools.iter().any(|t| t == "gradle") && !ctx.tools.iter().any(|t| t == "maven");
     if use_gradle {
         if cfg!(target_os = "windows") {
             format!("gradlew.bat {}", task)
@@ -493,8 +500,11 @@ fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
 /// Falling back to `python` keeps profiles for externally-created projects
 /// usable, while generated Django projects never leak into system Python.
 fn python_command(_dir: Option<&str>, args: &str) -> String {
+    // Windows `cmd` does not accept forward-slash paths in a command token:
+    // `.venv/Scripts/python.exe` fails with "'.venv' is not recognized as an
+    // internal or external command". Use native separators.
     if cfg!(target_os = "windows") {
-        ".venv/Scripts/python.exe ".to_string() + args
+        ".venv\\Scripts\\python.exe ".to_string() + args
     } else {
         "./.venv/bin/python ".to_string() + args
     }
@@ -502,10 +512,25 @@ fn python_command(_dir: Option<&str>, args: &str) -> String {
 
 fn python_install_command() -> String {
     if cfg!(target_os = "windows") {
-        "cmd /C \"python -m venv .venv && .venv/Scripts/python.exe -m pip install -r requirements.txt\"".to_string()
+        "cmd /C \"python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"".to_string()
     } else {
-        "sh -c \"python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt\"".to_string()
+        "sh -c \"python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt\""
+            .to_string()
     }
+}
+
+/// Candidate ports a dev server may end up on when its configured port is
+/// already taken: Vite, Next.js, Expo and the Angular CLI auto-increment by
+/// 1 until they find a free port. The readiness wait accepts any of them, so
+/// a busy primary port no longer times out the wait.
+fn port_candidates(port: u16, spread: u16) -> Vec<u16> {
+    let mut out = Vec::new();
+    for p in (port as u32 + 1)..=(port as u32 + spread as u32) {
+        if p <= u16::MAX as u32 {
+            out.push(p as u16);
+        }
+    }
+    out
 }
 
 fn has_language(ctx: &WizardContext, lang: &str) -> bool {
@@ -579,21 +604,40 @@ pub fn db_viewer_candidates(preferred: Option<&str>) -> Vec<String> {
     }
     if cfg!(target_os = "windows") {
         out.extend(
-            ["dbeaver", "datagrip", "heidisql", "tableplus", "sqlitebrowser", "pgadmin4"]
-                .iter()
-                .map(|s| s.to_string()),
+            [
+                "dbeaver",
+                "datagrip",
+                "heidisql",
+                "tableplus",
+                "sqlitebrowser",
+                "pgadmin4",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
         );
     } else if cfg!(target_os = "macos") {
         out.extend(
-            ["dbeaver", "datagrip", "tableplus", "sqlitebrowser", "pgadmin4"]
-                .iter()
-                .map(|s| s.to_string()),
+            [
+                "dbeaver",
+                "datagrip",
+                "tableplus",
+                "sqlitebrowser",
+                "pgadmin4",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
         );
     } else {
         out.extend(
-            ["dbeaver-ce", "dbeaver", "datagrip", "sqlitebrowser", "pgadmin4"]
-                .iter()
-                .map(|s| s.to_string()),
+            [
+                "dbeaver-ce",
+                "dbeaver",
+                "datagrip",
+                "sqlitebrowser",
+                "pgadmin4",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
         );
     }
     out
@@ -840,6 +884,7 @@ pub fn build_profile_v2_from_context_with_options(
                 &mut g,
                 &format!("Wait for {} readiness", tool),
                 port,
+                &[],
                 60,
                 compose_id.clone(),
                 "low",
@@ -920,6 +965,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for backend port",
                     port,
+                    &port_candidates(port, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -965,6 +1011,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for backend port",
                     port,
+                    &port_candidates(port, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1010,6 +1057,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Django port",
                     8000,
+                    &[],
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1037,6 +1085,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Go backend port",
                     port,
+                    &port_candidates(port, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1089,9 +1138,14 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     &format!(
                         "Wait for {} backend port",
-                        if fw == "symfony" { "Symfony" } else { "Laravel" }
+                        if fw == "symfony" {
+                            "Symfony"
+                        } else {
+                            "Laravel"
+                        }
                     ),
                     8000,
+                    &[],
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "medium",
@@ -1117,6 +1171,7 @@ pub fn build_profile_v2_from_context_with_options(
                         &mut g,
                         "Wait for Rust backend port",
                         3000,
+                        &port_candidates(3000, 2),
                         30,
                         start,
                         "low",
@@ -1130,7 +1185,14 @@ pub fn build_profile_v2_from_context_with_options(
                 let install = one_shot_step(
                     &mut g,
                     "Install Java dependencies",
-                    &java_wrapper_command(ctx, if gradle { "build -x test" } else { "package -DskipTests" }),
+                    &java_wrapper_command(
+                        ctx,
+                        if gradle {
+                            "build -x test"
+                        } else {
+                            "package -DskipTests"
+                        },
+                    ),
                     dir.as_deref(),
                     infra.clone(),
                     true,
@@ -1147,6 +1209,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Spring Boot port",
                     8080,
+                    &port_candidates(8080, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1174,6 +1237,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for .NET backend port",
                     5000,
+                    &port_candidates(5000, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1201,6 +1265,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Rails port",
                     3000,
+                    &port_candidates(3000, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1219,7 +1284,11 @@ pub fn build_profile_v2_from_context_with_options(
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
             | "vite-svelte" | "react" | "vue" | "svelte" | "solid" => {
                 let frontend_port = if has_backend {
-                    if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") { 3001 } else { 5174 }
+                    if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
+                        3001
+                    } else {
+                        5174
+                    }
                 } else if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
                     3000
                 } else {
@@ -1246,17 +1315,11 @@ pub fn build_profile_v2_from_context_with_options(
                     vec![install],
                     "high",
                 );
-                let port = if fw == "next" || fw == "nextjs" || fw == "nuxt" || fw == "nuxtjs" {
-                    frontend_port
-                } else if fw == "angular" {
-                    4200
-                } else {
-                    5173
-                };
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for frontend port",
-                    port,
+                    frontend_port,
+                    &port_candidates(frontend_port, 4),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1284,6 +1347,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Angular port",
                     4200,
+                    &port_candidates(4200, 4),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1311,6 +1375,7 @@ pub fn build_profile_v2_from_context_with_options(
                     &mut g,
                     "Wait for Metro bundler",
                     8081,
+                    &port_candidates(8081, 4),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1417,6 +1482,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder, infra: &[Stri
                     g,
                     "Wait for Go port",
                     8080,
+                    &port_candidates(8080, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1435,7 +1501,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder, infra: &[Stri
                 let _ = start;
             }
             "typescript" | "javascript" => {
-let install = one_shot_step(
+                let install = one_shot_step(
                     g,
                     "Install Node.js dependencies",
                     &node_install_command(ctx, None),

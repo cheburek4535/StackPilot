@@ -1436,7 +1436,11 @@ fn run_uninstall_program(program: &str, args: &[&str]) -> Result<(), String> {
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let text = if stderr.trim().is_empty() { stdout } else { stderr };
+    let text = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
     let tail: Vec<&str> = text.lines().rev().take(6).collect();
     let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
     Err(format!(
@@ -1489,7 +1493,13 @@ pub async fn tcx_uninstall_tool(
         "windows" => {
             run_uninstall_program(
                 "winget",
-                &["uninstall", "--id", pkg_id, "--silent", "--accept-source-agreements"],
+                &[
+                    "uninstall",
+                    "--id",
+                    pkg_id,
+                    "--silent",
+                    "--accept-source-agreements",
+                ],
             )?;
         }
         "macos" => {

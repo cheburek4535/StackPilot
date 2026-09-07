@@ -245,11 +245,8 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sp_session_test_{}_{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("sp_session_test_{}_{}", std::process::id(), name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
@@ -291,17 +288,22 @@ mod tests {
         svc.start_session(&ctx("a", Some("C:/dev/a")));
         {
             let mut guard = svc.current.lock().unwrap();
-            guard.as_mut().unwrap().started_at = guard.as_mut().unwrap().started_at.saturating_sub(60);
+            guard.as_mut().unwrap().started_at =
+                guard.as_mut().unwrap().started_at.saturating_sub(60);
         }
         svc.end_session();
 
         svc.start_session(&ctx("b", Some("C:/dev/b")));
         {
             let mut guard = svc.current.lock().unwrap();
-            guard.as_mut().unwrap().started_at = guard.as_mut().unwrap().started_at.saturating_sub(10);
+            guard.as_mut().unwrap().started_at =
+                guard.as_mut().unwrap().started_at.saturating_sub(10);
         }
         let info = svc.get_session().unwrap();
-        assert!(info.total_duration_secs < 30, "project b must not inherit project a time");
+        assert!(
+            info.total_duration_secs < 30,
+            "project b must not inherit project a time"
+        );
         fs::remove_dir_all(dir).ok();
     }
 
@@ -334,7 +336,8 @@ mod tests {
         svc.start_session(&ctx("a", Some("C:/dev/a")));
         {
             let mut guard = svc.current.lock().unwrap();
-            guard.as_mut().unwrap().started_at = guard.as_mut().unwrap().started_at.saturating_sub(90);
+            guard.as_mut().unwrap().started_at =
+                guard.as_mut().unwrap().started_at.saturating_sub(90);
         }
         // Switch directly to another project — old elapsed must be persisted.
         svc.start_session(&ctx("b", Some("C:/dev/b")));

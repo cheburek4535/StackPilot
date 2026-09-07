@@ -164,18 +164,17 @@ impl LaunchEngine for ProcessLaunchEngine {
                 ))
             }
 
-            ActionType::OpenUrl { url } => match crate::platform::app_launcher::open_url_in_browser(
-                url,
-                browser_path,
-            ) {
-                Ok(_) => Ok((
-                    ActionStatus::Success {
-                        message: format!("Browser opened: {}", url),
-                    },
-                    None,
-                )),
-                Err(e) => Err(format!("Failed to open browser: {}", e)),
-            },
+            ActionType::OpenUrl { url } => {
+                match crate::platform::app_launcher::open_url_in_browser(url, browser_path) {
+                    Ok(_) => Ok((
+                        ActionStatus::Success {
+                            message: format!("Browser opened: {}", url),
+                        },
+                        None,
+                    )),
+                    Err(e) => Err(format!("Failed to open browser: {}", e)),
+                }
+            }
 
             ActionType::OpenApplication {
                 path,

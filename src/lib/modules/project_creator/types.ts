@@ -61,6 +61,21 @@ export type FrameworkDef = {
   suppresses_language_scaffold?: boolean;
   /** Технологии UI внутри фреймворка с собственным стеком (Qt → QML/Widgets/WebEngine/Kirigami) */
   qt_ui_options?: QtUiOption[];
+  /** Capabilities, которые фреймворк предоставляет сам ("orm", "migrations", "admin").
+   *  Используется для обнаружения дублирования функциональности инструментами. */
+  provides_capabilities?: string[];
+  /** Инструменты, которые с этим фреймворком дают Warning (причина + рекомендация).
+   *  Ключ — tool_id, значение — причина и рекомендация. */
+  tool_warnings?: Record<string, ToolWarningReason>;
+  /** Инструменты, несовместимые с фреймворком (жёсткий конфликт, блокирует генерацию) */
+  tool_conflicts?: string[];
+};
+
+/** Причина предупреждения о нежелательном сочетании фреймворка и
+ *  инструмента: `reason` + `recommendation` (ключи локализации i18n). */
+export type ToolWarningReason = {
+  reason: string;
+  recommendation: string;
 };
 
 /** Технология UI внутри фреймворка с собственным стеком (Qt → QML/Widgets/
@@ -117,6 +132,17 @@ export type ToolDef = {
   for_languages: string[];
   /** Типы проектов, для которых тул «рекомендован» (airflow/clickhouse — для etl). Пусто = нейтрален */
   for_project_types: string[];
+  /** Архитектурная ответственность инструмента ("orm", "migrations", "testing", "linting").
+   *  Используется для группировки и обнаружения дублирования ролей. */
+  responsibility?: string | null;
+  /** Альтернативные инструменты той же/похожей ответственности */
+  alternatives?: string[];
+  /** Как обрабатывать альтернативы: "allow" (по умолчанию), "warn", "exclusive" */
+  alternative_policy?: "allow" | "warn" | "exclusive";
+  /** Фреймворки, под которые инструмент заточен (сильнее, чем for_languages) */
+  for_frameworks?: string[];
+  /** Capabilities, требуемые от фреймворка/стека ("orm:sqlalchemy") */
+  requires_capabilities?: string[];
 };
 
 /** Пара-предупреждение: выбор `a`+`b` не блокируется, но помечается Warning */

@@ -10,6 +10,13 @@ pub mod recommend;
 pub mod validate;
 pub mod wizard;
 
+#[cfg(test)]
+mod tests {
+    mod metadata_tests;
+    mod regression_tests;
+    mod validation_tests;
+}
+
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -54,14 +61,22 @@ pub fn count_project_files_on_disk(path: &std::path::Path, limit: u64) -> models
                 Ok(ft) if ft.is_file() => {
                     count += 1;
                     if count >= limit {
-                        return models::ProjectFileCount { count, capped: true, limit };
+                        return models::ProjectFileCount {
+                            count,
+                            capped: true,
+                            limit,
+                        };
                     }
                 }
                 _ => {}
             }
         }
     }
-    models::ProjectFileCount { count, capped: false, limit }
+    models::ProjectFileCount {
+        count,
+        capped: false,
+        limit,
+    }
 }
 
 pub struct ProjectCreatorState {

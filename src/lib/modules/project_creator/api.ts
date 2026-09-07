@@ -96,18 +96,21 @@ export function getHostPlatform(): Promise<string> {
   return invoke("get_host_platform");
 }
 
-/** Проверка стека на ограничения (лимиты, конфликты, платформы, языки) */
+/** Проверка стека на ограничения (лимиты, конфликты, платформы, языки,
+ *  инструменты: зависимости, языковая совместимость, ответственности) */
 export function validateProjectStack(
   projectType: string | null,
   backendLanguages: string[],
   frontendLanguages: string[],
   frameworks: string[],
+  tools: string[],
 ): Promise<StackIssue[]> {
   return invoke("validate_project_stack", {
     projectType,
     backendLanguages,
     frontendLanguages,
     frameworks,
+    tools,
   });
 }
 

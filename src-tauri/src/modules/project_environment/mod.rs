@@ -177,7 +177,6 @@ mod tests {
 
         let overlay = resolve_binding_overlay(&binding);
 
-
         // Tool executable parent dir should be first
         assert_eq!(overlay.path_prepend[0], py_parent);
         // Tool path_entries should be second

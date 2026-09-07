@@ -659,6 +659,23 @@ fn merge_legacy_into_v2(
                     step.retry_policy = old_step.retry_policy.clone();
                     step.metadata = old_step.metadata.clone();
                     step.extra = old_step.extra.clone();
+                    // The legacy action model cannot express `candidate_ports`
+                    // (dev-server fallback ports). Carry them over from the
+                    // existing V2 step so a legacy-API save never drops them.
+                    if let (
+                        StepKind::WaitForPort {
+                            candidate_ports, ..
+                        },
+                        StepKind::WaitForPort {
+                            candidate_ports: old_candidates,
+                            ..
+                        },
+                    ) = (&mut step.kind, &old_step.kind)
+                    {
+                        if !old_candidates.is_empty() {
+                            *candidate_ports = old_candidates.clone();
+                        }
+                    }
                 }
             }
             // The legacy edit may have removed steps the old graph depended
@@ -1143,6 +1160,71 @@ mod tests {
 
         let loaded = manager.get_profile_v2("Fwd").unwrap();
         assert_eq!(loaded.extra.get("future_field").unwrap()["a"], 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_save_preserves_candidate_ports_on_wait_steps() {
+        let dir = temp_dir("merge_ports");
+        let manager = JsonProfileManager::new(dir.clone());
+
+        // V2 profile with a wait step that carries fallback ports.
+        let mut profile = sample_v2("Ports", None);
+        profile.steps = vec![LaunchStep {
+            id: "wait".to_string(),
+            label: "wait".to_string(),
+            enabled: true,
+            kind: StepKind::WaitForPort {
+                host: "127.0.0.1".to_string(),
+                port: 5173,
+                candidate_ports: vec![5174, 5175],
+            },
+            depends_on: vec![],
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: Some(60),
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        }];
+        manager.save_profile_v2(&profile).unwrap();
+
+        // A legacy-API save cannot express candidate_ports, but the merge
+        // must carry them over from the existing V2 step.
+        let legacy = LaunchProfile {
+            name: "Ports".to_string(),
+            description: "updated".to_string(),
+            project_path: Some("/proj".to_string()),
+            actions: vec![LaunchAction {
+                id: "wait".to_string(),
+                label: "wait".to_string(),
+                enabled: true,
+                action_type: ActionType::WaitForPort {
+                    host: "127.0.0.1".to_string(),
+                    port: 5173,
+                    timeout_secs: 60,
+                },
+            }],
+            environment_binding_id: None,
+            preferred_ide: None,
+            schema_version: None,
+            id: None,
+            steps: None,
+        };
+        manager.save_profile(&legacy).unwrap();
+
+        let loaded = manager.get_profile_v2("Ports").unwrap();
+        match &loaded.steps[0].kind {
+            StepKind::WaitForPort {
+                candidate_ports, ..
+            } => assert_eq!(candidate_ports, &vec![5174, 5175]),
+            _ => panic!("expected WaitForPort"),
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }

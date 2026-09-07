@@ -18,12 +18,22 @@
 //   5. Язык(и) стороны совместимы с фреймворком (side + languages).
 //   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA, два
 //      full-stack фреймворка, backend + Electron).
+//   Инструменты (зеркало Session 2 validate.rs):
+//     8. зависимость (tool.requires) не выбрана — Error;
+//     9. несовпадение языков (tool.for_languages) — Error
+//        (пустой список = универсальный инструмент);
+//    10. пересечение ответственностей (responsibility + alternative_policy):
+//        exclusive — Error, warn — Warning, allow — допустимо; при
+//        расхождении политик действует более строгая из двух;
+//    11. связки фреймворк↔инструмент: tool_conflicts — Error,
+//        tool_warnings — Warning (причина + рекомендация).
 
 import { i18n } from "$lib/core/i18n.svelte";
 import type { TranslationKey } from "$lib/core/i18n.svelte";
 import type {
   WizardTreeData,
   FrameworkDef,
+  ToolDef,
   StackIssue,
   StackSeverity,
 } from "./types";
@@ -88,6 +98,7 @@ export function validateStack(
   backendLangs: string[],
   frontendLangs: string[],
   frameworks: string[],
+  tools: string[],
   os: string,
 ): StackIssue[] {
   const issues: StackIssue[] = [];
@@ -239,6 +250,127 @@ export function validateStack(
           b: owner.label,
         }),
       });
+    }
+  }
+
+  // 8. Зависимости инструментов (tool.requires[]): alembic требует
+  //    sqlalchemy. Если требуемый инструмент не выбран — Error.
+  const selectedToolIds = new Set(tools);
+  for (const toolId of tools) {
+    const tool = tree.tools.find((t) => t.id === toolId);
+    if (!tool) continue;
+    for (const requiredId of tool.requires) {
+      if (selectedToolIds.has(requiredId)) continue;
+      const requiredLabel =
+        tree.tools.find((t) => t.id === requiredId)?.label ?? requiredId;
+      const args = { tool: tool.label, required: requiredLabel };
+      issues.push({
+        severity: "Error",
+        message_key: "stack.tool.missing_dependency",
+        args,
+        message: i18n.t("stack.tool.missing_dependency", args),
+      });
+    }
+  }
+
+  // 9. Языковая совместимость инструмента (tool.for_languages[]). Пустой
+  //    список — универсальный инструмент. Несовпадение — Error.
+  const languages = [...backendLangs, ...frontendLangs];
+  for (const toolId of tools) {
+    const tool = tree.tools.find((t) => t.id === toolId);
+    if (!tool || tool.for_languages.length === 0) continue;
+    const compatible = tool.for_languages.some((l) => languages.includes(l));
+    if (compatible) continue;
+    const args = { tool: tool.label, languages: tool.for_languages.join(", ") };
+    issues.push({
+      severity: "Error",
+      message_key: "stack.tool.language_mismatch",
+      args,
+      message: i18n.t("stack.tool.language_mismatch", args),
+    });
+  }
+
+  // 10. Пересечение ответственностей (tool.responsibility + alternative_policy).
+  //     exclusive — Error, warn — Warning, allow — допустимо; при расхождении
+  //     политик действует более строгая из двух.
+  const selectedTools: ToolDef[] = tools
+    .map((id) => tree.tools.find((t) => t.id === id))
+    .filter((t): t is ToolDef => !!t);
+  const byResponsibility = new Map<string, ToolDef[]>();
+  for (const tool of selectedTools) {
+    if (!tool.responsibility) continue;
+    const group = byResponsibility.get(tool.responsibility) ?? [];
+    group.push(tool);
+    byResponsibility.set(tool.responsibility, group);
+  }
+  for (const [responsibility, group] of byResponsibility) {
+    if (group.length <= 1) continue;
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i];
+        const b = group[j];
+        const policyA = a.alternative_policy ?? "allow";
+        const policyB = b.alternative_policy ?? "allow";
+        const effective =
+          policyA === "exclusive" || policyB === "exclusive"
+            ? "exclusive"
+            : policyA === "warn" || policyB === "warn"
+              ? "warn"
+              : "allow";
+        if (effective === "exclusive") {
+          const args = { a: a.label, b: b.label, responsibility };
+          issues.push({
+            severity: "Error",
+            message_key: "stack.tool.exclusive_alternatives",
+            args,
+            message: i18n.t("stack.tool.exclusive_alternatives", args),
+          });
+        } else if (effective === "warn") {
+          const args = { a: a.label, b: b.label, responsibility };
+          issues.push({
+            severity: "Warning",
+            message_key: "stack.tool.overlapping_responsibility",
+            args,
+            message: i18n.t("stack.tool.overlapping_responsibility", args),
+          });
+        }
+      }
+    }
+  }
+
+  // 11. Связки фреймворк↔инструмент: tool_conflicts — жёсткая
+  //     несовместимость (Error); tool_warnings — Warning с причиной и
+  //     рекомендацией (показываются отдельной строкой из args).
+  for (const fw of selected) {
+    for (const toolId of tools) {
+      if ((fw.tool_conflicts ?? []).includes(toolId)) {
+        const toolLabel =
+          tree.tools.find((t) => t.id === toolId)?.label ?? toolId;
+        const args = { framework: fw.label, tool: toolLabel };
+        issues.push({
+          severity: "Error",
+          message_key: "stack.framework_tool_conflict",
+          args,
+          message: i18n.t("stack.framework_tool_conflict", args),
+        });
+      }
+      const warning = fw.tool_warnings?.[toolId];
+      if (warning) {
+        const toolLabel =
+          tree.tools.find((t) => t.id === toolId)?.label ?? toolId;
+        const args = {
+          framework: fw.label,
+          tool: toolLabel,
+          reason: warning.reason,
+          recommendation: warning.recommendation,
+        };
+        issues.push({
+          severity: "Warning",
+          message_key: "stack.framework_tool_warning",
+          args,
+          message: i18n.t("stack.framework_tool_warning", args),
+        });
+      }
     }
   }
 

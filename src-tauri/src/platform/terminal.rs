@@ -112,6 +112,13 @@ pub struct TerminalConfig {
     /// Environment variables to pass to the terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<std::collections::HashMap<String, String>>,
+    /// Optional startup probe marker file. When set, the terminal's inner
+    /// command is wrapped so that, after it exits, its exit code is written
+    /// to this file. The orchestrator polls the file to verify the command
+    /// actually ran (and did not fail instantly), instead of blindly
+    /// treating "terminal opened" as "command started".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_marker: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -128,6 +135,7 @@ impl Default for TerminalConfig {
             label: None,
             keep_open: true,
             env: None,
+            startup_marker: None,
         }
     }
 }
@@ -254,6 +262,43 @@ fn build_inner_command(command: &str, working_dir: Option<&str>) -> String {
     }
 }
 
+/// Shell family a terminal backend runs its inner command in.
+#[derive(Debug, Clone, Copy)]
+enum MarkerShell {
+    /// `cmd.exe` (`cmd /K`), needs delayed expansion (`!ERRORLEVEL!`).
+    Cmd,
+    /// POSIX `sh`/`bash`/`zsh` (`$?`).
+    Sh,
+    /// PowerShell (`$LASTEXITCODE`).
+    Ps,
+}
+
+/// Wrap the inner command so the terminal writes the command's exit code to
+/// the startup probe marker after it exits. The suffix is appended AFTER the
+/// inner command unconditionally (`&` in cmd, `;` in sh/ps), so a failing
+/// command still produces a marker with its real exit code.
+fn with_marker(inner: &str, config: &TerminalConfig, shell: MarkerShell) -> String {
+    let Some(marker) = config.startup_marker.as_deref() else {
+        return inner.to_string();
+    };
+    match shell {
+        // `!ERRORLEVEL!` (delayed expansion, enabled via `/V:ON`) is expanded
+        // when the echo executes, unlike `%ERRORLEVEL%` which is expanded when
+        // the whole line is parsed (always 0). The space before `>` and the
+        // quoted path are required: `echo !ERRORLEVEL!>path` writes an empty
+        // file.
+        MarkerShell::Cmd => format!("{} & echo !ERRORLEVEL! > \"{}\"", inner, marker),
+        MarkerShell::Sh => {
+            format!("{}; echo $? > '{}'", inner, marker.replace('\'', "'\\''"))
+        }
+        MarkerShell::Ps => format!(
+            "{}; $LASTEXITCODE | Out-File -FilePath '{}' -Encoding ascii",
+            inner,
+            marker.replace('\'', "''")
+        ),
+    }
+}
+
 /// Escape a command for osascript (macOS Terminal.app / iTerm2).
 fn escape_osascript(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -301,6 +346,7 @@ fn resolve_windows_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Cmd);
     // wt.exe -w new cmd /K "<inner>" — the command is passed as a single
     // argv entry so cmd.exe receives it literally (no temp batch script:
     // the user sees the exact command in the terminal and nothing leaks
@@ -327,6 +373,11 @@ fn resolve_windows_terminal(
     }
 
     args.push("cmd".to_string());
+    // `/V:ON` enables delayed expansion so the startup probe can capture the
+    // inner command's exit code with `!ERRORLEVEL!`.
+    if config.startup_marker.is_some() {
+        args.push("/V:ON".to_string());
+    }
     args.push("/K".to_string());
     args.push(inner_cmd.to_string());
 
@@ -342,11 +393,17 @@ fn resolve_windows_terminal(
 }
 
 fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Cmd);
     // `cmd /K <tail>`: the tail is a raw command line parsed by cmd itself.
     // `&&` separators must NOT be escaped (`^&^&` would join the pieces
     // into one command) and the tail must reach cmd without backslash
     // re-escaping — hence `raw_tail`.
     let mut args = Vec::new();
+    // `/V:ON` enables delayed expansion so the startup probe can capture the
+    // inner command's exit code with `!ERRORLEVEL!`.
+    if config.startup_marker.is_some() {
+        args.push("/V:ON".to_string());
+    }
     args.push("/K".to_string());
 
     let full_cmd = if let Some(ref label) = config.label {
@@ -369,6 +426,7 @@ fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan,
 }
 
 fn resolve_powershell(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Ps);
     let mut args = vec![
         "-NoExit".to_string(),
         "-Command".to_string(),
@@ -388,6 +446,7 @@ fn resolve_powershell(config: &TerminalConfig, inner_cmd: &str) -> Result<Termin
 }
 
 fn resolve_pwsh(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Ps);
     let mut args = vec![
         "-NoExit".to_string(),
         "-Command".to_string(),
@@ -407,7 +466,8 @@ fn resolve_pwsh(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan
 }
 
 fn resolve_terminal_app(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let escaped = escape_osascript(inner_cmd);
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let escaped = escape_osascript(&inner_cmd);
     let script = if let Some(ref label) = config.label {
         format!(
             "tell application \"Terminal\"\n  activate\n  do script \"{}\"\n  set custom title of front window to \"{}\"\nend tell",
@@ -428,7 +488,8 @@ fn resolve_terminal_app(config: &TerminalConfig, inner_cmd: &str) -> Result<Term
 fn resolve_iterm2(_config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
     // iTerm2 can be controlled via AppleScript or its CLI (iterm2://)
     // Use the AppleScript approach for reliability
-    let escaped = escape_osascript(inner_cmd);
+    let inner_cmd = with_marker(inner_cmd, _config, MarkerShell::Sh);
+    let escaped = escape_osascript(&inner_cmd);
     let script = format!(
         "tell application \"iTerm\"\n  activate\n  set newWindow to (create window with default profile)\n  tell current session of newWindow\n    write text \"{}\"\n  end tell\nend tell",
         escaped
@@ -446,6 +507,7 @@ fn resolve_gnome_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = Vec::new();
 
     if matches!(config.window_policy, TerminalWindowPolicy::NewTab) {
@@ -473,6 +535,7 @@ fn resolve_gnome_terminal(
 }
 
 fn resolve_konsole(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![
         "--hold".to_string(),
         "-e".to_string(),
@@ -494,6 +557,7 @@ fn resolve_konsole(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalP
 }
 
 fn resolve_xterm(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![
         "-hold".to_string(),
         "-e".to_string(),
@@ -515,6 +579,7 @@ fn resolve_xterm(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPla
 }
 
 fn resolve_alacritty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![];
     args.push("--command".to_string());
     args.push(format!("sh -c '{}'", inner_cmd.replace('\'', "'\\''")));
@@ -533,6 +598,7 @@ fn resolve_alacritty(config: &TerminalConfig, inner_cmd: &str) -> Result<Termina
 }
 
 fn resolve_kitty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![];
     args.push("--hold".to_string());
     args.push("sh".to_string());
@@ -556,6 +622,7 @@ fn resolve_xfce4_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![
         "--hold".to_string(),
         "-e".to_string(),
@@ -579,10 +646,11 @@ fn resolve_xfce4_terminal(
 
 fn resolve_custom_terminal(
     name: &str,
-    _config: &TerminalConfig,
+    config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
     // Custom terminal: assume it can accept `-e sh -c "<cmd>"` pattern
+    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
     Ok(TerminalPlan {
         program: name.to_string(),
         args: vec![
@@ -651,6 +719,7 @@ mod tests {
             label: Some("My Terminal".to_string()),
             keep_open: true,
             env: None,
+            startup_marker: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "cmd");
@@ -671,6 +740,7 @@ mod tests {
             label: None,
             keep_open: true,
             env: None,
+            startup_marker: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "osascript");
@@ -687,10 +757,51 @@ mod tests {
             label: Some("Dev".to_string()),
             keep_open: true,
             env: None,
+            startup_marker: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "gnome-terminal");
         assert!(plan.args.iter().any(|a| a == "--title"));
+    }
+
+    #[test]
+    fn cmd_plan_with_startup_marker_enables_delayed_expansion() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::Cmd,
+            command: "npm run dev".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: true,
+            env: None,
+            startup_marker: Some(r"C:\Temp\probe\m.txt".to_string()),
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        assert_eq!(plan.program, "cmd");
+        assert!(plan.args.contains(&"/V:ON".to_string()));
+        let tail = plan.raw_tail.unwrap_or_default();
+        assert!(tail.contains("!ERRORLEVEL!"));
+        assert!(tail.contains("m.txt"));
+        assert!(tail.contains("npm run dev"));
+    }
+
+    #[test]
+    fn sh_plan_with_startup_marker_appends_exit_code_capture() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::GnomeTerminal,
+            command: "python manage.py runserver".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: true,
+            env: None,
+            startup_marker: Some("/tmp/probe/m.txt".to_string()),
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        assert_eq!(plan.program, "gnome-terminal");
+        let joined = plan.args.join(" ");
+        assert!(joined.contains("echo $? > '/tmp/probe/m.txt'"), "{joined}");
+        assert!(joined.contains("python manage.py runserver"), "{joined}");
     }
 
     #[test]

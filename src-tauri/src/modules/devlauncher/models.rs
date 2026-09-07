@@ -294,6 +294,13 @@ pub enum StepKind {
     WaitForPort {
         host: String,
         port: u16,
+        /// Additional ports to accept during the readiness wait. The step
+        /// succeeds when ANY of `[port] + candidate_ports` opens. Dev servers
+        /// (Vite, Next.js, Expo) auto-increment their port when the primary
+        /// one is taken, so generated profiles carry the real candidates and
+        /// the wait no longer times out against a busy port.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        candidate_ports: Vec<u16>,
     },
     WaitForUrl {
         url: String,
@@ -665,6 +672,7 @@ impl From<LaunchAction> for LaunchStep {
                     StepKind::WaitForPort {
                         host: host.clone(),
                         port,
+                        candidate_ports: Vec::new(),
                     },
                     None,
                     None,
@@ -738,7 +746,7 @@ impl From<LaunchStep> for LaunchAction {
                 args_list: args,
             },
             StepKind::OpenUrl { url } => ActionType::OpenUrl { url },
-            StepKind::WaitForPort { host, port } => {
+            StepKind::WaitForPort { host, port, .. } => {
                 let timeout = step
                     .completion
                     .as_ref()
@@ -938,7 +946,7 @@ impl StepKind {
                 CompletionPolicy::ExternalLaunchAccepted
             }
             StepKind::OpenUrl { .. } => CompletionPolicy::ExternalLaunchAccepted,
-            StepKind::WaitForPort { host, port } => CompletionPolicy::PortOpen {
+            StepKind::WaitForPort { host, port, .. } => CompletionPolicy::PortOpen {
                 host: host.clone(),
                 port: *port,
                 timeout_secs: default_timeout_secs(),
@@ -1017,6 +1025,45 @@ mod tests {
     }
 
     #[test]
+    fn wait_for_port_candidate_ports_json_round_trip() {
+        let step = LaunchStep {
+            id: "s1".to_string(),
+            label: "wait".to_string(),
+            enabled: true,
+            kind: StepKind::WaitForPort {
+                host: "127.0.0.1".to_string(),
+                port: 5173,
+                candidate_ports: vec![5174, 5175],
+            },
+            depends_on: vec![],
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: Some(60),
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("candidate_ports"), "{json}");
+        let back: LaunchStep = serde_json::from_str(&json).unwrap();
+        match back.kind {
+            StepKind::WaitForPort {
+                port,
+                candidate_ports,
+                ..
+            } => {
+                assert_eq!(port, 5173);
+                assert_eq!(candidate_ports, vec![5174, 5175]);
+            }
+            _ => panic!("expected WaitForPort"),
+        }
+    }
+
+    #[test]
     fn legacy_profile_to_v2_preserves_name() {
         let profile = LaunchProfile {
             name: "My Profile".to_string(),
@@ -1079,6 +1126,7 @@ mod tests {
         let kind = StepKind::WaitForPort {
             host: "localhost".to_string(),
             port: 3000,
+            candidate_ports: vec![3001, 3002],
         };
         let policy = kind.default_completion(None);
         match policy {

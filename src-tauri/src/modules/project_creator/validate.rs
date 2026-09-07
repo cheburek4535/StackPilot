@@ -21,9 +21,18 @@
 //   6. Предупреждения из warning_pairs (Phoenix LiveView + SPA, два
 //      full-stack фреймворка, backend + Electron) — не блокируют
 //      генерацию, только поясняют и советуют альтернативу.
+//   Инструменты (Session 2, только добавляют проверки, ничего не меняют):
+//     • зависимость (tool.requires) не выбрана — Error;
+//     • несовпадение языков (tool.for_languages) — Error
+//       (пустой список = универсальный инструмент);
+//     • пересечение ответственностей (responsibility + alternative_policy):
+//       exclusive — Error, warn — Warning, allow — допустимо; при
+//       расхождении политик действует более строгая из двух;
+//     • связки фреймворк↔инструмент: tool_conflicts — Error,
+//       tool_warnings — Warning (причина + рекомендация).
 
 use super::engine::duplicate_framework_write_paths;
-use super::models::{FrameworkDef, WizardContext, WizardTreeData};
+use super::models::{AlternativePolicy, FrameworkDef, ToolDef, WizardContext, WizardTreeData};
 use super::normalize::normalize_context;
 
 /// Одна найденная проблема стека.
@@ -190,6 +199,7 @@ pub fn validate_context(
         &context.backend_languages,
         &context.frontend_languages,
         &context.frameworks,
+        &context.tools,
         os,
     ));
     issues.extend(
@@ -208,6 +218,7 @@ pub fn validate_stack(
     backend_langs: &[String],
     frontend_langs: &[String],
     frameworks: &[String],
+    tools: &[String],
     os: &str,
 ) -> Vec<StackIssue> {
     let mut issues: Vec<StackIssue> = Vec::new();
@@ -470,7 +481,299 @@ pub fn validate_stack(
         }
     }
 
+    // 8–11. Инструменты (Session 2): зависимости, языковая совместимость,
+    //    пересечение ответственностей и связки фреймворк↔инструмент.
+    //    Проверки не меняют поведение фреймворк-правил выше — только
+    //    добавляют новые проблемы в конец списка.
+    validate_tool_dependencies(tree, tools, &mut issues);
+    validate_tool_language_compatibility(tree, tools, languages, &mut issues);
+    validate_tool_responsibility_overlap(tree, tools, &mut issues);
+    validate_framework_tool_warnings(tree, frameworks, tools, &mut issues);
+
     issues
+}
+
+// ============================================================
+// Tool-валидация (Session 2)
+// ============================================================
+
+/// Зависимости инструментов (tool.requires[]): alembic требует sqlalchemy.
+/// Если требуемый инструмент не выбран — Error: конфигурация окружения
+/// такого стека не собирается. Неизвестный инструмент пропускается молча;
+/// циклы зависимостей не проверяются (данные wizard_tree каноничны).
+///
+/// # Аргументы
+/// * `tree` — дерево мастера со всеми определениями инструментов
+/// * `tools` — список выбранных id инструментов
+/// * `issues` — вектор, в который добавляются найденные проблемы
+///
+/// # Генерируемые проблемы
+/// * Error с ключом "stack.tool.missing_dependency", когда требуемый
+///   инструмент не выбран
+fn validate_tool_dependencies(
+    tree: &WizardTreeData,
+    tools: &[String],
+    issues: &mut Vec<StackIssue>,
+) {
+    let selected_ids: std::collections::HashSet<&str> = tools.iter().map(String::as_str).collect();
+
+    for tool_id in tools {
+        let tool = match tree.tools.iter().find(|t| &t.id == tool_id) {
+            Some(t) => t,
+            None => continue,
+        };
+        for required_id in &tool.requires {
+            if selected_ids.contains(required_id.as_str()) {
+                continue;
+            }
+            let required_label = tree
+                .tools
+                .iter()
+                .find(|t| &t.id == required_id)
+                .map(|t| t.label.as_str())
+                .unwrap_or(required_id);
+            let mut args = std::collections::HashMap::new();
+            args.insert("tool".to_string(), tool.label.clone());
+            args.insert("required".to_string(), required_label.to_string());
+            issues.push(StackIssue::keyed(
+                StackSeverity::Error,
+                format!(
+                    "«{}» требует «{}», но этот инструмент не выбран. Добавьте «{}» или снимите «{}».",
+                    tool.label, required_label, required_label, tool.label
+                ),
+                "stack.tool.missing_dependency",
+                args,
+            ));
+        }
+    }
+}
+
+/// Языковая совместимость инструмента (tool.for_languages[]). Пустой
+/// список — универсальный инструмент (postgresql, docker), подходит любому
+/// стеку. Иначе хотя бы один выбранный язык обязан совпасть (npm — только
+/// javascript/typescript); несовпадение — Error.
+///
+/// # Аргументы
+/// * `tree` — дерево мастера со всеми определениями инструментов
+/// * `tools` — список выбранных id инструментов
+/// * `languages` — список выбранных языков
+/// * `issues` — вектор, в который добавляются найденные проблемы
+///
+/// # Генерируемые проблемы
+/// * Error с ключом "stack.tool.language_mismatch", когда ни один из
+///   for_languages инструмента не выбран
+fn validate_tool_language_compatibility(
+    tree: &WizardTreeData,
+    tools: &[String],
+    languages: &[String],
+    issues: &mut Vec<StackIssue>,
+) {
+    for tool_id in tools {
+        let tool = match tree.tools.iter().find(|t| &t.id == tool_id) {
+            Some(t) => t,
+            None => continue,
+        };
+        if tool.for_languages.is_empty() {
+            continue;
+        }
+        let compatible = tool
+            .for_languages
+            .iter()
+            .any(|lang| languages.contains(lang));
+        if compatible {
+            continue;
+        }
+        let mut args = std::collections::HashMap::new();
+        args.insert("tool".to_string(), tool.label.clone());
+        args.insert("languages".to_string(), tool.for_languages.join(", "));
+        issues.push(StackIssue::keyed(
+            StackSeverity::Error,
+            format!(
+                "«{}» требует один из языков: {}. Ни один из них не выбран — добавьте язык или снимите инструмент.",
+                tool.label,
+                tool.for_languages.join(", ")
+            ),
+            "stack.tool.language_mismatch",
+            args,
+        ));
+    }
+}
+
+/// Инструменты с одинаковой ответственностью (tool.responsibility,
+/// например "orm" у sqlalchemy/prisma/drizzle) дублируют друг друга.
+/// Судьбу пары решает alternative_policy: allow — допустимо, warn —
+/// Warning, exclusive — Error. При расхождении политик действует более
+/// строгая из двух. Инструмент без responsibility в проверке не участвует.
+///
+/// # Аргументы
+/// * `tree` — дерево мастера со всеми определениями инструментов
+/// * `tools` — список выбранных id инструментов
+/// * `issues` — вектор, в который добавляются найденные проблемы
+///
+/// # Генерируемые проблемы
+/// * Error с ключом "stack.tool.exclusive_alternatives" для пары с
+///   политикой exclusive
+/// * Warning с ключом "stack.tool.overlapping_responsibility" для пары
+///   с политикой warn
+fn validate_tool_responsibility_overlap(
+    tree: &WizardTreeData,
+    tools: &[String],
+    issues: &mut Vec<StackIssue>,
+) {
+    let selected: Vec<&ToolDef> = tools
+        .iter()
+        .filter_map(|id| tree.tools.iter().find(|t| &t.id == id))
+        .collect();
+
+    // Группировка по ответственности.
+    let mut by_responsibility: std::collections::HashMap<&str, Vec<&ToolDef>> =
+        std::collections::HashMap::new();
+    for tool in &selected {
+        if let Some(resp) = &tool.responsibility {
+            by_responsibility
+                .entry(resp.as_str())
+                .or_default()
+                .push(tool);
+        }
+    }
+
+    // Проверка каждой пары внутри одной группы.
+    for (responsibility, tools_in_group) in by_responsibility {
+        if tools_in_group.len() <= 1 {
+            continue;
+        }
+        for (i, tool_a) in tools_in_group.iter().enumerate() {
+            for tool_b in tools_in_group.iter().skip(i + 1) {
+                // Политика пары: более строгая из двух заявленных.
+                let policy_a = &tool_a.alternative_policy;
+                let policy_b = &tool_b.alternative_policy;
+                let effective_policy = match (policy_a, policy_b) {
+                    (AlternativePolicy::Exclusive, _) | (_, AlternativePolicy::Exclusive) => {
+                        AlternativePolicy::Exclusive
+                    }
+                    (AlternativePolicy::Warn, _) | (_, AlternativePolicy::Warn) => {
+                        AlternativePolicy::Warn
+                    }
+                    _ => AlternativePolicy::Allow,
+                };
+
+                match effective_policy {
+                    AlternativePolicy::Exclusive => {
+                        let mut args = std::collections::HashMap::new();
+                        args.insert("a".to_string(), tool_a.label.clone());
+                        args.insert("b".to_string(), tool_b.label.clone());
+                        args.insert("responsibility".to_string(), responsibility.to_string());
+                        issues.push(StackIssue::keyed(
+                            StackSeverity::Error,
+                            format!(
+                                "«{}» и «{}» — взаимоисключающие инструменты: оба выполняют роль {} и не могут быть выбраны вместе.",
+                                tool_a.label, tool_b.label, responsibility
+                            ),
+                            "stack.tool.exclusive_alternatives",
+                            args,
+                        ));
+                    }
+                    AlternativePolicy::Warn => {
+                        let mut args = std::collections::HashMap::new();
+                        args.insert("a".to_string(), tool_a.label.clone());
+                        args.insert("b".to_string(), tool_b.label.clone());
+                        args.insert("responsibility".to_string(), responsibility.to_string());
+                        issues.push(StackIssue::keyed(
+                            StackSeverity::Warning,
+                            format!(
+                                "«{}» и «{}» оба выполняют роль {}. Оставьте один из них, если нет особой архитектурной причины.",
+                                tool_a.label, tool_b.label, responsibility
+                            ),
+                            "stack.tool.overlapping_responsibility",
+                            args,
+                        ));
+                    }
+                    AlternativePolicy::Allow => {}
+                }
+            }
+        }
+    }
+}
+
+/// Связки фреймворк↔инструмент из данных фреймворка: tool_conflicts —
+/// жёсткая несовместимость (Error, генерация блокируется); tool_warnings —
+/// нежелательное, но допустимое сочетание (Warning: причина + рекомендация).
+///
+/// # Аргументы
+/// * `tree` — дерево мастера со всеми определениями инструментов
+/// * `frameworks` — список выбранных id фреймворков
+/// * `tools` — список выбранных id инструментов
+/// * `issues` — вектор, в который добавляются найденные проблемы
+///
+/// # Генерируемые проблемы
+/// * Error с ключом "stack.framework_tool_conflict", когда инструмент
+///   входит в tool_conflicts фреймворка
+/// * Warning с ключом "stack.framework_tool_warning", когда инструмент
+///   входит в tool_warnings фреймворка (причина + рекомендация)
+fn validate_framework_tool_warnings(
+    tree: &WizardTreeData,
+    frameworks: &[String],
+    tools: &[String],
+    issues: &mut Vec<StackIssue>,
+) {
+    let selected_fws: Vec<&FrameworkDef> = frameworks
+        .iter()
+        .filter_map(|id| tree.frameworks.iter().find(|f| &f.id == id))
+        .collect();
+
+    for fw in selected_fws {
+        for tool_id in tools {
+            // Жёсткий конфликт: фреймворк запрещает инструмент.
+            if fw.tool_conflicts.contains(tool_id) {
+                let tool_label = tree
+                    .tools
+                    .iter()
+                    .find(|t| &t.id == tool_id)
+                    .map(|t| t.label.as_str())
+                    .unwrap_or(tool_id);
+                let mut args = std::collections::HashMap::new();
+                args.insert("framework".to_string(), fw.label.clone());
+                args.insert("tool".to_string(), tool_label.to_string());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
+                    format!(
+                        "«{}» несовместим с инструментом «{}».",
+                        fw.label, tool_label
+                    ),
+                    "stack.framework_tool_conflict",
+                    args,
+                ));
+            }
+
+            // Warning: нежелательное сочетание с причиной и рекомендацией.
+            if let Some(warning) = fw.tool_warnings.get(tool_id) {
+                let tool_label = tree
+                    .tools
+                    .iter()
+                    .find(|t| &t.id == tool_id)
+                    .map(|t| t.label.as_str())
+                    .unwrap_or(tool_id);
+                let mut message = format!(
+                    "«{}» и «{}» — спорная связка. {}",
+                    fw.label, tool_label, warning.reason
+                );
+                if !warning.recommendation.is_empty() {
+                    message.push_str(&format!(" Рекомендация: {}.", warning.recommendation));
+                }
+                let mut args = std::collections::HashMap::new();
+                args.insert("framework".to_string(), fw.label.clone());
+                args.insert("tool".to_string(), tool_label.to_string());
+                args.insert("reason".to_string(), warning.reason.clone());
+                args.insert("recommendation".to_string(), warning.recommendation.clone());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Warning,
+                    message,
+                    "stack.framework_tool_warning",
+                    args,
+                ));
+            }
+        }
+    }
 }
 
 /// Первая ошибка (для короткого сообщения пользователю).
@@ -516,7 +819,10 @@ mod tests {
         // Выбранные языки = объединение сторон (тестовый помощник).
         let mut langs = b_langs.clone();
         langs.extend(f_langs.iter().cloned());
-        validate_stack(tree, pt, &langs, &b_langs, &f_langs, &fws, os)
+        // Инструменты: legacy-тесты инструментов не выбирают — пустой
+        // список проходит tool-валидацию молча (новые тесты — ниже,
+        // mod tool_validation_tests).
+        validate_stack(tree, pt, &langs, &b_langs, &f_langs, &fws, &[], os)
     }
 
     // ----------------------------------------------------------
@@ -1498,5 +1804,412 @@ mod tests {
             "windows",
         );
         assert!(issues.is_empty(), "{issues:?}");
+    }
+}
+
+// ============================================================
+// Tool-валидация (Session 2)
+// ============================================================
+
+#[cfg(test)]
+mod tool_validation_tests {
+    use super::*;
+    use crate::modules::project_creator::models::ToolWarningReason;
+
+    fn tree() -> WizardTreeData {
+        let raw = include_str!("knowledge/wizard_tree.json");
+        serde_json::from_str(raw).expect("wizard_tree.json должен парситься")
+    }
+
+    fn validate(
+        tree: &WizardTreeData,
+        pt: Option<&str>,
+        b: Option<&str>,
+        f: Option<&str>,
+        fws: &[&str],
+        tools: &[&str],
+        os: &str,
+    ) -> Vec<StackIssue> {
+        let fws: Vec<String> = fws.iter().map(|s| s.to_string()).collect();
+        let tools: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
+        let b_langs: Vec<String> = b.map(|s| s.to_string()).into_iter().collect();
+        let f_langs: Vec<String> = f.map(|s| s.to_string()).into_iter().collect();
+        // Выбранные языки = объединение сторон (тестовый помощник).
+        let mut langs = b_langs.clone();
+        langs.extend(f_langs.iter().cloned());
+        validate_stack(tree, pt, &langs, &b_langs, &f_langs, &fws, &tools, os)
+    }
+
+    fn has_key(issues: &[StackIssue], key: &str) -> bool {
+        issues.iter().any(|i| i.message_key.as_deref() == Some(key))
+    }
+
+    fn mut_tool<'a>(tree: &'a mut WizardTreeData, id: &str) -> &'a mut ToolDef {
+        tree.tools
+            .iter_mut()
+            .find(|t| t.id == id)
+            .unwrap_or_else(|| panic!("инструмент {id} не найден в дереве"))
+    }
+
+    fn mut_framework<'a>(tree: &'a mut WizardTreeData, id: &str) -> &'a mut FrameworkDef {
+        tree.frameworks
+            .iter_mut()
+            .find(|f| f.id == id)
+            .unwrap_or_else(|| panic!("фреймворк {id} не найден в дереве"))
+    }
+
+    // ----------------------------------------------------------
+    // tool.requires: зависимость не выбрана
+    // ----------------------------------------------------------
+
+    #[test]
+    fn test_alembic_without_sqlalchemy() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("python"),
+            None,
+            &[],
+            &["alembic"],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message_key.as_deref()
+                == Some("stack.tool.missing_dependency")
+                && matches!(i.severity, StackSeverity::Error)),
+            "alembic без sqlalchemy должен дать Error: {issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .find(|i| i.message_key.as_deref() == Some("stack.tool.missing_dependency"))
+                .is_some_and(|i| i.args.get("tool").is_some_and(|v| v == "Alembic")
+                    && i.args.get("required").is_some_and(|v| v == "SQLAlchemy")),
+            "в args должны быть label'ы Alembic и SQLAlchemy: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_alembic_with_sqlalchemy_is_clean() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("python"),
+            None,
+            &[],
+            &["alembic", "sqlalchemy"],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "alembic + sqlalchemy на python-стеке не должны давать проблем: {issues:?}"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // tool.for_languages: инструмент требует совместимый язык
+    // ----------------------------------------------------------
+
+    #[test]
+    fn test_npm_without_js_language() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("cpp"),
+            None,
+            &[],
+            &["npm"],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(
+                |i| i.message_key.as_deref() == Some("stack.tool.language_mismatch")
+                    && matches!(i.severity, StackSeverity::Error)
+            ),
+            "npm без JS/TS-языка должен дать Error: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_npm_with_typescript_is_clean() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &[],
+            &["npm"],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "npm на typescript-стеке не должен давать проблем: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_universal_tool_matches_any_language() {
+        let t = tree();
+        // postgresql без for_languages — универсальный инструмент.
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("cpp"),
+            None,
+            &[],
+            &["postgresql"],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "универсальный инструмент не должен зависеть от языков: {issues:?}"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // Краевые случаи: пустой список / неизвестный инструмент
+    // ----------------------------------------------------------
+
+    #[test]
+    fn test_unknown_tool_and_empty_tools_are_ignored() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("python"),
+            None,
+            &[],
+            &["definitely-not-a-tool"],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "неизвестный инструмент должен пропускаться молча: {issues:?}"
+        );
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("python"),
+            None,
+            &[],
+            &[],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "пустой список инструментов не должен давать проблем: {issues:?}"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // tool.responsibility + alternative_policy
+    // (в wizard_tree.json политики сейчас пустые — тесты патчат данные)
+    // ----------------------------------------------------------
+
+    #[test]
+    fn test_exclusive_responsibility_overlap_blocked() {
+        let mut t = tree();
+        for id in ["prisma", "drizzle"] {
+            let tool = mut_tool(&mut t, id);
+            tool.responsibility = Some("orm".to_string());
+            tool.alternative_policy = AlternativePolicy::Exclusive;
+        }
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &[],
+            &["prisma", "drizzle"],
+            "windows",
+        );
+        assert_eq!(
+            issues.len(),
+            1,
+            "exclusive-пара должна дать ровно одну проблему: {issues:?}"
+        );
+        let issue = &issues[0];
+        assert_eq!(
+            issue.message_key.as_deref(),
+            Some("stack.tool.exclusive_alternatives")
+        );
+        assert!(matches!(issue.severity, StackSeverity::Error), "{issues:?}");
+    }
+
+    #[test]
+    fn test_warn_responsibility_overlap_warns() {
+        let mut t = tree();
+        for id in ["prisma", "drizzle"] {
+            let tool = mut_tool(&mut t, id);
+            tool.responsibility = Some("orm".to_string());
+            tool.alternative_policy = AlternativePolicy::Warn;
+        }
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &[],
+            &["prisma", "drizzle"],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message_key.as_deref()
+                == Some("stack.tool.overlapping_responsibility")
+                && matches!(i.severity, StackSeverity::Warning)),
+            "warn-пара должна дать Warning: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_strictest_alternative_policy_wins() {
+        // Exclusive + Allow → всё равно Error (более строгая побеждает).
+        let mut t = tree();
+        mut_tool(&mut t, "prisma").responsibility = Some("orm".to_string());
+        mut_tool(&mut t, "prisma").alternative_policy = AlternativePolicy::Exclusive;
+        mut_tool(&mut t, "drizzle").responsibility = Some("orm".to_string());
+        mut_tool(&mut t, "drizzle").alternative_policy = AlternativePolicy::Allow;
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &[],
+            &["prisma", "drizzle"],
+            "windows",
+        );
+        assert!(
+            has_key(&issues, "stack.tool.exclusive_alternatives"),
+            "{issues:?}"
+        );
+
+        // Allow + Allow → молча.
+        let mut t = tree();
+        for id in ["prisma", "drizzle"] {
+            let tool = mut_tool(&mut t, id);
+            tool.responsibility = Some("orm".to_string());
+            tool.alternative_policy = AlternativePolicy::Allow;
+        }
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("typescript"),
+            None,
+            &[],
+            &["prisma", "drizzle"],
+            "windows",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn test_tools_without_responsibility_not_compared() {
+        let t = tree();
+        // В реальных данных responsibility у инструментов пустой — пара
+        // любых инструментов (sqlite + mongodb — обе «базы данных» по
+        // category) не должна считаться пересечением ответственностей.
+        let issues = validate(
+            &t,
+            Some("rest-api"),
+            Some("python"),
+            None,
+            &[],
+            &["sqlite", "mongodb"],
+            "windows",
+        );
+        assert!(
+            !has_key(&issues, "stack.tool.exclusive_alternatives")
+                && !has_key(&issues, "stack.tool.overlapping_responsibility"),
+            "{issues:?}"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // Фреймворк ↔ инструмент: tool_conflicts / tool_warnings
+    // (в wizard_tree.json списки сейчас пустые — тесты патчат данные)
+    // ----------------------------------------------------------
+
+    #[test]
+    fn test_framework_tool_hard_conflict_blocks() {
+        let mut t = tree();
+        mut_framework(&mut t, "django")
+            .tool_conflicts
+            .push("pytest".to_string());
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["django"],
+            &["pytest"],
+            "windows",
+        );
+        assert!(
+            issues.iter().any(|i| i.message_key.as_deref()
+                == Some("stack.framework_tool_conflict")
+                && matches!(i.severity, StackSeverity::Error)),
+            "django, запрещающий pytest, должен дать Error: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_framework_tool_warning_is_reported() {
+        let mut t = tree();
+        mut_framework(&mut t, "django").tool_warnings.insert(
+            "pytest".to_string(),
+            ToolWarningReason {
+                reason: "pytest дублирует встроенный runner Django".to_string(),
+                recommendation: "используйте manage.py test".to_string(),
+            },
+        );
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["django"],
+            &["pytest"],
+            "windows",
+        );
+        let warn = issues
+            .iter()
+            .find(|i| i.message_key.as_deref() == Some("stack.framework_tool_warning"));
+        assert!(
+            warn.is_some_and(|i| matches!(i.severity, StackSeverity::Warning)
+                && i.message
+                    .contains("pytest дублирует встроенный runner Django")
+                && i.message.contains("manage.py test")
+                && i.args.get("framework").is_some_and(|v| v == "Django")
+                && i.args.get("tool").is_some_and(|v| v == "Pytest")),
+            "{issues:?}"
+        );
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i.severity, StackSeverity::Error)),
+            "warning не должен блокировать: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_framework_without_tools_is_clean() {
+        let t = tree();
+        let issues = validate(
+            &t,
+            Some("web-app"),
+            Some("python"),
+            None,
+            &["django"],
+            &[],
+            "windows",
+        );
+        assert!(
+            issues.is_empty(),
+            "django без инструментов не должен давать проблем: {issues:?}"
+        );
     }
 }

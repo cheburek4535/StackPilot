@@ -977,14 +977,14 @@ fn parse_python_project(dir: &Path, kind: PythonKind) -> PythonProject {
 }
 
 fn parse_composer_project(dir: &Path, manifest: &Path) -> ComposerProject {
-    let content = fs::read_to_string(manifest).unwrap_or_default().to_ascii_lowercase();
+    let content = fs::read_to_string(manifest)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     ComposerProject {
         dir: dir.to_path_buf(),
         manifest: manifest.to_path_buf(),
-        is_symfony: content.contains("symfony/")
-            || content.contains("symfony/framework-bundle"),
-        is_laravel: content.contains("laravel/")
-            || content.contains("laravel/framework"),
+        is_symfony: content.contains("symfony/") || content.contains("symfony/framework-bundle"),
+        is_laravel: content.contains("laravel/") || content.contains("laravel/framework"),
     }
 }
 
@@ -1320,7 +1320,10 @@ fn android_studio_cli_name() -> &'static str {
 fn resolve_db_viewer(preferred: Option<&str>) -> Option<(String, String)> {
     for cli in super::profile_builder::db_viewer_candidates(preferred) {
         if let Some(resolved) = resolve_app(&cli) {
-            return Some((resolved, super::profile_builder::db_viewer_display_name(&cli)));
+            return Some((
+                resolved,
+                super::profile_builder::db_viewer_display_name(&cli),
+            ));
         }
     }
     None
@@ -1499,12 +1502,39 @@ impl PendingStep {
     }
 
     fn wait_port(host: &str, port: u16, timeout: u64, depends_on: &str) -> Self {
+        PendingStep::wait_port_candidates(host, port, &[], timeout, depends_on)
+    }
+
+    fn wait_port_candidates(
+        host: &str,
+        port: u16,
+        candidate_ports: &[u16],
+        timeout: u64,
+        depends_on: &str,
+    ) -> Self {
+        let mut candidates: Vec<u16> = candidate_ports.to_vec();
+        candidates.retain(|p| *p != port);
+        candidates.dedup();
         PendingStep {
-            label: format!("Wait for port {}:{}", host, port),
+            label: if candidates.is_empty() {
+                format!("Wait for port {}:{}", host, port)
+            } else {
+                format!(
+                    "Wait for port {}:{} (or {})",
+                    host,
+                    port,
+                    candidates
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            },
             enabled: true,
             kind: StepKind::WaitForPort {
                 host: host.to_string(),
                 port,
+                candidate_ports: candidates.clone(),
             },
             depends_on: vec![depends_on.to_string()],
             working_directory: None,
@@ -1987,8 +2017,20 @@ fn generate_steps(
             } else {
                 format!("Run Django server ({})", dir_label)
             };
-            let install_cmd = if py.dir.join(if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe" } else { ".venv/bin/python" }).is_file() {
-                if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe -m pip install -r requirements.txt" } else { "./.venv/bin/python -m pip install -r requirements.txt" }
+            let install_cmd = if py
+                .dir
+                .join(if cfg!(target_os = "windows") {
+                    ".venv\\Scripts\\python.exe"
+                } else {
+                    ".venv/bin/python"
+                })
+                .is_file()
+            {
+                if cfg!(target_os = "windows") {
+                    ".venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+                } else {
+                    "./.venv/bin/python -m pip install -r requirements.txt"
+                }
             } else {
                 "python -m pip install -r requirements.txt"
             };
@@ -1999,16 +2041,24 @@ fn generate_steps(
                 root,
                 true,
             );
-            let python_cmd = if py.dir.join(if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe" } else { ".venv/bin/python" }).is_file() {
-                if cfg!(target_os = "windows") { ".venv\\Scripts\\python.exe manage.py runserver" } else { "./.venv/bin/python manage.py runserver" }
-            } else { "python manage.py runserver" };
-            let mut step = PendingStep::run(
-                &label,
-                python_cmd,
-                Some(&py.dir),
-                root,
-                true,
-            );
+            let python_cmd = if py
+                .dir
+                .join(if cfg!(target_os = "windows") {
+                    ".venv\\Scripts\\python.exe"
+                } else {
+                    ".venv/bin/python"
+                })
+                .is_file()
+            {
+                if cfg!(target_os = "windows") {
+                    ".venv\\Scripts\\python.exe manage.py runserver"
+                } else {
+                    "./.venv/bin/python manage.py runserver"
+                }
+            } else {
+                "python manage.py runserver"
+            };
+            let mut step = PendingStep::run(&label, python_cmd, Some(&py.dir), root, true);
             step.depends_on.push(format!("step_{:03}", steps.len() + 1));
             steps.push(install);
             if let Some(cid) = &compose_id {
@@ -2087,9 +2137,17 @@ fn generate_steps(
     for gradle in &model.gradle_projects {
         let dir_label = rel_label(&gradle.dir, root);
         let cmd = if gradle.is_spring {
-            if cfg!(target_os = "windows") { "gradlew.bat bootRun" } else { "./gradlew bootRun" }
+            if cfg!(target_os = "windows") {
+                "gradlew.bat bootRun"
+            } else {
+                "./gradlew bootRun"
+            }
         } else {
-            if cfg!(target_os = "windows") { "gradlew.bat run" } else { "./gradlew run" }
+            if cfg!(target_os = "windows") {
+                "gradlew.bat run"
+            } else {
+                "./gradlew run"
+            }
         };
         let label = if dir_label == "root" {
             "Run Gradle project".to_string()
@@ -2116,9 +2174,17 @@ fn generate_steps(
     for maven in &model.maven_projects {
         let dir_label = rel_label(&maven.dir, root);
         let cmd = if maven.is_spring {
-            if cfg!(target_os = "windows") { "mvnw.cmd spring-boot:run" } else { "./mvnw spring-boot:run" }
+            if cfg!(target_os = "windows") {
+                "mvnw.cmd spring-boot:run"
+            } else {
+                "./mvnw spring-boot:run"
+            }
         } else {
-            if cfg!(target_os = "windows") { "mvnw.cmd exec:java" } else { "./mvnw exec:java" }
+            if cfg!(target_os = "windows") {
+                "mvnw.cmd exec:java"
+            } else {
+                "./mvnw exec:java"
+            }
         };
         let label = if dir_label == "root" {
             "Run Maven project".to_string()
@@ -2335,8 +2401,22 @@ fn generate_steps(
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
 
-        if let Some(port) = pkg.port.map(|p| if frontend_port_override { 3001 } else { p }) {
-            let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
+        if let Some(port) = pkg
+            .port
+            .map(|p| if frontend_port_override { 3001 } else { p })
+        {
+            // Dev servers (Vite, Next.js, Expo) auto-increment their port when
+            // the configured one is already taken. Accept the detected port
+            // plus the next few so a busy primary port does not time out the
+            // wait.
+            let candidates: Vec<u16> = (port + 1..=port + 4).collect();
+            let mut wait = PendingStep::wait_port_candidates(
+                "127.0.0.1",
+                port,
+                &candidates,
+                WAIT_PORT_TIMEOUT_SECS,
+                &id,
+            );
             wait.label = format!("Wait for {} port {}", tool, port);
             wait = wait.with_metadata("confidence", pkg.port_confidence.as_str());
             steps.push(wait);
@@ -2494,7 +2574,7 @@ fn generate_steps(
 /// `cmd` tree, while retaining the root command as a fallback for projects
 /// whose entry point is generated at runtime.
 fn go_run_command(module_dir: &Path) -> String {
-if module_dir.join("main.go").is_file() {
+    if module_dir.join("main.go").is_file() {
         return "go run .".to_string();
     }
 
@@ -2515,7 +2595,10 @@ if module_dir.join("main.go").is_file() {
         .filter_map(Result::ok)
     {
         if entry.file_type().is_file()
-            && entry.file_name().to_string_lossy().eq_ignore_ascii_case("main.go")
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("main.go")
         {
             if let Some(parent) = entry.path().parent() {
                 candidates.push(parent.to_path_buf());

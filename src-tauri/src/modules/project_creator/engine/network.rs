@@ -181,19 +181,13 @@ pub fn is_network_command(command: &str, args: &[String]) -> bool {
         "pnpm" | "yarn" | "yarnpkg" | "bun" => any_token(
             &tokens,
             &[
-                "install",
-                "i",
-                "add",
-                "ci",
-                "upgrade",
-                "update",
-                "remove",
-                "rm",
-                "dlx",
-                "create",
+                "install", "i", "add", "ci", "upgrade", "update", "remove", "rm", "dlx", "create",
             ],
         ),
-        "deno" => any_token(&tokens, &["install", "add", "cache", "uninstall", "upgrade"]),
+        "deno" => any_token(
+            &tokens,
+            &["install", "add", "cache", "uninstall", "upgrade"],
+        ),
         // ---- Python ----
         // `python -m pip install ...` — сеть; `python -m venv ...` / `--version` — нет.
         "python" | "python3" | "py" => {
@@ -250,10 +244,9 @@ pub fn is_network_command(command: &str, args: &[String]) -> bool {
         // ---- Поставка исходников напрямую ----
         "zig" => any_token(&tokens, &["fetch", "build"]),
         "curl" | "wget" | "aria2c" => !any_token(&tokens, &["version"]),
-        "helm" | "kubectl" | "kustomize" => any_token(
-            &tokens,
-            &["install", "upgrade", "repo", "pull", "apply"],
-        ),
+        "helm" | "kubectl" | "kustomize" => {
+            any_token(&tokens, &["install", "upgrade", "repo", "pull", "apply"])
+        }
         _ => false,
     }
 }
@@ -332,9 +325,7 @@ pub fn network_failure_hint(program: &str, args: &[String]) -> String {
          \x20 - if the registry is blocked in your region, enable a VPN or a proxy;\n\
          \x20 - or configure a registry/providers mirror for the tool, then re-run\n\
          \x20   the command manually once the network is available.",
-        "Network error",
-        command_line,
-        registry,
+        "Network error", command_line, registry,
     )
 }
 
@@ -359,11 +350,17 @@ mod tests {
     fn classifies_node_ecosystem_by_args() {
         assert!(is_network_command("npm", &args(&["install"])));
         assert!(is_network_command("npm", &args(&["ci"])));
-        assert!(is_network_command("npx", &args(&["-p", "typescript", "tsc", "--init"])));
+        assert!(is_network_command(
+            "npx",
+            &args(&["-p", "typescript", "tsc", "--init"])
+        ));
         assert!(!is_network_command("npm", &args(&["run", "build"])));
         assert!(!is_network_command("npm", &args(&["--version"])));
         assert!(!is_network_command("npx", &args(&["--version"])));
-        assert!(!is_network_command("node", &args(&["-e", "console.log(1)"])));
+        assert!(!is_network_command(
+            "node",
+            &args(&["-e", "console.log(1)"])
+        ));
     }
 
     #[test]
@@ -382,10 +379,19 @@ mod tests {
 
     #[test]
     fn classifies_go_and_cargo() {
-        assert!(is_network_command("go", &args(&["get", "github.com/gin-gonic/gin@latest"])));
+        assert!(is_network_command(
+            "go",
+            &args(&["get", "github.com/gin-gonic/gin@latest"])
+        ));
         assert!(!is_network_command("go", &args(&["mod", "init", "myapp"])));
-        assert!(is_network_command("cargo", &args(&["add", "axum", "tokio"])));
-        assert!(!is_network_command("cargo", &args(&["init", "--name", "x"])));
+        assert!(is_network_command(
+            "cargo",
+            &args(&["add", "axum", "tokio"])
+        ));
+        assert!(!is_network_command(
+            "cargo",
+            &args(&["init", "--name", "x"])
+        ));
     }
 
     #[test]
@@ -401,7 +407,10 @@ mod tests {
         ));
         assert!(!is_network_command("composer", &args(&["--version"])));
         assert!(!is_network_command("flutter", &args(&["--version"])));
-        assert!(is_network_command("flutter", &args(&["create", "frontend"])));
+        assert!(is_network_command(
+            "flutter",
+            &args(&["create", "frontend"])
+        ));
     }
 
     #[test]
@@ -416,7 +425,10 @@ mod tests {
                 "laravel/laravel"
             ])
         ));
-        assert!(!is_network_command("php", &args(&["-d", "extension=fileinfo", "-r", "echo 'x';"])));
+        assert!(!is_network_command(
+            "php",
+            &args(&["-d", "extension=fileinfo", "-r", "echo 'x';"])
+        ));
     }
 
     #[test]
@@ -425,10 +437,7 @@ mod tests {
             "pip",
             &args(&["install", "--no-index", "-r", "requirements.txt"])
         ));
-        assert!(!is_network_command(
-            "npm",
-            &args(&["install", "--offline"])
-        ));
+        assert!(!is_network_command("npm", &args(&["install", "--offline"])));
     }
 
     #[test]
@@ -456,7 +465,9 @@ mod tests {
     fn does_not_flag_code_errors_as_network() {
         assert!(!has_network_failure_markers("npm ERR! code EJSONPARSE"));
         assert!(!has_network_failure_markers("error: could not run `rustc`"));
-        assert!(!has_network_failure_markers("Command failed (exited with status 1)"));
+        assert!(!has_network_failure_markers(
+            "Command failed (exited with status 1)"
+        ));
     }
 
     #[test]

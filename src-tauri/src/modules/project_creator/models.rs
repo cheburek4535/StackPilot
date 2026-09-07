@@ -190,6 +190,25 @@ pub struct FrameworkDef {
     /// в попапе владельца, а не как самостоятельные карточки.
     #[serde(default)]
     pub qt_ui_options: Vec<QtUiOption>,
+    /// Capabilities this framework provides (e.g., "orm", "migrations", "admin")
+    /// Used to detect when tools duplicate framework functionality
+    #[serde(default)]
+    pub provides_capabilities: Vec<String>,
+    /// Tools that should generate warnings when selected with this framework
+    /// Key: tool_id, Value: reason + recommendation (i18n keys)
+    #[serde(default)]
+    pub tool_warnings: std::collections::HashMap<String, ToolWarningReason>,
+    /// Tools that are incompatible (hard conflict, blocks generation)
+    #[serde(default)]
+    pub tool_conflicts: Vec<String>,
+}
+
+/// Причина предупреждения о нежелательном сочетании фреймворка и
+/// инструмента: `reason` + `recommendation` (ключи локализации i18n).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolWarningReason {
+    pub reason: String,
+    pub recommendation: String,
 }
 
 /// Технология UI внутри фреймворка с собственным стеком (Qt).
@@ -240,6 +259,42 @@ pub struct ToolDef {
     /// Типы проектов, для которых инструмент уместен. Пусто = везде.
     #[serde(default)]
     pub for_project_types: Vec<String>,
+    /// Architectural responsibility (e.g., "orm", "migrations", "testing", "linting")
+    /// Used for grouping and overlap detection
+    #[serde(default)]
+    pub responsibility: Option<String>,
+    /// Alternative tools serving same/similar responsibility
+    #[serde(default)]
+    pub alternatives: Vec<String>,
+    /// How to handle alternatives: "allow" (default), "warn", "exclusive"
+    #[serde(default)]
+    pub alternative_policy: AlternativePolicy,
+    /// Frameworks this tool is specifically designed for
+    /// (stronger filter than for_languages)
+    #[serde(default)]
+    pub for_frameworks: Vec<String>,
+    /// Capabilities required from framework/stack (e.g., "orm:sqlalchemy")
+    #[serde(default)]
+    pub requires_capabilities: Vec<String>,
+}
+
+/// Политика сосуществования инструмента с альтернативами той же
+/// ответственности (см. ToolDef.alternative_policy).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AlternativePolicy {
+    /// Can coexist, no restriction
+    Allow,
+    /// Warn user about overlap
+    Warn,
+    /// Mutual exclusion (error)
+    Exclusive,
+}
+
+impl Default for AlternativePolicy {
+    fn default() -> Self {
+        Self::Allow
+    }
 }
 
 /// Готовый рецепт для вкладки «Шаблоны». Обязан проходить каноническую

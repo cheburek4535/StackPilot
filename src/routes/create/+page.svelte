@@ -106,7 +106,7 @@ let vscode = $state(true);
 // Живая валидация стека (зеркало бэкенда, rules.ts)
 let stackIssues = $derived<StackIssue[]>(
   tree
-    ? validateStack(tree, selectedType?.id ?? null, backendLangs, frontendLangs, selectedFrameworks, hostOs)
+    ? validateStack(tree, selectedType?.id ?? null, backendLangs, frontendLangs, selectedFrameworks, selectedTools, hostOs)
     : [],
 );
 let stackError = $derived(firstError(stackIssues));
@@ -1813,6 +1813,7 @@ async function confirmAll() {
       backendLangs,
       frontendLangs,
       selectedFrameworks,
+      selectedTools,
     );
     const blocking = issues.filter((i) => i.severity === "Error");
     if (blocking.length > 0) {
@@ -2946,9 +2947,15 @@ function resetAll() {
           {#if stackIssues.length > 0}
             <div class="stack-issues">
               {#each stackIssues as issue}
-                <p class={issue.severity === "Error" ? "error" : "env-warn"}>
-                  {issue.severity === "Error" ? "⛔" : "⚠️"} {issue.message}
-                </p>
+                {@const isError = issue.severity !== "Warning"}
+                {@const text = issue.message_key ? i18n.t(issue.message_key as TranslationKey, issue.args) : issue.message}
+                <div class="stack-issue" class:error={isError} class:warning={!isError}>
+                  <span class="icon">{isError ? "⛔" : "⚠️"}</span>
+                  <span class="message">{text}</span>
+                  {#if issue.args?.recommendation}
+                    <div class="recommendation">💡 {issue.args.recommendation}</div>
+                  {/if}
+                </div>
               {/each}
             </div>
           {/if}
@@ -3524,8 +3531,11 @@ function resetAll() {
 .review-hint { color: var(--sp-text-3); font-size: 0.8rem; margin: 0.5rem 0 0; }
 
 /* ---- Проблемы стека ---- */
-.stack-issues { border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: rgba(239, 68, 68, 0.1); }
-.stack-issues p { margin: 0.3rem 0; font-size: 0.8rem; }
+.stack-issues { border: 1px solid var(--sp-border-strong); border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: var(--sp-bg-2); }
+.stack-issue { display: flex; flex-wrap: wrap; gap: 0.3rem 0.4rem; align-items: flex-start; margin: 0.4rem 0; font-size: 0.8rem; line-height: 1.35; }
+.stack-issue.error { color: var(--sp-danger); }
+.stack-issue.warning { color: var(--sp-warning); }
+.stack-issue .recommendation { flex-basis: 100%; margin-top: 0.15rem; font-size: 0.9em; font-style: italic; color: var(--sp-text-3); }
 
 /* ---- Summary ---- */
 .project-name-section { border: 1px solid var(--sp-border-strong); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; background: var(--sp-bg-1); }

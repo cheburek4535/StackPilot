@@ -326,7 +326,7 @@ fn validate_step_kind(step: &LaunchStep) -> ProfileValidationResult {
                 );
             }
         }
-        StepKind::WaitForPort { host, port } => {
+        StepKind::WaitForPort { host, port, .. } => {
             if host.trim().is_empty() {
                 result.push_error(
                     "EMPTY_HOST",
@@ -797,6 +797,7 @@ mod tests {
             kind: StepKind::WaitForPort {
                 host: "localhost".to_string(),
                 port: 0,
+                candidate_ports: vec![],
             },
             depends_on: vec![],
             working_directory: None,
@@ -1014,6 +1015,7 @@ mod tests {
             kind: StepKind::WaitForPort {
                 host: "  ".to_string(),
                 port: 3000,
+                candidate_ports: vec![],
             },
             depends_on: vec![],
             working_directory: None,

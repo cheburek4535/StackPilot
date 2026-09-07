@@ -201,7 +201,12 @@ pub async fn execute_action(
     let overlay_for_task = overlay.clone();
 
     let (status, proc_id) = tauri::async_runtime::spawn_blocking(move || {
-        engine.execute_action(&action, session_id, overlay_for_task.as_ref(), browser_path.as_deref())
+        engine.execute_action(
+            &action,
+            session_id,
+            overlay_for_task.as_ref(),
+            browser_path.as_deref(),
+        )
     })
     .await
     .map_err(|e| format!("Action task failed: {e}"))??;
@@ -482,8 +487,11 @@ pub fn build_profile_from_context(
 ) -> Result<LaunchProfile, String> {
     let mut diagnostics = Vec::new();
     let opts = builder_options_from_settings(&settings);
-    let mut profile =
-        super::profile_builder::build_profile_v2_from_context_with_options(&context, &mut diagnostics, &opts);
+    let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
+        &context,
+        &mut diagnostics,
+        &opts,
+    );
 
     // Check if a profile already exists for this project path
     if let Some(ref path) = profile.project_root {
@@ -509,8 +517,11 @@ pub fn build_profile_v2_from_context(
 ) -> Result<LaunchProfileV2, String> {
     let mut diagnostics = Vec::new();
     let opts = builder_options_from_settings(&settings);
-    let mut profile =
-        super::profile_builder::build_profile_v2_from_context_with_options(&context, &mut diagnostics, &opts);
+    let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
+        &context,
+        &mut diagnostics,
+        &opts,
+    );
 
     if let Some(ref path) = profile.project_root {
         if let Some(existing) = state.profile_manager.find_by_project_path_v2(path) {
@@ -835,18 +846,14 @@ pub fn resolve_application(name: String) -> Result<serde_json::Value, String> {
 pub fn detect_applications(
     settings: State<'_, SettingsState>,
 ) -> Result<crate::platform::app_launcher::DetectedApplications, String> {
-    let configured_vscode = settings
-        .0
-        .get_settings()
-        .ok()
-        .and_then(|s| {
-            let p = s.vscode_path.trim().to_string();
-            if p.is_empty() {
-                None
-            } else {
-                Some(p)
-            }
-        });
+    let configured_vscode = settings.0.get_settings().ok().and_then(|s| {
+        let p = s.vscode_path.trim().to_string();
+        if p.is_empty() {
+            None
+        } else {
+            Some(p)
+        }
+    });
     Ok(crate::platform::app_launcher::DetectedApplications {
         browsers: crate::platform::app_launcher::detect_browsers(),
         db_viewers: crate::platform::app_launcher::detect_db_viewers(),

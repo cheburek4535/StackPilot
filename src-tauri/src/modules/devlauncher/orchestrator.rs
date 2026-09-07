@@ -189,18 +189,20 @@ impl RunOrchestrator {
             if !missing_compose.contains(&step.id) {
                 continue;
             }
-            validation.diagnostics.push(validation::ProfileValidationDiagnostic {
-                severity: DiagnosticSeverity::Warning,
-                code: "COMPOSE_FILE_MISSING".to_string(),
-                message: format!(
-                    "Step '{}' skipped: no docker compose configuration file found in its \
+            validation
+                .diagnostics
+                .push(validation::ProfileValidationDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    code: "COMPOSE_FILE_MISSING".to_string(),
+                    message: format!(
+                        "Step '{}' skipped: no docker compose configuration file found in its \
                      working directory (expected compose.yaml, compose.yml, \
                      docker-compose.yaml or docker-compose.yml)",
-                    step.label
-                ),
-                step_id: Some(step.id.clone()),
-                field: Some("working_directory".to_string()),
-            });
+                        step.label
+                    ),
+                    step_id: Some(step.id.clone()),
+                    field: Some("working_directory".to_string()),
+                });
         }
 
         let run_id = generate_stable_id();
@@ -920,7 +922,8 @@ impl RunOrchestrator {
                 } else if let Some(p) = crate::platform::ide::resolve_ide_executable(path) {
                     p
                 } else {
-                    let launcher = crate::platform::app_launcher::resolve_application(path, None, None);
+                    let launcher =
+                        crate::platform::app_launcher::resolve_application(path, None, None);
                     if !launcher.found {
                         return StepCompletion {
                             step_id: step.id.clone(),
@@ -977,7 +980,11 @@ impl RunOrchestrator {
                     attempt_number: 0,
                 },
             },
-            StepKind::WaitForPort { host, port } => {
+            StepKind::WaitForPort {
+                host,
+                port,
+                candidate_ports,
+            } => {
                 // Generous default: dev servers (Metro, Go, Django) need
                 // headroom for cold starts.
                 let timeout = step.timeout.unwrap_or(120);
@@ -986,6 +993,7 @@ impl RunOrchestrator {
                     &step.id,
                     host,
                     *port,
+                    candidate_ports,
                     timeout,
                     cancelled,
                     cancel_notify,
@@ -1129,10 +1137,7 @@ impl RunOrchestrator {
                 return StepCompletion {
                     step_id: step_id.to_string(),
                     success: false,
-                    error: Some(format!(
-                        "Working directory '{}' does not exist",
-                        dir
-                    )),
+                    error: Some(format!("Working directory '{}' does not exist", dir)),
                     process_id: None,
                     attempt_number: 0,
                 };
@@ -1166,6 +1171,22 @@ impl RunOrchestrator {
             Some(&effective_overlay)
         };
 
+        // For visible-terminal service steps we must not blindly trust that
+        // "a terminal window opened" means "the command started". The inner
+        // command writes its exit code to a startup-probe marker after it
+        // exits; the ProcessStarted probe then verifies the marker (see
+        // `probe_startup_marker`). Plain interactive terminals (`cmd` with no
+        // args) get no marker — there is no command to verify.
+        let startup_marker: Option<std::path::PathBuf> =
+            if matches!(visibility, Visibility::VisibleTerminal)
+                && matches!(completion, CompletionPolicy::ProcessStarted)
+                && !args.is_empty()
+            {
+                Some(create_startup_marker_path())
+            } else {
+                None
+            };
+
         let tracked = match visibility {
             Visibility::VisibleTerminal => {
                 let pm = process_manager.clone();
@@ -1177,8 +1198,9 @@ impl RunOrchestrator {
                 let step_id_owned = step_id.to_string();
                 let session_id_owned = session_id.map(String::from);
                 let overlay_owned = overlay_arg.cloned();
+                let marker_owned = startup_marker.clone();
                 match tokio::task::spawn_blocking(move || {
-                    pm.spawn_visible_owned(
+                    pm.spawn_visible_owned_with_startup_marker(
                         &program_owned,
                         &args_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                         dir.as_deref(),
@@ -1187,6 +1209,7 @@ impl RunOrchestrator {
                         overlay_owned.as_ref(),
                         Some(run_id_owned),
                         Some(step_id_owned),
+                        marker_owned.as_deref().and_then(|p| p.to_str()),
                     )
                 })
                 .await
@@ -1289,14 +1312,32 @@ impl RunOrchestrator {
                 // quoting) that would otherwise report "started" while
                 // nothing is actually running. Terminal wrappers are
                 // probed leniently (the launcher detaches by design).
-                match probe_process_alive(
-                    &proc_id,
-                    process_manager,
-                    cancelled,
-                    tracked.tracking_quality.as_ref(),
-                )
-                .await
-                {
+                //
+                // When a startup marker was requested, the probe is
+                // authoritative: the inner command writes its real exit code
+                // to the marker, so a command that fails instantly (e.g. a
+                // broken `.venv` activation) fails the step instead of
+                // reporting "success". The probe result is captured so the
+                // marker file is always cleaned up afterwards.
+                let marker = startup_marker.clone();
+                let probe_result = match &marker {
+                    Some(path) => {
+                        probe_startup_marker(path, &proc_id, process_manager, cancelled).await
+                    }
+                    None => {
+                        probe_process_alive(
+                            &proc_id,
+                            process_manager,
+                            cancelled,
+                            tracked.tracking_quality.as_ref(),
+                        )
+                        .await
+                    }
+                };
+                if let Some(path) = &marker {
+                    let _ = std::fs::remove_file(path);
+                }
+                match probe_result {
                     Ok(true) => StepCompletion {
                         step_id: step_id.to_string(),
                         success: true,
@@ -1371,6 +1412,7 @@ impl RunOrchestrator {
                     &step_id_owned,
                     &host,
                     port,
+                    &[],
                     timeout_secs,
                     &cancelled_clone,
                     &cancel_notify_clone,
@@ -1800,6 +1842,7 @@ impl RunOrchestrator {
         step_id: &str,
         host: &str,
         port: u16,
+        candidate_ports: &[u16],
         timeout_secs: u64,
         cancelled: &Arc<AtomicBool>,
         cancel_notify: &Arc<Notify>,
@@ -1809,20 +1852,33 @@ impl RunOrchestrator {
         // `localhost` may resolve to ::1 only while the server binds
         // 127.0.0.1 (and vice versa). Trying both makes the wait robust
         // across platform/stack configurations.
+        //
+        // Candidate ports: dev servers (Vite, Next.js, Expo) auto-increment
+        // their port when the configured one is already taken. The wait
+        // succeeds when ANY of `[port] + candidate_ports` opens, so a busy
+        // port no longer fails the readiness wait.
+        let mut ports: Vec<u16> = vec![port];
+        for p in candidate_ports {
+            if *p != port && !ports.contains(p) {
+                ports.push(*p);
+            }
+        }
         let hosts = loopback_host_aliases(host);
         let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
         for h in &hosts {
-            let addr_str = format!("{}:{}", h, port);
-            match addr_str.to_socket_addrs() {
-                Ok(a) => addrs.extend(a),
-                Err(e) => {
-                    return StepCompletion {
-                        step_id: step_id.to_string(),
-                        success: false,
-                        error: Some(format!("DNS resolve failed: {}", e)),
-                        process_id: None,
-                        attempt_number: 0,
-                    };
+            for p in &ports {
+                let addr_str = format!("{}:{}", h, p);
+                match addr_str.to_socket_addrs() {
+                    Ok(a) => addrs.extend(a),
+                    Err(e) => {
+                        return StepCompletion {
+                            step_id: step_id.to_string(),
+                            success: false,
+                            error: Some(format!("DNS resolve failed: {}", e)),
+                            process_id: None,
+                            attempt_number: 0,
+                        };
+                    }
                 }
             }
         }
@@ -1852,8 +1908,14 @@ impl RunOrchestrator {
 
             if tokio::time::Instant::now() >= deadline {
                 let msg = format!(
-                    "Timeout: port {}:{} not open after {}s",
-                    host, port, timeout_secs
+                    "Timeout: none of ports [{}] on {} open after {}s",
+                    ports
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    host,
+                    timeout_secs
                 );
                 Self::emit_diagnostic(
                     run_id,
@@ -2783,10 +2845,9 @@ fn normalize_profile_for_run(
                 diagnostics.push(super::validation::ProfileValidationDiagnostic {
                     severity: DiagnosticSeverity::Info,
                     code: "FAILURE_POLICY_DOWNGRADED".to_string(),
-                    message:
-                        "Failure policy downgraded from StopRun to SkipDependents: a failing \
+                    message: "Failure policy downgraded from StopRun to SkipDependents: a failing \
                          step must not abort the run and kill already-started infrastructure"
-                            .to_string(),
+                        .to_string(),
                     step_id: Some(step.id.clone()),
                     field: Some("failure_policy".to_string()),
                 });
@@ -3030,6 +3091,101 @@ fn build_effective_overlay(
 /// Short grace period after a `ProcessStarted`-style spawn: the child must
 /// still be alive for the step to count as started.
 const START_PROBE_GRACE_MS: u64 = 4000;
+
+/// Maximum time the startup-marker probe waits for the inner command to
+/// either exit (writing its exit code to the marker) or keep running. A
+/// long-running dev server never exits, so the probe treats "still running
+/// after this window with no marker" as a successful start.
+const MARKER_PROBE_WINDOW_MS: u64 = 6000;
+
+/// Create a fresh startup-probe marker path in the system temp directory.
+/// The file itself is created by the command run inside the terminal; the
+/// orchestrator only polls for it.
+fn create_startup_marker_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "devlauncher_startup_probe_{}.txt",
+        uuid::Uuid::new_v4()
+    ))
+}
+
+/// Verify that a visible-terminal command actually started, using the
+/// exit-code marker the terminal writes after the inner command exits.
+///
+/// Returns:
+/// - `Ok(true)` — the marker reports exit code 0 (command completed
+///   successfully), or no marker appeared within the probe window while the
+///   terminal is still running (long-running dev server, assumed started).
+/// - `Err(msg)` — the marker reports a non-zero exit code (the command ran
+///   and FAILED, e.g. a broken `.venv` invocation), or the terminal process
+///   exited before the probe could confirm the command.
+async fn probe_startup_marker(
+    marker: &std::path::Path,
+    proc_id: &str,
+    process_manager: &Arc<dyn ProcessManager>,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<bool, String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(MARKER_PROBE_WINDOW_MS);
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled".to_string());
+        }
+
+        if let Ok(meta) = std::fs::metadata(marker) {
+            if meta.is_file() {
+                let content = std::fs::read_to_string(marker).unwrap_or_default();
+                match content.trim().parse::<i32>() {
+                    Ok(0) => return Ok(true),
+                    Ok(code) => {
+                        return Err(format!(
+                            "Command failed with exit code {} (reported by the startup probe); \
+                             check the terminal output",
+                            code
+                        ));
+                    }
+                    Err(_) => {
+                        // Marker exists but holds no number yet (e.g. a
+                        // PowerShell wrapper writing asynchronously) — keep
+                        // waiting for a valid value.
+                    }
+                }
+            }
+        }
+
+        let pm = process_manager.clone();
+        let pid = proc_id.to_string();
+        let status = tokio::task::spawn_blocking(move || pm.refresh_status(&pid))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+
+        match status {
+            Some(ProcessStatus::Running)
+            | Some(ProcessStatus::Starting)
+            | Some(ProcessStatus::Ready) => {}
+            Some(ProcessStatus::Exited(0)) | None => {
+                // Terminal closed cleanly (or detached) without a marker.
+                // With `cmd /K` / `--hold` the terminal stays open, so an
+                // early exit usually means the wrapper detached — the real
+                // command is owned by the terminal window from here on.
+                return Ok(true);
+            }
+            Some(_) => {
+                return Err(
+                    "Terminal process exited before the startup probe could confirm the command"
+                        .to_string(),
+                );
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            // No marker within the window and the terminal is still running:
+            // the command is a long-running dev server. Treat as started.
+            return Ok(true);
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
 
 /// Check that a freshly-spawned process is still alive after a short grace
 /// period. Returns:
@@ -3487,10 +3643,8 @@ mod tests {
             "stackpilot_dl_orch_nocompose_{}",
             std::process::id()
         ));
-        let empty_dir = std::env::temp_dir().join(format!(
-            "stackpilot_dl_orch_empty_{}",
-            std::process::id()
-        ));
+        let empty_dir =
+            std::env::temp_dir().join(format!("stackpilot_dl_orch_empty_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&empty_dir).unwrap();
         std::fs::write(
@@ -3531,10 +3685,8 @@ mod tests {
 
     #[test]
     fn pin_compose_config_pins_existing_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "stackpilot_dl_orch_pin_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_dl_orch_pin_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("compose.yaml"),
@@ -3600,12 +3752,8 @@ mod tests {
 
     #[test]
     fn pin_compose_config_ignores_non_compose_commands() {
-        let (program, args) = pin_docker_compose_config(
-            "docker",
-            &["ps".to_string()],
-            None,
-        )
-        .unwrap();
+        let (program, args) =
+            pin_docker_compose_config("docker", &["ps".to_string()], None).unwrap();
         assert_eq!(program, "docker");
         assert_eq!(args, vec!["ps".to_string()]);
     }
@@ -3615,10 +3763,8 @@ mod tests {
         // Windows may resolve `docker` to a `.cmd`/`.bat` batch shim. The
         // `-f` pin must still be applied, otherwise the step silently depends
         // on the process working directory.
-        let dir = std::env::temp_dir().join(format!(
-            "stackpilot_dl_orch_pin_cmd_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_dl_orch_pin_cmd_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("compose.yaml"),
@@ -3646,10 +3792,8 @@ mod tests {
 
     #[test]
     fn pin_compose_config_pins_bare_bat_shim() {
-        let dir = std::env::temp_dir().join(format!(
-            "stackpilot_dl_orch_pin_bat_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("stackpilot_dl_orch_pin_bat_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("docker-compose.yaml"),
@@ -3746,6 +3890,7 @@ mod tests {
             kind: StepKind::WaitForPort {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
+                candidate_ports: vec![],
             },
             depends_on: vec![],
             working_directory: None,
@@ -3981,6 +4126,7 @@ mod tests {
                 kind: StepKind::WaitForPort {
                     host: "localhost".to_string(),
                     port: 8080,
+                    candidate_ports: vec![],
                 },
                 depends_on: vec!["backend".to_string()],
                 working_directory: None,
@@ -4571,7 +4717,10 @@ mod tests {
                 &app_handle,
             ),
         );
-        assert!(result.success, "terminal wrapper detach is a successful launch");
+        assert!(
+            result.success,
+            "terminal wrapper detach is a successful launch"
+        );
     }
 
     /// Test 11: Legacy run_profile compatibility — verify V2 conversion.
@@ -5043,6 +5192,7 @@ mod tests {
             StepKind::WaitForPort {
                 host: "127.0.0.1".to_string(),
                 port: 3000,
+                candidate_ports: vec![],
             }
             .default_failure_policy(true),
             FailurePolicy::SkipDependents
@@ -5268,5 +5418,151 @@ mod tests {
         let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let run = orchestrator.create_run(profile).unwrap();
         assert_eq!(run.steps[0].retries_remaining, Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // Startup-marker probe
+    // -----------------------------------------------------------------------
+
+    struct RunningPM;
+
+    impl ProcessManager for RunningPM {
+        fn spawn_and_track(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: Option<&str>,
+            _: &str,
+            _: Option<String>,
+        ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+            todo!()
+        }
+        fn spawn_and_track_with_overlay(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: Option<&str>,
+            _: &str,
+            _: Option<String>,
+            _: &EnvironmentOverlay,
+        ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+            todo!()
+        }
+        fn spawn_visible(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: Option<&str>,
+            _: &str,
+            _: Option<String>,
+            _: Option<&EnvironmentOverlay>,
+        ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+            todo!()
+        }
+        fn launch_detached(&self, _: &str, _: &[&str], _: Option<&str>) -> Result<(), String> {
+            todo!()
+        }
+        fn spawn_and_track_owned(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: Option<&str>,
+            _: &str,
+            _: Option<String>,
+            _: Option<String>,
+            _: Option<String>,
+        ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+            todo!()
+        }
+        fn spawn_visible_owned(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: Option<&str>,
+            _: &str,
+            _: Option<String>,
+            _: Option<&EnvironmentOverlay>,
+            _: Option<String>,
+            _: Option<String>,
+        ) -> Result<crate::modules::workspace::models::TrackedProcess, String> {
+            todo!()
+        }
+        fn list(&self) -> Vec<crate::modules::workspace::models::TrackedProcess> {
+            todo!()
+        }
+        fn kill(&self, _: &str) -> Result<(), String> {
+            todo!()
+        }
+        fn refresh_status(
+            &self,
+            _: &str,
+        ) -> Result<crate::modules::workspace::models::ProcessStatus, String> {
+            Ok(crate::modules::workspace::models::ProcessStatus::Running)
+        }
+        fn get_logs(
+            &self,
+            _: &str,
+        ) -> Result<crate::modules::workspace::models::ProcessLogs, String> {
+            todo!()
+        }
+        fn get_log_buffer(
+            &self,
+            _: &str,
+        ) -> Option<Arc<crate::modules::workspace::models::BoundedLogBuffer>> {
+            None
+        }
+        fn get_log_truncation(
+            &self,
+            _: &str,
+        ) -> Option<(
+            crate::modules::workspace::models::LogTruncation,
+            crate::modules::workspace::models::LogTruncation,
+        )> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_marker_probe_success_on_exit_code_zero() {
+        let marker =
+            std::env::temp_dir().join(format!("stackpilot_dl_probe_ok_{}.txt", std::process::id()));
+        std::fs::write(&marker, "0").unwrap();
+        let pm: Arc<dyn ProcessManager> = Arc::new(RunningPM);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let result = probe_startup_marker(&marker, "proc_x", &pm, &cancelled).await;
+        let _ = std::fs::remove_file(&marker);
+        assert!(matches!(result, Ok(true)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn startup_marker_probe_reports_nonzero_exit() {
+        let marker = std::env::temp_dir().join(format!(
+            "stackpilot_dl_probe_fail_{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&marker, "9009").unwrap();
+        let pm: Arc<dyn ProcessManager> = Arc::new(RunningPM);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let result = probe_startup_marker(&marker, "proc_x", &pm, &cancelled).await;
+        let _ = std::fs::remove_file(&marker);
+        assert!(result.is_err(), "{result:?}");
+        assert!(result.unwrap_err().contains("9009"));
+    }
+
+    #[tokio::test]
+    async fn startup_marker_probe_assumes_running_when_no_marker() {
+        // No marker appears and the terminal keeps running: a long-running
+        // dev server. The probe must NOT claim success on a failed command
+        // — it must keep waiting and finally assume the process is running.
+        let marker = std::env::temp_dir().join(format!(
+            "stackpilot_dl_probe_running_{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let pm: Arc<dyn ProcessManager> = Arc::new(RunningPM);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let result = probe_startup_marker(&marker, "proc_x", &pm, &cancelled).await;
+        let _ = std::fs::remove_file(&marker);
+        assert!(matches!(result, Ok(true)), "{result:?}");
     }
 }

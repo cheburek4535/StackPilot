@@ -104,6 +104,39 @@ pub trait ProcessManager: Send + Sync {
         step_id: Option<String>,
     ) -> Result<TrackedProcess, String>;
 
+    /// Spawn a visible process with ownership metadata and an optional
+    /// startup-probe marker. When `startup_marker` is set, the command run
+    /// inside the terminal writes its exit code to that file after it exits,
+    /// so the orchestrator can verify the command actually started (and did
+    /// not fail instantly) instead of trusting that a terminal window opened.
+    ///
+    /// The default implementation ignores the marker and delegates to
+    /// [`Self::spawn_visible_owned`] so managers that do not implement it
+    /// degrade gracefully.
+    fn spawn_visible_owned_with_startup_marker(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+        _startup_marker: Option<&str>,
+    ) -> Result<TrackedProcess, String> {
+        self.spawn_visible_owned(
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            overlay,
+            run_id,
+            step_id,
+        )
+    }
+
     /// Spawn a tracked process with ownership metadata and an environment
     /// overlay applied to the child (PATH prepend, env set/remove).
     ///
@@ -397,6 +430,7 @@ fn spawn_in_terminal(
     overlay: Option<&EnvironmentOverlay>,
     run_id: Option<String>,
     step_id: Option<String>,
+    startup_marker: Option<&str>,
 ) -> Result<TrackedProcess, String> {
     use crate::platform::terminal::{
         resolve_terminal_plan, TerminalBackend, TerminalConfig, TerminalWindowPolicy,
@@ -413,6 +447,7 @@ fn spawn_in_terminal(
         label: Some(label.to_string()),
         keep_open: true,
         env: None,
+        startup_marker: startup_marker.map(String::from),
     };
 
     let plan = resolve_terminal_plan(&config)
@@ -654,6 +689,7 @@ impl ProcessManager for OsProcessManager {
             overlay,
             None,
             None,
+            None,
         )
     }
 
@@ -714,6 +750,33 @@ impl ProcessManager for OsProcessManager {
             overlay,
             run_id,
             step_id,
+            None,
+        )
+    }
+
+    fn spawn_visible_owned_with_startup_marker(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: Option<&str>,
+        label: &str,
+        session_id: Option<String>,
+        overlay: Option<&EnvironmentOverlay>,
+        run_id: Option<String>,
+        step_id: Option<String>,
+        startup_marker: Option<&str>,
+    ) -> Result<TrackedProcess, String> {
+        spawn_in_terminal(
+            self,
+            command,
+            args,
+            working_dir,
+            label,
+            session_id,
+            overlay,
+            run_id,
+            step_id,
+            startup_marker,
         )
     }
 
