@@ -35,6 +35,22 @@
   let profileName = $derived($page.params.name);
   const isV2 = $derived(profile ? isV2Profile(profile) : false);
 
+  /**
+   * Name of the profile currently loaded. SvelteKit reuses this component
+   * instance when navigating between /profiles/A and /profiles/B, so the
+   * profile must be re-fetched when the param changes — otherwise the page
+   * keeps showing the previous profile until a manual refresh.
+   */
+  let loadedName = $state<string | null>($page.params.name ?? null);
+
+  $effect(() => {
+    const name = $page.params.name;
+    if (name && name !== loadedName) {
+      loadedName = name;
+      void loadProfile();
+    }
+  });
+
   /** V2 step graph of the loaded profile (present on V2 profiles returned
    *  by the backend). */
   let profileSteps = $derived<LaunchStep[]>(
@@ -43,6 +59,18 @@
   let showAddPanel = $state(false);
   let addTpl = $state<AddTemplateDraft>(emptyAddTemplateDraft());
   let savingActions = $state(false);
+
+  /** Run id whose processes are being stopped (drives button feedback). */
+  let stoppingRunId = $state<string | null>(null);
+
+  /** Polling handle for the active run (supplements store events). */
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollingInFlight = false;
+
+  /** Store subscription: re-sync run state + history on every mutation. */
+  let unsubscribeStore: (() => void) | null = null;
+  /** Status of this profile's latest run seen by the last sync. */
+  let lastSyncedStatus: import("$lib/modules/devlauncher/types").RunStatus | null = null;
 
   // ---- Application selection (browser / database viewer) ----
   let detectedApps = $state<DetectedApplications | null>(null);
@@ -74,18 +102,25 @@
     } catch {
       // Non-critical — the profile itself loads without the event store.
     }
+    // Live-sync run state and history from store mutations (event-driven).
+    unsubscribeStore = runStore.subscribe(() => syncRunFromStore());
     await loadProfile();
-    // Recover any active run for this profile.
-    await recoverRun();
     // If the user clicked "Run" on a recent mini-card on the Home page, the
     // profile page was opened with ?run=1 — launch the profile here.
     if ($page.url.searchParams.get("run") === "1") {
       await runAll();
     }
+    // A recovered still-active run needs polling to stay fresh.
+    if (activeRun && !isRunTerminal(activeRun.status)) {
+      startPolling(activeRun.run_id);
+    }
     void refreshDetectedApps();
   });
 
   onDestroy(() => {
+    stopPolling();
+    unsubscribeStore?.();
+    unsubscribeStore = null;
     runStore.destroy();
   });
 
@@ -99,6 +134,31 @@
     });
   }
 
+  /** Fetch the profile from the backend without touching loading state. */
+  async function fetchProfile() {
+    const name = profileName;
+    if (!name) return;
+
+    try {
+      const demo = await withTimeout(getDemoProfile(), 10000);
+      if (demo.name === name) {
+        profile = demo;
+      } else {
+        profile = await withTimeout(getProfile(name), 10000);
+      }
+    } catch (e) {
+      // Only surface load errors on the initial load — a failed silent
+      // refresh (e.g. transient IPC error after a run finished) must not
+      // replace a page that already shows a valid profile.
+      if (!profile) {
+        errorMsg = i18n.t("devl.profile_load_failed", { name, err: String(e) }) as TranslationKey;
+      }
+    }
+
+    await recoverRun();
+    refreshHistory();
+  }
+
   async function loadProfile() {
     loading = true;
     errorMsg = "";
@@ -110,21 +170,63 @@
       return;
     }
 
-    try {
-      const demo = await withTimeout(getDemoProfile(), 10000);
-      if (demo.name === name) {
-        profile = demo;
-      } else {
-        profile = await withTimeout(getProfile(name), 10000);
-      }
-    } catch (e) {
-      errorMsg = i18n.t("devl.profile_load_failed", { name, err: String(e) }) as TranslationKey;
-    }
-
+    await fetchProfile();
     loading = false;
-    // Recover the latest run and refresh history after the profile loads.
-    await recoverRun();
+  }
+
+  /**
+   * Store mutation callback: re-derive the page's run state and history from
+   * the store. When this profile's latest run transitions to a terminal
+   * state, the profile itself is silently re-fetched so on-disk changes
+   * (e.g. steps saved elsewhere) appear without a manual page refresh.
+   */
+  function syncRunFromStore() {
+    if (!profile) return;
+    const latest = runStore.getLatestRunForProfile(profile.name);
+    if (latest) {
+      // Respect a run the user picked from history — don't yank it away.
+      if (!activeRun || activeRun.run_id === latest.run_id) {
+        activeRun = latest;
+      }
+      const status = latest.status;
+      const wasTerminal = lastSyncedStatus !== null && isRunTerminal(lastSyncedStatus);
+      if (isRunTerminal(status) && !wasTerminal) {
+        lastSyncedStatus = status;
+        void fetchProfile();
+        return;
+      }
+      lastSyncedStatus = status;
+    }
     refreshHistory();
+  }
+
+  /** Poll a V2 run for updates (supplements store events). */
+  function startPolling(runId: string) {
+    stopPolling();
+    pollTimer = setInterval(() => {
+      void (async () => {
+        if (pollingInFlight) return;
+        pollingInFlight = true;
+        try {
+          const run = await runStore.fetchRun(runId);
+          if (run) {
+            activeRun = run;
+            if (isRunTerminal(run.status)) stopPolling();
+          }
+        } catch {
+          // Non-critical.
+        } finally {
+          pollingInFlight = false;
+        }
+      })();
+    }, 1000);
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
   }
 
   /** Map a step id to its display label using the profile's step graph. */
@@ -137,6 +239,8 @@
 
   /** Stop all processes of a run. */
   async function stopRun(runId: string) {
+    if (stoppingRunId !== null) return;
+    stoppingRunId = runId;
     try {
       await runStore.stopProcesses(runId);
       if (activeRun?.run_id === runId) {
@@ -144,8 +248,11 @@
         if (updated) activeRun = updated;
       }
       refreshHistory();
+      notifySuccess(i18n.t("devl.stop_processes_done") as TranslationKey);
     } catch (error) {
       notifyError(i18n.t("devl.stop_processes") as TranslationKey, String(error));
+    } finally {
+      stoppingRunId = null;
     }
   }
 
@@ -338,8 +445,9 @@
         const run = await runStore.launchRun(v2Profile);
         activeRun = run;
         refreshHistory();
+        lastSyncedStatus = run.status;
         // Poll for updates.
-        pollRun(run.run_id);
+        startPolling(run.run_id);
       } catch (e) {
         errorMsg = i18n.t("devl.launch_failed", { err: String(e) }) as TranslationKey;
       }
@@ -373,19 +481,6 @@
     goto("/workspace/logs");
   }
 
-  /** Poll a V2 run for updates. */
-  async function pollRun(runId: string) {
-    try {
-      const run = await runStore.fetchRun(runId);
-      if (run) {
-        activeRun = run;
-        if (!isRunTerminal(run.status)) {
-          setTimeout(() => pollRun(runId), 1000);
-        }
-      }
-    } catch { /* non-critical */ }
-  }
-
   async function retryFailed() {
     if (!profile || runningAll) return;
     runningAll = true;
@@ -417,6 +512,7 @@
       const updated = await runStore.fetchRun(activeRun.run_id);
       if (updated) activeRun = updated;
     }
+    refreshHistory();
   }
 
   /** View logs for a V2 step. */
@@ -564,12 +660,18 @@
           {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>
         {#if activeRun && !isRunTerminal(activeRun.status)}
-          <button class="danger-outline" onclick={cancelRun}>
+          <button class="danger-outline" onclick={cancelRun} disabled={stoppingRunId !== null}>
             {i18n.t("devl.cancel_run") as TranslationKey}
           </button>
         {:else if activeRun}
-          <button class="danger-outline" onclick={() => stopRun(activeRun!.run_id)}>
-            {i18n.t("devl.stop_processes") as TranslationKey}
+          <button
+            class="danger-outline"
+            onclick={() => stopRun(activeRun!.run_id)}
+            disabled={stoppingRunId !== null}
+          >
+            {stoppingRunId === activeRun.run_id
+              ? (i18n.t("devl.stop_processes_running") as TranslationKey)
+              : (i18n.t("devl.stop_processes") as TranslationKey)}
           </button>
         {/if}
       </div>
@@ -647,8 +749,14 @@
               </button>
               <div class="step-controls">
                 {#if !isRunTerminal(r.status)}
-                  <button class="small-btn" onclick={() => stopRun(r.run_id)}>
-                    {i18n.t("devl.stop_processes") as TranslationKey}
+                  <button
+                    class="small-btn"
+                    onclick={() => stopRun(r.run_id)}
+                    disabled={stoppingRunId !== null}
+                  >
+                    {stoppingRunId === r.run_id
+                      ? (i18n.t("devl.stop_processes_running") as TranslationKey)
+                      : (i18n.t("devl.stop_processes") as TranslationKey)}
                   </button>
                 {/if}
                 <button class="small-btn" onclick={() => viewRunLogs(r.run_id)}>
@@ -886,6 +994,7 @@
     font-family: var(--sp-font-sans);
   }
   .danger-outline:hover { background: rgba(239, 68, 68, 0.14); }
+  .danger-outline:disabled { opacity: 0.5; cursor: default; }
 
   h1 { margin: 0; font-size: var(--sp-fs-xl); color: var(--sp-text-1); }
   .desc { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.15rem 0 0; }
@@ -1014,6 +1123,8 @@
     font-family: var(--sp-font-sans);
   }
   .small-btn:hover { background: var(--sp-bg-2); color: var(--sp-text-1); }
+  .small-btn:disabled { opacity: 0.5; cursor: default; }
+  .small-btn:disabled:hover { background: transparent; color: var(--sp-text-2); }
 
   .run-diagnostics { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--sp-border); }
   .run-diagnostics h3 { font-size: var(--sp-fs-sm); margin: 0 0 0.5rem; color: var(--sp-text-2); }

@@ -242,6 +242,9 @@ let installedTools = $state<Set<string>>(new Set());
 
 // ---- Integration: DevLauncher profile ----
 let devlProfileCreated = $state(false);
+/** Показать ли плашку «Ниже ещё есть контент!» в диалоге: только при
+ *  первом АВТО-открытии после генерации, не при ручном повторном открытии. */
+let devlShowReminder = $state(false);
 let devlProfileName = $state<string | null>(null);
 let devlProfilePath = $state<string | null>(null);
 /** Реально существует ли профиль в DevLauncher (после создания/удаления). */
@@ -267,10 +270,17 @@ let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
 
 function showTooltip(tool: ToolDef, e: MouseEvent | FocusEvent) {
   if (tooltipTimer) clearTimeout(tooltipTimer);
+  // currentTarget жив только во время диспатча события — захватываем элемент
+  // синхронно, а rect берём при показе (позиция может устареть из-за скролла).
+  const target = e.currentTarget as HTMLElement | null;
   tooltipTimer = setTimeout(() => {
-    const rect = (e.currentTarget as HTMLElement)?.getBoundingClientRect();
-    tooltipData = { x: rect ? rect.left : 0, y: rect ? rect.bottom + 4 : 0, tool };
-  }, 600);
+    const rect = target?.getBoundingClientRect();
+    if (!rect) return;
+    // Тултип у самой карточки, с привязкой к вьюпорту, чтобы не уезжал за край.
+    const x = Math.max(8, Math.min(rect.left, window.innerWidth - 260));
+    const y = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 140));
+    tooltipData = { x, y, tool };
+  }, 300);
 }
 
 function hideTooltip() {
@@ -1294,23 +1304,38 @@ function availableTools(): ToolDef[] {
   return tree.tools.filter((t) => t.id !== "npm" && toolFitsStack(t));
 }
 
-/** Тул «рекомендован» для текущего стека: заявлен в framework_tool_map
- *  выбранных фреймворков или подходит выбранному типу проекта
+/** Максимум бейджей «рекомендуется» на карточках инструментов (2–5) */
+const MAX_RECOMMENDED_BADGES = 3;
+
+/** id инструментов, которые получают бейдж «рекомендуется»: не весь набор
+ *  рекомендаций стека, а небольшой приоритетный список (до MAX_RECOMMENDED_BADGES),
+ *  чтобы не засорять карточки. Сначала — тулы из framework_tool_map выбранных
+ *  фреймворков (в порядке их выбора), затем — рекомендации типа проекта
  *  (etl → airflow/clickhouse/grafana). */
-function isToolRecommended(t: ToolDef): boolean {
-  if (!tree || !toolFitsStack(t)) return false;
-  const tm = tree.framework_tool_map;
+function recommendedBadgeIds(): string[] {
+  if (!tree) return [];
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const tm = tree.framework_tool_map ?? {};
   for (const fwId of selectedFrameworks) {
-    if ((tm[fwId] ?? []).includes(t.id)) return true;
+    for (const tid of tm[fwId] ?? []) {
+      if (seen.has(tid)) continue;
+      seen.add(tid);
+      ordered.push(tid);
+    }
   }
-  if (
-    t.for_project_types.length > 0 &&
-    selectedType &&
-    t.for_project_types.includes(selectedType.id)
-  ) {
-    return true;
+  for (const t of tree.tools) {
+    if (seen.has(t.id)) continue;
+    if (
+      t.for_project_types.length > 0 &&
+      selectedType &&
+      t.for_project_types.includes(selectedType.id)
+    ) {
+      seen.add(t.id);
+      ordered.push(t.id);
+    }
   }
-  return false;
+  return ordered.slice(0, MAX_RECOMMENDED_BADGES);
 }
 
 function isDockerForced(): boolean {
@@ -1989,12 +2014,14 @@ async function handleExecEvent(event: ExecutionEvent) {
         try {
           const profile = await confirmProjectCreatedWithProfile(ctx);
           devlProfileCreated = true;
+          devlShowReminder = true;
           devlProfileName = profile.name;
           devlProfilePath = profile.project_path;
           devlProfileExists = true;
         } catch {
           // Non-critical: profile creation failed, user can still use VS Code
           devlProfileCreated = false;
+          devlShowReminder = false;
           devlProfileExists = false;
         }
       }
@@ -2029,11 +2056,13 @@ function openDevLauncher() {
     goto(`/devlauncher/profiles/${encodeURIComponent(devlProfileName)}`);
   }
   devlProfileCreated = false;
+  devlShowReminder = false;
 }
 
 /** OK / крестик — только закрывают окно; профиль остаётся в DevLauncher. */
 function dismissProfileOk() {
   devlProfileCreated = false;
+  devlShowReminder = false;
 }
 
 /** Маленькая кнопка на финальной странице: открывает то же окно.
@@ -2052,6 +2081,7 @@ async function reopenDevlDialog() {
     }
   }
   devlProfileCreated = true;
+  devlShowReminder = false;
 }
 
 function cancelProfile() {
@@ -2063,6 +2093,7 @@ function confirmCancelProfile() {
     deleteProfile(devlProfileName).catch(() => {});
   }
   devlProfileCreated = false;
+  devlShowReminder = false;
   devlProfileName = null;
   devlProfilePath = null;
   devlProfileExists = false;
@@ -2727,16 +2758,12 @@ function resetAll() {
               <div class="territory-body">
                 {#each TOOL_CATEGORIES as cat}
                   {@const catTools = availableTools().filter((t) => t.category === cat.id)}
-                  {@const recTools = catTools.filter((t) => isToolRecommended(t))}
                   {#if catTools.length > 0}
                     <div class="tool-group">
                       <p class="tool-cat-title">
                         <TechIcon alt="" size="xs" />
                         {cat.label}
                         <span class="tool-cat-count">{catTools.length}</span>
-                        {#if recTools.length > 0}
-                          <span class="tool-cat-rec">{i18n.t("create.for_your_stack", { n: recTools.length }) as TranslationKey}</span>
-                        {/if}
                       </p>
                       <div class="tool-menu">
                         {#each catTools as tool}
@@ -2755,7 +2782,7 @@ function resetAll() {
                               <span class="tool-item-desc">{i18n.t(tool.description as TranslationKey)}</span>
                             </span>
                             <span class="tool-item-badges">
-                              {#if isToolRecommended(tool)}
+                              {#if recommendedBadgeIds().includes(tool.id)}
                                 <span class="tool-item-badge rec">{i18n.t("create.recommended") as TranslationKey}</span>
                               {/if}
                               {#if tool.requires_docker}
@@ -2778,7 +2805,7 @@ function resetAll() {
                 {/each}
 
                 {#if tooltipData}
-                  <div class="tooltip" style="left: {tooltipData.x + 12}px; top: {tooltipData.y - 10}px;">
+                  <div class="tooltip" style="left: {tooltipData.x}px; top: {tooltipData.y}px;">
                     <strong>{i18n.t(tooltipData.tool.label as TranslationKey)}</strong>
                     <p>{i18n.t(tooltipData.tool.description as TranslationKey)}</p>
                     {#if tooltipData.tool.requires.length > 0}
@@ -3045,6 +3072,7 @@ function resetAll() {
 {#if DevlDialogs}
   <DevlDialogs
     created={devlProfileCreated}
+    showReminder={devlShowReminder}
     confirmCancel={devlConfirmCancel}
     onopen={openDevLauncher}
     onclose={dismissProfileOk}
@@ -3475,16 +3503,6 @@ function resetAll() {
   padding: 0.1rem 0.5rem;
   font-weight: 600;
 }
-.tool-cat-rec {
-  font-size: 0.68rem;
-  color: var(--sp-warning);
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 999px;
-  padding: 0.1rem 0.5rem;
-  font-weight: 600;
-  margin-left: 0.1rem;
-}
 .tool-menu { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
 .tool-item {
   display: flex;
@@ -3513,7 +3531,25 @@ function resetAll() {
 .tool-item-badge.rec { color: var(--sp-warning); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); }
 .tool-item-check { color: var(--sp-accent-strong); font-weight: 700; font-size: 0.95rem; }
 .group-label { font-size: 0.85rem; font-weight: 600; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-.tooltip { position: fixed; background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.8rem; max-width: 240px; z-index: 999; pointer-events: none; color: var(--sp-text-2); }
+.tooltip {
+  position: fixed;
+  background: var(--sp-bg-1);
+  border: 1px solid var(--sp-accent-strong);
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.8rem;
+  max-width: 240px;
+  z-index: 999;
+  pointer-events: none;
+  color: var(--sp-text-2);
+  opacity: 0.94;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  animation: tooltip-in 0.14s ease-out;
+}
+@keyframes tooltip-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 0.94; transform: translateY(0); }
+}
 .tooltip strong { color: #fff; }
 .tt-req, .tt-conf, .tt-docker { margin: 0.2rem 0; font-size: 0.75rem; }
 .features-panel { margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }

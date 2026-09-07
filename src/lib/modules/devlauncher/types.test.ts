@@ -18,6 +18,7 @@ import {
   failurePolicyLabel,
   visibilityLabel,
 } from "./types";
+import { deleteStepCascade } from "./stepBuilder";
 import type {
   LaunchProfile,
   LaunchProfileV2,
@@ -171,6 +172,30 @@ describe("applyStepPatch", () => {
     expect(patched.timeout).toBe(120);
     expect(patched.depends_on).toEqual(["step_002"]);
     expect(step.enabled).toBe(true);
+  });
+});
+
+describe("deleteStepCascade", () => {
+  it("removes a step with no depends_on field (backend omits empty lists)", () => {
+    const steps: LaunchStep[] = [
+      { id: "a", label: "A", enabled: true, kind: { type: "open_application", path: "x" } },
+      { id: "b", label: "B", enabled: true, kind: { type: "delay", seconds: 1 }, depends_on: ["a"] },
+      { id: "c", label: "C", enabled: true, kind: { type: "open_url", url: "http://x" } },
+    ];
+    const { steps: next, removed } = deleteStepCascade(steps, "c");
+    expect(next.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(next[1].depends_on).toEqual(["a"]);
+    expect(removed).toEqual(["c"]);
+  });
+
+  it("cascades dependents correctly when dep-less steps are present", () => {
+    const steps: LaunchStep[] = [
+      { id: "a", label: "A", enabled: true, kind: { type: "open_application", path: "x" } },
+      { id: "b", label: "B", enabled: true, kind: { type: "delay", seconds: 1 }, depends_on: ["a"] },
+    ];
+    const { steps: next, removed } = deleteStepCascade(steps, "a");
+    expect(next).toEqual([]);
+    expect(removed).toEqual(["a", "b"]);
   });
 });
 

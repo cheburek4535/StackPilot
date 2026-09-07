@@ -3111,13 +3111,20 @@ fn create_startup_marker_path() -> std::path::PathBuf {
 /// Verify that a visible-terminal command actually started, using the
 /// exit-code marker the terminal writes after the inner command exits.
 ///
+/// The startup marker is AUTHORITATIVE: the tracked terminal-launcher
+/// process (wt.exe and similar wrappers) detaches by design once the window
+/// is up, so its exit status says nothing about the inner command. Treating
+/// a detached wrapper as "started" is what let instantly-failing commands
+/// (a broken `cd`, a missing interpreter) report success — the launcher
+/// exits 0 before the marker is ever written, and the probe short-circuited.
+///
 /// Returns:
 /// - `Ok(true)` — the marker reports exit code 0 (command completed
-///   successfully), or no marker appeared within the probe window while the
-///   terminal is still running (long-running dev server, assumed started).
+///   successfully), or no marker appeared within the probe window (a
+///   long-running dev server never exits, so it never writes a marker).
 /// - `Err(msg)` — the marker reports a non-zero exit code (the command ran
 ///   and FAILED, e.g. a broken `.venv` invocation), or the terminal process
-///   exited before the probe could confirm the command.
+///   itself failed to open (non-zero launcher exit).
 async fn probe_startup_marker(
     marker: &std::path::Path,
     proc_id: &str,
@@ -3151,6 +3158,9 @@ async fn probe_startup_marker(
             }
         }
 
+        // The launcher's clean exit (or disappearance from the tracker) is
+        // NOT a verdict: terminal wrappers detach on purpose. Only a
+        // non-zero exit means the terminal itself failed to open.
         let pm = process_manager.clone();
         let pid = proc_id.to_string();
         let status = tokio::task::spawn_blocking(move || pm.refresh_status(&pid))
@@ -3161,25 +3171,21 @@ async fn probe_startup_marker(
         match status {
             Some(ProcessStatus::Running)
             | Some(ProcessStatus::Starting)
-            | Some(ProcessStatus::Ready) => {}
-            Some(ProcessStatus::Exited(0)) | None => {
-                // Terminal closed cleanly (or detached) without a marker.
-                // With `cmd /K` / `--hold` the terminal stays open, so an
-                // early exit usually means the wrapper detached — the real
-                // command is owned by the terminal window from here on.
-                return Ok(true);
-            }
+            | Some(ProcessStatus::Ready)
+            | Some(ProcessStatus::Exited(0))
+            | None => {}
             Some(_) => {
                 return Err(
-                    "Terminal process exited before the startup probe could confirm the command"
+                    "Terminal process failed before the startup probe could confirm the command"
                         .to_string(),
                 );
             }
         }
 
         if tokio::time::Instant::now() >= deadline {
-            // No marker within the window and the terminal is still running:
-            // the command is a long-running dev server. Treat as started.
+            // No marker within the window: the command is still running (a
+            // long-running dev server never exits, so the marker is never
+            // written). Treat as started.
             return Ok(true);
         }
 

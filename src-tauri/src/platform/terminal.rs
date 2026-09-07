@@ -249,11 +249,19 @@ pub fn resolve_terminal_plan(config: &TerminalConfig) -> Result<TerminalPlan, St
 // ---------------------------------------------------------------------------
 
 /// Build the inner command string with working directory.
+///
+/// On Windows the working directory is NOT baked into the command line:
+/// `cmd` receives it as the spawn's current directory and Windows Terminal
+/// gets it via `--startingDirectory` (see `resolve_windows_terminal`). A
+/// `cd /d "path"` prefix is fragile under `wt`'s command-line re-parsing
+/// (quotes get stripped, so a path with spaces breaks the `cd` and the
+/// command silently never runs). POSIX terminals keep the `cd` prefix —
+/// their launchers start the shell in the launcher's own directory.
 fn build_inner_command(command: &str, working_dir: Option<&str>) -> String {
     match working_dir {
         Some(dir) => {
             if cfg!(target_os = "windows") {
-                format!("cd /d \"{}\" && {}", dir, command)
+                command.to_string()
             } else {
                 format!("cd '{}' && {}", dir.replace('\'', "'\\''"), command)
             }
@@ -370,6 +378,16 @@ fn resolve_windows_terminal(
     if let Some(ref label) = config.label {
         args.push("--title".to_string());
         args.push(label.clone());
+    }
+
+    // The tab must start in the step's working directory. This is passed as
+    // a structured `--startingDirectory` (NOT baked into the command line as
+    // `cd /d`): wt re-parses its command tail with CommandLineToArgvW and
+    // strips quotes, so an unquoted path with spaces would fail the `cd`
+    // with "The system cannot find the path specified".
+    if let Some(dir) = config.working_dir.as_deref() {
+        args.push("--startingDirectory".to_string());
+        args.push(dir.to_string());
     }
 
     args.push("cmd".to_string());
@@ -806,15 +824,45 @@ mod tests {
 
     #[test]
     fn build_inner_command_with_dir() {
+        // On Windows the working directory is passed out-of-band (spawn cwd
+        // / `--startingDirectory`), so the command line is unchanged. POSIX
+        // terminals keep the `cd` prefix.
         let cmd = build_inner_command("echo hello", Some("/tmp/project"));
-        assert!(cmd.starts_with("cd"));
-        assert!(cmd.contains("echo hello"));
+        if cfg!(target_os = "windows") {
+            assert_eq!(cmd, "echo hello");
+        } else {
+            assert!(cmd.starts_with("cd"));
+            assert!(cmd.contains("echo hello"));
+        }
     }
 
     #[test]
     fn build_inner_command_without_dir() {
         let cmd = build_inner_command("echo hello", None);
         assert_eq!(cmd, "echo hello");
+    }
+
+    #[test]
+    fn wt_plan_carries_starting_directory() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::WindowsTerminal,
+            command: "npm run dev".to_string(),
+            working_dir: Some("C:\\My Project\\app".to_string()),
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: true,
+            env: None,
+            startup_marker: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        assert_eq!(plan.program, "wt");
+        let idx = plan.args.iter().position(|a| a == "--startingDirectory");
+        assert!(idx.is_some(), "wt plan must carry --startingDirectory");
+        let idx = idx.unwrap();
+        assert_eq!(plan.args[idx + 1], "C:\\My Project\\app");
+        // The command line must not carry a `cd` prefix — the directory is
+        // passed as a structured option instead.
+        assert!(plan.args.iter().all(|a| !a.starts_with("cd ")));
     }
 
     #[test]

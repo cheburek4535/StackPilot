@@ -468,7 +468,11 @@ fn spawn_in_terminal(
         &plan.program,
         &plan_args,
         raw_tail.as_deref(),
-        None,
+        // The working directory reaches the terminal process out-of-band:
+        // `cmd` inherits it as the spawn's current directory, and `wt`
+        // receives it via `--startingDirectory` (baked-in `cd /d` prefixes
+        // break under wt's command-line re-parsing — see terminal.rs).
+        working_dir,
         label,
         session_id,
         overlay,

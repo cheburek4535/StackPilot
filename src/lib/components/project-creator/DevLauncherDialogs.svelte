@@ -7,6 +7,9 @@
   let {
     created,
     confirmCancel,
+    /** Плашка «Ниже ещё есть контент!» показывается только при первом
+     *  авто-открытии окна после генерации, не при ручном повторном открытии. */
+    showReminder,
     onopen,
     onclose,
     oncancel,
@@ -15,6 +18,7 @@
   }: {
     created: boolean;
     confirmCancel: boolean;
+    showReminder: boolean;
     onopen: () => void;
     onclose: () => void;
     oncancel: () => void;
@@ -40,10 +44,12 @@
     <p style="font-size: 0.85rem; color: var(--sp-text-3); margin: 0;">
       {i18n.t("create.devl_dialog_hint") as TranslationKey}
     </p>
-    <div class="devl-reminder" role="note">
-      <strong>{i18n.t("create.devl_reminder_title") as TranslationKey}</strong>
-      <span>{i18n.t("create.devl_reminder_body") as TranslationKey}</span>
-    </div>
+    {#if showReminder}
+      <div class="devl-reminder" role="note">
+        <strong>{i18n.t("create.devl_reminder_title") as TranslationKey}</strong>
+        <span>{i18n.t("create.devl_reminder_body") as TranslationKey}</span>
+      </div>
+    {/if}
   {/snippet}
   {#snippet footer()}
     <Button variant="subtle" size="sm" onclick={onclose}>

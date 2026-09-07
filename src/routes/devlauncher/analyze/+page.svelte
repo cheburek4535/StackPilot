@@ -406,11 +406,11 @@
                     {/each}
                   </select>
                 </div>
-                {#if step.depends_on.length > 0}
+                {#if (step.depends_on ?? []).length > 0}
                   <div class="field">
                     <label>Запускается после</label>
                     <div class="chips">
-                      {#each step.depends_on as dep}
+                      {#each step.depends_on ?? [] as dep}
                         <span class="chip">{dep}</span>
                       {/each}
                     </div>

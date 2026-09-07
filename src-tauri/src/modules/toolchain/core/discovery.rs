@@ -72,7 +72,13 @@ pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String
     if output.status.success() {
         let capped = cap_bytes(output.stdout);
         let stdout = String::from_utf8_lossy(&capped);
-        Some(stdout.trim().to_string())
+        let text = if stdout.trim().is_empty() {
+            let capped_err = cap_bytes(output.stderr);
+            String::from_utf8_lossy(&capped_err).trim().to_string()
+        } else {
+            stdout.trim().to_string()
+        };
+        if text.is_empty() { None } else { Some(text) }
     } else {
         None
     }

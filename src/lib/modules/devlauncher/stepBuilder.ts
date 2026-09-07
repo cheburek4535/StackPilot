@@ -225,7 +225,7 @@ export function deleteStepCascade(
     changed = false;
     for (const step of steps) {
       if (removed.has(step.id)) continue;
-      if (step.depends_on.some((dep) => removed.has(dep))) {
+      if ((step.depends_on ?? []).some((dep) => removed.has(dep))) {
         removed.add(step.id);
         changed = true;
       }
@@ -233,6 +233,9 @@ export function deleteStepCascade(
   }
   const next = steps
     .filter((s) => !removed.has(s.id))
-    .map((s) => ({ ...s, depends_on: s.depends_on.filter((dep) => !removed.has(dep)) }));
+    .map((s) => ({
+      ...s,
+      depends_on: (s.depends_on ?? []).filter((dep) => !removed.has(dep)),
+    }));
   return { steps: next, removed: [...removed] };
 }

@@ -1457,6 +1457,8 @@ export default {
   "devl.run": "Запуск",
   "devl.cancel_run": "Отменить запуск",
   "devl.stop_processes": "Остановить процессы",
+  "devl.stop_processes_running": "Останавливаю…",
+  "devl.stop_processes_done": "Процессы остановлены",
   "devl.run_history": "История запусков",
   "devl.launch_failed": "Ошибка запуска",
   "devl.status_starting": "Запуск",

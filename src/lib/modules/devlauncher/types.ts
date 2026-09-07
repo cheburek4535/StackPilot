@@ -127,7 +127,9 @@ export type LaunchStep = {
   label: string;
   enabled: boolean;
   kind: StepKind;
-  depends_on: string[];
+  /** Optional in practice: the backend omits empty dependency lists from
+   *  serialized profiles (serde `skip_serializing_if = "Vec::is_empty"`). */
+  depends_on?: string[];
   working_directory?: string | null;
   environment?: Record<string, string> | null;
   visibility?: Visibility | null;

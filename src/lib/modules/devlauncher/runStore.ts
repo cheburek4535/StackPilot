@@ -44,6 +44,32 @@ const listeners: UnlistenFn[] = [];
 let destroyed = false;
 
 // ---------------------------------------------------------------------------
+// Reactivity — the store is a plain module, so pages subscribe to change
+// notifications and re-derive their local $state from the accessors below.
+// ---------------------------------------------------------------------------
+
+type StoreSubscriber = () => void;
+const subscribers = new Set<StoreSubscriber>();
+
+/** Subscribe to store mutations. Returns an unsubscribe function. */
+export function subscribe(fn: StoreSubscriber): () => void {
+  subscribers.add(fn);
+  return () => {
+    subscribers.delete(fn);
+  };
+}
+
+function notify() {
+  for (const fn of subscribers) {
+    try {
+      fn();
+    } catch {
+      // A failing subscriber must not break the store for the others.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Derived accessors (read-only, used by Svelte components)
 // ---------------------------------------------------------------------------
 
@@ -95,6 +121,7 @@ function applyStepUpdate(runId: string, step: StepStatusPayload["step"]) {
   } else {
     run.steps.push({ ...step });
   }
+  notify();
 }
 
 /** Apply a run status update. */
@@ -105,12 +132,14 @@ function applyRunStatus(runId: string, status: RunStatusPayload["status"]) {
   if (isRunTerminal(status)) {
     run.finished_at = new Date().toISOString();
   }
+  notify();
 }
 
 /** Store a newly created run. */
 function storeRun(run: LaunchRun) {
   state.runs.set(run.run_id, { ...run, steps: run.steps.map((s) => ({ ...s })) });
   state.currentRunId = run.run_id;
+  notify();
 }
 
 /** Update a run with full snapshot from backend. */
@@ -124,6 +153,7 @@ function updateRun(run: LaunchRun) {
   } else {
     storeRun(run);
   }
+  notify();
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +390,7 @@ export async function init(): Promise<void> {
         step.process_id = e.payload.process.id;
       }
     }
+    notify();
   });
 
   await safeListen<Diagnostic>("devlauncher:diagnostic", (e) => {
@@ -375,6 +406,7 @@ export async function init(): Promise<void> {
         run.diagnostics.push(e.payload);
       }
     }
+    notify();
   });
 
   await safeListen<LaunchRun>("devlauncher:run-finished", (e) => {
@@ -399,6 +431,7 @@ export function destroy(): void {
   state.initialized = false;
   state.runs.clear();
   state.currentRunId = null;
+  subscribers.clear();
   // Allow a later init() to re-register listeners (tab switches).
   destroyed = false;
 }
