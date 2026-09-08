@@ -996,6 +996,23 @@ fn php_install_dir(def: &ToolDefinition) -> Option<PathBuf> {
         .find(|p| p.is_dir())
 }
 
+/// Каталог установки PHP для потока Composer: у composer-определения нет
+/// path_entries PHP, поэтому каталог ищется по известным местам установки
+/// (тот же список, что path_entries php в tools.json) и по `php` из PATH.
+fn php_dir_for_composer() -> Option<PathBuf> {
+    let known = ["%LOCALAPPDATA%/Programs/php", "C:/Program Files/php"];
+    for entry in known {
+        let p = PathBuf::from(path_service::expand_env_vars(entry));
+        if p.join("php.exe").is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(path) = which::which("php") {
+        return path.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
 /// Приводит строку php.ini к каноническому виду обязательной директивы.
 /// Распознаёт как активные, так и закомментированные строки
 /// (`;extension_dir = "ext"`, `;extension=php_zip.dll`) и нормализует
@@ -1058,7 +1075,21 @@ async fn configure_php_ini(
         ));
         return;
     };
+    configure_php_ini_at(&php_dir, index, total, task_id, tool_id, session_id, sink).await;
+}
 
+/// Сама настройка php.ini по фактическому каталогу PHP — переиспользуется
+/// установкой PHP (configure_php_ini) и установкой Composer (без настроенного
+/// php.ini голый PHP не имеет openssl/zip, и composer-установщик падает).
+async fn configure_php_ini_at(
+    php_dir: &Path,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<RedactingSink>,
+) {
     let ini = php_dir.join("php.ini");
     if !ini.exists() {
         let dev = php_dir.join("php.ini-development");
@@ -1427,6 +1458,43 @@ async fn try_install_source(
         };
         result.map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
         skip_run = true;
+    }
+
+    // Composer на Windows: предусловия, без которых оба источника падают
+    // кодом 1, прямо в потоке установки composer:
+    //   (а) php-установщик (getcomposer.org/installer) НЕ создаёт целевой
+    //       каталог сам — `--install-dir` обязан существовать («The defined
+    //       install dir ... does not exist.»);
+    //   (б) голый PHP без настроенного php.ini не имеет openssl/zip/curl —
+    //       установщик падает с «The openssl extension is missing». Та же
+    //       конфигурация, что делает установка PHP (configure_php_ini),
+    //       применяется здесь для уже установленного PHP.
+    if def.id == "composer" && cfg!(target_os = "windows") {
+        if let Some(dir_arg) = source
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("--install-dir="))
+        {
+            let dir = path_service::expand_env_vars(dir_arg);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                return Err(format!(
+                    "Не удалось создать каталог установки Composer {}: {e}",
+                    dir
+                ));
+            }
+        }
+        if let Some(php_dir) = php_dir_for_composer() {
+            configure_php_ini_at(
+                &php_dir,
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+                sink,
+            )
+            .await;
+        }
     }
 
     let cmd = build_install_command(def, source, offline_path.as_deref(), password.as_deref())?;

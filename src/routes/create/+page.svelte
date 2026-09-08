@@ -250,6 +250,10 @@ let devlProfilePath = $state<string | null>(null);
 /** Реально существует ли профиль в DevLauncher (после создания/удаления). */
 let devlProfileExists = $state(false);
 let devlConfirmCancel = $state(false);
+/** Авто-окно DevLauncher уже показывалось для текущего выполнения проекта.
+ *  Сохраняется в снапшоте: повторный показ при восстановлении вкладки
+ *  (переключение маршрутов → реплей событий) невозможен. */
+let devlAutoPopupShown = $state(false);
 
 function startTick() {
   if (tickTimer) return;
@@ -337,6 +341,7 @@ function buildSnapshot(): Record<string, unknown> {
     execProjectPath: execPlan?.project_path ?? null,
     execPlan,
     execResult,
+    devlAutoPopupShown,
   };
 }
 
@@ -395,6 +400,7 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   execResult = (s.execResult as { duration: number; status: string } | null) ?? null;
   execError = str(s.execError) || null;
   execLogs = strArr(s.execLogs);
+  devlAutoPopupShown = bool(s.devlAutoPopupShown);
   envCheck = (s.envCheck as EnvironmentCheck | null) ?? null;
   envPlan = (s.envPlan as InstallPlan | null) ?? null;
   envLogs = strArr(s.envLogs);
@@ -1952,6 +1958,8 @@ async function doCreateProject() {
   execOverallStatus = "running";
   execResult = null;
   execError = null;
+  devlAutoPopupShown = false;
+  persistNow();
 
   if (unlisten) unlisten();
   unlisten = await listen<ExecutionEvent>("project_creator:step_event", (e) => {
@@ -2009,7 +2017,14 @@ async function handleExecEvent(event: ExecutionEvent) {
       // Контекст из плана НЕ содержит project_path (фронтенд шлёт его
       // отдельным аргументом), поэтому подставляем реальный путь — иначе
       // профиль получит пустой project_path и затрёт чужой профиль.
-      if (execPlan?.context) {
+      //
+      // Окно DevLauncher открывается ТОЛЬКО при полностью успешном создании
+      // (overall === "Success"): провал любого шага (PartialFailure/Aborted)
+      // не должен показывать «профиль создан». И только один раз за
+      // выполнение — реплей событий при возврате на вкладку не открывает
+      // уже показанное/закрытое окно заново.
+      const createdSuccessfully = a?.result?.overall === "Success";
+      if (createdSuccessfully && !devlAutoPopupShown && execPlan?.context) {
         const ctx = { ...execPlan.context, project_path: execPlan.project_path };
         try {
           const profile = await confirmProjectCreatedWithProfile(ctx);
@@ -2024,6 +2039,8 @@ async function handleExecEvent(event: ExecutionEvent) {
           devlShowReminder = false;
           devlProfileExists = false;
         }
+        devlAutoPopupShown = true;
+        persistNow();
       }
     }
     if ("Error" in t) {
@@ -2146,6 +2163,7 @@ function resetAll() {
   devlProfilePath = null;
   devlProfileExists = false;
   devlConfirmCancel = false;
+  devlAutoPopupShown = false;
   clearCreateSession();
 }
 </script>

@@ -1763,8 +1763,11 @@
           "kind": "Official",
           "id": "composer-setup-exe",
           "url": "https://getcomposer.org/Composer-Setup.exe",
+          "file_name": "Composer-Setup.exe",
           "args": [
-            "/S"
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
           ],
           "extra_args": [],
           "dynamic_args": false,

@@ -70,6 +70,7 @@ impl GeneratorRegistry {
         registry.register(Arc::new(FsCleanupGenerator));
         registry.register(Arc::new(ManifestCheckGenerator));
         registry.register(Arc::new(HostToolCheckGenerator));
+        registry.register(Arc::new(DotnetMauiEnsureGenerator));
         registry.register(Arc::new(ScaffoldGenerator));
         registry.register(Arc::new(TauriConfigGenerator));
         registry.register(Arc::new(VsCodeMergeGenerator));
@@ -883,6 +884,119 @@ impl Generator for HostToolCheckGenerator {
             if mode_all { "required" } else { "alternative" },
             found.join(", ")
         )))
+    }
+}
+
+// ============================================================================
+// DotnetMauiEnsureGenerator — гарантирует шаблон `dotnet new maui`.
+//
+// .NET SDK сам по себе НЕ содержит шаблон MAUI («Не найдены шаблоны или
+// подкоманды, соответствующие: "maui"», код 103): он появляется только
+// после установки workload `dotnet workload install maui`. Toolchain
+// ставит workload как пост-шаг явной установки dotnet, но на машине, где
+// SDK уже был установлен заранее (без StackPilot), шаблона нет.
+//
+// Генератор:
+//   1. проверяет `dotnet new list maui` (локально, без сети, быстро);
+//   2. шаблон уже есть → Success без побочных эффектов (идемпотентно);
+//   3. шаблона нет → `dotnet workload install maui` + повторная проверка.
+// Сбой установки workload — честная ошибка (Err), а не молчаливый скип:
+// без шаблона следующий шаг (maui_new) всё равно упадёт с той же ошибкой.
+// ============================================================================
+pub struct DotnetMauiEnsureGenerator;
+
+#[async_trait]
+impl Generator for DotnetMauiEnsureGenerator {
+    fn id(&self) -> &str {
+        "dotnet-maui-ensure"
+    }
+    fn name(&self) -> &str {
+        "Ensure .NET MAUI templates"
+    }
+    fn description(&self) -> &str {
+        "Installs the .NET MAUI workload so `dotnet new maui` is available (no-op when already installed)"
+    }
+
+    async fn generate_with_sink(
+        &self,
+        _context: &WizardContext,
+        _project_path: &Path,
+        _config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<GenerationReport, String> {
+        const CHECK_TIMEOUT_SECS: u64 = 60;
+        const INSTALL_TIMEOUT_SECS: u64 = 900;
+
+        // `dotnet new list maui` печатает найденные шаблоны в stdout и
+        // завершается нулём; при отсутствии шаблона — код 103. Любой сбой
+        // (нет dotnet, шаблон не найден) трактуется как «нужно обеспечить».
+        async fn template_present(sink: Option<&ExecutionEventSink>) -> bool {
+            let spec = ProcessSpec {
+                command: "dotnet".to_string(),
+                args: vec![
+                    "new".to_string(),
+                    "list".to_string(),
+                    "maui".to_string(),
+                ],
+                working_dir: None,
+                env: None,
+                timeout: Some(Duration::from_secs(CHECK_TIMEOUT_SECS)),
+                stdin: StdinMode::Null,
+                ci_mode: false,
+            };
+            match ProcessRunner::run(spec, sink).await {
+                Ok(output) => !output.stdout_tail.trim().is_empty(),
+                Err(_) => false,
+            }
+        }
+
+        if template_present(sink).await {
+            if let Some(sink) = sink {
+                sink.emit_stdout(
+                    "dotnet new maui: template already installed — workload not needed",
+                )
+                .await;
+            }
+            return Ok(GenerationReport::success(
+                "The .NET MAUI template is already installed — no workload install needed",
+            ));
+        }
+
+        if let Some(sink) = sink {
+            sink.emit_stdout(
+                "dotnet new maui: template missing — installing the .NET MAUI workload (`dotnet workload install maui`)",
+            )
+            .await;
+        }
+        let install_spec = ProcessSpec {
+            command: "dotnet".to_string(),
+            args: vec![
+                "workload".to_string(),
+                "install".to_string(),
+                "maui".to_string(),
+            ],
+            working_dir: None,
+            env: None,
+            timeout: Some(Duration::from_secs(INSTALL_TIMEOUT_SECS)),
+            stdin: StdinMode::Null,
+            ci_mode: false,
+        };
+        if let Err(error) = ProcessRunner::run(install_spec, sink).await {
+            return Err(format!(
+                "Failed to install the .NET MAUI workload (required for the `maui` template): {}",
+                error.format_command_error()
+            ));
+        }
+
+        // Повторная проверка: workload установлен — шаблон обязан появиться.
+        if !template_present(sink).await {
+            return Err(
+                "The .NET MAUI workload was installed, but `dotnet new maui` is still unavailable — restart the app or check the .NET SDK installation".to_string(),
+            );
+        }
+        Ok(GenerationReport::success(
+            "Installed the .NET MAUI workload; the `maui` template is now available",
+        ))
     }
 }
 

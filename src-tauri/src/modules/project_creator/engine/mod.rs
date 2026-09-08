@@ -6615,6 +6615,21 @@ func main() {{
                 None => format!("{}.csproj", project_name),
             };
             vec![
+                // Шаблон `dotnet new maui` отсутствует в голом SDK: он
+                // появляется только после `dotnet workload install maui`.
+                // На машинах с ранее установленным SDK workload нет —
+                // гарантируем шаблон ДО скаффолда (идемпотентно: при
+                // установленном шаблоне шаг — мгновенный no-op).
+                Step::Generate {
+                    id: "maui_templates".into(),
+                    label: "Ensure .NET MAUI templates".into(),
+                    description: "Install the .NET MAUI workload so the `maui` template is available (no-op when already installed)".into(),
+                    generator_id: "dotnet-maui-ensure".into(),
+                    generator_config: serde_json::json!({}),
+                    policy: None,
+                    condition: None,
+                    on_error: ErrorMode::Abort,
+                },
                 Step::Command {
                     id: "maui_new".into(),
                     label: "Create MAUI app".into(),

@@ -429,6 +429,21 @@ pub fn host_tool_preflight_steps(context: &WizardContext) -> Vec<Step> {
             any_groups.push(required);
         }
     }
+
+    // Erlang/OTP — обязательный рантайм Elixir: `mix`/`elixir` стартуют
+    // Erlang VM (erl.exe). Без erl в PATH mix падает кодом 9009 в середине
+    // скаффолда (phoenix), а не понятной ошибкой префлайта. Оба инструмента
+    // обязательны ОДНОВРЕМЕННО (не альтернативы — режим any сюда не
+    // подходит). erl/mix добавляются и когда elixir-скаффолд подавлен
+    // фреймворком (phoenix подавляет generic `mix new` и не декларирует
+    // required_tools — иначе проверки не было бы вовсе).
+    let uses_elixir = context.languages.iter().any(|l| l == "elixir")
+        || context.frameworks.iter().any(|f| f == "phoenix");
+    if uses_elixir {
+        push_unique(&mut all_tools, "erl".to_string());
+        push_unique(&mut all_tools, "mix".to_string());
+    }
+
     all_tools.sort();
     all_tools.dedup();
 
@@ -991,6 +1006,69 @@ mod tests {
             )),
             "maven/gradle — альтернативы (any): {groups:?}"
         );
+    }
+
+    #[test]
+    fn host_tool_preflight_requires_erlang_and_mix_for_elixir() {
+        // phoenix: elixir-скаффолд подавлен (mix phx.new генерирует каркас
+        // сам), required_tools phoenix пуст — без явной проверки erl/mix
+        // префлайта не было бы вовсе, и mix падал бы кодом 9009 в середине
+        // скаффолда. erl И mix обязательны ОДНОВРЕМЕННО (mode=all).
+        let steps = host_tool_preflight_steps(&ctx(&["elixir"], &["phoenix"], &[]));
+        let Step::Generate {
+            generator_id,
+            generator_config,
+            on_error,
+            ..
+        } = &steps[0]
+        else {
+            panic!("host-tool префлайт — Generate");
+        };
+        assert_eq!(generator_id, "host-tool-check");
+        assert_eq!(on_error, &ErrorMode::Abort);
+        let tools: Vec<String> = generator_config
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            tools.contains(&"erl".to_string()),
+            "Erlang/OTP (erl) обязателен для Elixir: {tools:?}"
+        );
+        assert!(
+            tools.contains(&"mix".to_string()),
+            "mix обязателен для Elixir: {tools:?}"
+        );
+        assert_eq!(
+            generator_config.get("mode").and_then(|v| v.as_str()),
+            Some("all"),
+            "erl и mix — НЕ альтернативы (any), а два обязательных инструмента: {generator_config}"
+        );
+
+        // elixir без phoenix: язык не подавлен — mix добавляется и языковым
+        // путём, erl — явно; оба в одном all-шаге.
+        let steps = host_tool_preflight_steps(&ctx(&["elixir"], &[], &[]));
+        let Step::Generate {
+            generator_config, ..
+        } = &steps[0]
+        else {
+            panic!("host-tool префлайт — Generate");
+        };
+        let tools: Vec<String> = generator_config
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(tools.contains(&"erl".to_string()), "{tools:?}");
+        assert!(tools.contains(&"mix".to_string()), "{tools:?}");
     }
 
     #[test]
