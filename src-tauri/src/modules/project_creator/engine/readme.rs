@@ -1507,7 +1507,7 @@ fn tool_kafka() -> ToolProfile {
         name: "Apache Kafka",
         what: "A distributed event-streaming platform — publish/subscribe topics.",
         config:
-            "`docker-compose.yaml` (services `zookeeper` + `kafka`) or your local Kafka install",
+            "`docker-compose.yaml` (single-node KRaft service `kafka`) or your local Kafka install",
         start: "`docker compose up -d kafka`",
         credentials: "none by default — `KAFKA_BOOTSTRAP_SERVERS` in `.env.example`",
         verify: "`docker compose ps` (kafka must be healthy)",

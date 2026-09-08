@@ -467,6 +467,14 @@ impl RunOrchestrator {
             }
 
             for step_id in &to_spawn {
+                // A user-initiated cancellation must stop the launch from
+                // starting additional processes that were still waiting to be
+                // launched. Steps already in flight are allowed to report back
+                // (their completion drives the Cancelled finalization), but no
+                // NEW step is spawned once the cancel flag is set.
+                if handle.cancelled.load(Ordering::SeqCst) {
+                    break;
+                }
                 if let Some(step) = step_map.get(step_id) {
                     running.insert(step_id.clone());
 
@@ -827,6 +835,39 @@ impl RunOrchestrator {
         };
         let working_dir = working_dir.as_deref();
 
+        // A relative working directory needs the profile's project root to
+        // resolve against. Without it the spawn silently runs in the APP's
+        // own working directory, so every relative command (`.venv\Scripts\
+        // python.exe`, npm scripts, ...) dies with the cryptic "The system
+        // cannot find the path specified" (cmd exit code 3) — or, worse,
+        // starts in the wrong place and the following port waits time out.
+        // Surface the real cause up front.
+        let root_missing = profile
+            .project_root
+            .as_deref()
+            .map(str::trim)
+            .map_or(true, |r| r.is_empty());
+        if root_missing
+            && step
+                .working_directory
+                .as_deref()
+                .is_some_and(|d| !Path::new(d).is_absolute())
+        {
+            return StepCompletion {
+                step_id: step.id.clone(),
+                success: false,
+                error: Some(format!(
+                    "Step '{}' has a relative working directory '{}' but the profile has no \
+                     project path to resolve it against. Re-analyze the project or fix the \
+                     profile's project path, otherwise commands run in the wrong folder.",
+                    step.label,
+                    step.working_directory.as_deref().unwrap_or("")
+                )),
+                process_id: None,
+                attempt_number: 0,
+            };
+        }
+
         match &step.kind {
             StepKind::RunCommand {
                 command,
@@ -961,25 +1002,54 @@ impl RunOrchestrator {
                     },
                 }
             }
-            StepKind::OpenUrl { url } => match crate::platform::app_launcher::open_url_in_browser(
-                url,
-                browser_path.as_deref(),
-            ) {
-                Ok(_) => StepCompletion {
-                    step_id: step.id.clone(),
-                    success: true,
-                    error: None,
-                    process_id: None,
-                    attempt_number: 0,
-                },
-                Err(e) => StepCompletion {
-                    step_id: step.id.clone(),
-                    success: false,
-                    error: Some(format!("Failed to open URL '{}': {}", url, e)),
-                    process_id: None,
-                    attempt_number: 0,
-                },
-            },
+            StepKind::OpenUrl { url } => {
+                // Doc URLs (/docs, /swagger-ui/...) often 404 when the docs
+                // package is not installed (NestJS without @nestjs/swagger,
+                // Spring Boot without springdoc). Resolve what to open BEFORE
+                // launching the browser: the path is probed and the origin
+                // root opens instead when the path answers with an error.
+                let requested = url.clone();
+                let resolved = tokio::task::spawn_blocking({
+                    let requested = requested.clone();
+                    move || crate::platform::readiness::resolve_browser_url(&requested)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_else(|| requested.clone());
+                if resolved != requested {
+                    Self::emit_diagnostic(
+                        run_id,
+                        Some(step.id.as_str()),
+                        LogSource::Readiness,
+                        DiagnosticSeverity::Info,
+                        format!(
+                            "'{}' answered with an error; opening '{}' instead",
+                            requested, resolved
+                        ),
+                        app_handle,
+                    );
+                }
+                match crate::platform::app_launcher::open_url_in_browser(
+                    &resolved,
+                    browser_path.as_deref(),
+                ) {
+                    Ok(_) => StepCompletion {
+                        step_id: step.id.clone(),
+                        success: true,
+                        error: None,
+                        process_id: None,
+                        attempt_number: 0,
+                    },
+                    Err(e) => StepCompletion {
+                        step_id: step.id.clone(),
+                        success: false,
+                        error: Some(format!("Failed to open URL '{}': {}", resolved, e)),
+                        process_id: None,
+                        attempt_number: 0,
+                    },
+                }
+            }
             StepKind::WaitForPort {
                 host,
                 port,
@@ -1144,12 +1214,33 @@ impl RunOrchestrator {
             }
         }
 
+        // Resolve a RELATIVE program path (e.g. `.venv\Scripts\python.exe`)
+        // against the step's working directory. The command resolver checks
+        // relative paths against the APP's own cwd, so without this the spawn
+        // would run in the project root while cmd fails with the cryptic
+        // "The system cannot find the path specified" (exit code 3) — exactly
+        // what the startup probe reports for a missing venv interpreter.
+        // When the executable is genuinely absent (install step never ran or
+        // was disabled), fail with the real reason instead.
+        let (program, args) = match resolve_relative_program(program, args, working_dir) {
+            Ok(pinned) => pinned,
+            Err(msg) => {
+                return StepCompletion {
+                    step_id: step_id.to_string(),
+                    success: false,
+                    error: Some(msg),
+                    process_id: None,
+                    attempt_number: 0,
+                };
+            }
+        };
+
         // docker compose resolves its configuration file from the process
         // working directory. Pin the file with `-f` so the step never depends
         // on the cwd, and fail with an actionable message instead of docker's
         // cryptic "no configuration file provided: not found" when the file
         // disappeared between profile creation and execution.
-        let (program, args) = match pin_docker_compose_config(program, args, working_dir) {
+        let (program, args) = match pin_docker_compose_config(&program, &args, working_dir) {
             Ok(pinned) => pinned,
             Err(msg) => {
                 return StepCompletion {
@@ -1170,6 +1261,19 @@ impl RunOrchestrator {
         } else {
             Some(&effective_overlay)
         };
+
+        // Re-check cancellation right before the spawn: a step task may have
+        // passed the initial `cancelled` check and then lost the race against
+        // `cancel_run`. No process is spawned for a canceled run.
+        if cancelled.load(Ordering::SeqCst) {
+            return StepCompletion {
+                step_id: step_id.to_string(),
+                success: false,
+                error: Some("Cancelled".to_string()),
+                process_id: None,
+                attempt_number: 0,
+            };
+        }
 
         // For visible-terminal service steps we must not blindly trust that
         // "a terminal window opened" means "the command started". The inner
@@ -2760,6 +2864,45 @@ fn is_compose_bootstrap_step(step: &LaunchStep) -> bool {
     }
 }
 
+/// Resolve a RELATIVE program path against the step's working directory,
+/// returning an absolute executable when it exists there. Bare command names
+/// (npm, python, docker) stay PATH-resolved; absolute paths and shell
+/// wrappers (`cmd`, `sh`) pass through unchanged.
+///
+/// Without this, a relative program (`.venv\Scripts\python.exe`) is checked
+/// against the APP's own cwd by the command resolver and the spawn runs in
+/// the project root, where cmd fails with the cryptic "The system cannot
+/// find the path specified" (exit code 3) and the startup probe reports
+/// "Command failed with exit code 3".
+fn resolve_relative_program(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&str>,
+) -> Result<(String, Vec<String>), String> {
+    let has_separator = program.contains('/') || program.contains('\\');
+    if !has_separator || Path::new(program).is_absolute() {
+        return Ok((program.to_string(), args.to_vec()));
+    }
+    let Some(dir) = working_dir else {
+        return Err(format!(
+            "Executable '{}' is a relative path, but this step has no working directory to \
+             resolve it against (the profile's project path is missing or empty). Re-analyze \
+             the project or fix the profile.",
+            program
+        ));
+    };
+    let candidate = Path::new(dir).join(program);
+    if !candidate.is_file() {
+        return Err(format!(
+            "Executable '{}' not found in '{}'. The project's virtual environment may not \
+             have been created: check that the install step ran (or is enabled), or \
+             re-analyze the project.",
+            program, dir
+        ));
+    }
+    Ok((candidate.to_string_lossy().into_owned(), args.to_vec()))
+}
+
 /// Rewrite a docker compose invocation to pin its configuration file with
 /// `-f`, so the step never depends on the process working directory to
 /// find its config. Commands that are not docker compose, or that already
@@ -3143,11 +3286,19 @@ async fn probe_startup_marker(
                 match content.trim().parse::<i32>() {
                     Ok(0) => return Ok(true),
                     Ok(code) => {
-                        return Err(format!(
+                        let mut msg = format!(
                             "Command failed with exit code {} (reported by the startup probe); \
                              check the terminal output",
                             code
-                        ));
+                        );
+                        // The wrapper's captured output (cmd backend) usually
+                        // carries the real failure line ("The system cannot
+                        // find the path specified" and similar) — surface it.
+                        let tail = output_tail_hint(process_manager, proc_id);
+                        if !tail.is_empty() {
+                            msg.push_str(&tail);
+                        }
+                        return Err(msg);
                     }
                     Err(_) => {
                         // Marker exists but holds no number yet (e.g. a
@@ -5509,7 +5660,10 @@ mod tests {
             &self,
             _: &str,
         ) -> Result<crate::modules::workspace::models::ProcessLogs, String> {
-            todo!()
+            Ok(crate::modules::workspace::models::ProcessLogs {
+                stdout_lines: Vec::new(),
+                stderr_lines: Vec::new(),
+            })
         }
         fn get_log_buffer(
             &self,
@@ -5553,6 +5707,59 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         assert!(result.is_err(), "{result:?}");
         assert!(result.unwrap_err().contains("9009"));
+    }
+
+    #[test]
+    fn resolve_relative_program_resolves_against_working_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_rrp_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let exe = dir.join("bin").join("tool.py");
+        std::fs::write(&exe, "#!/usr/bin/env python\n").unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let args = vec!["manage.py".to_string(), "runserver".to_string()];
+
+        // Bare names stay PATH-resolved.
+        let (p, a) = resolve_relative_program("python", &args, Some(&dir_str)).unwrap();
+        assert_eq!(p, "python");
+        assert_eq!(a, args);
+
+        // Absolute paths pass through.
+        let abs = exe.to_string_lossy().into_owned();
+        let (p, _) = resolve_relative_program(&abs, &args, Some(&dir_str)).unwrap();
+        assert_eq!(p, abs);
+
+        // Relative path with separator resolves to an absolute executable.
+        let (p, _) = resolve_relative_program(
+            if cfg!(windows) {
+                r"bin\tool.py"
+            } else {
+                "bin/tool.py"
+            },
+            &args,
+            Some(&dir_str),
+        )
+        .unwrap();
+        assert_eq!(p, exe.to_string_lossy());
+
+        // Missing executable → actionable error (this is the exit-code-3
+        // scenario: `.venv\Scripts\python.exe` not found in the cwd).
+        let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, Some(&dir_str))
+            .unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+
+        // Relative program with NO working directory → clear error instead
+        // of silently spawning in the app's own cwd.
+        let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, None).unwrap_err();
+        assert!(err.contains("no working directory"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

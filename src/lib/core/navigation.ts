@@ -73,6 +73,13 @@ export const NAV_GROUPS: NavGroup[] = [
         match: exact(["/devlauncher/analyze", "/analyze"]),
       },
       {
+        id: "profiles",
+        label: "nav.devlauncher.profiles",
+        href: "/devlauncher/profiles",
+        icon: "layers",
+        match: exact(["/devlauncher/profiles", "/profiles"]),
+      },
+      {
         id: "settings",
         label: "nav.settings",
         href: "/settings",
@@ -91,8 +98,10 @@ export const NAV_GROUPS: NavGroup[] = [
         href: "/workspace",
         icon: "folder",
         match: (p) =>
-          prefix(["/workspace", "/profiles", "/processes"])(p) ||
-          (p.startsWith("/devlauncher") && !p.startsWith("/devlauncher/analyze")),
+          prefix(["/workspace", "/processes"])(p) ||
+          (p.startsWith("/devlauncher") &&
+            !p.startsWith("/devlauncher/analyze") &&
+            !p.startsWith("/devlauncher/profiles")),
       },
     ],
   },

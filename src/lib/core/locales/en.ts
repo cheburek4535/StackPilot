@@ -1456,6 +1456,7 @@ export default {
   "devl.visible_terminal": "Runs in a native terminal window",
   "devl.run": "Run",
   "devl.cancel_run": "Cancel run",
+  "devl.cancelling": "Cancelling…",
   "devl.stop_processes": "Stop processes",
   "devl.stop_processes_running": "Stopping…",
   "devl.stop_processes_done": "Processes stopped",

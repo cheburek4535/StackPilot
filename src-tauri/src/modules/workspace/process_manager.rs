@@ -453,9 +453,16 @@ fn spawn_in_terminal(
     let plan = resolve_terminal_plan(&config)
         .map_err(|e| format!("Failed to resolve terminal plan: {}", e))?;
 
-    // The terminal plan may carry a raw command tail (cmd-style quoting for
-    // `cmd /K` / `wt`): it must reach the spawned process verbatim, so it
-    // is popped from the arg list and appended raw by the spawner.
+    // The terminal plan's LAST argument is the `cmd /K` / `wt` payload. It
+    // must reach the spawned process VERBATIM: standard argument quoting
+    // would backslash-escape its quotes (`\"`), which cmd's /K parsing does
+    // not understand — quoted paths would be split and the command would die
+    // with "C:\Program is not recognized". The payload is therefore popped
+    // from the arg list and appended raw (unquoted): cmd parses everything
+    // after /K itself, and wt forwards the tail to cmd unchanged.
+    // (The plan's `raw_tail` field — the payload wrapped in cmd-style quotes
+    // `"<cmd>"` — is NOT what the spawner appends: cmd's first/last-quote
+    // stripping mangles the nested quotes and the whole command fails.)
     let (plan_args, raw_tail) = if plan.raw_tail.is_some() {
         let mut args = plan.args.clone();
         let raw = args.pop();

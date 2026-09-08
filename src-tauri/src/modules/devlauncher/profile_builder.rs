@@ -308,6 +308,28 @@ const DOCKER_TOOL_PORTS: &[(&str, u16)] = &[
     ("redpanda", 9092),
 ];
 
+/// Compose tools that need a longer readiness timeout than the generic
+/// 60s. Kafka (and its drop-in Redpanda) are the slowest containers to
+/// become reachable: the image pull + broker bootstrap routinely exceeds
+/// a minute on cold starts, so 60s times out while the broker is still
+/// starting. The wait accepts `29092` as an alternative because many
+/// Kafka/KRaft compose templates expose the host-facing listener there.
+fn tool_wait_timeout_secs(tool: &str) -> u64 {
+    if matches!(tool, "kafka" | "redpanda") {
+        180
+    } else {
+        60
+    }
+}
+
+fn tool_wait_candidate_ports(tool: &str, port: u16) -> &'static [u16] {
+    if matches!(tool, "kafka" | "redpanda") && port == 9092 {
+        &[29092]
+    } else {
+        &[]
+    }
+}
+
 /// Whether a wizard tool id is deployed as a compose service.
 fn is_docker_tool(tool: &str) -> bool {
     DOCKER_TOOL_PORTS.iter().any(|(id, _)| *id == tool)
@@ -396,6 +418,12 @@ fn is_frontend_framework(fw: &str) -> bool {
 /// otherwise the project root (None). The wizard itself creates these
 /// directories, so they are explicit relative paths anchored to the
 /// profile's `project_root`.
+///
+/// When the project path is missing there is nothing to anchor a relative
+/// dir to: a relative working directory would make every command run in the
+/// app's own working directory ("The system cannot find the path
+/// specified", cmd exit code 3). Emit `None` — the run-time preflight then
+/// fails with the real reason.
 fn side_dir(ctx: &WizardContext, side: &str) -> Option<String> {
     let has_backend = !backend_frameworks(ctx).is_empty();
     let has_frontend = !frontend_frameworks(ctx).is_empty();
@@ -411,7 +439,7 @@ fn side_dir(ctx: &WizardContext, side: &str) -> Option<String> {
             }
             None
         } else {
-            Some(format!("./{}", side))
+            None
         }
     } else {
         None
@@ -820,6 +848,21 @@ pub fn build_profile_v2_from_context_with_options(
         if let Some(file) = compose_file {
             let compose_dir = file.parent().map(|p| p.to_string_lossy().into_owned());
             let command = format!("docker compose -f \"{}\" up -d", file.display());
+            // The compose bootstrap runs in a VISIBLE terminal with a
+            // ProcessStarted completion — exactly like the analyzer's compose
+            // step. A captured one-shot `docker compose up -d` is fragile:
+            // the CLI stays attached to the build, and when its stdout is a
+            // pipe (not a TTY) the build is frequently canceled by the daemon
+            // ("CANCELED") before the CLI exits, so the step dies with
+            // "Process exited with error code 1" even though Docker itself
+            // was fine. In a real terminal the build runs normally and the
+            // step completes once the command has started; readiness is still
+            // verified by the port waits that depend on this step. The
+            // startup probe keeps failures honest: a compose command that
+            // exits with a non-zero code still fails the step.
+            let mut metadata = HashMap::new();
+            metadata.insert("kind".to_string(), "infrastructure".to_string());
+            metadata.insert("visibility".to_string(), "visible_terminal".to_string());
             compose = Some(g.push(
                 "Start Docker Compose",
                 StepKind::RunCommand {
@@ -828,12 +871,12 @@ pub fn build_profile_v2_from_context_with_options(
                 },
                 vec![docker_wait.clone().unwrap()],
                 compose_dir,
-                Some(Visibility::Captured),
-                Some(ExecutionMode::OneShot),
-                Some(CompletionPolicy::ExitSuccess),
+                Some(Visibility::VisibleTerminal),
+                Some(ExecutionMode::LongRunning),
+                Some(CompletionPolicy::ProcessStarted),
                 None,
                 true,
-                meta(&[("kind", "infrastructure")]),
+                Some(metadata),
             ));
         } else {
             diagnostics.push(AnalysisDiagnostic::new(
@@ -884,8 +927,8 @@ pub fn build_profile_v2_from_context_with_options(
                 &mut g,
                 &format!("Wait for {} readiness", tool),
                 port,
-                &[],
-                60,
+                tool_wait_candidate_ports(tool, port),
+                tool_wait_timeout_secs(tool),
                 compose_id.clone(),
                 "low",
             );
@@ -1733,6 +1776,125 @@ mod tests {
         // Graph validates (no cycles, no missing deps).
         let result = crate::modules::devlauncher::validation::validate_profile_v2(&profile);
         assert!(result.valid, "{:?}", result.diagnostics);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compose_bootstrap_runs_in_visible_terminal_with_start_probe() {
+        // A captured one-shot `docker compose up -d` is fragile: the CLI
+        // stays attached to the build, and when its stdout is a pipe the
+        // daemon frequently cancels the build, so the step dies with
+        // "Process exited with error code 1" while Docker itself was fine.
+        // The bootstrap must run in a visible terminal and complete when the
+        // command has started (readiness is verified by the port waits that
+        // depend on it), exactly like the analyzer's compose step.
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_compose_vis_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n    ports:\n      - \"5432:5432\"\n",
+        )
+        .unwrap();
+
+        let mut c = ctx(&["typescript"], &["nestjs"], &["postgresql"], true);
+        c.project_path = Some(dir.clone());
+        let (profile, _diags) = build(&c);
+        let compose = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Docker Compose"))
+            .unwrap();
+        assert_eq!(compose.visibility, Some(Visibility::VisibleTerminal));
+        assert_eq!(compose.execution_mode, Some(ExecutionMode::LongRunning));
+        assert!(
+            matches!(compose.completion, Some(CompletionPolicy::ProcessStarted)),
+            "compose bootstrap must complete when started, got {:?}",
+            compose.completion
+        );
+        // The command pins the compose file so it never depends on the cwd.
+        match &compose.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(command.contains("up -d"), "{}", command);
+                assert!(
+                    command.contains("-f"),
+                    "compose bootstrap must pin its config file: {}",
+                    command
+                );
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+        // Readiness is still verified by the dependent port waits.
+        assert!(profile
+            .steps
+            .iter()
+            .any(|s| s.depends_on.contains(&compose.id) && matches!(s.kind, StepKind::WaitForPort { .. })));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kafka_readiness_wait_gets_generous_timeout_and_candidate_port() {
+        // Kafka is the slowest compose tool to become reachable (image
+        // pull + broker bootstrap routinely exceeds the generic 60s), so
+        // its readiness wait must carry a longer timeout — otherwise the
+        // wait dies with "Timeout: none of ports [9092] on 127.0.0.1 open
+        // after 60s" while the broker is still starting.
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_kafka_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  kafka:\n    image: confluentinc/cp-kafka:latest\n    ports:\n      - \"9092:9092\"\n",
+        )
+        .unwrap();
+
+        let mut c = ctx(&["typescript"], &["nestjs"], &["kafka"], true);
+        c.project_path = Some(dir.clone());
+        let (profile, _diags) = build(&c);
+        let kafka = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("kafka readiness"))
+            .expect("kafka readiness wait must be generated");
+        match &kafka.completion {
+            Some(CompletionPolicy::PortOpen { timeout_secs, .. }) => {
+                assert!(
+                    *timeout_secs >= 180,
+                    "kafka wait must carry a generous timeout, got {}s",
+                    timeout_secs
+                );
+            }
+            other => panic!("expected PortOpen completion, got {:?}", other),
+        }
+        match &kafka.kind {
+            StepKind::WaitForPort {
+                port,
+                candidate_ports,
+                ..
+            } => {
+                assert_eq!(*port, 9092);
+                assert!(
+                    candidate_ports.contains(&29092),
+                    "kafka wait should accept 29092 (KRaft templates): {:?}",
+                    candidate_ports
+                );
+            }
+            other => panic!("expected WaitForPort, got {:?}", other),
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

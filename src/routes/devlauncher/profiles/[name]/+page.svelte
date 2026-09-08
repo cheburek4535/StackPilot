@@ -62,6 +62,8 @@
 
   /** Run id whose processes are being stopped (drives button feedback). */
   let stoppingRunId = $state<string | null>(null);
+  /** True while a cancel request is in flight (drives button feedback). */
+  let cancellingRun = $state(false);
 
   /** Polling handle for the active run (supplements store events). */
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -256,17 +258,18 @@
     }
   }
 
-  /** Recover the latest run for this profile (including finished runs). */
+  /** Recover the latest run for this profile (including finished runs).
+   *  Only runs that belong to THIS profile are adopted: a freshly created
+   *  project (or any profile without its own run) must NEVER pick up the
+   *  active run of another project that is still launching — that would tie
+   *  the new project to an unrelated launch (see Project Creator race). */
   async function recoverRun() {
     if (!profile) return;
     const latest = runStore.getLatestRunForProfile(profile.name);
     if (latest) {
       activeRun = latest;
     } else {
-      const runs = runStore.getActiveRuns();
-      if (runs.length > 0) {
-        activeRun = runs[runs.length - 1];
-      }
+      activeRun = null;
     }
     // A still-active run means the profile has really been launched.
     if (activeRun && !isRunTerminal(activeRun.status)) {
@@ -505,14 +508,21 @@
     actionResults = new Map();
   }
 
-  /** Cancel the active V2 run. Idempotent. */
+  /** Cancel the active V2 run. Idempotent. Cancels the run tracked by THIS
+   *  page — never a "current" run that may belong to another project. */
   async function cancelRun() {
-    await runStore.cancelCurrentRun();
-    if (activeRun) {
+    if (cancellingRun || !activeRun) return;
+    cancellingRun = true;
+    try {
+      await runStore.cancelCurrentRun(activeRun.run_id);
       const updated = await runStore.fetchRun(activeRun.run_id);
       if (updated) activeRun = updated;
+      refreshHistory();
+    } catch {
+      // The store subscription / polling will surface the real state.
+    } finally {
+      cancellingRun = false;
     }
-    refreshHistory();
   }
 
   /** View logs for a V2 step. */
@@ -660,8 +670,14 @@
           {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>
         {#if activeRun && !isRunTerminal(activeRun.status)}
-          <button class="danger-outline" onclick={cancelRun} disabled={stoppingRunId !== null}>
-            {i18n.t("devl.cancel_run") as TranslationKey}
+          <button
+            class="danger-outline"
+            onclick={cancelRun}
+            disabled={stoppingRunId !== null || cancellingRun}
+          >
+            {cancellingRun
+              ? (i18n.t("devl.cancelling") as TranslationKey)
+              : (i18n.t("devl.cancel_run") as TranslationKey)}
           </button>
         {:else if activeRun}
           <button

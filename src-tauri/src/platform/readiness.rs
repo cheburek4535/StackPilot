@@ -312,6 +312,94 @@ pub fn check_url(url: &str) -> Result<u16, String> {
     Err(format!("URL '{}' did not respond successfully", url))
 }
 
+/// Probe a URL with a single HTTP request, returning the response status
+/// code. `Ok(code)` for ANY HTTP response (2xx, 3xx, 4xx, 5xx) — unlike
+/// [`check_url`] which only accepts 2xx/3xx — and `Err` only when the
+/// server cannot be reached at all (DNS/connection failure).
+pub fn probe_url_status(url: &str) -> Result<u16, String> {
+    let parsed = ParsedTarget::parse(url).map_err(|e| e.to_string())?;
+    let addr_str = format!("{}:{}", parsed.host, parsed.port);
+    let addrs = addr_str
+        .to_socket_addrs()
+        .map_err(|e| format!("DNS resolve failed: {}", e))?;
+
+    for addr in addrs {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+            let request = format!(
+                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                parsed.path, parsed.host
+            );
+            if stream.write_all(request.as_bytes()).is_err() {
+                continue;
+            }
+            let mut reader = BufReader::new(&stream);
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).is_err() {
+                continue;
+            }
+            let parts: Vec<&str> = first_line.split_whitespace().collect();
+            if let Some(code_str) = parts.get(1) {
+                if let Ok(code) = code_str.parse::<u16>() {
+                    return Ok(code);
+                }
+            }
+        }
+    }
+
+    Err(format!("URL '{}' is not reachable", url))
+}
+
+/// Decide which URL a browser tab should actually open.
+///
+/// Non-root doc URLs (`/docs`, `/swagger-ui/index.html`, ...) frequently
+/// 404: the framework's docs package may not be installed (e.g. NestJS
+/// without `@nestjs/swagger`) or the route differs from the default. A
+/// browser tab on a dead page is worse than no tab at all, so the requested
+/// path is probed first and the ORIGIN ROOT is opened instead when the
+/// server answers with an error status. The original URL is kept as the
+/// best-effort fallback when the server is still unreachable (it may simply
+/// be warming up).
+///
+/// - 2xx/3xx on the requested path → the path itself.
+/// - definitive 4xx/5xx on the path → the origin root (when it responds).
+/// - unreachable server → the original URL (best effort).
+pub fn resolve_browser_url(url: &str) -> Result<String, String> {
+    let parsed = ParsedTarget::parse(url).map_err(|e| e.to_string())?;
+    // Root URLs have nothing to fall back to — open them directly.
+    if parsed.path == "/" {
+        return Ok(url.to_string());
+    }
+
+    let origin = format!(
+        "{}://{}:{}/",
+        if parsed.is_https { "https" } else { "http" },
+        parsed.host,
+        parsed.port
+    );
+
+    // Probe the requested path: up to ~8s, 500ms apart. An HTTP error
+    // status is decisive and stops the loop immediately.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        match probe_url_status(url) {
+            Ok(code) if (200..400).contains(&code) => return Ok(url.to_string()),
+            Ok(_) => break,
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    return Ok(url.to_string());
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+
+    // The path is broken (404/500...): fall back to the origin root.
+    match probe_url_status(&origin) {
+        Ok(code) if (200..400).contains(&code) => Ok(origin),
+        _ => Ok(url.to_string()),
+    }
+}
+
 /// Wait for a TCP port to become open, with cancellation support.
 pub async fn wait_for_port(
     check: &PortReadinessCheck,
@@ -604,6 +692,77 @@ mod tests {
     #[test]
     fn check_url_does_not_panic() {
         let _ = check_url("http://localhost:1/health");
+    }
+
+    #[test]
+    fn probe_url_status_returns_error_codes() {
+        // A tiny HTTP server: /docs → 404, / → 200.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                let (code, body) = if request.contains("/docs") {
+                    ("404 Not Found", "not found")
+                } else {
+                    ("200 OK", "hello")
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    code,
+                    body.len(),
+                    body
+                );
+            }
+        });
+
+        assert_eq!(probe_url_status(&format!("http://127.0.0.1:{}/", port)).unwrap(), 200);
+        assert_eq!(
+            probe_url_status(&format!("http://127.0.0.1:{}/docs", port)).unwrap(),
+            404
+        );
+        // Unreachable server → Err, not a status code.
+        assert!(probe_url_status("http://127.0.0.1:1/x").is_err());
+    }
+
+    #[test]
+    fn resolve_browser_url_falls_back_to_root_on_404() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                let (code, body) = if request.contains("/docs") {
+                    ("404 Not Found", "not found")
+                } else {
+                    ("200 OK", "hello")
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    code,
+                    body.len(),
+                    body
+                );
+            }
+        });
+
+        // A 404 on the doc path → the origin root is opened instead.
+        let resolved = resolve_browser_url(&format!("http://127.0.0.1:{}/docs", port)).unwrap();
+        assert_eq!(resolved, format!("http://127.0.0.1:{}/", port));
+        // A 200 on the doc path → the path itself.
+        let resolved = resolve_browser_url(&format!("http://127.0.0.1:{}/", port)).unwrap();
+        assert_eq!(resolved, format!("http://127.0.0.1:{}/", port));
+        // Root URLs are returned unchanged.
+        let root = format!("http://127.0.0.1:{}/", port);
+        assert_eq!(resolve_browser_url(&root).unwrap(), root);
     }
 
     #[test]

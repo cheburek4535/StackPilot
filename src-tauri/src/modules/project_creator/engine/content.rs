@@ -267,33 +267,61 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
             }),
 
             "kafka" => {
-                services.push(DockerService {
-                    name: "zookeeper".into(),
-                    image: "confluentinc/cp-zookeeper:latest".into(),
-                    ports: vec!["2181:2181".into()],
-                    environment: vec![
-                        ("ZOOKEEPER_CLIENT_PORT".into(), "2181".into()),
-                        ("ZOOKEEPER_TICK_TIME".into(), "2000".into()),
-                    ],
-                    volumes: Vec::new(),
-                    depends_on: Vec::new(),
-                });
-
+                // Single-node KRaft. The current `confluentinc/cp-kafka:latest`
+                // image NO LONGER starts in Zookeeper mode: it requires
+                // `KAFKA_PROCESS_ROLES` and crashes on boot with
+                // "environment variable KAFKA_PROCESS_ROLES is not set"
+                // (exit code 1) when only the legacy ZK variables are set —
+                // the container dies instantly and port 9092 never opens.
+                // The listener must bind to 0.0.0.0 INSIDE the container
+                // (docker port publishing cannot reach a broker bound to
+                // `localhost`), while clients on the host connect via the
+                // advertised `localhost:9092`.
                 services.push(DockerService {
                     name: "kafka".into(),
                     image: "confluentinc/cp-kafka:latest".into(),
                     ports: vec!["9092:9092".into()],
                     environment: vec![
-                        ("KAFKA_BROKER_ID".into(), "1".into()),
-                        ("KAFKA_ZOOKEEPER_CONNECT".into(), "zookeeper:2181".into()),
+                        ("KAFKA_NODE_ID".into(), "1".into()),
+                        (
+                            "KAFKA_PROCESS_ROLES".into(),
+                            "broker,controller".into(),
+                        ),
+                        (
+                            "KAFKA_LISTENERS".into(),
+                            "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093".into(),
+                        ),
                         (
                             "KAFKA_ADVERTISED_LISTENERS".into(),
                             "PLAINTEXT://localhost:9092".into(),
                         ),
-                        ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(), "1".into()),
+                        (
+                            "KAFKA_CONTROLLER_LISTENER_NAMES".into(),
+                            "CONTROLLER".into(),
+                        ),
+                        (
+                            "KAFKA_CONTROLLER_QUORUM_VOTERS".into(),
+                            "1@kafka:9093".into(),
+                        ),
+                        (
+                            "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(),
+                            "1".into(),
+                        ),
+                        (
+                            "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS".into(),
+                            "0".into(),
+                        ),
+                        (
+                            "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR".into(),
+                            "1".into(),
+                        ),
+                        (
+                            "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR".into(),
+                            "1".into(),
+                        ),
                     ],
                     volumes: Vec::new(),
-                    depends_on: vec!["Zookeeper".into()],
+                    depends_on: Vec::new(),
                 });
             }
 
@@ -1981,5 +2009,47 @@ mod tests {
             dockerfile.contains("next\", \"start\", \"-H\", \"0.0.0.0\""),
             "{dockerfile}"
         );
+    }
+
+    #[test]
+    fn kafka_compose_generates_single_node_kraft_not_zookeeper() {
+        // The current `confluentinc/cp-kafka:latest` image requires KRaft:
+        // without KAFKA_PROCESS_ROLES the container dies on boot with
+        // "environment variable KAFKA_PROCESS_ROLES is not set" (exit 1)
+        // and port 9092 never opens — the old zookeeper-mode template.
+        let services = collect_docker_services(&["kafka".into()]);
+        assert_eq!(services.len(), 1, "kafka must be a single KRaft service");
+        let kafka = &services[0];
+        assert_eq!(kafka.name, "kafka");
+        let env: Vec<(&str, &str)> = kafka
+            .environment
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert!(
+            env.contains(&("KAFKA_PROCESS_ROLES", "broker,controller")),
+            "KRaft process roles required: {:?}",
+            env
+        );
+        assert!(
+            env.contains(&(
+                "KAFKA_LISTENERS",
+                "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            )),
+            "listeners must bind 0.0.0.0 so the published port is reachable: {:?}",
+            env
+        );
+        assert!(
+            env.contains(&("KAFKA_ADVERTISED_LISTENERS", "PLAINTEXT://localhost:9092")),
+            "advertised listeners must point at localhost for host clients: {:?}",
+            env
+        );
+        // No legacy ZK mode leftovers.
+        assert!(!env.iter().any(|(k, _)| *k == "KAFKA_ZOOKEEPER_CONNECT"));
+        assert!(!env.iter().any(|(k, _)| *k == "KAFKA_BROKER_ID"));
+
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
+        assert!(!compose.contains("zookeeper"), "no zookeeper service: {compose}");
+        assert!(compose.contains("KAFKA_PROCESS_ROLES"), "{compose}");
     }
 }

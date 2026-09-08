@@ -810,7 +810,10 @@ impl From<LaunchProfile> for LaunchProfileV2 {
             id: generate_stable_id(),
             name: profile.name,
             description: profile.description,
-            project_root: profile.project_path,
+            project_root: profile
+                .project_path
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty()),
             steps,
             environment_binding_id: profile.environment_binding_id,
             preferred_ide: profile.preferred_ide,
@@ -878,7 +881,14 @@ pub fn migrate_legacy_profile(profile: LaunchProfile) -> LaunchProfileV2 {
         id: generate_stable_id(),
         name: profile.name,
         description: profile.description,
-        project_root: profile.project_path,
+        // An empty legacy `project_path` (e.g. wizard drafts saved before a
+        // folder was picked) must NOT survive as `Some("")`: relative step
+        // directories would then resolve to relative paths and spawn in the
+        // app's own working directory.
+        project_root: profile
+            .project_path
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty()),
         steps,
         environment_binding_id: profile.environment_binding_id,
         preferred_ide: profile.preferred_ide,
@@ -911,7 +921,14 @@ pub fn resolve_working_directory(
     if path.is_absolute() {
         return Some(dir.to_string());
     }
-    let root = project_root?;
+    // An empty/whitespace root can never anchor a relative directory: joining
+    // onto it would silently produce another RELATIVE path, which the spawn
+    // would then resolve against the app's own working directory — the root
+    // cause of "The system cannot find the path specified" (cmd exit code 3)
+    // when the command is a relative venv path like `.venv\Scripts\python.exe`.
+    let root = project_root
+        .map(str::trim)
+        .filter(|r| !r.is_empty())?;
     // Normalize the joined path: `Path::join` keeps `.` components
     // (`/proj/./backend`), which are valid but ugly in logs and misleading
     // in step metadata. CurDir components are dropped lexically.
@@ -1337,5 +1354,65 @@ mod tests {
         assert_eq!(resolve_working_directory(Some(root), None), None);
         assert_eq!(resolve_working_directory(None, Some("./x")), None);
         assert_eq!(resolve_working_directory(None, None), None);
+    }
+
+    #[test]
+    fn resolve_working_directory_empty_root_is_missing() {
+        // An empty (or whitespace) project root must behave like None: it can
+        // never anchor a relative directory, and joining onto it would
+        // silently produce ANOTHER relative path that resolves against the
+        // app's own working directory ("The system cannot find the path
+        // specified", cmd exit code 3).
+        assert_eq!(resolve_working_directory(Some(""), Some("./backend")), None);
+        assert_eq!(resolve_working_directory(Some("   "), Some("./backend")), None);
+        assert_eq!(resolve_working_directory(Some(""), Some("backend")), None);
+        // Absolute working directories still pass through with an empty root.
+        let abs = if cfg!(windows) {
+            r"C:\abs\path"
+        } else {
+            "/abs/path"
+        };
+        assert_eq!(
+            resolve_working_directory(Some(""), Some(abs)),
+            Some(abs.to_string())
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_profile_empty_project_path_becomes_none() {
+        let legacy = LaunchProfile {
+            name: "broken".to_string(),
+            description: String::new(),
+            project_path: Some("  ".to_string()),
+            actions: Vec::new(),
+            environment_binding_id: None,
+            preferred_ide: None,
+            schema_version: None,
+            id: None,
+            steps: None,
+        };
+        let v2 = migrate_legacy_profile(legacy);
+        assert!(v2.project_root.is_none(), "empty root must not survive");
+
+        let legacy = LaunchProfile {
+            project_path: Some("C:\\proj".to_string()),
+            ..launch_profile_minimal("x")
+        };
+        let v2 = migrate_legacy_profile(legacy);
+        assert_eq!(v2.project_root.as_deref(), Some("C:\\proj"));
+    }
+
+    fn launch_profile_minimal(name: &str) -> LaunchProfile {
+        LaunchProfile {
+            name: name.to_string(),
+            description: String::new(),
+            project_path: None,
+            actions: Vec::new(),
+            environment_binding_id: None,
+            preferred_ide: None,
+            schema_version: None,
+            id: None,
+            steps: None,
+        }
     }
 }

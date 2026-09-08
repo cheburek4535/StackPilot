@@ -1874,8 +1874,20 @@ fn generate_steps(
             if !known.insert(("db_wait".to_string(), key)) {
                 continue;
             }
+            // Kafka (and Redpanda) brokers are the slowest containers to
+            // become reachable — image pull + broker bootstrap routinely
+            // exceeds the generic 90s on cold starts, so they get extra
+            // headroom.
+            let timeout = if matches!(
+                service.to_ascii_lowercase().as_str(),
+                "kafka" | "redpanda"
+            ) {
+                180
+            } else {
+                WAIT_PORT_TIMEOUT_SECS
+            };
             let mut wait =
-                PendingStep::wait_port("127.0.0.1", *port, WAIT_PORT_TIMEOUT_SECS, &compose_id);
+                PendingStep::wait_port("127.0.0.1", *port, timeout, &compose_id);
             wait.label = format!(
                 "Wait for {} ({})",
                 if service.is_empty() {

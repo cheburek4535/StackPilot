@@ -72,6 +72,11 @@
   let activeRun = $state<LaunchRun | null>(null);
   let actionResults = $state<Map<string, string>>(new Map());
   let watching = $state(false);
+  /** True while a cancel request is in flight — drives the Cancel button's
+   *  immediate visual feedback ("Отмена…") until the backend confirms it. */
+  let cancelling = $state(false);
+  /** Store subscription so the dashboard's run card never goes stale. */
+  let unsubscribeStore: (() => void) | null = null;
   /** The profile launcher widget starts collapsed — it lives at the bottom of
    *  the dashboard and expands only on demand or when a launch begins. */
   let profilesExpanded = $state(false);
@@ -99,6 +104,9 @@
     } catch {
       // Non-critical — the dashboard works without the event store.
     }
+    // Live-sync the tracked run from store mutations (event-driven), so the
+    // run card and Cancel button reflect backend state without polling.
+    unsubscribeStore = runStore.subscribe(() => syncRunFromStore());
     await loadProfiles();
     // Deep links: /workspace?profile=<name>[&run=1]
     const want = $page.url.searchParams.get("profile");
@@ -112,6 +120,8 @@
 
   onDestroy(() => {
     stopPolling();
+    unsubscribeStore?.();
+    unsubscribeStore = null;
     runStore.destroy();
     if (watching) {
       stopFileWatcher().catch(() => {});
@@ -262,7 +272,7 @@
       const run = await runStore.fetchRun(runId);
       if (run) {
         activeRun = run;
-        if (!isRunTerminal(run.status) && launching) {
+        if (!isRunTerminal(run.status)) {
           setTimeout(() => pollRun(runId), 1000);
         }
       }
@@ -271,12 +281,29 @@
     }
   }
 
+  /** Store mutation callback: refresh the tracked run only (by run id), so
+   *  a run started from another page/profile never overwrites the dashboard's
+   *  run card. */
+  function syncRunFromStore() {
+    if (!activeRun) return;
+    const updated = runStore.getRunById(activeRun.run_id);
+    if (updated) activeRun = updated;
+  }
+
   /** Cancel the active V2 run. Idempotent — safe after terminal state. */
   async function cancelRun() {
-    await runStore.cancelCurrentRun();
-    if (activeRun) {
+    if (cancelling || !activeRun) return;
+    cancelling = true;
+    try {
+      // Cancel the run this dashboard is tracking — never a "current" run
+      // that may belong to another project (shared store state).
+      await runStore.cancelCurrentRun(activeRun.run_id);
       const updated = await runStore.fetchRun(activeRun.run_id);
       if (updated) activeRun = updated;
+    } catch {
+      // The store subscription / polling will surface the real state.
+    } finally {
+      cancelling = false;
     }
   }
 
@@ -779,8 +806,17 @@
                 </h5>
                 <div class="sp-run-actions">
                   {#if !isRunTerminal(activeRun.status)}
-                    <Button variant="danger" size="sm" icon="x" onclick={cancelRun}>
-                      {i18n.t("devl.cancel_run") as TranslationKey}
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon="x"
+                      loading={cancelling}
+                      disabled={cancelling}
+                      onclick={cancelRun}
+                    >
+                      {cancelling
+                        ? (i18n.t("devl.cancelling") as TranslationKey)
+                        : (i18n.t("devl.cancel_run") as TranslationKey)}
                     </Button>
                   {:else}
                     <Button

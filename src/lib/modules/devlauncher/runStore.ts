@@ -226,7 +226,11 @@ function toV2Profile(
     id: legacy.id ?? `legacy-${legacy.name}`,
     name: legacy.name,
     description: legacy.description,
-    project_root: legacy.project_path,
+    // An empty legacy project_path must become null: the backend resolves
+    // relative working directories ("./backend") against project_root, and
+    // "" would silently keep them relative so commands run in the app's own
+    // folder ("The system cannot find the path specified", exit code 3).
+    project_root: legacy.project_path?.trim() || null,
     steps,
     environment_binding_id: legacy.environment_binding_id,
     preferred_ide: legacy.preferred_ide,
@@ -273,11 +277,15 @@ function actionTypeToStepKind(
   return { type: "run_command", command: "" };
 }
 
-/** Cancel an active run. Idempotent — safe to call after terminal state. */
-export async function cancelCurrentRun(): Promise<void> {
-  if (!state.currentRunId) return;
+/** Cancel an active run. Idempotent — safe to call after terminal state.
+ *  When `runId` is omitted, the most recently created run is cancelled
+ *  (legacy behavior). Callers that track a specific run SHOULD pass its id
+ *  so cancellation never targets a different project's run. */
+export async function cancelCurrentRun(runId?: string): Promise<void> {
+  const target = runId ?? state.currentRunId;
+  if (!target) return;
   try {
-    await api.cancelRun(state.currentRunId);
+    await api.cancelRun(target);
   } catch {
     // Already cancelled or terminal — safe to ignore.
   }

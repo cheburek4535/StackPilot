@@ -1456,6 +1456,7 @@ export default {
   "devl.visible_terminal": "Работает в нативном окне терминала",
   "devl.run": "Запуск",
   "devl.cancel_run": "Отменить запуск",
+  "devl.cancelling": "Отмена…",
   "devl.stop_processes": "Остановить процессы",
   "devl.stop_processes_running": "Останавливаю…",
   "devl.stop_processes_done": "Процессы остановлены",

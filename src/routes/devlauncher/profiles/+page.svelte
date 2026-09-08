@@ -29,6 +29,24 @@
   let activeRun = $state<import("$lib/modules/devlauncher/types").LaunchRun | null>(null);
   let actionResults = $state<Map<string, string>>(new Map());
   let launchCurrent = $state<string | null>(null);
+  /** True while a cancel request is in flight (drives button feedback). */
+  let cancellingRun = $state(false);
+
+  /** Cancel the active V2 run. Cancels the run tracked on this page — never a
+   *  "current" run that may belong to another project. */
+  async function cancelRun() {
+    if (cancellingRun || !activeRun) return;
+    cancellingRun = true;
+    try {
+      await runStore.cancelCurrentRun(activeRun.run_id);
+      const updated = await runStore.fetchRun(activeRun.run_id);
+      if (updated) activeRun = updated;
+    } catch {
+      // Non-critical — polling will surface the real state.
+    } finally {
+      cancellingRun = false;
+    }
+  }
 
   onMount(async () => {
     try {
@@ -271,9 +289,13 @@
               variant="danger"
               size="sm"
               icon="x"
-              onclick={() => runStore.cancelCurrentRun()}
+              loading={cancellingRun}
+              disabled={cancellingRun}
+              onclick={cancelRun}
             >
-              {i18n.t("devl.cancel_run") as TranslationKey}
+              {cancellingRun
+                ? (i18n.t("devl.cancelling") as TranslationKey)
+                : (i18n.t("devl.cancel_run") as TranslationKey)}
             </Button>
           {/if}
         </div>

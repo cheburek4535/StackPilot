@@ -154,15 +154,21 @@ pub struct TerminalPlan {
     pub args: Vec<String>,
     /// The tracking quality for processes spawned through this plan.
     pub tracking_quality: ProcessTrackingQuality,
-    /// When set, the LAST argument of `args` must be appended to the spawned
-    /// command line verbatim (never re-quoted).
+    /// Flag marking the LAST argument of `args` as a raw command tail that
+    /// must be appended to the spawned command line verbatim (never
+    /// re-quoted by standard argument quoting).
     ///
     /// Windows `cmd` and `wt` re-parse their command tail with cmd-style
     /// rules from the RAW command line (they do not round-trip through
     /// CommandLineToArgvW). Backslash-escaped quotes produced by standard
     /// argument quoting (`\"`) survive into the command and break paths
-    /// with spaces, silently killing the whole chain. The tail is therefore
-    /// pre-quoted with cmd-style quotes and appended raw.
+    /// with spaces, silently killing the whole chain. The spawner therefore
+    /// pops the LAST argument and appends it raw, UNQUOTED: cmd parses
+    /// everything after `/K` itself, and wt forwards the tail to cmd
+    /// unchanged. (Wrapping the tail in outer quotes — the value stored
+    /// here — does NOT survive cmd's first/last-quote stripping: the nested
+    /// quotes get mangled and the command dies with "C:\Program is not
+    /// recognized".)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_tail: Option<String>,
 }
@@ -399,8 +405,11 @@ fn resolve_windows_terminal(
     args.push("/K".to_string());
     args.push(inner_cmd.to_string());
 
-    // The tail is wrapped in cmd-style quotes (like `cmd /K "<cmd>"`) —
-    // exactly the form wt forwards verbatim to the new tab.
+    // `raw_tail` is a FLAG: the spawner pops the last `args` element (the
+    // unquoted payload) and appends it raw. The value stored here is not
+    // appended itself — cmd's first/last-quote stripping mangles a
+    // quote-wrapped tail and the command dies with "C:\Program is not
+    // recognized".
     let raw_tail = format!("\"{}\"", inner_cmd);
     Ok(TerminalPlan {
         program: "wt".to_string(),
@@ -432,8 +441,11 @@ fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan,
 
     args.push(full_cmd.clone());
 
-    // `cmd /K "..."` — the tail is wrapped in cmd-style quotes so cmd's
-    // first/last-quote stripping leaves exactly `full_cmd` to execute.
+    // `raw_tail` is a FLAG: the spawner pops the last `args` element (the
+    // unquoted `full_cmd`) and appends it raw. The value stored here is not
+    // appended itself — cmd's first/last-quote stripping would mangle the
+    // nested quotes (paths with spaces die with "C:\Program is not
+    // recognized"). cmd parses the UNQUOTED tail after `/K` itself.
     let raw_tail = format!("\"{}\"", full_cmd);
     Ok(TerminalPlan {
         program: "cmd".to_string(),
@@ -801,6 +813,46 @@ mod tests {
         assert!(tail.contains("!ERRORLEVEL!"));
         assert!(tail.contains("m.txt"));
         assert!(tail.contains("npm run dev"));
+    }
+
+    #[test]
+    fn raw_tail_plan_contract_last_arg_is_the_payload() {
+        // The spawner pops the plan's LAST argument and appends it raw
+        // (never re-quoted). If a resolver stops putting the payload last,
+        // cmd/wt receive a mangled command line and every command with a
+        // quoted path dies with "C:\Program is not recognized" — the
+        // regression this test guards against.
+        let cmd_config = TerminalConfig {
+            backend: TerminalBackend::Cmd,
+            command: "\"C:\\Program Files\\nodejs\\npm.cmd\" run dev".to_string(),
+            working_dir: Some("C:\\My Project\\app".to_string()),
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: Some("Backend".to_string()),
+            keep_open: true,
+            env: None,
+            startup_marker: None,
+        };
+        let cmd_plan = resolve_terminal_plan(&cmd_config).unwrap();
+        assert!(cmd_plan.raw_tail.is_some());
+        let last = cmd_plan.args.last().cloned().unwrap_or_default();
+        assert!(last.contains("npm.cmd"), "cmd payload must be the last arg: {last}");
+        assert!(last.contains("run dev"), "cmd payload must carry the command: {last}");
+
+        let wt_config = TerminalConfig {
+            backend: TerminalBackend::WindowsTerminal,
+            command: "\"C:\\Program Files\\nodejs\\npm.cmd\" run dev".to_string(),
+            working_dir: Some("C:\\My Project\\app".to_string()),
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: Some("Backend".to_string()),
+            keep_open: true,
+            env: None,
+            startup_marker: None,
+        };
+        let wt_plan = resolve_terminal_plan(&wt_config).unwrap();
+        assert!(wt_plan.raw_tail.is_some());
+        let last = wt_plan.args.last().cloned().unwrap_or_default();
+        assert!(last.contains("npm.cmd"), "wt payload must be the last arg: {last}");
+        assert!(last.contains("run dev"), "wt payload must carry the command: {last}");
     }
 
     #[test]

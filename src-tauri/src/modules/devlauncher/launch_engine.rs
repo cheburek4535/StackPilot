@@ -83,6 +83,24 @@ impl LaunchEngine for ProcessLaunchEngine {
                 ..
             } => {
                 let dir_ref = working_dir.as_deref();
+                // A stale or unresolvable working directory must not spawn:
+                // cmd would print "The system cannot find the path specified"
+                // and die with exit code 3 (or a batch shim starts in the
+                // wrong place and exits 1). Surface the real reason instead.
+                if let Some(dir) = dir_ref {
+                    if !std::path::Path::new(dir).is_dir() {
+                        return Ok((
+                            ActionStatus::Failed {
+                                error: format!(
+                                    "Working directory '{}' does not exist; \
+                                     fix the action or re-analyze the project",
+                                    dir
+                                ),
+                            },
+                            None,
+                        ));
+                    }
+                }
                 let empty_overlay = EnvironmentOverlay::new();
                 let effective_overlay = overlay.unwrap_or(&empty_overlay);
 
@@ -165,10 +183,15 @@ impl LaunchEngine for ProcessLaunchEngine {
             }
 
             ActionType::OpenUrl { url } => {
-                match crate::platform::app_launcher::open_url_in_browser(url, browser_path) {
+                // Doc URLs (/docs, /swagger-ui/...) often 404 when the docs
+                // package is not installed; probe first and fall back to the
+                // origin root so the browser opens a working page.
+                let resolved = crate::platform::readiness::resolve_browser_url(url)
+                    .unwrap_or_else(|_| url.to_string());
+                match crate::platform::app_launcher::open_url_in_browser(&resolved, browser_path) {
                     Ok(_) => Ok((
                         ActionStatus::Success {
-                            message: format!("Browser opened: {}", url),
+                            message: format!("Browser opened: {}", resolved),
                         },
                         None,
                     )),
