@@ -571,7 +571,7 @@ cargo test
 └── README.md
 ```
 
-Rust-модули регистрируют Tauri commands в [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs). Контракт DevLauncher V2 описан в [`docs/devlauncher-contract.md`](docs/devlauncher-contract.md), кросс-платформенная матрица — в [`docs/CROSS_PLATFORM_PROGRESS.md`](docs/CROSS_PLATFORM_PROGRESS.md).
+Rust-модули регистрируют Tauri commands в [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs).
 
 ### Для интеграторов и авторов плагинов
 
@@ -739,6 +739,3 @@ StackPilot распространяется под [GNU Affero General Public Li
 - [SvelteKit documentation](https://kit.svelte.dev/docs)
 - [Rust documentation](https://doc.rust-lang.org/)
 - [Vite documentation](https://vite.dev/guide/)
-- [Документация DevLauncher V2](docs/devlauncher-contract.md)
-- [Кросс-платформенный прогресс](docs/CROSS_PLATFORM_PROGRESS.md)
-- [Прогресс Toolchain](docs/progress_toolchain.md)
