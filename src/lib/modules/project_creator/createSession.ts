@@ -42,6 +42,7 @@ const LIGHT_FIELDS = new Set<string>([
   "selectedFolder",
   "conflictResolvedFolder",
   "folderExists",
+  "devlAutoPopupShown",
   "envLocalInfra",
   "envSelectedIds",
   "envInstalling",
