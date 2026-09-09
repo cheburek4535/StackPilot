@@ -3,6 +3,7 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -1220,18 +1221,34 @@ impl RunOrchestrator {
         // would run in the project root while cmd fails with the cryptic
         // "The system cannot find the path specified" (exit code 3) — exactly
         // what the startup probe reports for a missing venv interpreter.
-        // When the executable is genuinely absent (install step never ran or
-        // was disabled), fail with the real reason instead.
+        // When the executable is genuinely absent but it is a venv
+        // interpreter, fall back to the closest ancestor `.venv` or the
+        // system interpreter (with a warning) before giving up — a project
+        // copied or cloned without its `.venv` must not dead-end the run.
         let (program, args) = match resolve_relative_program(program, args, working_dir) {
             Ok(pinned) => pinned,
             Err(msg) => {
-                return StepCompletion {
-                    step_id: step_id.to_string(),
-                    success: false,
-                    error: Some(msg),
-                    process_id: None,
-                    attempt_number: 0,
-                };
+                if let Some((fp, fa, warning)) =
+                    resolve_venv_program_fallback(program, args, working_dir)
+                {
+                    Self::emit_diagnostic(
+                        run_id,
+                        Some(step_id),
+                        LogSource::Preflight,
+                        DiagnosticSeverity::Warning,
+                        warning,
+                        app_handle,
+                    );
+                    (fp, fa)
+                } else {
+                    return StepCompletion {
+                        step_id: step_id.to_string(),
+                        success: false,
+                        error: Some(msg),
+                        process_id: None,
+                        attempt_number: 0,
+                    };
+                }
             }
         };
 
@@ -1281,9 +1298,16 @@ impl RunOrchestrator {
         // exits; the ProcessStarted probe then verifies the marker (see
         // `probe_startup_marker`). Plain interactive terminals (`cmd` with no
         // args) get no marker — there is no command to verify.
+        //
+        // Docker compose bootstraps request the marker too: the
+        // DockerComposeUp completion waits for the marker to report the real
+        // exit code of `docker compose up -d` (a failed build must fail the
+        // step) while independently polling running containers.
+        let marker_needed = matches!(completion, CompletionPolicy::ProcessStarted)
+            || matches!(completion, CompletionPolicy::DockerComposeUp { .. });
         let startup_marker: Option<std::path::PathBuf> =
             if matches!(visibility, Visibility::VisibleTerminal)
-                && matches!(completion, CompletionPolicy::ProcessStarted)
+                && marker_needed
                 && !args.is_empty()
             {
                 Some(create_startup_marker_path())
@@ -1479,6 +1503,28 @@ impl RunOrchestrator {
                         attempt_number: 0,
                     },
                 }
+            }
+            CompletionPolicy::DockerComposeUp { timeout_secs } => {
+                // `docker compose up -d` runs in a visible terminal so the
+                // user watches the build. Success is NOT "process started":
+                // the step polls (captured, no extra terminal) until compose
+                // reports running containers or the command's real exit code
+                // is captured. A build that fails minutes in (broken
+                // Dockerfile, missing package-lock.json for `npm ci`, ...)
+                // fails this step instead of silently reporting success.
+                Self::wait_for_docker_compose_up(
+                    run_id,
+                    step_id,
+                    working_dir,
+                    startup_marker.as_deref(),
+                    &proc_id,
+                    *timeout_secs,
+                    cancelled,
+                    cancel_notify,
+                    process_manager,
+                    app_handle,
+                )
+                .await
             }
             CompletionPolicy::ExitSuccess => {
                 // Wait for process exit
@@ -2256,6 +2302,168 @@ impl RunOrchestrator {
     }
 
     // -----------------------------------------------------------------------
+    // Docker Compose bootstrap verification
+    // -----------------------------------------------------------------------
+
+    /// Wait for a `docker compose up -d` bootstrap to actually bring the
+    /// containers up. Never completes on "process started": a compose build
+    /// that fails minutes later (broken Dockerfile, missing package-lock.json
+    /// for `npm ci`, ...) must fail this step, not report success.
+    ///
+    /// Two independent signals, whichever fires first:
+    /// 1. The startup marker — the terminal wrapper writes the inner
+    ///    command's real exit code after `docker compose up -d` exits.
+    ///    Non-zero means the build/start failed; zero means compose detached
+    ///    cleanly (all services up).
+    /// 2. A captured `docker compose ps --status running --quiet` poll in the
+    ///    step's working directory — NO terminal window, the user must not
+    ///    see the check. Non-empty output means at least one container of
+    ///    the project is actually running.
+    async fn wait_for_docker_compose_up(
+        run_id: &str,
+        step_id: &str,
+        working_dir: Option<&str>,
+        marker: Option<&std::path::Path>,
+        proc_id: &str,
+        timeout_secs: u64,
+        cancelled: &Arc<AtomicBool>,
+        cancel_notify: &Arc<Notify>,
+        process_manager: &Arc<dyn ProcessManager>,
+        app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    ) -> StepCompletion {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        let poll_interval = Duration::from_millis(1000);
+
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                Self::emit_diagnostic(
+                    run_id,
+                    Some(step_id),
+                    LogSource::Readiness,
+                    DiagnosticSeverity::Info,
+                    "Docker Compose verification cancelled".to_string(),
+                    app_handle,
+                );
+                return StepCompletion {
+                    step_id: step_id.to_string(),
+                    success: false,
+                    error: Some("Cancelled".to_string()),
+                    process_id: Some(proc_id.to_string()),
+                    attempt_number: 0,
+                };
+            }
+
+            // 1. Authoritative failure signal: once the compose command
+            //    finishes, the startup marker holds its real exit code. A
+            //    non-zero exit (broken build, failed start) fails the step
+            //    immediately — no waiting out the timeout.
+            if let Some(marker) = marker {
+                if let Ok(meta) = std::fs::metadata(marker) {
+                    if meta.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(marker) {
+                            match content.trim().parse::<i32>() {
+                                Ok(0) => {
+                                    let _ = std::fs::remove_file(marker);
+                                    Self::emit_diagnostic(
+                                        run_id,
+                                        Some(step_id),
+                                        LogSource::Readiness,
+                                        DiagnosticSeverity::Info,
+                                        "Docker Compose exited 0 — containers started".to_string(),
+                                        app_handle,
+                                    );
+                                    return StepCompletion {
+                                        step_id: step_id.to_string(),
+                                        success: true,
+                                        error: None,
+                                        process_id: Some(proc_id.to_string()),
+                                        attempt_number: 0,
+                                    };
+                                }
+                                Ok(code) => {
+                                    let _ = std::fs::remove_file(marker);
+                                    let mut msg = format!(
+                                        "Docker Compose failed with exit code {} (reported \
+                                         by the startup probe); check the terminal output",
+                                        code
+                                    );
+                                    let tail = output_tail_hint(process_manager, proc_id);
+                                    if !tail.is_empty() {
+                                        msg.push_str(&tail);
+                                    }
+                                    return StepCompletion {
+                                        step_id: step_id.to_string(),
+                                        success: false,
+                                        error: Some(msg),
+                                        process_id: Some(proc_id.to_string()),
+                                        attempt_number: 0,
+                                    };
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Live verification: a captured `docker compose ps` (never a
+            //    new terminal window) confirms containers are running.
+            if let Some(dir) = working_dir {
+                let running = crate::platform::docker_service::compose_running_ids(Path::new(dir));
+                if !running.is_empty() {
+                    if let Some(marker) = marker {
+                        let _ = std::fs::remove_file(marker);
+                    }
+                    Self::emit_diagnostic(
+                        run_id,
+                        Some(step_id),
+                        LogSource::Readiness,
+                        DiagnosticSeverity::Info,
+                        format!("Docker Compose containers running: {}", running.join(", ")),
+                        app_handle,
+                    );
+                    return StepCompletion {
+                        step_id: step_id.to_string(),
+                        success: true,
+                        error: None,
+                        process_id: Some(proc_id.to_string()),
+                        attempt_number: 0,
+                    };
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                let mut msg = format!(
+                    "Docker Compose did not report any running containers within {}s; \
+                     check the 'Start Docker Compose' terminal for build/start errors",
+                    timeout_secs
+                );
+                let tail = output_tail_hint(process_manager, proc_id);
+                if !tail.is_empty() {
+                    msg.push_str(&tail);
+                }
+                Self::emit_diagnostic(
+                    run_id,
+                    Some(step_id),
+                    LogSource::Readiness,
+                    DiagnosticSeverity::Error,
+                    msg.clone(),
+                    app_handle,
+                );
+                return StepCompletion {
+                    step_id: step_id.to_string(),
+                    success: false,
+                    error: Some(msg),
+                    process_id: Some(proc_id.to_string()),
+                    attempt_number: 0,
+                };
+            }
+
+            let _ = tokio::time::timeout(poll_interval, cancel_notify.notified()).await;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Delay with cancellation
     // -----------------------------------------------------------------------
 
@@ -2840,6 +3048,12 @@ impl RunOrchestrator {
 /// saved before the timeout rework carry 30s waits.
 const WAIT_TIMEOUT_FLOOR_SECS: u64 = 60;
 
+/// Default timeout for the Docker Compose bootstrap verification. Image
+/// builds (npm ci, pip install, ...) routinely take minutes on cold
+/// starts; the step still fails fast when the compose command itself
+/// exits non-zero (the startup probe reports the real exit code).
+const COMPOSE_UP_TIMEOUT_SECS: u64 = 600;
+
 /// Default retry policy attached to readiness waits that have none.
 fn default_wait_retry_policy() -> RetryPolicy {
     RetryPolicy {
@@ -2901,6 +3115,108 @@ fn resolve_relative_program(
         ));
     }
     Ok((candidate.to_string_lossy().into_owned(), args.to_vec()))
+}
+
+/// True when `program` is a relative virtual-env interpreter path such as
+/// `.venv\Scripts\python.exe` (Windows) or `.venv/bin/python` (Unix).
+fn is_venv_interpreter_program(program: &str) -> bool {
+    let normalized = program.replace('\\', "/");
+    let comps: Vec<&str> = normalized.split('/').filter(|c| !c.is_empty()).collect();
+    if comps.len() < 3 {
+        return false;
+    }
+    let has_venv_dir = comps[..comps.len() - 2]
+        .iter()
+        .any(|c| *c == ".venv" || *c == "venv");
+    if !has_venv_dir {
+        return false;
+    }
+    let script_dir = comps[comps.len() - 2];
+    // Accept both the Windows (`Scripts`) and Unix (`bin`) layouts so a
+    // profile created on one OS still falls back gracefully on the other.
+    let script_dir_ok =
+        script_dir.eq_ignore_ascii_case("Scripts") || script_dir.eq_ignore_ascii_case("bin");
+    if !script_dir_ok {
+        return false;
+    }
+    let mut exe = comps[comps.len() - 1].to_ascii_lowercase();
+    let exe = exe.strip_suffix(".exe").unwrap_or(&exe);
+    exe == "python" || exe == "python3" || exe.starts_with("python3.")
+}
+
+/// Search `start` and each ancestor directory for a virtual environment
+/// containing an interpreter for the current OS, returning the interpreter
+/// path of the closest match. This handles projects whose venv lives above
+/// the step's working directory (e.g. a monorepo root `.venv` shared by a
+/// `backend/` service).
+fn find_venv_interpreter_above(start: &Path) -> Option<PathBuf> {
+    const VENV_DIRS: [&str; 2] = [".venv", "venv"];
+    let interpreter_rel = if cfg!(target_os = "windows") {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    };
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        for vd in VENV_DIRS {
+            let candidate = d.join(vd).join(interpreter_rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// When a step references a relative venv interpreter that is missing in its
+/// working directory, find a usable replacement: the closest `.venv`/`venv`
+/// in an ancestor directory, otherwise the system interpreter on PATH. The
+/// replacement is returned with a human-readable warning for the user.
+/// Returns `None` when no replacement is available — the caller reports the
+/// original "Executable not found" error then.
+fn resolve_venv_program_fallback(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&str>,
+) -> Option<(String, Vec<String>, String)> {
+    if !is_venv_interpreter_program(program) {
+        return None;
+    }
+    if let Some(dir) = working_dir {
+        if let Some(interp) = find_venv_interpreter_above(Path::new(dir)) {
+            let warning = format!(
+                "Virtual environment interpreter '{}' was not found in '{}'; using '{}' from an \
+                 ancestor directory instead.",
+                program,
+                dir,
+                interp.display()
+            );
+            return Some((
+                interp.to_string_lossy().into_owned(),
+                args.to_vec(),
+                warning,
+            ));
+        }
+    }
+    let system = if cfg!(target_os = "windows") {
+        "python"
+    } else {
+        "python3"
+    };
+    if let Some(path) = crate::platform::command_resolver::resolve_executable(system, None) {
+        let warning = format!(
+            "Virtual environment '{}' was not created in '{}'; falling back to system \
+             interpreter '{}' ({}). Dependencies must be installed there, or run the install \
+             step to create the project venv.",
+            program,
+            working_dir.unwrap_or("(no working directory)"),
+            system,
+            path.display()
+        );
+        return Some((path.to_string_lossy().into_owned(), args.to_vec(), warning));
+    }
+    None
 }
 
 /// Rewrite a docker compose invocation to pin its configuration file with
@@ -2977,6 +3293,37 @@ fn normalize_profile_for_run(
     diagnostics: &mut Vec<super::validation::ProfileValidationDiagnostic>,
 ) -> LaunchProfileV2 {
     for step in &mut profile.steps {
+        // Compose bootstrap upgrade: profiles generated before the
+        // DockerComposeUp completion reported success as soon as the
+        // visible-terminal probe window (6s) expired — a build that failed
+        // minutes later (broken Dockerfile, missing package-lock.json for
+        // `npm ci`) was silently marked "started". Rewrite the completion
+        // so the run verifies running containers (captured check, no extra
+        // terminal) before reporting success.
+        let is_compose_bootstrap = matches!(
+            &step.kind,
+            StepKind::RunCommand { command, .. } if is_compose_bootstrap_command(command)
+        );
+        if is_compose_bootstrap
+            && !matches!(
+                step.completion,
+                Some(CompletionPolicy::DockerComposeUp { .. })
+            )
+        {
+            step.completion = Some(CompletionPolicy::DockerComposeUp {
+                timeout_secs: COMPOSE_UP_TIMEOUT_SECS,
+            });
+            diagnostics.push(super::validation::ProfileValidationDiagnostic {
+                severity: DiagnosticSeverity::Info,
+                code: "COMPOSE_COMPLETION_UPGRADED".to_string(),
+                message: "Docker Compose bootstrap upgraded to verify running containers \
+                     before reporting success"
+                    .to_string(),
+                step_id: Some(step.id.clone()),
+                field: Some("completion".to_string()),
+            });
+        }
+
         // Legacy StopRun downgrade (see doc comment above).
         if step.failure_policy == Some(FailurePolicy::StopRun) {
             let is_compose_bootstrap = matches!(
@@ -3042,7 +3389,96 @@ fn normalize_profile_for_run(
             step.retry_policy = Some(default_wait_retry_policy());
         }
     }
+
+    // Repair graphs whose chain routes through a DISABLED step (see
+    // `bridge_disabled_step_dependencies`): this restores serialization for
+    // profiles saved before the generator started wiring install steps
+    // directly into their service dependents.
+    bridge_disabled_step_dependencies(&mut profile, diagnostics);
+
     profile
+}
+
+/// Repair graphs whose chain routes through a DISABLED step. A disabled step
+/// pre-completes instantly (it is marked Skipped at run creation), so an
+/// enabled dependent that depends ONLY on it starts in parallel with the
+/// disabled step's own upstream work.
+///
+/// The classic case is the Django chain `server -> migrate (disabled) ->
+/// install`: the migrate step was a disabled gate, so the server started at
+/// the same time as the install, and its spawn-time resolution of
+/// `.venv\Scripts\python.exe` failed before the install had created the venv
+/// ("Executable '.venv\Scripts\python.exe' not found ... check that the
+/// install step ran"). Enabled dependents of a disabled step are rewired to
+/// also wait for that step's enabled upstream steps, preserving the disabled
+/// step's skip while restoring correct ordering. Existing edges are left
+/// untouched (deduplicated), so correctly generated profiles are a no-op.
+fn bridge_disabled_step_dependencies(
+    profile: &mut LaunchProfileV2,
+    diagnostics: &mut Vec<validation::ProfileValidationDiagnostic>,
+) {
+    let disabled: Vec<String> = profile
+        .steps
+        .iter()
+        .filter(|s| !s.enabled)
+        .map(|s| s.id.clone())
+        .collect();
+
+    for d in &disabled {
+        // Enabled upstream steps of the disabled step (its own deps that are
+        // enabled — those actually do work the dependents should wait for).
+        let upstream: Vec<String> = profile
+            .steps
+            .iter()
+            .find(|s| &s.id == d)
+            .map(|s| {
+                s.depends_on
+                    .iter()
+                    .filter(|dep| profile.steps.iter().any(|ds| &ds.id == *dep && ds.enabled))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if upstream.is_empty() {
+            continue;
+        }
+        // Enabled steps that depend on the disabled step.
+        let dependents: Vec<String> = profile
+            .steps
+            .iter()
+            .filter(|s| s.enabled && s.depends_on.iter().any(|dep| dep == d))
+            .map(|s| s.id.clone())
+            .collect();
+        if dependents.is_empty() {
+            continue;
+        }
+
+        let mut bridged = false;
+        for dep_id in &dependents {
+            if let Some(step) = profile.steps.iter_mut().find(|s| &s.id == dep_id) {
+                for u in &upstream {
+                    if !step.depends_on.iter().any(|e| e == u) {
+                        step.depends_on.push(u.clone());
+                        bridged = true;
+                    }
+                }
+            }
+        }
+        if bridged {
+            diagnostics.push(validation::ProfileValidationDiagnostic {
+                severity: DiagnosticSeverity::Info,
+                code: "DEPENDENCY_BRIDGED".to_string(),
+                message: format!(
+                    "Disabled step '{}' pre-completes instantly; its enabled upstream steps were \
+                     bridged to its dependents so they start only after the upstream work \
+                     finishes",
+                    d
+                ),
+                step_id: Some(d.clone()),
+                field: Some("depends_on".to_string()),
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4145,6 +4581,53 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| d.code == "FAILURE_POLICY_DOWNGRADED"));
+    }
+
+    #[test]
+    fn normalize_profile_upgrades_compose_bootstrap_completion() {
+        // Profiles generated before the DockerComposeUp completion reported
+        // "Start Docker Compose" success as soon as the 6s probe window
+        // expired — a build failing minutes later was silently masked.
+        // Run-time normalization must rewrite the completion so the run
+        // verifies running containers before reporting success.
+        let mut compose = make_step("compose", vec![]);
+        compose.kind = StepKind::RunCommand {
+            command: "docker compose up -d".to_string(),
+            command_spec: None,
+        };
+        compose.completion = Some(CompletionPolicy::ProcessStarted);
+
+        let mut plain = make_step("plain", vec![]);
+        plain.kind = StepKind::RunCommand {
+            command: "npm start".to_string(),
+            command_spec: None,
+        };
+        plain.completion = Some(CompletionPolicy::ProcessStarted);
+
+        let profile = valid_profile(vec![compose, plain]);
+        let mut diagnostics = Vec::new();
+        let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+
+        let normalized_compose = normalized.steps.iter().find(|s| s.id == "compose").unwrap();
+        assert!(
+            matches!(
+                normalized_compose.completion,
+                Some(CompletionPolicy::DockerComposeUp { .. })
+            ),
+            "compose bootstrap must verify running containers, got {:?}",
+            normalized_compose.completion
+        );
+        let normalized_plain = normalized.steps.iter().find(|s| s.id == "plain").unwrap();
+        assert!(
+            matches!(
+                normalized_plain.completion,
+                Some(CompletionPolicy::ProcessStarted)
+            ),
+            "non-compose steps keep their completion"
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.code == "COMPOSE_COMPLETION_UPGRADED"));
     }
 
     // -------------------------------------------------------------------
@@ -5777,5 +6260,200 @@ mod tests {
         let result = probe_startup_marker(&marker, "proc_x", &pm, &cancelled).await;
         let _ = std::fs::remove_file(&marker);
         assert!(matches!(result, Ok(true)), "{result:?}");
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_orch_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn is_venv_interpreter_program_detects_venv_paths() {
+        assert!(is_venv_interpreter_program(".venv\\Scripts\\python.exe"));
+        assert!(is_venv_interpreter_program(".venv/bin/python"));
+        assert!(is_venv_interpreter_program("venv/Scripts/python3"));
+        assert!(is_venv_interpreter_program(
+            "backend/.venv/Scripts/python.exe"
+        ));
+        assert!(!is_venv_interpreter_program("python"));
+        assert!(!is_venv_interpreter_program("bin/tool.py"));
+        assert!(!is_venv_interpreter_program("C:\\Python\\python.exe"));
+        assert!(!is_venv_interpreter_program(
+            ".venv/Scripts/python.exe --version"
+        ));
+    }
+
+    #[test]
+    fn find_venv_interpreter_above_searches_ancestors() {
+        let dir = temp_dir("venv_above");
+        let backend = dir.join("backend");
+        std::fs::create_dir_all(&backend).unwrap();
+        let venv = dir.join(".venv").join("Scripts");
+        std::fs::create_dir_all(&venv).unwrap();
+        std::fs::write(venv.join("python.exe"), "").unwrap();
+
+        // The venv lives ABOVE the step's working directory: ancestor search
+        // finds it from any descendant (this is the monorepo layout where a
+        // root `.venv` is shared by a `backend/` service).
+        let found = find_venv_interpreter_above(&backend).expect("ancestor venv found");
+        let found_str = found.to_string_lossy();
+        assert!(found_str.contains("Scripts"), "{found_str}");
+        assert!(found_str.ends_with("python.exe"), "{found_str}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_venv_program_fallback_uses_ancestor_venv() {
+        let dir = temp_dir("fallback");
+        let backend = dir.join("backend");
+        std::fs::create_dir_all(&backend).unwrap();
+        let venv = dir.join(".venv").join("Scripts");
+        std::fs::create_dir_all(&venv).unwrap();
+        let interp = venv.join("python.exe");
+        std::fs::write(&interp, "").unwrap();
+        let dir_str = backend.to_string_lossy().into_owned();
+        let args = vec!["manage.py".to_string(), "runserver".to_string()];
+
+        let (p, a, warning) =
+            resolve_venv_program_fallback(".venv\\Scripts\\python.exe", &args, Some(&dir_str))
+                .unwrap();
+        // Compare canonicalized paths: the resolver joins with `/` while
+        // the test builds with `\` — both name the same file on Windows.
+        assert_eq!(
+            std::fs::canonicalize(&p).unwrap(),
+            std::fs::canonicalize(&interp).unwrap()
+        );
+        assert_eq!(a, args);
+        assert!(warning.contains("ancestor"), "{warning}");
+
+        // Non-venv relative programs are never substituted.
+        assert!(resolve_venv_program_fallback("bin/tool.py", &args, Some(&dir_str)).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bridge_disabled_step_dependencies_serializes_chain() {
+        // Classic Django shape saved by older generators: server -> migrate
+        // (disabled) -> install. The disabled migrate pre-completes instantly,
+        // so without the bridge the server would race the install.
+        let install = LaunchStep {
+            id: "install".to_string(),
+            label: "Install Python dependencies".to_string(),
+            enabled: true,
+            kind: StepKind::RunCommand {
+                command: "cmd /C \"(if not exist .venv\\Scripts\\python.exe python -m venv .venv) && .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"".to_string(),
+                command_spec: None,
+            },
+            depends_on: Vec::new(),
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: None,
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        };
+        let migrate = LaunchStep {
+            id: "migrate".to_string(),
+            label: "Run Django database migrations".to_string(),
+            enabled: false,
+            kind: StepKind::RunCommand {
+                command: "echo migrate".to_string(),
+                command_spec: None,
+            },
+            depends_on: vec!["install".to_string()],
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: None,
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        };
+        let server = LaunchStep {
+            id: "server".to_string(),
+            label: "Start Django server".to_string(),
+            enabled: true,
+            kind: StepKind::RunCommand {
+                command: ".venv\\Scripts\\python.exe manage.py runserver".to_string(),
+                command_spec: None,
+            },
+            depends_on: vec!["migrate".to_string()],
+            working_directory: None,
+            environment: None,
+            visibility: None,
+            execution_mode: None,
+            completion: None,
+            timeout: None,
+            failure_policy: None,
+            retry_policy: None,
+            metadata: None,
+            extra: Map::new(),
+        };
+        let mut profile = valid_profile(vec![install, migrate, server]);
+        let mut diagnostics = Vec::new();
+        bridge_disabled_step_dependencies(&mut profile, &mut diagnostics);
+
+        let server = profile
+            .steps
+            .iter()
+            .find(|s| s.id == "server")
+            .expect("server step");
+        assert!(
+            server.depends_on.iter().any(|d| d == "install"),
+            "server must wait for install: {:?}",
+            server.depends_on
+        );
+        assert!(
+            server.depends_on.iter().any(|d| d == "migrate"),
+            "server keeps the migrate edge: {:?}",
+            server.depends_on
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.code == "DEPENDENCY_BRIDGED"),
+            "a bridge diagnostic is emitted"
+        );
+    }
+
+    #[test]
+    fn bridge_disabled_step_dependencies_is_noop_when_already_wired() {
+        // Correctly generated Django chain already waits for install directly:
+        // the bridge must not duplicate edges or emit diagnostics.
+        let install = make_step("install", vec![]);
+        let migrate = LaunchStep {
+            enabled: false,
+            ..make_step("migrate", vec!["install"])
+        };
+        let server = LaunchStep {
+            depends_on: vec!["install".to_string(), "migrate".to_string()],
+            ..make_step("server", vec![])
+        };
+        let mut profile = valid_profile(vec![install, migrate, server]);
+        let mut diagnostics = Vec::new();
+        bridge_disabled_step_dependencies(&mut profile, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{:?}", diagnostics);
+        let server = profile.steps.iter().find(|s| s.id == "server").unwrap();
+        assert_eq!(
+            server.depends_on,
+            vec!["install".to_string(), "migrate".to_string()]
+        );
     }
 }

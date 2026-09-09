@@ -114,7 +114,8 @@ export type CompletionPolicy =
   | { type: "url_ready"; url: string; timeout_secs: number }
   | { type: "delay_elapsed"; seconds: number }
   | { type: "external_launch_accepted" }
-  | { type: "manual" };
+  | { type: "manual" }
+  | { type: "docker_compose_up"; timeout_secs: number };
 
 export type RetryPolicy = {
   max_retries: number;

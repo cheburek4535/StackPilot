@@ -835,8 +835,14 @@ mod tests {
         let cmd_plan = resolve_terminal_plan(&cmd_config).unwrap();
         assert!(cmd_plan.raw_tail.is_some());
         let last = cmd_plan.args.last().cloned().unwrap_or_default();
-        assert!(last.contains("npm.cmd"), "cmd payload must be the last arg: {last}");
-        assert!(last.contains("run dev"), "cmd payload must carry the command: {last}");
+        assert!(
+            last.contains("npm.cmd"),
+            "cmd payload must be the last arg: {last}"
+        );
+        assert!(
+            last.contains("run dev"),
+            "cmd payload must carry the command: {last}"
+        );
 
         let wt_config = TerminalConfig {
             backend: TerminalBackend::WindowsTerminal,
@@ -851,8 +857,14 @@ mod tests {
         let wt_plan = resolve_terminal_plan(&wt_config).unwrap();
         assert!(wt_plan.raw_tail.is_some());
         let last = wt_plan.args.last().cloned().unwrap_or_default();
-        assert!(last.contains("npm.cmd"), "wt payload must be the last arg: {last}");
-        assert!(last.contains("run dev"), "wt payload must carry the command: {last}");
+        assert!(
+            last.contains("npm.cmd"),
+            "wt payload must be the last arg: {last}"
+        );
+        assert!(
+            last.contains("run dev"),
+            "wt payload must carry the command: {last}"
+        );
     }
 
     #[test]

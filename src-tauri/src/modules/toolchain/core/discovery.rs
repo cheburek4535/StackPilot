@@ -78,7 +78,11 @@ pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String
         } else {
             stdout.trim().to_string()
         };
-        if text.is_empty() { None } else { Some(text) }
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     } else {
         None
     }

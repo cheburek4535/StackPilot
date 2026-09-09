@@ -1,4 +1,7 @@
-use crate::modules::devlauncher::analyzer::{AnalysisConfidence, AnalysisDiagnostic};
+use crate::modules::devlauncher::analyzer::{
+    parse_compose_services, python_ensure_venv_install, python_venv_run, AnalysisConfidence,
+    AnalysisDiagnostic,
+};
 use crate::modules::devlauncher::models::*;
 use crate::modules::project_creator::models::WizardContext;
 use crate::platform::docker_service::DockerService;
@@ -295,6 +298,13 @@ fn open_terminal_step(g: &mut GraphBuilder) -> String {
 /// headroom for cold starts; the retry policy re-arms twice with backoff).
 const WAIT_PORT_TIMEOUT_SECS: u64 = 90;
 
+/// Default timeout for the "Start Docker Compose" verification. Image
+/// builds (npm ci, pip install, ...) routinely take minutes on cold
+/// starts, so the step gets generous headroom — but it still fails fast
+/// when the compose command itself exits non-zero (the startup probe
+/// reports the real exit code as soon as the build dies).
+const COMPOSE_UP_TIMEOUT_SECS: u64 = 600;
+
 /// Tools that are deployed via docker-compose, with their default host port.
 const DOCKER_TOOL_PORTS: &[(&str, u16)] = &[
     ("postgresql", 5432),
@@ -527,24 +537,15 @@ fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
 /// Use the project virtual environment when Project Creator created one.
 /// Falling back to `python` keeps profiles for externally-created projects
 /// usable, while generated Django projects never leak into system Python.
+/// The relative interpreter path is resolved at spawn time by the
+/// orchestrator, with an ancestor/system-python fallback when the venv is
+/// missing.
 fn python_command(_dir: Option<&str>, args: &str) -> String {
-    // Windows `cmd` does not accept forward-slash paths in a command token:
-    // `.venv/Scripts/python.exe` fails with "'.venv' is not recognized as an
-    // internal or external command". Use native separators.
-    if cfg!(target_os = "windows") {
-        ".venv\\Scripts\\python.exe ".to_string() + args
-    } else {
-        "./.venv/bin/python ".to_string() + args
-    }
+    python_venv_run(args)
 }
 
 fn python_install_command() -> String {
-    if cfg!(target_os = "windows") {
-        "cmd /C \"python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"".to_string()
-    } else {
-        "sh -c \"python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt\""
-            .to_string()
-    }
+    python_ensure_venv_install("-m pip install -r requirements.txt")
 }
 
 /// Candidate ports a dev server may end up on when its configured port is
@@ -559,6 +560,24 @@ fn port_candidates(port: u16, spread: u16) -> Vec<u16> {
         }
     }
     out
+}
+
+/// Allocate the local dev-server port for a backend framework: the canonical
+/// framework port (shared [`crate::ports`] table — the same one the wizard's
+/// scaffolds and docker-compose use), bumped past ports already claimed by
+/// the compose bootstrap or by other backends. Keeps every backend on a
+/// distinct port and off the containers' host ports.
+fn allocate_backend_port(
+    fw: &str,
+    compose_published_ports: &[u16],
+    allocated: &mut Vec<u16>,
+) -> u16 {
+    let base = crate::ports::framework_default_port(fw).unwrap_or(3000);
+    let mut reserved: Vec<u16> = compose_published_ports.to_vec();
+    reserved.extend(allocated.iter().copied());
+    let port = crate::ports::local_dev_port(base, &reserved);
+    allocated.push(port);
+    port
 }
 
 fn has_language(ctx: &WizardContext, lang: &str) -> bool {
@@ -809,6 +828,11 @@ pub fn build_profile_v2_from_context_with_options(
     // --- 2. Docker infrastructure ---
     let docker_wait: Option<String>;
     let mut compose: Option<String> = None;
+    // Host ports the compose step actually publishes. Local dev servers
+    // (backend/frontend) allocate around them, so a generated profile never
+    // makes two things listen on the same port (e.g. a Next.js frontend on
+    // 3001 next to a Grafana container on 3001).
+    let mut compose_published_ports: Vec<u16> = Vec::new();
     if docker {
         let docker_app = if cfg!(target_os = "windows") {
             "Docker Desktop"
@@ -847,19 +871,52 @@ pub fn build_profile_v2_from_context_with_options(
             .and_then(|root| DockerService::find_compose_file(root));
         if let Some(file) = compose_file {
             let compose_dir = file.parent().map(|p| p.to_string_lossy().into_owned());
-            let command = format!("docker compose -f \"{}\" up -d", file.display());
-            // The compose bootstrap runs in a VISIBLE terminal with a
-            // ProcessStarted completion — exactly like the analyzer's compose
-            // step. A captured one-shot `docker compose up -d` is fragile:
-            // the CLI stays attached to the build, and when its stdout is a
-            // pipe (not a TTY) the build is frequently canceled by the daemon
-            // ("CANCELED") before the CLI exits, so the step dies with
-            // "Process exited with error code 1" even though Docker itself
-            // was fine. In a real terminal the build runs normally and the
-            // step completes once the command has started; readiness is still
-            // verified by the port waits that depend on this step. The
-            // startup probe keeps failures honest: a compose command that
-            // exits with a non-zero code still fails the step.
+            // The wizard's compose file includes the app service (`app:`,
+            // build from the backend dir). The dev session runs the app
+            // locally (visible terminal with hot reload); `docker compose up`
+            // here bootstraps only the INFRASTRUCTURE services, so the app's
+            // container never races the local dev server for the same port.
+            // When no known infra service is found (foreign/edited compose
+            // file) the whole file is started, preserving the old behavior.
+            let parsed = parse_compose_services(&file);
+            let infra_services: Vec<String> = parsed
+                .services
+                .iter()
+                .filter(|s| crate::ports::tool_service_name(&s.name).is_some())
+                .map(|s| s.name.clone())
+                .collect();
+            let full_up = infra_services.is_empty();
+            let command = if full_up {
+                format!("docker compose -f \"{}\" up -d", file.display())
+            } else {
+                format!(
+                    "docker compose -f \"{}\" up -d {}",
+                    file.display(),
+                    infra_services.join(" ")
+                )
+            };
+            // Only the services actually started by the command publish ports
+            // during the run; those are the ports local dev servers must avoid.
+            compose_published_ports = parsed
+                .services
+                .iter()
+                .filter(|s| full_up || infra_services.contains(&s.name))
+                .flat_map(|s| s.host_ports.iter().copied())
+                .collect();
+            compose_published_ports.sort_unstable();
+            compose_published_ports.dedup();
+            // The compose bootstrap runs in a VISIBLE terminal (the user
+            // watches the build — hidden failures are the #1 support
+            // question), but its completion is NOT "process started". A
+            // `ProcessStarted` completion is a 6-second probe: a build that
+            // is still running when the probe window expires reports
+            // "success" even when it dies moments later (e.g. `npm ci`
+            // failing on a missing package-lock.json). The DockerComposeUp
+            // completion keeps polling — via a captured `docker compose ps`
+            // (no extra terminal window) and the command's real exit code —
+            // until containers are actually running. Readiness of specific
+            // services is additionally verified by the port waits that
+            // depend on this step.
             let mut metadata = HashMap::new();
             metadata.insert("kind".to_string(), "infrastructure".to_string());
             metadata.insert("visibility".to_string(), "visible_terminal".to_string());
@@ -873,7 +930,9 @@ pub fn build_profile_v2_from_context_with_options(
                 compose_dir,
                 Some(Visibility::VisibleTerminal),
                 Some(ExecutionMode::LongRunning),
-                Some(CompletionPolicy::ProcessStarted),
+                Some(CompletionPolicy::DockerComposeUp {
+                    timeout_secs: COMPOSE_UP_TIMEOUT_SECS,
+                }),
                 None,
                 true,
                 Some(metadata),
@@ -974,6 +1033,9 @@ pub fn build_profile_v2_from_context_with_options(
 
     // --- 3. Backend services ---
     let mut backend_waits: Vec<String> = Vec::new();
+    // Every backend's local dev port: canonical framework port, bumped past
+    // compose-published ports and already-allocated backend ports.
+    let mut allocated_backend_ports: Vec<u16> = Vec::new();
     for fw in &backend_frameworks(ctx) {
         let dir = side_dir(ctx, "backend");
         let infra: Vec<String> = compose.clone().into_iter().collect();
@@ -1003,7 +1065,7 @@ pub fn build_profile_v2_from_context_with_options(
                     },
                     "high",
                 );
-                let port = 3000;
+                let port = allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports);
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for backend port",
@@ -1035,21 +1097,21 @@ pub fn build_profile_v2_from_context_with_options(
                     true,
                 );
                 let cmd = if fw == "fastapi" {
-                    "uvicorn main:app --reload"
+                    python_command(dir.as_deref(), "-m uvicorn main:app --reload")
                 } else if fw == "flask" {
-                    "flask run --debug"
+                    python_command(dir.as_deref(), "-m flask run --debug")
                 } else {
-                    "litestar run --reload"
+                    python_command(dir.as_deref(), "-m litestar run --reload")
                 };
                 let start = service_step(
                     &mut g,
                     "Start Python backend",
-                    cmd,
+                    &cmd,
                     dir.as_deref(),
                     vec![install],
                     "high",
                 );
-                let port = if fw == "flask" { 5000 } else { 8000 };
+                let port = allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports);
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for backend port",
@@ -1085,7 +1147,7 @@ pub fn build_profile_v2_from_context_with_options(
                     "Run Django database migrations (disabled by default)",
                     &python_command(dir.as_deref(), "manage.py migrate"),
                     dir.as_deref(),
-                    vec![install],
+                    vec![install.clone()],
                     false,
                 );
                 let start = service_step(
@@ -1093,13 +1155,19 @@ pub fn build_profile_v2_from_context_with_options(
                     "Start Django server",
                     &python_command(dir.as_deref(), "manage.py runserver"),
                     dir.as_deref(),
-                    vec![migrate],
+                    // Wait for BOTH the install (which provisions the venv)
+                    // and the migrate step. The migrate step is disabled, so
+                    // it pre-completes instantly; depending on it ALONE would
+                    // let the server start in parallel with the install and
+                    // race the venv creation (the exact "Executable
+                    // '.venv\Scripts\python.exe' not found" failure).
+                    vec![migrate, install],
                     "high",
                 );
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for Django port",
-                    8000,
+                    allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports),
                     &[],
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
@@ -1123,7 +1191,7 @@ pub fn build_profile_v2_from_context_with_options(
                     infra,
                     "high",
                 );
-                let port = 8080;
+                let port = allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports);
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for Go backend port",
@@ -1187,7 +1255,7 @@ pub fn build_profile_v2_from_context_with_options(
                             "Laravel"
                         }
                     ),
-                    8000,
+                    allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports),
                     &[],
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
@@ -1210,11 +1278,13 @@ pub fn build_profile_v2_from_context_with_options(
                     "high",
                 );
                 if fw != "tauri" {
+                    let port =
+                        allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports);
                     let wait = wait_port_step(
                         &mut g,
                         "Wait for Rust backend port",
-                        3000,
-                        &port_candidates(3000, 2),
+                        port,
+                        &port_candidates(port, 2),
                         30,
                         start,
                         "low",
@@ -1248,11 +1318,12 @@ pub fn build_profile_v2_from_context_with_options(
                     vec![install],
                     "high",
                 );
+                let port = allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports);
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for Spring Boot port",
-                    8080,
-                    &port_candidates(8080, 2),
+                    port,
+                    &port_candidates(port, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
                     "low",
@@ -1261,7 +1332,7 @@ pub fn build_profile_v2_from_context_with_options(
                 let docs = open_url_step(
                     &mut g,
                     "Open Spring Boot Swagger docs",
-                    "http://localhost:8080/swagger-ui/index.html",
+                    &format!("http://localhost:{}/swagger-ui/index.html", port),
                     vec![wait],
                     "springdoc default /swagger-ui/index.html",
                 );
@@ -1279,7 +1350,7 @@ pub fn build_profile_v2_from_context_with_options(
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for .NET backend port",
-                    5000,
+                    allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports),
                     &port_candidates(5000, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
@@ -1307,7 +1378,7 @@ pub fn build_profile_v2_from_context_with_options(
                 let wait = wait_port_step(
                     &mut g,
                     "Wait for Rails port",
-                    3000,
+                    allocate_backend_port(fw, &compose_published_ports, &mut allocated_backend_ports),
                     &port_candidates(3000, 2),
                     WAIT_PORT_TIMEOUT_SECS,
                     start,
@@ -1320,24 +1391,36 @@ pub fn build_profile_v2_from_context_with_options(
     }
 
     // --- 4. Frontend services (parallel roots unless they need infra) ---
+    // The wizard's Tauri scaffold pins the companion vite dev URL to 5173
+    // (tauri.conf.json devUrl); shifting it would break `cargo tauri dev`,
+    // so the frontend keeps its canonical port for Tauri stacks.
+    let has_tauri = ctx.frameworks.iter().any(|f| f == "tauri");
     for fw in &frontend_frameworks(ctx) {
         let dir = side_dir(ctx, "frontend");
         let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
             | "vite-svelte" | "react" | "vue" | "svelte" | "solid" => {
-                let frontend_port = if has_backend {
+                // Canonical port first; nextjs/nuxt dev servers own 3000, the
+                // vite family 5173. With a backend present the frontend moves
+                // off the backend's port, then off every port the compose
+                // bootstrap publishes (grafana 3001, airflow 8080, ...) so
+                // the frontend never collides with a container.
+                let base_port =
                     if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
-                        3001
+                        3000
                     } else {
-                        5174
-                    }
-                } else if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
-                    3000
+                        5173
+                    };
+                let frontend_port = if has_tauri {
+                    base_port
                 } else {
-                    5173
+                    let mut reserved: Vec<u16> = compose_published_ports.clone();
+                    reserved.extend(allocated_backend_ports.iter().copied());
+                    let start = if has_backend { base_port + 1 } else { base_port };
+                    crate::ports::local_dev_port(start, &reserved)
                 };
-                let frontend_cmd = if has_backend {
+                let frontend_cmd = if has_backend && !has_tauri {
                     format!("npm run dev -- --port {}", frontend_port)
                 } else {
                     "npm run dev".to_string()
@@ -1505,7 +1588,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder, infra: &[Stri
                 let start = service_step(
                     g,
                     "Run Python project",
-                    "python main.py",
+                    &python_command(None, "main.py"),
                     None,
                     vec![install],
                     "medium",
@@ -1815,8 +1898,11 @@ mod tests {
         assert_eq!(compose.visibility, Some(Visibility::VisibleTerminal));
         assert_eq!(compose.execution_mode, Some(ExecutionMode::LongRunning));
         assert!(
-            matches!(compose.completion, Some(CompletionPolicy::ProcessStarted)),
-            "compose bootstrap must complete when started, got {:?}",
+            matches!(
+                compose.completion,
+                Some(CompletionPolicy::DockerComposeUp { .. })
+            ),
+            "compose bootstrap must verify running containers, got {:?}",
             compose.completion
         );
         // The command pins the compose file so it never depends on the cwd.
@@ -1835,7 +1921,8 @@ mod tests {
         assert!(profile
             .steps
             .iter()
-            .any(|s| s.depends_on.contains(&compose.id) && matches!(s.kind, StepKind::WaitForPort { .. })));
+            .any(|s| s.depends_on.contains(&compose.id)
+                && matches!(s.kind, StepKind::WaitForPort { .. })));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1990,6 +2077,104 @@ mod tests {
             .any(|d| d.severity == DiagnosticSeverity::Warning));
     }
 
+    /// The Django chain must serialize the server behind the install step
+    /// that provisions the venv: depending on the DISABLED migrate step alone
+    /// let the server race the venv creation. The server and migrate steps
+    /// must run with the venv interpreter.
+    #[test]
+    fn django_server_waits_for_install_and_runs_in_venv() {
+        let c = ctx(&["python"], &["django"], &[], false);
+        let (profile, _) = build(&c);
+
+        let server = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Django server"))
+            .expect("server step");
+        let install = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Install Python dependencies"))
+            .expect("install step");
+        let migrate = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("migrations"))
+            .expect("migrate step");
+        assert!(!migrate.enabled);
+
+        // Server waits for BOTH install and migrate, so it starts only after
+        // the install finishes even when migrate is a disabled gate.
+        assert!(
+            server.depends_on.iter().any(|d| d == &install.id),
+            "server depends on install: {:?}",
+            server.depends_on
+        );
+        assert!(
+            server.depends_on.iter().any(|d| d == &migrate.id),
+            "server depends on migrate: {:?}",
+            server.depends_on
+        );
+
+        match &server.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(command.ends_with("manage.py runserver"), "{command}");
+                if cfg!(target_os = "windows") {
+                    assert!(
+                        command.starts_with(".venv\\Scripts\\python.exe "),
+                        "{command}"
+                    );
+                } else {
+                    assert!(command.starts_with("./.venv/bin/python "), "{command}");
+                }
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+        match &install.kind {
+            StepKind::RunCommand { command, .. } => {
+                if cfg!(target_os = "windows") {
+                    assert!(
+                        command.contains("if not exist .venv\\Scripts\\python.exe"),
+                        "{command}"
+                    );
+                } else {
+                    assert!(command.contains("[ -x .venv/bin/python ]"), "{command}");
+                }
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+    }
+
+    /// FastAPI/Flask/Litestar backends must run the server module through the
+    /// venv interpreter: `uvicorn`/`flask` installed into `.venv` are NOT on
+    /// PATH, so the bare CLI names could never start after the venv install.
+    #[test]
+    fn python_backends_run_modules_through_venv_interpreter() {
+        for fw in ["fastapi", "flask", "litestar"] {
+            let c = ctx(&["python"], &[fw], &[], false);
+            let (profile, _) = build(&c);
+            let start = profile
+                .steps
+                .iter()
+                .find(|s| s.label.contains("Start Python backend"))
+                .expect("start step");
+            match &start.kind {
+                StepKind::RunCommand { command, .. } => {
+                    if cfg!(target_os = "windows") {
+                        assert!(
+                            command.starts_with(".venv\\Scripts\\python.exe "),
+                            "{command}"
+                        );
+                    } else {
+                        assert!(command.starts_with("./.venv/bin/python "), "{command}");
+                    }
+                    assert!(command.contains("-m "), "{command}");
+                }
+                other => panic!("expected RunCommand, got {:?}", other),
+            }
+        }
+    }
+
     #[test]
     fn steps_carry_explicit_fields() {
         let c = ctx(&["typescript"], &["nestjs"], &["redis"], true);
@@ -2061,5 +2246,161 @@ mod tests {
             preferred_ide_for(&c),
             Some(PreferredIde::Webstorm)
         ));
+    }
+
+    fn compose_dir(content: &str, tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_ports_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("docker-compose.yaml"), content).unwrap();
+        dir
+    }
+
+    fn wait_port_of(profile: &LaunchProfileV2, label_part: &str) -> (u16, String) {
+        let step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains(label_part))
+            .unwrap_or_else(|| panic!("no step containing '{}'", label_part));
+        match &step.kind {
+            StepKind::WaitForPort { port, .. } => (*port, step.label.clone()),
+            other => panic!("expected WaitForPort, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compose_up_starts_only_infra_services_not_the_app() {
+        // The wizard's compose file carries the app service (`app:` building
+        // the backend). The dev session runs the app locally, so the compose
+        // bootstrap must start only the infrastructure services — otherwise
+        // the app container and the local dev server race for the same port.
+        let dir = compose_dir(
+            "services:\n\
+             \x20 app:\n\x20\x20 build: .\n\x20\x20 ports:\n\x20\x20\x20 - \"3000:3000\"\n\
+             \x20 postgres:\n\x20\x20 image: postgres:16\n\x20\x20 ports:\n\x20\x20\x20 - \"5432:5432\"\n",
+            "infraonly",
+        );
+        let mut c = ctx(&["typescript"], &["nestjs"], &["postgresql"], true);
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+        let compose = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Docker Compose"))
+            .expect("compose step");
+        match &compose.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(
+                    command.contains("up -d postgres"),
+                    "compose must start only infra services: {command}"
+                );
+                assert!(
+                    !command.contains(" up -d app"),
+                    "the app service must not be started by the dev session: {command}"
+                );
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+        // The local backend keeps its canonical port 3000 (the app service is
+        // not running, so nothing claims it).
+        assert_eq!(wait_port_of(&profile, "Wait for backend port").0, 3000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn frontend_avoids_grafana_and_backend_ports() {
+        // Next.js + backend + Grafana: the frontend's default 3001 (shifted
+        // off the backend's 3000) collides with Grafana's host port 3001 —
+        // it must move to 3002 and pass `--port 3002` to the dev server.
+        let dir = compose_dir(
+            "services:\n\
+             \x20 postgres:\n\x20\x20 image: postgres:16\n\x20\x20 ports:\n\x20\x20\x20 - \"5432:5432\"\n\
+             \x20 grafana:\n\x20\x20 image: grafana/grafana\n\x20\x20 ports:\n\x20\x20\x20 - \"3001:3000\"\n",
+            "grafana",
+        );
+        let mut c = ctx(
+            &["typescript"],
+            &["nestjs", "nextjs"],
+            &["postgresql", "grafana"],
+            true,
+        );
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+        assert_eq!(wait_port_of(&profile, "Wait for backend port").0, 3000);
+        assert_eq!(wait_port_of(&profile, "Wait for frontend port").0, 3002);
+        let frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("frontend step");
+        match &frontend.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(command.contains("--port 3002"), "{command}");
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backend_avoids_compose_published_ports() {
+        // A backend whose canonical port is claimed by a compose service
+        // (Django 8000 taken by a custom compose service) moves off it; the
+        // docs URL follows the allocated port.
+        let dir = compose_dir(
+            "services:\n\
+             \x20 app:\n\x20\x20 build: .\n\x20\x20 ports:\n\x20\x20\x20 - \"8000:8000\"\n",
+            "backend",
+        );
+        let mut c = ctx(&["python"], &["django"], &[], true);
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+        assert_eq!(wait_port_of(&profile, "Wait for Django port").0, 8001);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tauri_vite_companion_keeps_5173() {
+        // The Tauri scaffold pins vite's dev URL to 5173 (tauri.conf.json
+        // devUrl); shifting the companion vite to 5174 would break
+        // `cargo tauri dev`.
+        let c = ctx(&["typescript"], &["tauri", "react"], &[], false);
+        let (profile, _) = build(&c);
+        assert_eq!(wait_port_of(&profile, "Wait for frontend port").0, 5173);
+        let frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("frontend step");
+        match &frontend.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(!command.contains("--port"), "{command}");
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fastapi_wait_and_docs_follow_scaffold_port_8000() {
+        let c = ctx(&["python"], &["fastapi"], &[], false);
+        let (profile, _) = build(&c);
+        let (port, _) = wait_port_of(&profile, "Wait for backend port");
+        assert_eq!(port, 8000);
+        let docs = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("FastAPI docs"))
+            .expect("docs step");
+        match &docs.kind {
+            StepKind::OpenUrl { url } => assert_eq!(url, "http://localhost:8000/docs"),
+            other => panic!("expected OpenUrl, got {:?}", other),
+        }
     }
 }

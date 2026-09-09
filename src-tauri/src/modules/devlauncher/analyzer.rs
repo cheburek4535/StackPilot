@@ -431,7 +431,17 @@ impl ProjectModel {
                         } else {
                             PythonKind::Pipfile
                         };
-                        model.python_projects.push(parse_python_project(&dir, kind));
+                        // Directory scan order is arbitrary: `manage.py` may be
+                        // read before or after the manifest. Merge the manifest
+                        // kind into a project already discovered via an entry
+                        // point (e.g. manage.py → PythonKind::None_) instead of
+                        // creating a duplicate project that would generate a
+                        // second, manifest-less Django step graph.
+                        if let Some(p) = model.python_projects.iter_mut().find(|p| p.dir == dir) {
+                            p.kind = kind;
+                        } else {
+                            model.python_projects.push(parse_python_project(&dir, kind));
+                        }
                     }
                 }
                 "manage.py" => {
@@ -1013,14 +1023,16 @@ fn parse_maven_project(dir: &Path, manifest: &Path) -> MavenProject {
 /// structurally, so ports and service identities are direct evidence
 /// (High confidence) rather than textual guesses.
 #[derive(Debug, Clone, Default)]
-struct ComposeServices {
-    db_ports: Vec<(u16, String)>,
-    web_tools: Vec<(u16, String)>,
-    services: Vec<ComposeService>,
-    warning: Option<String>,
+pub(crate) struct ComposeServices {
+    pub(crate) db_ports: Vec<(u16, String)>,
+    pub(crate) web_tools: Vec<(u16, String)>,
+    pub(crate) services: Vec<ComposeService>,
+    pub(crate) warning: Option<String>,
 }
 
-fn parse_compose_services(path: &Path) -> ComposeServices {
+/// Parse a compose file into structured services. Shared with the profile
+/// builder so both paths agree on what the compose file actually publishes.
+pub(crate) fn parse_compose_services(path: &Path) -> ComposeServices {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -1437,6 +1449,56 @@ fn detect_dev_port(run_cmd: &str) -> Option<u16> {
 }
 
 // ---------------------------------------------------------------------------
+// Python virtual-environment commands (shared with the profile builder)
+// ---------------------------------------------------------------------------
+
+/// Run `args` with the project's virtual-environment interpreter
+/// (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere).
+///
+/// The relative path is resolved by the orchestrator against the step's
+/// working directory at spawn time, with a graceful fallback to an
+/// ancestor `.venv` or the system interpreter when the venv is missing.
+pub(crate) fn python_venv_run(args: &str) -> String {
+    // Windows `cmd` does not accept forward-slash paths in a command token:
+    // `.venv/Scripts/python.exe` fails with "'.venv' is not recognized as an
+    // internal or external command". Use native separators.
+    if cfg!(target_os = "windows") {
+        ".venv\\Scripts\\python.exe ".to_string() + args
+    } else {
+        "./.venv/bin/python ".to_string() + args
+    }
+}
+
+/// Install dependencies into the project venv, creating the venv first only
+/// when it does not exist yet (idempotent). `install_args` is the venv-python
+/// invocation to run once the venv is guaranteed (e.g. `-m pip install -r
+/// requirements.txt`).
+pub(crate) fn python_ensure_venv_install(install_args: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!(
+            "cmd /C \"(if not exist .venv\\Scripts\\python.exe python -m venv .venv) && .venv\\Scripts\\python.exe {}\"",
+            install_args
+        )
+    } else {
+        format!(
+            "sh -c \"([ -x .venv/bin/python ] || python3 -m venv .venv) && .venv/bin/python {}\"",
+            install_args
+        )
+    }
+}
+
+/// The `pip`-style install target for a project's dependency manifest kind.
+/// `None` means the project has no dependency manifest to install.
+fn python_install_target(kind: PythonKind) -> Option<&'static str> {
+    match kind {
+        PythonKind::Requirements => Some("-m pip install -r requirements.txt"),
+        PythonKind::Pyproject => Some("-m pip install -e ."),
+        PythonKind::Pipfile => Some("-m pipenv install"),
+        PythonKind::None_ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Step graph generation
 // ---------------------------------------------------------------------------
 
@@ -1701,6 +1763,12 @@ fn finalize_steps(
 /// this budget is spent on polling, not on one stuck `docker version`.
 const WAIT_DOCKER_TIMEOUT_SECS: u64 = 180;
 
+/// Default timeout for the "Start Docker Compose" verification. Image
+/// builds (npm ci, pip install, ...) routinely take minutes on cold
+/// starts; the step still fails fast when the compose command itself
+/// exits non-zero (the startup probe reports the real exit code).
+const COMPOSE_UP_TIMEOUT_SECS: u64 = 600;
+
 /// Default timeout for generated port-readiness waits. Dev servers
 /// (Metro, Go, Django, ...) need headroom for cold starts; combined with
 /// the retry policy this yields ~90s + two backoff re-arms.
@@ -1848,6 +1916,15 @@ fn generate_steps(
             root,
             true,
         );
+        // The compose bootstrap must NOT complete on "process started": a
+        // build that fails minutes later (broken Dockerfile, missing
+        // package-lock.json for `npm ci`) would falsely report success. The
+        // DockerComposeUp completion keeps polling — via a captured
+        // `docker compose ps`, never an extra terminal window — and the
+        // command's real exit code until containers are actually running.
+        step.completion = Some(CompletionPolicy::DockerComposeUp {
+            timeout_secs: COMPOSE_UP_TIMEOUT_SECS,
+        });
         if let Some(w) = &docker_wait_id {
             step.depends_on.push(w.clone());
         }
@@ -1878,16 +1955,29 @@ fn generate_steps(
             // become reachable — image pull + broker bootstrap routinely
             // exceeds the generic 90s on cold starts, so they get extra
             // headroom.
-            let timeout = if matches!(
+            let is_kafka = matches!(
                 service.to_ascii_lowercase().as_str(),
                 "kafka" | "redpanda"
-            ) {
+            );
+            let timeout = if is_kafka {
                 180
             } else {
                 WAIT_PORT_TIMEOUT_SECS
             };
-            let mut wait =
-                PendingStep::wait_port("127.0.0.1", *port, timeout, &compose_id);
+            // Many Kafka/KRaft compose templates expose the host-facing
+            // listener on 29092 instead of 9092; accept it as an alternative
+            // so the wait does not time out against the published port.
+            let mut wait = if is_kafka && *port == 9092 {
+                PendingStep::wait_port_candidates(
+                    "127.0.0.1",
+                    *port,
+                    &[29092],
+                    timeout,
+                    &compose_id,
+                )
+            } else {
+                PendingStep::wait_port("127.0.0.1", *port, timeout, &compose_id)
+            };
             wait.label = format!(
                 "Wait for {} ({})",
                 if service.is_empty() {
@@ -2029,50 +2119,28 @@ fn generate_steps(
             } else {
                 format!("Run Django server ({})", dir_label)
             };
-            let install_cmd = if py
-                .dir
-                .join(if cfg!(target_os = "windows") {
-                    ".venv\\Scripts\\python.exe"
-                } else {
-                    ".venv/bin/python"
-                })
-                .is_file()
-            {
-                if cfg!(target_os = "windows") {
-                    ".venv\\Scripts\\python.exe -m pip install -r requirements.txt"
-                } else {
-                    "./.venv/bin/python -m pip install -r requirements.txt"
-                }
-            } else {
-                "python -m pip install -r requirements.txt"
-            };
-            let install = PendingStep::run(
-                "Install Django dependencies",
-                install_cmd,
-                Some(&py.dir),
-                root,
-                true,
-            );
-            let python_cmd = if py
-                .dir
-                .join(if cfg!(target_os = "windows") {
-                    ".venv\\Scripts\\python.exe"
-                } else {
-                    ".venv/bin/python"
-                })
-                .is_file()
-            {
-                if cfg!(target_os = "windows") {
-                    ".venv\\Scripts\\python.exe manage.py runserver"
-                } else {
-                    "./.venv/bin/python manage.py runserver"
-                }
-            } else {
-                "python manage.py runserver"
-            };
-            let mut step = PendingStep::run(&label, python_cmd, Some(&py.dir), root, true);
-            step.depends_on.push(format!("step_{:03}", steps.len() + 1));
-            steps.push(install);
+            // The install step creates the venv (only when missing) and
+            // installs dependencies, then finishes. It is a CAPTURED one-shot
+            // that waits for real process exit, so the server step that
+            // depends on it can never race ahead of the venv bootstrap. The
+            // command never depends on the state of `.venv` at analysis time.
+            let install_id = python_install_target(py.kind).map(|target| {
+                let install = PendingStep::run(
+                    "Install Django dependencies",
+                    &python_ensure_venv_install(target),
+                    Some(&py.dir),
+                    root,
+                    false,
+                );
+                let id = format!("step_{:03}", steps.len() + 1);
+                steps.push(install);
+                id
+            });
+            let python_cmd = python_venv_run("manage.py runserver");
+            let mut step = PendingStep::run(&label, &python_cmd, Some(&py.dir), root, true);
+            if let Some(iid) = &install_id {
+                step.depends_on.push(iid.clone());
+            }
             if let Some(cid) = &compose_id {
                 step.depends_on.push(cid.clone());
             }
@@ -2082,15 +2150,21 @@ fn generate_steps(
             wait.label = "Wait for Django port 8000".to_string();
             wait = wait.with_metadata("confidence", "low");
             steps.push(wait);
-            // DB migration is state-changing -- never enabled by default.
+            // DB migration is state-changing -- never enabled by default. It
+            // runs with the SAME interpreter as the server (the project venv)
+            // so migrations apply to the environment that actually runs the
+            // server, never the system python.
             let mut migrate = PendingStep::run(
                 "Run Django migrate (disabled by default)",
-                "python manage.py migrate",
+                &python_venv_run("manage.py migrate"),
                 Some(&py.dir),
                 root,
                 false,
             );
             migrate.enabled = false;
+            if let Some(iid) = &install_id {
+                migrate.depends_on.push(iid.clone());
+            }
             migrate = migrate.with_metadata("policy", "manual-enable");
             steps.push(migrate);
             diagnostics.push(AnalysisDiagnostic::new(
@@ -2400,12 +2474,31 @@ fn generate_steps(
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
         }
+        // A Next.js/Nuxt frontend defaults to 3000; when a node backend also
+        // wants 3000 — or a compose service publishes 3000/3001 (e.g. the
+        // wizard's Grafana on host 3001) — the frontend is re-pinned to the
+        // first free port starting at 3001. Ports published by compose and
+        // backend ports are reserved, so the shift never lands on a port a
+        // container (or another server) already owns.
+        let mut reserved: Vec<u16> = model
+            .compose_files
+            .iter()
+            .flat_map(|c| c.services.iter().flat_map(|s| s.host_ports.iter().copied()))
+            .collect();
+        reserved.extend(node_backends.iter().filter_map(|b| b.port));
+        reserved.sort_unstable();
+        reserved.dedup();
         let backend_uses_3000 = node_backends.iter().any(|b| b.port == Some(3000));
-        let frontend_port_override = backend_uses_3000
+        let frontend_port_override = (backend_uses_3000 || reserved.contains(&3000))
             && (pkg.features.next || pkg.features.nuxt)
             && pkg.port.unwrap_or(3000) == 3000;
+        let override_port = if frontend_port_override {
+            crate::ports::local_dev_port(3001, &reserved)
+        } else {
+            pkg.port.unwrap_or(3000)
+        };
         let run_command = if frontend_port_override {
-            format!("{} -- --port 3001", run)
+            format!("{} -- --port {}", run, override_port)
         } else {
             run.clone()
         };
@@ -2415,7 +2508,7 @@ fn generate_steps(
 
         if let Some(port) = pkg
             .port
-            .map(|p| if frontend_port_override { 3001 } else { p })
+            .map(|p| if frontend_port_override { override_port } else { p })
         {
             // Dev servers (Vite, Next.js, Expo) auto-increment their port when
             // the configured one is already taken. Accept the detected port
@@ -3694,6 +3787,96 @@ mod tests {
     }
 
     #[test]
+    fn compose_kafka_wait_accepts_29092_candidate() {
+        let dir = temp_dir("kafka29092");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "docker-compose.yaml",
+                    "services:\n  kafka:\n    image: confluentinc/cp-kafka\n    ports:\n      - \"9092:9092\"\n",
+                ),
+            ],
+        );
+        let draft = analyze(&dir);
+        let wait = draft
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("kafka"))
+            .expect("kafka wait");
+        match &wait.kind {
+            StepKind::WaitForPort {
+                port,
+                candidate_ports,
+                ..
+            } => {
+                assert_eq!(*port, 9092);
+                assert!(
+                    candidate_ports.contains(&29092),
+                    "kafka wait must accept 29092 (KRaft templates): {:?}",
+                    candidate_ports
+                );
+            }
+            other => panic!("expected WaitForPort, got {:?}", other),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nextjs_frontend_shift_avoids_compose_grafana_port() {
+        // Next.js frontend + Node backend + Grafana on host 3001: the
+        // frontend is re-pinned off the backend's 3000, and the shift must
+        // skip Grafana's 3001 and land on 3002.
+        let dir = temp_dir("nextgraf");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "backend/package.json",
+                    r#"{"name":"api","dependencies":{"express":"^4"},"scripts":{"dev":"node index.js"}}"#,
+                ),
+                ("backend/index.js", "1"),
+                (
+                    "frontend/package.json",
+                    r#"{"name":"web","dependencies":{"next":"^14"},"scripts":{"dev":"next dev"}}"#,
+                ),
+                (
+                    "docker-compose.yaml",
+                    "services:\n  postgres:\n    image: postgres:16\n    ports:\n      - \"5432:5432\"\n  grafana:\n    image: grafana/grafana\n    ports:\n      - \"3001:3000\"\n",
+                ),
+            ],
+        );
+        let draft = analyze(&dir);
+        let frontend = draft
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Next.js dev server"))
+            .expect("nextjs run step");
+        match &frontend.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(
+                    command.contains("--port 3002"),
+                    "frontend must land on 3002 (3000 taken by backend, 3001 by grafana): {command}"
+                );
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+        let wait = draft
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Next.js port"))
+            .expect("nextjs wait");
+        match &wait.kind {
+            StepKind::WaitForPort { port, .. } => assert_eq!(*port, 3002),
+            other => panic!("expected WaitForPort, got {:?}", other),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn go_port_hint_detects_port_from_env() {
         let dir = temp_dir("goenv");
         fs::write(dir.join(".env"), "PORT=9090\n").unwrap();
@@ -3746,5 +3929,134 @@ mod tests {
         assert_eq!(retry.max_retries, 2);
         assert_eq!(retry.delay_ms, 2000);
         assert_eq!(retry.backoff_multiplier, Some(1.5));
+    }
+
+    /// The Django chain must be venv-first and serialized: a captured install
+    /// step creates the venv (only when missing) and finishes before the
+    /// server starts, and the server/migrate steps always run with the venv
+    /// interpreter — never a snapshot of `.venv` state taken at analysis time.
+    #[test]
+    fn django_steps_are_venv_first_and_serialized() {
+        let dir = temp_dir("django");
+        write_tree(
+            &dir,
+            &[
+                ("manage.py", "# django"),
+                ("requirements.txt", "Django>=4\n"),
+                (".git/HEAD", "ref: refs/heads/main"),
+            ],
+        );
+        let draft = analyze(&dir);
+        let steps = &draft.profile.steps;
+
+        let install = steps
+            .iter()
+            .find(|s| s.label.contains("Install Django dependencies"))
+            .expect("install step");
+        // Captured one-shot: waits for real process exit so the server below
+        // can never race the venv creation.
+        assert_eq!(install.visibility, Some(Visibility::Captured));
+        assert_eq!(install.execution_mode, Some(ExecutionMode::OneShot));
+        match &install.kind {
+            StepKind::RunCommand { command, .. } => {
+                if cfg!(target_os = "windows") {
+                    assert!(
+                        command.contains("if not exist .venv\\Scripts\\python.exe"),
+                        "{command}"
+                    );
+                    assert!(
+                        command.contains(".venv\\Scripts\\python.exe -m pip install"),
+                        "{command}"
+                    );
+                } else {
+                    assert!(command.contains("[ -x .venv/bin/python ]"), "{command}");
+                    assert!(
+                        command.contains(".venv/bin/python -m pip install"),
+                        "{command}"
+                    );
+                }
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+
+        let server = steps
+            .iter()
+            .find(|s| s.label.contains("Run Django server"))
+            .expect("server step");
+        // Server depends on the install step, so it starts only after the
+        // venv exists.
+        let install_idx = steps
+            .iter()
+            .position(|s| s.label.contains("Install Django dependencies"))
+            .unwrap();
+        let install_id = format!("step_{:03}", install_idx + 1);
+        assert!(
+            server.depends_on.iter().any(|d| d == &install_id),
+            "server depends on install: {:?}",
+            server.depends_on
+        );
+        match &server.kind {
+            StepKind::RunCommand { command, .. } => {
+                if cfg!(target_os = "windows") {
+                    assert!(
+                        command.starts_with(".venv\\Scripts\\python.exe "),
+                        "{command}"
+                    );
+                } else {
+                    assert!(command.starts_with("./.venv/bin/python "), "{command}");
+                }
+                assert!(command.ends_with("manage.py runserver"), "{command}");
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+
+        let migrate = steps
+            .iter()
+            .find(|s| s.label.contains("migrate"))
+            .expect("migrate step");
+        assert!(!migrate.enabled);
+        match &migrate.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(command.ends_with("manage.py migrate"), "{command}");
+                if cfg!(target_os = "windows") {
+                    assert!(
+                        command.starts_with(".venv\\Scripts\\python.exe "),
+                        "{command}"
+                    );
+                } else {
+                    assert!(command.starts_with("./.venv/bin/python "), "{command}");
+                }
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Django with no dependency manifest must not generate an install step
+    /// that would fail on a missing requirements.txt — the server step relies
+    /// on the existing environment instead.
+    #[test]
+    fn django_without_manifest_skips_install_step() {
+        let dir = temp_dir("django_nomanifest");
+        write_tree(
+            &dir,
+            &[
+                ("manage.py", "# django"),
+                (".git/HEAD", "ref: refs/heads/main"),
+            ],
+        );
+        let draft = analyze(&dir);
+        assert!(!draft
+            .profile
+            .steps
+            .iter()
+            .any(|s| s.label.contains("Install Django dependencies")));
+        assert!(draft
+            .profile
+            .steps
+            .iter()
+            .any(|s| s.label.contains("Run Django server")));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

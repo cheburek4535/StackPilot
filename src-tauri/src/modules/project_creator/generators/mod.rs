@@ -933,11 +933,7 @@ impl Generator for DotnetMauiEnsureGenerator {
         async fn template_present(sink: Option<&ExecutionEventSink>) -> bool {
             let spec = ProcessSpec {
                 command: "dotnet".to_string(),
-                args: vec![
-                    "new".to_string(),
-                    "list".to_string(),
-                    "maui".to_string(),
-                ],
+                args: vec!["new".to_string(), "list".to_string(), "maui".to_string()],
                 working_dir: None,
                 env: None,
                 timeout: Some(Duration::from_secs(CHECK_TIMEOUT_SECS)),

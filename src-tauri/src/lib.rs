@@ -1,6 +1,7 @@
 mod core;
 mod modules;
 pub mod platform;
+pub mod ports;
 
 use std::sync::Arc;
 use tauri::{Listener, Manager};

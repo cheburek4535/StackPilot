@@ -387,6 +387,17 @@ pub enum CompletionPolicy {
     },
     ExternalLaunchAccepted,
     Manual,
+    /// Docker Compose bootstrap. The compose command runs in a visible
+    /// terminal (so the user watches the build); the step does NOT complete
+    /// on "process started" — it polls until compose reports running
+    /// containers (captured check, no extra terminal) or the command's exit
+    /// code is captured. A failed `docker compose up -d` (e.g. a broken
+    /// `npm ci` inside the Dockerfile) therefore fails the step instead of
+    /// silently reporting success.
+    DockerComposeUp {
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -926,9 +937,7 @@ pub fn resolve_working_directory(
     // would then resolve against the app's own working directory — the root
     // cause of "The system cannot find the path specified" (cmd exit code 3)
     // when the command is a relative venv path like `.venv\Scripts\python.exe`.
-    let root = project_root
-        .map(str::trim)
-        .filter(|r| !r.is_empty())?;
+    let root = project_root.map(str::trim).filter(|r| !r.is_empty())?;
     // Normalize the joined path: `Path::join` keeps `.` components
     // (`/proj/./backend`), which are valid but ugly in logs and misleading
     // in step metadata. CurDir components are dropped lexically.
@@ -1188,6 +1197,29 @@ mod tests {
     }
 
     #[test]
+    fn docker_compose_up_completion_round_trips() {
+        let policy = CompletionPolicy::DockerComposeUp { timeout_secs: 600 };
+        let json = serde_json::to_string(&policy).unwrap();
+        assert_eq!(json, r#"{"type":"docker_compose_up","timeout_secs":600}"#);
+        let back: CompletionPolicy = serde_json::from_str(&json).unwrap();
+        match back {
+            CompletionPolicy::DockerComposeUp { timeout_secs } => {
+                assert_eq!(timeout_secs, 600);
+            }
+            other => panic!("expected DockerComposeUp, got {:?}", other),
+        }
+        // The timeout defaults when absent (hand-written profiles).
+        let minimal: CompletionPolicy =
+            serde_json::from_str(r#"{"type":"docker_compose_up"}"#).unwrap();
+        match minimal {
+            CompletionPolicy::DockerComposeUp { timeout_secs } => {
+                assert_eq!(timeout_secs, 120);
+            }
+            other => panic!("expected DockerComposeUp, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn v2_json_round_trip() {
         let profile = LaunchProfileV2 {
             schema_version: "2".to_string(),
@@ -1364,7 +1396,10 @@ mod tests {
         // app's own working directory ("The system cannot find the path
         // specified", cmd exit code 3).
         assert_eq!(resolve_working_directory(Some(""), Some("./backend")), None);
-        assert_eq!(resolve_working_directory(Some("   "), Some("./backend")), None);
+        assert_eq!(
+            resolve_working_directory(Some("   "), Some("./backend")),
+            None
+        );
         assert_eq!(resolve_working_directory(Some(""), Some("backend")), None);
         // Absolute working directories still pass through with an empty root.
         let abs = if cfg!(windows) {

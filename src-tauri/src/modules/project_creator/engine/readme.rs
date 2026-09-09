@@ -2404,6 +2404,14 @@ fn section_tools(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if tools.is_empty() {
         return;
     }
+    // Порт приложения и ремапы инфра-сервисов: единый план из ports.rs,
+    // чтобы README не противоречил docker-compose.yaml/.env.example
+    // (например, Airflow на 8081 рядом с Spring Boot, Grafana на 3001).
+    let plan = crate::ports::PortPlan::new(
+        &ctx.context.frameworks,
+        &ctx.context.tools,
+        &ctx.context.local_infra_tools,
+    );
     let mut body = String::new();
     for tool in tools {
         let Some(p) = tool_profile(tool) else {
@@ -2421,10 +2429,34 @@ fn section_tools(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             ToolMode::Local => p.credentials_local.unwrap_or(p.credentials),
             _ => p.credentials,
         };
+        let credentials = match tool {
+            // Airflow's credentials line also carries the host UI URL.
+            "airflow" if mode == ToolMode::Docker => {
+                let port = plan.tool_ports("airflow").first().copied().unwrap_or(8080);
+                replace_host_port(credentials, port)
+            }
+            _ => credentials.to_string(),
+        };
         let verify = match mode {
             ToolMode::Docker => p.verify_docker.unwrap_or(p.verify),
             ToolMode::Local => p.verify_local.unwrap_or(p.verify),
             _ => p.verify,
+        };
+        // Host-порты инструментов, которые могли быть ремаплены из-за
+        // конфликта с приложением (см. PortPlan).
+        let verify = match tool {
+            "airflow" if mode == ToolMode::Docker => {
+                let port = plan.tool_ports("airflow").first().copied().unwrap_or(8080);
+                replace_host_port(verify, port)
+            }
+            "grafana" if mode == ToolMode::Docker => {
+                let port = plan.tool_ports("grafana").first().copied().unwrap_or(3001);
+                replace_host_port(verify, port)
+            }
+            "grafana" if mode == ToolMode::Local => {
+                replace_host_port(verify, plan.grafana_local_port())
+            }
+            _ => verify.to_string(),
         };
         body.push_str(&format!("### {}\n\n", p.name));
         body.push_str(&format!("**What it is.** {}\n\n", p.what));
@@ -2448,6 +2480,29 @@ fn section_tools(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         body.push_str(&format!("**Verify it is running.** {}\n\n", verify));
     }
     doc.add("Database & tool usage", body);
+}
+
+/// Заменить `http://localhost:<старый-порт>` в тексте на фактический порт
+/// сервиса. Версии с префиксом `localhost:` заменяются на новый порт;
+/// остальной текст (например контейнерные порты) не трогается.
+fn replace_host_port(text: &str, port: u16) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut rest = text;
+    while let Some(idx) = rest.find("localhost:") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + "localhost:".len()..];
+        // Съедаем старый числовой порт (если есть).
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            out.push_str("localhost:");
+            rest = after;
+            continue;
+        }
+        out.push_str(&format!("localhost:{}", port));
+        rest = &after[digits.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
@@ -2531,8 +2586,22 @@ fn section_quick_start(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     steps.push("Install the prerequisites listed above.".to_string());
     let docker_tools = docker_managed_tools(ctx);
     if !docker_tools.is_empty() {
+        // Start ONLY the infrastructure services: the compose file also
+        // carries the app service, and starting it would race the local dev
+        // server for the app port (both bind the same host port).
+        let infra_services: Vec<String> = docker_tools
+            .iter()
+            .filter_map(|t| crate::ports::tool_service_name(t))
+            .map(String::from)
+            .collect();
+        let up_cmd = if infra_services.is_empty() {
+            "docker compose up -d".to_string()
+        } else {
+            format!("docker compose up -d {}", infra_services.join(" "))
+        };
         steps.push(format!(
-            "Start the infrastructure services: `docker compose up -d` ({}).",
+            "Start the infrastructure services: `{}` ({}).",
+            up_cmd,
             docker_tools
                 .iter()
                 .map(|t| tool_name(t))
@@ -2932,12 +3001,28 @@ fn section_docker(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             .collect::<Vec<_>>()
             .join(", ")
     ));
+    // The compose file also carries the app service. Starting ONLY the infra
+    // services (`up -d <services>`) is the right command for a dev session:
+    // the full `up -d` would publish the app container on the same host port
+    // the local dev server binds.
+    let infra_services: Vec<String> = docker_tools
+        .iter()
+        .filter_map(|t| crate::ports::tool_service_name(t))
+        .map(String::from)
+        .collect();
+    let infra_up = if infra_services.is_empty() {
+        "docker compose up -d".to_string()
+    } else {
+        format!("docker compose up -d {}", infra_services.join(" "))
+    };
     body.push_str(
-        "Start everything (services + the app):\n\n```\ndocker compose up --build\n```\n\n",
+        "Start everything (services + the app) — a full containerized run:\n\n```\ndocker compose up --build\n```\n\n",
     );
-    body.push_str(
-        "Start only the services in the background:\n\n```\ndocker compose up -d\n```\n\n",
-    );
+    body.push_str(&format!(
+        "Start only the infrastructure services in the background (the app runs locally \
+         during development):\n\n```\n{}\n```\n\n",
+        infra_up
+    ));
     body.push_str("Stop and remove the containers:\n\n```\ndocker compose down\n```\n\n");
     body.push_str("Watch the app logs:\n\n```\ndocker compose logs -f app\n```\n\n");
     let local = local_tools(ctx);
@@ -2962,11 +3047,21 @@ fn section_mistakes(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             .to_string(),
     ];
     if !docker_managed_tools(ctx).is_empty() {
-        items.push(
-            "Starting the app before the infrastructure: run `docker compose up -d` first, \
-             otherwise the app fails to connect."
-                .to_string(),
-        );
+        let infra_services: Vec<String> = docker_managed_tools(ctx)
+            .iter()
+            .filter_map(|t| crate::ports::tool_service_name(t))
+            .map(String::from)
+            .collect();
+        let infra_up = if infra_services.is_empty() {
+            "docker compose up -d".to_string()
+        } else {
+            format!("docker compose up -d {}", infra_services.join(" "))
+        };
+        items.push(format!(
+            "Starting the app before the infrastructure: run `{}` first, \
+             otherwise the app fails to connect.",
+            infra_up
+        ));
     }
     if !local_tools(ctx).is_empty() {
         items.push(

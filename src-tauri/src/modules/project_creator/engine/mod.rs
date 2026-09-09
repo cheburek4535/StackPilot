@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use crate::modules::project_creator::generators::GeneratorRegistry;
 use crate::modules::project_creator::generators::SCAFFOLD_TARGET;
 use crate::modules::project_creator::models::*;
+use crate::ports;
 
 /// Полный движок рецептов:
 ///   1. plan() — составить план выполнения на основе WizardContext
@@ -5751,7 +5752,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=3000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 "#,
                     project_name, project_name
                 ),
@@ -5803,7 +5804,7 @@ def root():
     return {{"message": "Hello from {}!"}}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
 "#,
                     project_name
                 ),
@@ -6415,7 +6416,7 @@ func main() {{
     r.GET("/", func(c *gin.Context) {{
         c.JSON(http.StatusOK, gin.H{{"message": "Hello from {}!"}})
     }})
-    r.Run(":3000")
+    r.Run(":8080")
 }}
 "#,
                         project_name
@@ -7359,6 +7360,14 @@ fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let mut steps = Vec::new();
     let mut infra_envs: Vec<String> = Vec::new();
 
+    // Канонический порт приложения (порт, на котором слушает каркас) —
+    // нужен локальным инфра-инструментам, чей штатный порт может совпасть
+    // с ним (локальный Grafana на 3000 рядом с NestJS/Express на 3000).
+    let app_port: u16 = ports::framework_default_port(
+        context.frameworks.first().map(String::as_str).unwrap_or(""),
+    )
+    .unwrap_or(3000);
+
     let write_file = |id: &str, label: &str, path: &str, content: &str| -> Step {
         Step::WriteFile {
             id: id.to_string(),
@@ -7732,14 +7741,14 @@ with DAG(
             "postgresql" | "redis" | "mongodb" | "mysql" | "kafka" | "clickhouse" | "rabbitmq"
             | "minio" | "mailpit" => {
                 if context.local_infra_tools.contains(tool_id) {
-                    infra_envs.push(content::get_local_env_example(tool_id));
+                    infra_envs.push(content::get_local_env_example(tool_id, app_port));
                 } else {
                     infra_envs.push(content::get_env_example(tool_id));
                 }
             }
             "grafana" => {
                 if context.local_infra_tools.contains(tool_id) {
-                    infra_envs.push(content::get_local_env_example(tool_id));
+                    infra_envs.push(content::get_local_env_example(tool_id, app_port));
                 } else {
                     infra_envs.push(content::get_env_example(tool_id));
                 }
@@ -8173,7 +8182,7 @@ service firebase.storage {
             "local_infra_guide",
             "Create LOCAL_INFRA.md",
             "LOCAL_INFRA.md",
-            &content::generate_local_infra_guide(&context.local_infra_tools),
+            &content::generate_local_infra_guide(&context.local_infra_tools, app_port),
         ));
     }
 
@@ -8199,7 +8208,18 @@ fn steps_for_docker(
         .filter(|t| !context.local_infra_tools.contains(t))
         .cloned()
         .collect();
-    let services = content::collect_docker_services(&docker_tools);
+    let primary_lang = context
+        .languages
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("python");
+    let primary_fw = context.frameworks.first().map(|s| s.as_str());
+    // Канонический порт приложения: единая таблица в ports.rs, чтобы
+    // docker-compose, Dockerfile и devlauncher-профили не расходились.
+    // Инфра-сервисы (airflow, grafana) ремапятся вокруг него в
+    // collect_docker_services.
+    let app_port: u16 = ports::framework_default_port(primary_fw.unwrap_or("")).unwrap_or(3000);
+    let services = content::collect_docker_services(&docker_tools, app_port);
     // Контейнерная фаза активна, если (а) поднят флаг context.docker (выбран
     // любой requires_docker инструмент), (б) выбран инструмент «docker»
     // (containerization), либо (в) выбранные инструменты разворачивают
@@ -8209,13 +8229,6 @@ fn steps_for_docker(
     if !docker_phase_active {
         return Vec::new();
     }
-
-    let primary_lang = context
-        .languages
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("python");
-    let primary_fw = context.frameworks.first().map(|s| s.as_str());
     // Split: сервер живёт в backend/ — Dockerfile собирается оттуда.
     let app_dir = layout
         .eager_dirs()
@@ -8259,24 +8272,8 @@ fn steps_for_docker(
         on_error: (ErrorMode::Skip),
     });
 
-    // Локально установленные инфра-инструменты исключаются из docker-compose:
-    // их сервисы уже запущены на машине, контейнер просто займёт порт.
-    let docker_tools: Vec<String> = context
-        .tools
-        .iter()
-        .filter(|t| !context.local_infra_tools.contains(t))
-        .cloned()
-        .collect();
-    let services = content::collect_docker_services(&docker_tools);
     // App-сервис попадает в compose, только если генерируется Dockerfile
     // (app_dockerfile.is_some()). Инфра-сервисы (БД/кеши) — по мере наличия.
-    let app_port = match primary_fw {
-        Some("django") | Some("laravel") | Some("symfony") => "8000",
-        // ktor-каркас биндит Netty на 3000 (не 8080) — см. scaffold и Dockerfile.
-        Some("spring-boot") | Some("aspnetcore") => "8080",
-        Some("phoenix") => "4000",
-        _ => "3000",
-    };
     result.push(Step::WriteFile {
         id: "docker_compose".into(),
         label: "Create docker-compose".into(),
@@ -8285,7 +8282,7 @@ fn steps_for_docker(
         content: content::generate_docker_compose(
             &services,
             project_name,
-            app_port,
+            &app_port.to_string(),
             &app_dir,
             app_dockerfile.is_some(),
         ),
@@ -10990,7 +10987,7 @@ mod tests {
             "в мастере должны быть docker-инструменты"
         );
         for tool in &docker_tools {
-            let services = content::collect_docker_services(std::slice::from_ref(tool));
+            let services = content::collect_docker_services(std::slice::from_ref(tool), 3000);
             assert!(
                 !services.is_empty(),
                 "requires_docker-инструмент {tool} не создаёт сервис в docker-compose"

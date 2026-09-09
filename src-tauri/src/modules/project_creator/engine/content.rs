@@ -55,7 +55,11 @@ AIRFLOW_WEBSERVER_PORT=8080
 /// (postgresql, redis, mongodb, ...). Используются, когда пользователь
 /// выбрал локальную установку вместо docker-compose: адреса указывают на
 /// localhost, а не на имя контейнера.
-pub fn get_local_env_example(tool_id: &str) -> String {
+///
+/// `app_port` — порт, на котором слушает приложение проекта (канонический
+/// порт выбранного фреймворка): локальный Grafana, чей штатный порт 3000
+/// совпал бы с приложением на 3000, переносится на 3001.
+pub fn get_local_env_example(tool_id: &str, app_port: u16) -> String {
     match tool_id {
         "postgresql" => r#"# PostgreSQL (local install)
 # Пароль суперпользователя сгенерирован при установке — он показан один раз
@@ -94,14 +98,15 @@ MYSQL_PASSWORD=<ROOT_PASSWORD_FROM_INSTALL>
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 "#
         .to_string(),
-        // Локальный Grafana слушает свой штатный порт 3000 — конфликта
-        // с app-сервисом проекта в локальном режиме нет (в docker его
-        // выносим на 3001, чтобы не пересекаться с app_port).
-        "grafana" => r#"# Grafana (local install)
-# Запустите один раз: grafana-server (см. LOCAL_INFRA.md)
-GRAFANA_URL=http://localhost:3000
-"#
-        .to_string(),
+        // Локальный Grafana по умолчанию слушает штатный порт 3000; рядом
+        // с приложением на 3000 он переносится на 3001 (как в docker-режиме).
+        "grafana" => format!(
+            r#"# Grafana (local install)
+# Запустите один раз: grafana-server --http-port {port} (см. LOCAL_INFRA.md)
+GRAFANA_URL=http://localhost:{port}
+"#,
+            port = crate::ports::local_dev_port(3000, &[app_port])
+        ),
         _ => get_env_example(tool_id),
     }
 }
@@ -109,7 +114,11 @@ GRAFANA_URL=http://localhost:3000
 /// Инструкция по запуску локально установленных инфра-инструментов
 /// (файл LOCAL_INFRA.md в проекте). Пишется, когда пользователь выбрал
 /// локальную установку вместо docker-compose.
-pub fn generate_local_infra_guide(tools: &[String]) -> String {
+///
+/// `app_port` — канонический порт приложения проекта: локальный Grafana,
+/// чей штатный порт 3000 совпал бы с приложением, переносится на 3001.
+pub fn generate_local_infra_guide(tools: &[String], app_port: u16) -> String {
+    let grafana_port = crate::ports::local_dev_port(3000, &[app_port]);
     let mut out = String::from(
         "# Local infrastructure\n\n\
 You chose to run these services locally instead of Docker. They were installed \
@@ -118,7 +127,7 @@ they must be running before you launch the project.\n",
     );
 
     for tool in tools {
-        let section: &str = match tool.as_str() {
+        let section: String = match tool.as_str() {
             "postgresql" => {
                 r#"## PostgreSQL
 
@@ -130,6 +139,7 @@ they must be running before you launch the project.\n",
   ```
 - Connection: see `POSTGRES_*` / `DATABASE_URL` in `.env.example`.
 "#
+                .to_string()
             }
             "redis" => {
                 r#"## Redis
@@ -140,6 +150,7 @@ they must be running before you launch the project.\n",
   ```
 - Connection: `REDIS_URL=redis://localhost:6379/0`.
 "#
+                .to_string()
             }
             "mongodb" => {
                 r#"## MongoDB
@@ -151,6 +162,7 @@ they must be running before you launch the project.\n",
   ```
 - Connection: `MONGODB_URI=mongodb://localhost:27017`.
 "#
+                .to_string()
             }
             "mysql" => {
                 r#"## MySQL
@@ -166,6 +178,7 @@ they must be running before you launch the project.\n",
   ```
 - Connection: `MYSQL_*` in `.env.example`.
 "#
+                .to_string()
             }
             "kafka" => {
                 r#"## Apache Kafka
@@ -178,23 +191,25 @@ they must be running before you launch the project.\n",
   ```
 - Connection: `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
 "#
+                .to_string()
             }
-            "grafana" => {
+            "grafana" => format!(
                 r#"## Grafana
 
 - Start the server once (install directory is on PATH):
   ```powershell
-  grafana-server
+  grafana-server --http-port {port}
   ```
-- UI: http://localhost:3000 (admin/admin on first run).
-- Connection: `GRAFANA_URL=http://localhost:3000`.
-"#
-            }
-            _ => "",
+- UI: http://localhost:{port} (admin/admin on first run).
+- Connection: `GRAFANA_URL=http://localhost:{port}`.
+"#,
+                port = grafana_port
+            ),
+            _ => String::new(),
         };
         if !section.is_empty() {
             out.push('\n');
-            out.push_str(section);
+            out.push_str(&section);
         }
     }
 
@@ -218,7 +233,21 @@ pub struct DockerService {
 // Docker service collection from tool IDs
 // ---------------------------------------------------------------------------
 
-pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
+/// Collect the docker-compose services for the selected tools.
+///
+/// `app_port` is the host port the compose `app` service publishes (the
+/// canonical framework port). Infra tools whose preferred host port collides
+/// with it — Airflow (8080) next to a Spring Boot app, Grafana (host 3001)
+/// — are remapped to the next free port by the shared [`crate::ports`]
+/// allocator, so a generated compose file never publishes two services on
+/// the same host port.
+pub fn collect_docker_services(tools: &[String], app_port: u16) -> Vec<DockerService> {
+    let mut alloc = crate::ports::PortAllocator::new();
+    // The app claims its port first; infra tools are remapped around it.
+    let _ = alloc.reserve(app_port);
+    let airflow_host = alloc.reserve(8080);
+    let grafana_host = alloc.reserve(3001);
+
     let mut services = Vec::new();
 
     for tool in tools.iter() {
@@ -283,10 +312,7 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                     ports: vec!["9092:9092".into()],
                     environment: vec![
                         ("KAFKA_NODE_ID".into(), "1".into()),
-                        (
-                            "KAFKA_PROCESS_ROLES".into(),
-                            "broker,controller".into(),
-                        ),
+                        ("KAFKA_PROCESS_ROLES".into(), "broker,controller".into()),
                         (
                             "KAFKA_LISTENERS".into(),
                             "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093".into(),
@@ -303,22 +329,13 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
                             "KAFKA_CONTROLLER_QUORUM_VOTERS".into(),
                             "1@kafka:9093".into(),
                         ),
-                        (
-                            "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(),
-                            "1".into(),
-                        ),
-                        (
-                            "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS".into(),
-                            "0".into(),
-                        ),
+                        ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR".into(), "1".into()),
+                        ("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS".into(), "0".into()),
                         (
                             "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR".into(),
                             "1".into(),
                         ),
-                        (
-                            "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR".into(),
-                            "1".into(),
-                        ),
+                        ("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR".into(), "1".into()),
                     ],
                     volumes: Vec::new(),
                     depends_on: Vec::new(),
@@ -355,7 +372,10 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
             "airflow" => services.push(DockerService {
                 name: "airflow".into(),
                 image: "apache/airflow:2.10.4".into(),
-                ports: vec!["8080:8080".into()],
+                // Airflow's webserver listens on 8080 inside the container;
+                // the host port is remapped when another service (typically
+                // the app on Spring Boot/ASP.NET) already claims 8080.
+                ports: vec![format!("{airflow_host}:8080")],
                 environment: vec![
                     ("AIRFLOW__CORE__EXECUTOR".into(), "LocalExecutor".into()),
                     (
@@ -376,11 +396,12 @@ pub fn collect_docker_services(tools: &[String]) -> Vec<DockerService> {
             }),
 
             // grafana: контейнерный порт 3000 — конфликтовал бы с app-сервисом
-            // проекта (app_port 3000), поэтому наружу отдаём 3001.
+            // проекта (app_port 3000), поэтому наружу отдаём 3001 (или первый
+            // свободный порт, если 3001 уже занят).
             "grafana" => services.push(DockerService {
                 name: "grafana".into(),
                 image: "grafana/grafana:11.6.1".into(),
-                ports: vec!["3001:3000".into()],
+                ports: vec![format!("{grafana_host}:3000")],
                 environment: Vec::new(),
                 volumes: Vec::new(),
                 depends_on: Vec::new(),
@@ -572,7 +593,9 @@ pub fn generate_dockerfile_content(
     match lang {
         "python" => {
             let (base_image, port, cmd) = match framework {
-                Some("fastapi") => ("python:3.13-slim", "3000", "[\"python\", \"src/main.py\"]"),
+                // FastAPI's scaffold binds uvicorn on 8000 (its CLI default);
+                // the compose app service publishes the same port.
+                Some("fastapi") => ("python:3.13-slim", "8000", "[\"python\", \"src/main.py\"]"),
                 // Django: runserver обязан принимать запросы из контейнера —
                 // без `0.0.0.0:8000` сервер слушает только 127.0.0.1 и наружу
                 // недоступен. Раньше CMD был просто `python manage.py` — Django
@@ -582,7 +605,8 @@ pub fn generate_dockerfile_content(
                     "8000",
                     "[\"python\", \"manage.py\", \"runserver\", \"0.0.0.0:8000\"]",
                 ),
-                Some("flask") => ("python:3.13-slim", "3000", "[\"python\", \"src/app.py\"]"),
+                // Flask's scaffold binds 5000 (its CLI default).
+                Some("flask") => ("python:3.13-slim", "5000", "[\"python\", \"src/app.py\"]"),
                 _ => ("python:3.13-slim", "3000", "[\"python\", \"src/main.py\"]"),
             };
 
@@ -654,21 +678,21 @@ CMD ["./{bin_name}"]
                     "node:22-alpine",
                     true,
                     "3000",
-                    "COPY . .\nRUN npm ci && npm run build\n",
+                    "COPY . .\nRUN if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build\n",
                     "[\"node\", \".output/server/index.mjs\"]",
                 ),
                 Some("sveltekit") => (
                     "node:22-alpine",
                     true,
                     "3000",
-                    "COPY . .\nRUN npm ci && npm run build\n",
+                    "COPY . .\nRUN if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build\n",
                     "[\"node\", \"build/index.js\"]",
                 ),
                 Some("nest") => (
                     "node:22-alpine",
                     true,
                     "3000",
-                    "COPY . .\nRUN npm ci && npm run build\n",
+                    "COPY . .\nRUN if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build\n",
                     "[\"node\", \"dist/main.js\"]",
                 ),
                 Some("fastify") | Some("express") => (
@@ -695,8 +719,13 @@ CMD ["./{bin_name}"]
 WORKDIR /app
 
 # Install all dependencies (including dev for build)
+# node:22-alpine bundles npm 10.9.x whose arborist crashes on some
+# peer-dependency graphs ("Cannot read properties of null (reading
+# 'edgesOut')" — npm/cli#9787, triggered e.g. by vitest 4.1.x); upgrade
+# npm so installs work for any dependency tree.
+RUN npm install -g npm@latest
 COPY package*.json ./
-RUN npm ci
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # Copy source and build
 COPY . .
@@ -718,8 +747,12 @@ CMD {start_cmd}
 WORKDIR /app
 
 # Install production dependencies only
+# node:22-alpine bundles npm 10.9.x whose arborist crashes on some
+# peer-dependency graphs ("Cannot read properties of null (reading
+# 'edgesOut')" — npm/cli#9787); upgrade npm first so installs work.
+RUN npm install -g npm@latest
 COPY package*.json ./
-RUN npm ci --only=production
+RUN if [ -f package-lock.json ]; then npm ci --only=production; else npm install --only=production; fi
 
 # Copy application code
 COPY . .
@@ -756,7 +789,9 @@ FROM alpine:3.21
 WORKDIR /app
 COPY --from=builder /app/app .
 
-EXPOSE 3000
+# The wizard's Go web scaffolds (Gin and friends) bind :8080, so the
+# container must expose the same port.
+EXPOSE 8080
 
 CMD ["./app"]
 "#
@@ -1808,7 +1843,7 @@ mod tests {
     fn bind_mounts_stay_out_of_global_volumes_block() {
         // airflow монтирует ./dags и ./logs — это bind-mounts, их НЕЛЬЗЯ
         // объявлять в глобальной секции volumes (Property is not allowed).
-        let services = collect_docker_services(&["airflow".into(), "postgresql".into()]);
+        let services = collect_docker_services(&["airflow".into(), "postgresql".into()], 3000);
         let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
 
         // Bind-mount остаётся внутри сервиса
@@ -2017,7 +2052,7 @@ mod tests {
         // without KAFKA_PROCESS_ROLES the container dies on boot with
         // "environment variable KAFKA_PROCESS_ROLES is not set" (exit 1)
         // and port 9092 never opens — the old zookeeper-mode template.
-        let services = collect_docker_services(&["kafka".into()]);
+        let services = collect_docker_services(&["kafka".into()], 3000);
         assert_eq!(services.len(), 1, "kafka must be a single KRaft service");
         let kafka = &services[0];
         assert_eq!(kafka.name, "kafka");
@@ -2049,7 +2084,82 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| *k == "KAFKA_BROKER_ID"));
 
         let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
-        assert!(!compose.contains("zookeeper"), "no zookeeper service: {compose}");
+        assert!(
+            !compose.contains("zookeeper"),
+            "no zookeeper service: {compose}"
+        );
         assert!(compose.contains("KAFKA_PROCESS_ROLES"), "{compose}");
+    }
+
+    #[test]
+    fn airflow_host_port_remapped_next_to_spring_boot_app() {
+        // Spring Boot's app publishes 8080; Airflow's webserver inside the
+        // container stays on 8080 but its HOST port must move to 8081 —
+        // otherwise `docker compose up` fails with "port is already
+        // allocated" on the very first run.
+        let services = collect_docker_services(
+            &["airflow".into(), "postgresql".into()],
+            8080,
+        );
+        let compose = generate_docker_compose(&services, "myproj", "8080", ".", true);
+        // Airflow moves to 8081 while the app keeps 8080 (exactly one
+        // "8080:8080" mapping — the app service's own).
+        assert!(compose.contains("\"8081:8080\""), "{compose}");
+        assert_eq!(compose.matches("\"8080:8080\"").count(), 1, "{compose}");
+    }
+
+    #[test]
+    fn airflow_keeps_8080_without_app_conflict() {
+        // Without an app on 8080 the canonical Airflow host port is kept.
+        let services = collect_docker_services(&["airflow".into()], 3000);
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
+        assert!(compose.contains("8080:8080"), "{compose}");
+    }
+
+    #[test]
+    fn grafana_host_port_survives_app_on_3000() {
+        // Grafana's container port 3000 would collide with an app on 3000;
+        // the host mapping is 3001:3000.
+        let services = collect_docker_services(&["grafana".into()], 3000);
+        let compose = generate_docker_compose(&services, "myproj", "3000", ".", true);
+        assert!(compose.contains("3001:3000"), "{compose}");
+    }
+
+    #[test]
+    fn local_grafana_moves_off_3000_next_to_3000_app() {
+        // Local (non-docker) Grafana binds its native port 3000, which would
+        // collide with an app on 3000 (NestJS, Express, ...): the env example
+        // and LOCAL_INFRA.md must point it at 3001.
+        let env = get_local_env_example("grafana", 3000);
+        assert!(env.contains("GRAFANA_URL=http://localhost:3001"), "{env}");
+        assert!(env.contains("--http-port 3001"), "{env}");
+
+        let guide = generate_local_infra_guide(&["grafana".into()], 3000);
+        assert!(guide.contains("grafana-server --http-port 3001"), "{guide}");
+        assert!(guide.contains("http://localhost:3001"), "{guide}");
+    }
+
+    #[test]
+    fn local_grafana_keeps_3000_for_non_3000_app() {
+        let env = get_local_env_example("grafana", 8080);
+        assert!(env.contains("GRAFANA_URL=http://localhost:3000"), "{env}");
+        let guide = generate_local_infra_guide(&["grafana".into()], 8080);
+        assert!(guide.contains("grafana-server --http-port 3000"), "{guide}");
+    }
+
+    #[test]
+    fn dockerfile_ports_match_framework_scaffolds() {
+        let fastapi = generate_dockerfile_content("python", Some("fastapi"), "myproj")
+            .expect("fastapi dockerfile");
+        assert!(fastapi.contains("EXPOSE 8000"), "{fastapi}");
+        assert!(!fastapi.contains("EXPOSE 3000"), "{fastapi}");
+
+        let flask = generate_dockerfile_content("python", Some("flask"), "myproj")
+            .expect("flask dockerfile");
+        assert!(flask.contains("EXPOSE 5000"), "{flask}");
+
+        let go = generate_dockerfile_content("go", Some("gin"), "myproj").expect("go dockerfile");
+        assert!(go.contains("EXPOSE 8080"), "{go}");
+        assert!(!go.contains("EXPOSE 3000"), "{go}");
     }
 }

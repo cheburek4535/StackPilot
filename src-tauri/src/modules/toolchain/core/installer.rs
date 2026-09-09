@@ -1484,16 +1484,7 @@ async fn try_install_source(
             }
         }
         if let Some(php_dir) = php_dir_for_composer() {
-            configure_php_ini_at(
-                &php_dir,
-                index,
-                total,
-                task_id,
-                tool_id,
-                session_id,
-                sink,
-            )
-            .await;
+            configure_php_ini_at(&php_dir, index, total, task_id, tool_id, session_id, sink).await;
         }
     }
 

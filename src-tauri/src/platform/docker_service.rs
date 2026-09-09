@@ -817,6 +817,32 @@ fn is_service_running(service_name: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// List the container IDs of running services for the compose project in
+/// `dir`. Runs `docker compose ps --status running --quiet` inside `dir`
+/// (compose's own config discovery), so it verifies the SAME project the
+/// `docker compose up` step booted. The check is captured — it never opens
+/// a terminal window. Returns an empty vector when no container is running
+/// or when the check cannot complete (CLI missing, command error, timeout).
+pub fn compose_running_ids(dir: &std::path::Path) -> Vec<String> {
+    let Some(cli) = DockerService::resolve_cli() else {
+        eprintln!("[docker] compose_running_ids: docker CLI not resolvable");
+        return Vec::new();
+    };
+    run_cli_bounded_in(
+        &cli,
+        &["compose", "ps", "--status", "running", "--quiet"],
+        Some(dir),
+        Duration::from_secs(10),
+    )
+    .map(|(_, out, _)| {
+        out.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Run a Docker CLI command with a hard per-attempt timeout.
 ///
 /// Returns `Some((success, stdout, stderr))` when the process finished within
@@ -827,12 +853,24 @@ fn run_cli_bounded(
     args: &[&str],
     timeout: Duration,
 ) -> Option<(bool, String, String)> {
-    let mut child = match std::process::Command::new(cli)
-        .args(args)
+    run_cli_bounded_in(cli, args, None, timeout)
+}
+
+/// [`run_cli_bounded`] with an explicit working directory for the child.
+fn run_cli_bounded_in(
+    cli: &std::path::Path,
+    args: &[&str],
+    dir: Option<&std::path::Path>,
+    timeout: Duration,
+) -> Option<(bool, String, String)> {
+    let mut cmd = std::process::Command::new(cli);
+    cmd.args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!(

@@ -720,7 +720,10 @@ mod tests {
             }
         });
 
-        assert_eq!(probe_url_status(&format!("http://127.0.0.1:{}/", port)).unwrap(), 200);
+        assert_eq!(
+            probe_url_status(&format!("http://127.0.0.1:{}/", port)).unwrap(),
+            200
+        );
         assert_eq!(
             probe_url_status(&format!("http://127.0.0.1:{}/docs", port)).unwrap(),
             404
