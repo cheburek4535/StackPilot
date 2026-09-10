@@ -762,6 +762,8 @@ mod tests {
         assert_eq!(windows_command_program("vite"), "vite.cmd");
         assert_eq!(windows_command_program("nest"), "nest.cmd");
         assert_eq!(windows_command_program("composer"), "composer.bat");
+        assert_eq!(windows_command_program("gradle"), "gradle.bat");
+        assert_eq!(windows_command_program("mvn"), "mvn.cmd");
     }
 
     #[test]
@@ -1123,6 +1125,70 @@ mod tests {
         assert!(
             output.stdout_tail.contains("abs-path-ok"),
             "stdout tail: {}",
+            output.stdout_tail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn runner_preserves_cmd_arguments_with_spaces_and_metachars() {
+        // Регрессия Tauri-init: args с пробелами и `&&` (before-dev-command
+        // hooks) обязаны доходить до CLI ОДНИМ аргументом. Раньше Rust
+        // экранировал встроенные кавычки как `\"`, cmd.exe резал значение
+        // по пробелам — npx получал `--before-dev-command`, `cd`, `frontend`...
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        // Пробник на Node повторяет argv, который реально увидел процесс.
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_cmd_args_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("probe.js"),
+            "console.log(JSON.stringify(process.argv.slice(2)))\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("probe.cmd"),
+            "@echo off\r\nnode \"%~dp0probe.js\" %*\r\n",
+        )
+        .unwrap();
+
+        let spec = ProcessSpec {
+            command: dir.join("probe.cmd").to_string_lossy().into_owned(),
+            args: vec![
+                "--before-dev-command".into(),
+                "cd frontend && npm run dev".into(),
+                "--window-title".into(),
+                "my app".into(),
+            ],
+            working_dir: None,
+            env: None,
+            timeout: Some(Duration::from_secs(30)),
+            stdin: StdinMode::Null,
+            ci_mode: false,
+        };
+        let output = ProcessRunner::run(spec, None)
+            .await
+            .expect("пробник обязан выполниться");
+        assert!(
+            output.stdout_tail.contains(
+                r#"["--before-dev-command","cd frontend && npm run dev","--window-title","my app"]"#
+            ),
+            "аргументы обязаны сохраниться одним токеном: {}",
             output.stdout_tail
         );
         let _ = std::fs::remove_dir_all(&dir);

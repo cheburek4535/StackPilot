@@ -243,7 +243,10 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                         confidence: DetectionConfidence::Certain,
                         evidence: vec![format!(
                             "Found in package.json: {}",
-                            packages.iter().find(|p| has_dep(p)).unwrap()
+                            packages
+                                .iter()
+                                .find(|p| has_dep(p))
+                                .expect("guarded by packages.iter().any(has_dep) above")
                         )],
                     });
                     project_type_hints.push(fw.to_string());
@@ -301,7 +304,10 @@ impl ProjectAnalyzer for DefaultProjectAnalyzer {
                         confidence: DetectionConfidence::Certain,
                         evidence: vec![format!(
                             "Found in Cargo.toml: {}",
-                            crates.iter().find(|c| has_crate(c)).unwrap()
+                            crates
+                                .iter()
+                                .find(|c| has_crate(c))
+                                .expect("guarded by crates.iter().any(has_crate) above")
                         )],
                     });
                     project_type_hints.push(name.to_string());

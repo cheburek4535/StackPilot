@@ -78,16 +78,25 @@ impl FileWatcher {
             .watch(&path, RecursiveMode::Recursive)
             .map_err(|e| format!("Failed to watch path {}: {}", path.display(), e))?;
 
-        *self.watcher.lock().unwrap() = Some(watcher);
-        *self.watched_path.lock().unwrap() = Some(path);
+        *self.watcher.lock().expect("watcher lock poisoned; critical section is infallible") =
+            Some(watcher);
+        *self
+            .watched_path
+            .lock()
+            .expect("watched_path lock poisoned; critical section is infallible") =
+            Some(path);
         self.watching.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     /// Stop watching and release resources.
     pub fn stop(&self) {
-        *self.watcher.lock().unwrap() = None;
-        *self.watched_path.lock().unwrap() = None;
+        *self.watcher.lock().expect("watcher lock poisoned; critical section is infallible") = None;
+        *self
+            .watched_path
+            .lock()
+            .expect("watched_path lock poisoned; critical section is infallible") =
+            None;
         self.watching.store(false, Ordering::SeqCst);
     }
 
@@ -96,7 +105,10 @@ impl FileWatcher {
     }
 
     pub fn watched_path(&self) -> Option<PathBuf> {
-        self.watched_path.lock().unwrap().clone()
+        self.watched_path
+            .lock()
+            .expect("watched_path lock poisoned; clone is infallible")
+            .clone()
     }
 }
 

@@ -426,7 +426,9 @@ fn detect_cycle(profile: &LaunchProfileV2) -> Result<Vec<String>, String> {
         if let Some(deps) = dependents.get(id) {
             let mut new_ready: Vec<&str> = Vec::new();
             for &dep_id in deps {
-                let degree = in_degree.get_mut(dep_id).unwrap();
+                let degree = in_degree
+                    .get_mut(dep_id)
+                    .expect("dependents values are step ids, all keyed in in_degree");
                 *degree -= 1;
                 if *degree == 0 {
                     new_ready.push(dep_id);
@@ -505,7 +507,9 @@ pub fn topological_order(profile: &LaunchProfileV2) -> Vec<String> {
         if let Some(deps) = dependents.get(id) {
             let mut new_ready: Vec<&str> = Vec::new();
             for &dep_id in deps {
-                let degree = in_degree.get_mut(dep_id).unwrap();
+                let degree = in_degree
+                    .get_mut(dep_id)
+                    .expect("dependents values are step ids, all keyed in in_degree");
                 *degree -= 1;
                 if *degree == 0 {
                     new_ready.push(dep_id);

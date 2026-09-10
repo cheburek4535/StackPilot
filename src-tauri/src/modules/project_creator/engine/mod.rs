@@ -278,7 +278,9 @@ impl RecipeEngine for DefaultRecipeEngine {
                         will_execute = false;
                         skip_reason = Some(format!(
                             "File already exists — step will be skipped (policy {:?})",
-                            file_policy.unwrap()
+                            file_policy.expect(
+                                "match arm only matches Some(SkipIfExists | CreateOnly)"
+                            )
                         ));
                     }
                     _ => {}
@@ -2554,7 +2556,10 @@ fn cycle_path(steps: &[Step], remaining: &[usize], prereqs_of: &[Vec<usize>]) ->
                     }
                 }
                 1 => {
-                    let pos = stack.iter().position(|&x| x == pre).unwrap();
+                    let pos = stack
+                        .iter()
+                        .position(|&x| x == pre)
+                        .expect("DFS invariant: state[pre] == 1 implies pre is on the stack");
                     return Some(stack[pos..].to_vec());
                 }
                 _ => {}
@@ -5324,7 +5329,11 @@ include(":app")
             description: "Create gradlew + gradle/wrapper for the Android project".into(),
             command: "gradle".into(),
             args: vec!["wrapper".into()],
-            working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+            // Рабочая директория — корень проекта: into_segment добавит
+            // сегмент (frontend/ в split-стеке) РОВНО ОДИН раз. Раньше
+            // сегмент подставлялся здесь и повторно в into_segment —
+            // получался несуществующий путь frontend/frontend.
+            working_dir: Some(project_path.to_string()),
             env: None,
             timeout_secs: Some(300),
             condition: None,
@@ -6819,8 +6828,10 @@ fun main() {{
                     args: vec!["wrapper".into()],
                     // Wrapper обязан лежать рядом с build.gradle.kts — в каталоге
                     // сегмента (backend/ в mono-репозитории), иначе gradlew
-                    // создаётся в корне без проекта.
-                    working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+                    // создаётся в корне без проекта. Рабочая директория — корень
+                    // проекта: сегмент добавляет into_segment РОВНО ОДИН раз
+                    // (иначе получался backend/backend и spawn падал).
+                    working_dir: Some(project_path.to_string()),
                     env: None,
                     timeout_secs: Some(300),
                     condition: None,
@@ -7019,8 +7030,10 @@ struct ContentView: View {{
                     command: "swift".into(),
                     args: vec!["build".into()],
                     // Пакет живёт в каталоге сегмента (frontend/ в
-                    // mono-репозитории) — сборка выполняется там же.
-                    working_dir: seg.map(|dir| format!("{}/{}", project_path, dir)),
+                    // mono-репозитории) — сборка выполняется там же. Сегмент
+                    // добавляет into_segment РОВНО ОДИН раз (без двойного
+                    // frontend/frontend).
+                    working_dir: Some(project_path.to_string()),
                     env: None,
                     timeout_secs: Some(600),
                     condition: None,
@@ -8858,6 +8871,39 @@ mod tests {
         // манифест: метка проекта экранирована, тема — платформенная (без res/)
         let manifest = write_content(&steps, "app/src/main/AndroidManifest.xml");
         assert!(manifest.contains("android:label=\"myapp\""), "{manifest}");
+    }
+
+    #[test]
+    fn gradle_wrapper_working_dir_has_segment_applied_once() {
+        // Регрессия: wrapper-шаги получали сегмент ДВАЖДЫ (backend/backend,
+        // frontend/frontend) — рабочей директории не существовало, gradle
+        // не запускался. into_segment обязан применять сегмент ровно один раз.
+        let ctx = ctx_scenario(&["kotlin"], &["ktor", "android"], &[]);
+        let layout = ProjectLayout::compute(&ctx);
+        assert_eq!(layout.framework_dir("ktor").as_deref(), Some("backend"));
+        assert_eq!(layout.framework_dir("android").as_deref(), Some("frontend"));
+
+        let ktor_steps = steps_for_framework("ktor", "C:\\dev\\myapp", "myapp", &ctx, &layout);
+        let ktor_wrapper = ktor_steps
+            .iter()
+            .find(|s| s.id() == "ktor_gradle_wrapper")
+            .expect("ktor_gradle_wrapper должен быть в шагах ktor");
+        assert_eq!(
+            wd_of(ktor_wrapper),
+            "C:\\dev\\myapp/backend",
+            "wrapper ktor обязан запускаться в backend/ без двойного сегмента"
+        );
+
+        let android_steps = steps_for_framework("android", "C:\\dev\\myapp", "myapp", &ctx, &layout);
+        let android_wrapper = android_steps
+            .iter()
+            .find(|s| s.id() == "android_gradle_wrapper")
+            .expect("android_gradle_wrapper должен быть в шагах android");
+        assert_eq!(
+            wd_of(android_wrapper),
+            "C:\\dev\\myapp/frontend",
+            "wrapper android обязан запускаться в frontend/ без двойного сегмента"
+        );
     }
 
     #[test]
@@ -16378,12 +16424,10 @@ mod tests {
             error_mode_of(find_step(&recipe, "swiftui_build")),
             ErrorMode::Abort
         );
-        // пакет живёт в frontend/ (swiftui — frontend-сторона) — сборка там же.
-        assert!(
-            wd_of(find_step(&recipe, "swiftui_build")).ends_with("/frontend"),
-            "{}",
-            wd_of(find_step(&recipe, "swiftui_build"))
-        );
+        // пакет живёт в frontend/ (swiftui — frontend-сторона) — сборка там
+        // же, сегмент применяется РОВНО ОДИН раз (без frontend/frontend).
+        let wd = wd_of(find_step(&recipe, "swiftui_build"));
+        assert_eq!(wd, "frontend", "{wd}");
     }
 
     #[test]

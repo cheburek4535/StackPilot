@@ -390,7 +390,12 @@ fn join_and(items: &[String]) -> String {
         2 => format!("{} and {}", items[0], items[1]),
         _ => {
             let mut s = items[..items.len() - 1].join(", ");
-            s.push_str(&format!(", and {}", items.last().unwrap()));
+            s.push_str(&format!(
+                ", and {}",
+                items
+                    .last()
+                    .expect("match arm is `_` (len >= 3), so items is non-empty")
+            ));
             s
         }
     }
@@ -1979,7 +1984,10 @@ fn section_architecture(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         }
     };
     doc.add("Architecture", format!("_{}_", arch.label()));
-    doc.sections.last_mut().unwrap().body = body;
+    doc.sections
+        .last_mut()
+        .expect("ReadmeDoc::add pushes a section immediately before this line")
+        .body = body;
 }
 
 fn section_selected_stack(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {

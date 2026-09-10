@@ -862,7 +862,8 @@ fn config_file_port(dir: &Path, features: &NodeFeatures) -> Option<u16> {
         }
     }
     if features.nuxt {
-        let re = regex::Regex::new(r"port\s*[:=]\s*(\d{2,5})").unwrap();
+        let re = regex::Regex::new(r"port\s*[:=]\s*(\d{2,5})")
+            .expect("hardcoded regex literal is valid");
         for file in ["nuxt.config.ts", "nuxt.config.js"] {
             let path = dir.join(file);
             if path.is_file() {
@@ -882,7 +883,8 @@ fn config_file_port(dir: &Path, features: &NodeFeatures) -> Option<u16> {
         let path = dir.join("angular.json");
         if path.is_file() {
             if let Ok(content) = fs::read_to_string(&path) {
-                let re = regex::Regex::new(r#""port"\s*:\s*(\d{2,5})"#).unwrap();
+                let re = regex::Regex::new(r#""port"\s*:\s*(\d{2,5})"#)
+                    .expect("hardcoded regex literal is valid");
                 if let Some(caps) = re.captures(&content) {
                     if let Ok(p) = caps[1].parse::<u16>() {
                         if p > 0 {
@@ -897,7 +899,8 @@ fn config_file_port(dir: &Path, features: &NodeFeatures) -> Option<u16> {
 }
 
 fn env_file_port(dir: &Path) -> Option<u16> {
-    let re = regex::Regex::new(r"(?m)^\s*PORT\s*=\s*(\d{2,5})\s*$").unwrap();
+    let re = regex::Regex::new(r"(?m)^\s*PORT\s*=\s*(\d{2,5})\s*$")
+            .expect("hardcoded regex literal is valid");
     for file in [".env", ".env.local", ".env.development"] {
         let path = dir.join(file);
         if path.is_file() {
@@ -1875,7 +1878,11 @@ fn generate_steps(
                         path: resolved,
                         args: None,
                     },
-                    depends_on: vec![docker_wait_id.clone().unwrap()],
+                    depends_on: vec![docker_wait_id
+                        .clone()
+                        .expect(
+                            "docker_wait_id is Some: set at the top of this branch (include_tool_steps && docker_present)",
+                        )],
                     working_directory: None,
                     visibility: Some(Visibility::Detached),
                     execution_mode: None,
@@ -2722,7 +2729,8 @@ fn go_run_command(module_dir: &Path) -> String {
 
 fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {
     // Highest evidence: an explicit PORT in the environment file.
-    let env_re = regex::Regex::new(r"(?m)^\s*PORT\s*=\s*(\d{2,5})").unwrap();
+    let env_re = regex::Regex::new(r"(?m)^\s*PORT\s*=\s*(\d{2,5})")
+        .expect("hardcoded regex literal is valid");
     let env_path = dir.join(".env");
     if env_path.is_file() {
         if let Ok(content) = fs::read_to_string(&env_path) {
@@ -2736,9 +2744,10 @@ fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {
         }
     }
     // Direct listen call: `http.ListenAndServe(":8080", ...)`.
-    let listen_re = regex::Regex::new(r#"ListenAndServe(TLS)?\s*\(\s*":(\d{2,5})"#).unwrap();
+    let listen_re = regex::Regex::new(r#"ListenAndServe(TLS)?\s*\(\s*":(\d{2,5})"#)
+        .expect("hardcoded regex literal is valid");
     // Fallback: any `:port` token in the entry source.
-    let addr_re = regex::Regex::new(r":(\d{2,5})\b").unwrap();
+    let addr_re = regex::Regex::new(r":(\d{2,5})\b").expect("hardcoded regex literal is valid");
     for file in ["main.go", "cmd/main.go"] {
         let path = dir.join(file);
         if path.is_file() {

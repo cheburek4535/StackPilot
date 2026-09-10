@@ -505,7 +505,7 @@ impl RunOrchestrator {
                     let handle = handle.clone();
 
                     tokio::spawn(async move {
-                        let _permit = semaphore.acquire().await.unwrap();
+                        let _permit = semaphore.acquire().await.expect("semaphore is never closed");
 
                         // Run the step in a child task and await its JoinHandle.
                         // If `step_task` panics (an unwrap/expect in the process

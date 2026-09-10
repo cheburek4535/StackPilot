@@ -340,7 +340,11 @@ impl Generator for SpringBootGenerator {
                     .filter_map(Result::ok)
                     .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e.path()))
                     .collect();
-                (dirs.len() == 1).then(|| dirs.into_iter().next().unwrap())
+                (dirs.len() == 1).then(|| {
+                    dirs.into_iter()
+                        .next()
+                        .expect("dirs.len() == 1 guarantees exactly one element")
+                })
             });
             if let Some(nested) = nested {
                 for entry in std::fs::read_dir(&nested).map_err(|e| {
@@ -1387,10 +1391,18 @@ async fn run_named_directory_scaffold(
 
     // Куда CLI кладёт проект: уникальная временная папка в корне проекта
     // (temp+move) или папка с именем каталога назначения рядом с ним.
-    let (created_dir, created_name, needs_merge) = if temp_allowed {
+    // `run_dir` — фактическая рабочая директория CLI; `staging_root` задан,
+    // когда CLI пришлось увести в staging-родитель (коллизия с target).
+    let (run_dir, created_dir, created_name, needs_merge, staging_root) = if temp_allowed {
         let temp_name = unique_temp_name(project_path, &cfg.target_dir);
         args[placeholder] = temp_name.clone();
-        (work_dir.join(&temp_name), temp_name, true)
+        (
+            work_dir.to_path_buf(),
+            work_dir.join(&temp_name),
+            temp_name,
+            true,
+            None,
+        )
     } else {
         // target=".": имя = имя папки проекта (как поступил бы пользователь);
         // иначе — имя каталога назначения (CLI создаёт его рядом с самим собой).
@@ -1409,9 +1421,36 @@ async fn run_named_directory_scaffold(
         };
         args[placeholder] = name.clone();
         let created = work_dir.join(&name);
-        // CLI создал сам каталог назначения — слияние не нужно.
-        let needs_merge = created != target;
-        (created, name, needs_merge)
+        // Коллизия: каталог назначения уже существует и не пуст (повторный
+        // запуск, чужой каркас в frontend/ и т.п.). RN CLI и подобные
+        // скаффолдеры отказываются писать в непустой каталог. Запускаем CLI
+        // в свежем staging-родителе, сохраняя ИМЯ проекта (app.json/package
+        // name остаются правильными), и программно сливаем результат в target.
+        if dir_has_entries(&created) {
+            let staging = work_dir.join(unique_temp_name(work_dir, &cfg.target_dir));
+            std::fs::create_dir_all(&staging).map_err(|e| {
+                format!(
+                    "ScaffoldGenerator: failed to create staging dir '{}': {}",
+                    staging.display(),
+                    e
+                )
+            })?;
+            report.validation_warnings.push(format!(
+                "target '{}' already contained files — ran the scaffold in a staging directory and merged the result",
+                cfg.target_dir
+            ));
+            (
+                staging.clone(),
+                staging.join(&name),
+                name,
+                true,
+                Some(staging),
+            )
+        } else {
+            // CLI создал сам каталог назначения — слияние не нужно.
+            let needs_merge = created != target;
+            (work_dir.to_path_buf(), created, name, needs_merge, None)
+        }
     };
 
     // Перенос + нормализация матрёшки. При ЛЮБОЙ ошибке (включая провал
@@ -1423,7 +1462,7 @@ async fn run_named_directory_scaffold(
         run_cli_process(
             &cfg.command,
             args,
-            work_dir,
+            &run_dir,
             None,
             cfg.timeout_secs,
             &cfg.interactive,
@@ -1437,7 +1476,7 @@ async fn run_named_directory_scaffold(
                  expected directory '{}' in {}",
                 cfg.command,
                 created_name,
-                work_dir.display()
+                run_dir.display()
             ));
         }
 
@@ -1487,8 +1526,18 @@ async fn run_named_directory_scaffold(
         Ok(())
     }
     .await;
-    if result.is_err() && temp_allowed {
-        let _ = std::fs::remove_dir_all(&created_dir);
+    if result.is_err() {
+        // Провал: хвосты проваленного скаффолда не должны ломать повторный
+        // запуск — чистим созданный каталог (temp+move) и staging-родитель.
+        if temp_allowed {
+            let _ = std::fs::remove_dir_all(&created_dir);
+        }
+        if let Some(staging) = &staging_root {
+            let _ = std::fs::remove_dir_all(staging);
+        }
+    } else if let Some(staging) = &staging_root {
+        // Успех: содержимое перенесено в target — staging-родитель пуст.
+        let _ = std::fs::remove_dir_all(staging);
     }
     result
 }
@@ -1949,6 +1998,14 @@ fn unique_temp_name(project_path: &Path, target_dir: &str) -> String {
         counter += 1;
     }
     name
+}
+
+/// Каталог существует и содержит хотя бы один элемент (файл или папку)?
+/// Несуществующий каталог и каталог, который не удалось прочитать, — false.
+fn dir_has_entries(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 /// Рекурсивно перенести содержимое src в dst: каталоги сливаются, файлы
@@ -2546,6 +2603,12 @@ mod tests {
                 "@echo off\r\nmkdir \"%1\"\r\n",
             )
             .unwrap();
+            // Ведёт себя как RN CLI: существующий каталог — отказ (exit 1).
+            std::fs::write(
+                dir.join("fake-strict-create.cmd"),
+                "@echo off\r\nif exist \"%1\" exit /b 1\r\nmkdir \"%1\"\r\necho {}> \"%1\\package.json\"\r\n",
+            )
+            .unwrap();
             std::fs::write(
                 dir.join("fake-inplace.cmd"),
                 "@echo off\r\necho {}> package.json\r\n",
@@ -2567,6 +2630,12 @@ mod tests {
             std::fs::write(
                 dir.join("fake-create-empty.sh"),
                 "#!/bin/sh\nmkdir \"$1\"\n",
+            )
+            .unwrap();
+            // Ведёт себя как RN CLI: существующий каталог — отказ (exit 1).
+            std::fs::write(
+                dir.join("fake-strict-create.sh"),
+                "#!/bin/sh\nif [ -e \"$1\" ]; then exit 1; fi\nmkdir \"$1\"\necho '{}' > \"$1/package.json\"\n",
             )
             .unwrap();
             std::fs::write(
@@ -2659,6 +2728,62 @@ mod tests {
             "{:?}",
             report.skipped_dependent_steps
         );
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&clis);
+    }
+
+    #[test]
+    fn scaffold_without_temp_stages_around_existing_target_collision() {
+        // Регрессия RN init: каталог назначения уже существует и не пуст
+        // (повторный запуск, чужой каркас в frontend/). CLI, который
+        // отказывается писать в существующий каталог (RN CLI), обязан
+        // получить свежий staging-родитель с правильным именем проекта,
+        // а результат — слиться в target без потери чужих файлов.
+        let gen = ScaffoldGenerator;
+        let project = temp_test_dir("scaffold_collision");
+        let clis = fake_cli_dir("scaffold_collision");
+        let ctx = WizardContext::default();
+        // Чужой файл в целевом каталоге — обязан выжить после merge.
+        std::fs::create_dir_all(project.join("frontend")).unwrap();
+        std::fs::write(project.join("frontend").join("keep.txt"), "keep").unwrap();
+
+        let cfg = serde_json::json!({
+            "command": fake_cli(&clis, "fake-strict-create"),
+            "args": ["__TARGET__"],
+            "capability": "creates_named_directory",
+            "target_dir": "frontend",
+            "temp_dir_allowed": false,
+            "expected_outputs": ["package.json"],
+        });
+        let report = tokio_test_block_on(gen.generate(&ctx, &project, &cfg))
+            .expect("коллизия не должна валить скаффолд");
+
+        assert!(
+            project.join("frontend/package.json").exists(),
+            "результат staging-скаффолда переносится в frontend/"
+        );
+        assert!(
+            project.join("frontend/keep.txt").exists(),
+            "существующие файлы target не теряются (merge)"
+        );
+        assert!(
+            !project.join("frontend/frontend").exists(),
+            "матрёшки быть не должно"
+        );
+        assert!(
+            report
+                .validation_warnings
+                .iter()
+                .any(|w| w.contains("staging")),
+            "факт staging-запуска фиксируется: {:?}",
+            report.validation_warnings
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&project)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("temp_"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging-папки удаляются: {leftovers:?}");
         let _ = std::fs::remove_dir_all(&project);
         let _ = std::fs::remove_dir_all(&clis);
     }

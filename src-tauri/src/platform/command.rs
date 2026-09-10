@@ -84,7 +84,7 @@ pub fn build_tokio_command(
             cmd.arg(flag);
             // Build the full script line for the shell
             let script = build_script_line(program, args, resolved_shell);
-            cmd.arg(script);
+            append_shell_script_tokio(&mut cmd, resolved_shell, script);
             #[cfg(target_os = "windows")]
             suppress_child_console_async(&mut cmd);
             Ok(cmd)
@@ -116,7 +116,7 @@ pub fn build_std_command(
             let mut cmd = std::process::Command::new(exe);
             cmd.arg(flag);
             let script = build_script_line(program, args, resolved_shell);
-            cmd.arg(script);
+            append_shell_script_std(&mut cmd, resolved_shell, script);
             #[cfg(target_os = "windows")]
             suppress_child_console(&mut cmd);
             Ok(cmd)
@@ -203,7 +203,9 @@ pub fn resolve_windows_program_name(command: &str) -> String {
         "composer" => "composer.bat".to_string(),
         "mix" => "mix.bat".to_string(),
         "flutter" => "flutter.bat".to_string(),
+        "mvn" => "mvn.cmd".to_string(),
         "mvnw" => "mvnw.cmd".to_string(),
+        "gradle" => "gradle.bat".to_string(),
         "gradlew" => "gradlew.bat".to_string(),
         _ => trimmed.to_string(),
     }
@@ -390,6 +392,47 @@ fn build_script_line(program: &str, args: &[String], shell: ShellKind) -> String
             build_script_line(program, args, resolved)
         }
     }
+}
+
+/// Append the pre-quoted shell script to a command.
+///
+/// `cmd /C <script>` is special: the script is one opaque command-line tail,
+/// not a regular argv entry. Rust's default argument escaping turns the
+/// script's embedded quotes (e.g. `--before-dev-command "cd frontend && npm
+/// run dev"`) into `\"...\"`, which cmd.exe does not understand — the value is
+/// split on spaces and the `&&` breaks the command. `raw_arg` appends the
+/// script verbatim, preserving the quoting produced by [`build_script_line`].
+fn append_shell_script_tokio(
+    cmd: &mut tokio::process::Command,
+    shell: ShellKind,
+    script: String,
+) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = shell;
+    #[cfg(target_os = "windows")]
+    {
+        if shell == ShellKind::Cmd {
+            // tokio::process::Command has an inherent `raw_arg` on Windows.
+            cmd.raw_arg(&script);
+            return;
+        }
+    }
+    cmd.arg(script);
+}
+
+/// Same as [`append_shell_script_tokio`] for [`std::process::Command`].
+fn append_shell_script_std(cmd: &mut std::process::Command, shell: ShellKind, script: String) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = shell;
+    #[cfg(target_os = "windows")]
+    {
+        if shell == ShellKind::Cmd {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(&script);
+            return;
+        }
+    }
+    cmd.arg(script);
 }
 
 /// Quote an argument for `cmd /C`: double quotes with internal quote doubling.
@@ -631,6 +674,29 @@ mod tests {
         assert_eq!(resolve_windows_program_name("vite"), "vite.cmd");
         assert_eq!(resolve_windows_program_name("nest"), "nest.cmd");
         assert_eq!(resolve_windows_program_name("composer"), "composer.bat");
+    }
+
+    #[test]
+    fn resolve_windows_program_jvm_shims() {
+        // Gradle/Maven поставляются как .bat/.cmd шимы: без расширения
+        // CreateProcess (и PATH-поиск Rust) их не находит — «program not
+        // found» при генерации wrapper'а.
+        assert_eq!(resolve_windows_program_name("gradle"), "gradle.bat");
+        assert_eq!(resolve_windows_program_name("gradlew"), "gradlew.bat");
+        assert_eq!(resolve_windows_program_name("mvn"), "mvn.cmd");
+        assert_eq!(resolve_windows_program_name("mvnw"), "mvnw.cmd");
+    }
+
+    #[test]
+    fn gradle_and_mvn_run_through_cmd_shell() {
+        assert_eq!(
+            infer_command_mode("gradle", &["wrapper".into()], None),
+            CommandMode::Shell(ShellKind::Cmd)
+        );
+        assert_eq!(
+            infer_command_mode("mvn", &["-v".into()], None),
+            CommandMode::Shell(ShellKind::Cmd)
+        );
     }
 
     #[test]

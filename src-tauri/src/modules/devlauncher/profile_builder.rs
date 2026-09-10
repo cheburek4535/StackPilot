@@ -1018,7 +1018,11 @@ pub fn build_profile_v2_from_context_with_options(
                     command,
                     command_spec: None,
                 },
-                vec![docker_wait.clone().unwrap()],
+                vec![docker_wait
+                            .clone()
+                            .expect(
+                                "docker_wait is Some: assigned at the top of the same `if docker` branch",
+                            )],
                 compose_dir,
                 Some(Visibility::VisibleTerminal),
                 Some(ExecutionMode::LongRunning),
@@ -1107,7 +1111,9 @@ pub fn build_profile_v2_from_context_with_options(
                         &format!("Open {}", display_name),
                         &resolved,
                         Vec::new(),
-                        vec![docker_wait.clone().unwrap()],
+vec![docker_wait
+                    .clone()
+                    .expect("docker_wait is Some: assigned at the top of the same `if docker` branch")],
                     );
                 }
                 None => {
