@@ -8536,14 +8536,9 @@ fn steps_for_readme(
     _project_path: &str,
     project_name: &str,
 ) -> Vec<Step> {
-    // README приходит с фронтенда уже локализованным через i18n
-    // (readme_content). Когда контента нет (прямые вызовы API, старые
-    // сессии) — работает встроенный генератор readme.rs на английском.
-    // Выбор источника — проверка наличия, а не ветвление по языку.
-    let readme = context
-        .readme_content
-        .clone()
-        .unwrap_or_else(|| readme::generate_readme(layout, context, project_name));
+    // README генерируется подсистемой readme.rs: текст собирается из i18n-
+    // словарей (locales/readme/*.json) на языке из context.readme_locale.
+    let readme = readme::generate_readme(layout, context, project_name);
 
     vec![Step::WriteFile {
         id: "readme".into(),
@@ -10109,20 +10104,18 @@ mod tests {
     }
 
     #[test]
-    fn provided_readme_content_is_written_verbatim() {
-        // README, локализованный фронтендом через i18n, движок пишет как есть:
-        // выбор языка — данные в контексте, а не ветвление генератора.
+    fn readme_step_uses_context_locale() {
+        // README локализуется на бэкенде по context.readme_locale: выбор
+        // языка — данные, а не ветвление генератора.
         let mut ctx = context();
         ctx.readme_locale = Some("ru".into());
-        ctx.readme_content = Some("# myapp\n\n## Обзор\n\nЛокализованный README.".into());
 
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
         match find_step(&recipe, "readme") {
             Step::WriteFile { content, .. } => {
-                assert_eq!(
-                    content.as_str(),
-                    "# myapp\n\n## Обзор\n\nЛокализованный README."
-                );
+                assert!(content.contains("## Обзор"), "{content}");
+                assert!(content.contains("Сгенерировано StackPilot"), "{content}");
+                assert!(!content.contains("readme."), "raw key leaked: {content}");
             }
             _ => panic!("readme — WriteFile"),
         }

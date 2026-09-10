@@ -185,6 +185,7 @@ pub struct NodeFeatures {
     pub electron: bool,
     pub api_framework: bool,
     pub swagger: bool,
+    pub swagger_ui_express: bool,
     pub is_frontend_framework: bool,
     pub is_backend_framework: bool,
     /// Runnable script present but no recognizable framework.
@@ -668,6 +669,7 @@ fn parse_node_package(dir: &Path, manifest: &Path) -> Result<NodePackage, String
             || has_dep("@nestjs/swagger")
             || has_dep("fastify-swagger")
             || has_dep("@fastify/swagger"),
+        swagger_ui_express: has_dep("swagger-ui-express"),
         is_frontend_framework: false,
         is_backend_framework: false,
         generic_node: false,
@@ -2436,10 +2438,17 @@ fn generate_steps(
             wait = wait.with_metadata("confidence", pkg.port_confidence.as_str());
             steps.push(wait);
 
-            // API docs when a Swagger/OpenAPI tool is present.
+            // API docs when a Swagger/OpenAPI tool is present. Frontend or
+            // generic packages fall back to the origin root (SPA servers
+            // answer 200 with an empty index.html on any path).
             if pkg.features.swagger {
                 let url = docs_url_for_node(pkg);
-                let mut docs = PendingStep::open_url(&url, "Open API docs");
+                let label = if url.ends_with("/docs") || url.ends_with("/api-docs") {
+                    "Open API docs"
+                } else {
+                    "Open app in browser"
+                };
+                let mut docs = PendingStep::open_url(&url, label);
                 docs.depends_on.push(id.clone());
                 docs = docs.with_metadata("source", "swagger dependency");
                 steps.push(docs);
@@ -2784,14 +2793,19 @@ fn go_port_hint(dir: &Path) -> Option<(u16, AnalysisConfidence, String)> {
 
 fn docs_url_for_node(pkg: &NodePackage) -> String {
     let port = pkg.port.unwrap_or(3000);
-    if pkg.features.next {
-        return format!("http://localhost:{}/api", port);
+    // Frontend dev servers (Next.js, Nuxt, SvelteKit, Vite, ...) and generic
+    // Node apps serve a single page: every path answers 200 with index.html,
+    // so a /docs or /api URL opens an EMPTY page. Open the origin root.
+    if pkg.features.next || pkg.features.is_frontend_framework {
+        return format!("http://localhost:{}", port);
     }
-    if pkg.features.api_framework {
-        // nestjs / fastify default to /docs; swagger-ui-express to /api-docs
+    // nestjs / fastify serve their docs at /docs by default. swagger-ui-express
+    // mounts wherever the app decides (often /api-docs, sometimes elsewhere):
+    // a guessed path would open the SPA's empty page, so the origin root wins.
+    if pkg.features.api_framework && !pkg.features.swagger_ui_express {
         return format!("http://localhost:{}/docs", port);
     }
-    format!("http://localhost:{}/docs", port)
+    format!("http://localhost:{}", port)
 }
 
 // ---------------------------------------------------------------------------
@@ -3361,6 +3375,66 @@ mod tests {
             .filter_map(|s| s.working_directory.as_deref())
             .collect();
         assert_eq!(dirs.len(), profile.steps.len());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn express_swagger_opens_origin_root_not_docs() {
+        // swagger-ui-express mounts wherever the app decides; a guessed
+        // /docs path would open the SPA's empty index.html page, so the
+        // step opens the origin root instead.
+        let dir = temp_dir("node_swagger_express");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "package.json",
+                    r#"{"name":"api","dependencies":{"express":"^4","swagger-ui-express":"^5"},"scripts":{"dev":"node index.js"}}"#,
+                ),
+                ("index.js", "1"),
+            ],
+        );
+        let draft = analyze(&dir);
+        let profile = &draft.profile;
+        let open = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("API docs") || s.label.contains("app in browser"))
+            .expect("swagger step");
+        assert_eq!(open.label, "Open app in browser");
+        match &open.kind {
+            StepKind::OpenUrl { url } => assert_eq!(url, "http://localhost:3000"),
+            other => panic!("expected OpenUrl, got {:?}", other),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nestjs_swagger_keeps_docs_path() {
+        // @nestjs/swagger serves /docs by default, so the docs URL survives.
+        let dir = temp_dir("node_swagger_nest");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "package.json",
+                    r#"{"name":"api","dependencies":{"@nestjs/core":"^10","@nestjs/swagger":"^7"},"scripts":{"dev":"nest start"}}"#,
+                ),
+                ("main.ts", "1"),
+            ],
+        );
+        let draft = analyze(&dir);
+        let profile = &draft.profile;
+        let open = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("API docs") || s.label.contains("app in browser"))
+            .expect("swagger step");
+        assert_eq!(open.label, "Open API docs");
+        match &open.kind {
+            StepKind::OpenUrl { url } => assert_eq!(url, "http://localhost:3000/docs"),
+            other => panic!("expected OpenUrl, got {:?}", other),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

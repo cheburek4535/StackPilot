@@ -60,11 +60,6 @@ import TechIcon from "$lib/components/TechIcon.svelte";
 import Icon from "$lib/components/ui/Icon.svelte";
 import { i18n, availableLocales } from "$lib/core/i18n.svelte";
 import type { TranslationKey, Locale } from "$lib/core/i18n.svelte";
-import {
-  buildReadme,
-  type ReadmeInput,
-  type ReadmeNamedItem,
-} from "$lib/modules/project_creator/readme";
 import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
 import { goto } from "$app/navigation";
 import { deleteProfile } from "$lib/modules/devlauncher/api";
@@ -182,40 +177,6 @@ function toggleReadmeLocale() {
   readmeLocale = ids[(index + 1) % ids.length];
   readmeLocaleTouched = true;
 }
-
-/** Элемент README: id + i18n-ключ подписи (из wizard_tree). */
-function readmeItems(
-  ids: string[],
-  defs: { id: string; label: string }[] | undefined,
-): ReadmeNamedItem[] {
-  return ids.map((id) => ({
-    id,
-    labelKey: defs?.find((d) => d.id === id)?.label ?? id,
-  }));
-}
-
-/** Локализованный README.md: собирается из i18n-ключей на выбранном языке.
- *  Переводчик с явной локалью — код не содержит ветвлений RU/EN. */
-let readmeContent = $derived.by(() => {
-  const input: ReadmeInput = {
-    projectName: conflictResolvedFolder ?? projectName,
-    projectType: selectedType ? { id: selectedType.id, labelKey: selectedType.label } : null,
-    backendLanguages: readmeItems(backendLangs, tree?.languages),
-    frontendLanguages: readmeItems(frontendLangs, tree?.languages),
-    frameworks: readmeItems(selectedFrameworks, tree?.frameworks),
-    tools: readmeItems(selectedTools, tree?.tools),
-    localInfraTools: readmeItems([...envLocalInfra], tree?.tools),
-    architecture: archMode ?? "unknown",
-    features: {
-      docker: dockerEnabled(),
-      testing,
-      git,
-      vscode,
-      ci: false,
-    },
-  };
-  return buildReadme(input, (key, vars) => i18n.translateIn(readmeLocale, key, vars));
-});
 
 /** Автоочистка backend-состояния, если серверная сторона недоступна
  *  (переключение типа проекта без бэкенда). */
@@ -1994,7 +1955,6 @@ function buildWizardContext(): WizardContext {
     vscode_config: vscode,
     answers: buildAnswers(),
     readme_locale: readmeLocale,
-    readme_content: readmeContent,
   };
 }
 
@@ -2022,7 +1982,6 @@ async function doCreateProject() {
     vscode_config: vscode,
     answers: buildAnswers(),
     readme_locale: readmeLocale,
-    readme_content: readmeContent,
   };
 
   phase = 6;
@@ -3039,7 +2998,6 @@ function resetAll() {
                   {git}
                   {vscode}
                   {readmeLocale}
-                  {readmeContent}
                   projectName={projectName || ""}
                   projectFolder={selectedFolder || ""}
                   bind:removedStepIds

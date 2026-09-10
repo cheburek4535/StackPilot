@@ -29,7 +29,6 @@
     projectName,
     projectFolder,
     readmeLocale,
-    readmeContent,
     removedStepIds = $bindable([]),
   }: {
     selectedType: ProjectTypeDef | null;
@@ -45,8 +44,6 @@
     projectFolder: string;
     /** Язык README, выбранный переключателем на странице ревью */
     readmeLocale: "en" | "ru";
-    /** Готовый локализованный README.md (i18n-система) */
-    readmeContent: string;
     removedStepIds?: string[];
   } = $props();
 
@@ -81,7 +78,6 @@
       vscode_config: vscode,
       answers: {},
       readme_locale: readmeLocale,
-      readme_content: readmeContent,
     };
   }
 
@@ -132,7 +128,7 @@
       JSON.stringify([...envLocalInfra]),
       testing, git, vscode,
       projectName, projectFolder,
-      readmeLocale, readmeContent,
+      readmeLocale,
       JSON.stringify(removedStepIds),
     ].join("|");
     void _key;

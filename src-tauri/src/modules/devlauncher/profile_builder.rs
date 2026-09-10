@@ -1857,7 +1857,6 @@ mod tests {
             answers: Default::default(),
             environment_binding_id: None,
             readme_locale: None,
-            readme_content: None,
         }
     }
 

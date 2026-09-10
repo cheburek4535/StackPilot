@@ -834,7 +834,7 @@
           <div class="tpl-row">
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">{i18n.t("devl.tpl.open_url") as TranslationKey}</div>
-              <input type="text" placeholder="https://localhost:3000/docs" bind:value={addTpl.url} />
+              <input type="text" placeholder="https://localhost:3000" bind:value={addTpl.url} />
             </div>
             <button class="small-btn" onclick={() => addActionStep({ kind: "open_url" })}>+</button>
           </div>

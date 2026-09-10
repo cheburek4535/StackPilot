@@ -109,7 +109,6 @@ fn guard_context(
         answers: Default::default(),
         environment_binding_id: None,
         readme_locale: None,
-        readme_content: None,
     }
 }
 

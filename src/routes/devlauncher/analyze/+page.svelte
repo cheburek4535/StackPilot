@@ -267,7 +267,7 @@
           <div class="tpl-row">
             <div class="tpl-body tpl-fields">
               <div class="tpl-name">Открыть URL</div>
-              <input type="text" placeholder="https://localhost:3000/docs" bind:value={addTpl.url} />
+              <input type="text" placeholder="https://localhost:3000" bind:value={addTpl.url} />
             </div>
             <button class="secondary" onclick={() => addStep({ kind: "open_url" })}>Добавить</button>
           </div>
