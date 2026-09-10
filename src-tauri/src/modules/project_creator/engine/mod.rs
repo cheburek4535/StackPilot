@@ -8520,10 +8520,14 @@ fn steps_for_readme(
     _project_path: &str,
     project_name: &str,
 ) -> Vec<Step> {
-    // README генерируется ТИПИЗИРОВАННОЙ подсистемой readme.rs: полный
-    // WizardContext + каноническая раскладка (ProjectLayout), детерминированная
-    // композиция секций и провайдеры для языков/фреймворков/инструментов.
-    let readme = readme::generate_readme(layout, context, project_name);
+    // README приходит с фронтенда уже локализованным через i18n
+    // (readme_content). Когда контента нет (прямые вызовы API, старые
+    // сессии) — работает встроенный генератор readme.rs на английском.
+    // Выбор источника — проверка наличия, а не ветвление по языку.
+    let readme = context
+        .readme_content
+        .clone()
+        .unwrap_or_else(|| readme::generate_readme(layout, context, project_name));
 
     vec![Step::WriteFile {
         id: "readme".into(),
@@ -10053,6 +10057,26 @@ mod tests {
         let layout = ProjectLayout::compute(&ctx);
         assert_eq!(layout.to_summary(&ctx).class, "custom");
         assert!(layout.eager_dirs().is_empty());
+    }
+
+    #[test]
+    fn provided_readme_content_is_written_verbatim() {
+        // README, локализованный фронтендом через i18n, движок пишет как есть:
+        // выбор языка — данные в контексте, а не ветвление генератора.
+        let mut ctx = context();
+        ctx.readme_locale = Some("ru".into());
+        ctx.readme_content = Some("# myapp\n\n## Обзор\n\nЛокализованный README.".into());
+
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        match find_step(&recipe, "readme") {
+            Step::WriteFile { content, .. } => {
+                assert_eq!(
+                    content.as_str(),
+                    "# myapp\n\n## Обзор\n\nЛокализованный README."
+                );
+            }
+            _ => panic!("readme — WriteFile"),
+        }
     }
 
     #[test]

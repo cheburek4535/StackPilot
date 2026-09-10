@@ -642,6 +642,9 @@ fn build_command(spec: &ProcessSpec) -> TokioCommand {
         cmd.arg(&full_script);
     }
 
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+
     cmd
 }
 

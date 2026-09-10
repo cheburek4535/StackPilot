@@ -257,15 +257,53 @@ pub struct ReadinessResult {
 // Readiness service
 // ---------------------------------------------------------------------------
 
+/// Loopback aliases for a host name: `localhost` ↔ `127.0.0.1` (plus `::1`),
+/// so a port/URL check works regardless of which loopback interface the
+/// server bound to.
+///
+/// Why: Node 17+ resolves `localhost` in OS order (verbatim), and on Windows
+/// that is `::1` first — Vite (and other dev servers) then bind ONLY to the
+/// IPv6 loopback and print `Local: http://localhost:5174/`, while a check
+/// configured against `127.0.0.1` sees nothing. Other hosts pass through
+/// unchanged.
+pub fn loopback_host_aliases(host: &str) -> Vec<String> {
+    let lower = host.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" => vec![
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "::1".to_string(),
+        ],
+        _ => vec![host.to_string()],
+    }
+}
+
+/// Resolve every `(host, port)` pair — including loopback aliases — into a
+/// deduplicated list of socket addresses. Hosts that fail to resolve are
+/// skipped (one unresolvable alias must not kill the whole wait: e.g. a
+/// system without IPv6 loopback cannot resolve `::1`).
+pub fn resolve_loopback_addrs(host: &str, port: u16) -> Vec<std::net::SocketAddr> {
+    let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
+    for h in loopback_host_aliases(host) {
+        let addr_str = format!("{}:{}", h, port);
+        if let Ok(a) = addr_str.to_socket_addrs() {
+            addrs.extend(a);
+        }
+    }
+    addrs.sort_unstable();
+    addrs.dedup();
+    addrs
+}
+
 /// Check if a TCP port is open on the given host.
 pub fn check_port(host: &str, port: u16) -> Result<(), String> {
-    let addr_str = format!("{}:{}", host, port);
-    let addrs = addr_str
-        .to_socket_addrs()
-        .map_err(|e| format!("DNS resolve failed for {}: {}", addr_str, e))?;
+    let addrs = resolve_loopback_addrs(host, port);
+    if addrs.is_empty() {
+        return Err(format!("DNS resolve failed for {}:{}", host, port));
+    }
 
-    for addr in addrs {
-        if TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+    for addr in &addrs {
+        if TcpStream::connect_timeout(addr, Duration::from_secs(2)).is_ok() {
             return Ok(());
         }
     }
@@ -277,10 +315,10 @@ pub fn check_port(host: &str, port: u16) -> Result<(), String> {
 pub fn check_url(url: &str) -> Result<u16, String> {
     let parsed = ParsedTarget::parse(url).map_err(|e| e.to_string())?;
 
-    let addr_str = format!("{}:{}", parsed.host, parsed.port);
-    let addrs = addr_str
-        .to_socket_addrs()
-        .map_err(|e| format!("DNS resolve failed: {}", e))?;
+    let addrs = resolve_loopback_addrs(&parsed.host, parsed.port);
+    if addrs.is_empty() {
+        return Err(format!("DNS resolve failed: {}", parsed.host));
+    }
 
     for addr in addrs {
         if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
@@ -318,10 +356,10 @@ pub fn check_url(url: &str) -> Result<u16, String> {
 /// server cannot be reached at all (DNS/connection failure).
 pub fn probe_url_status(url: &str) -> Result<u16, String> {
     let parsed = ParsedTarget::parse(url).map_err(|e| e.to_string())?;
-    let addr_str = format!("{}:{}", parsed.host, parsed.port);
-    let addrs = addr_str
-        .to_socket_addrs()
-        .map_err(|e| format!("DNS resolve failed: {}", e))?;
+    let addrs = resolve_loopback_addrs(&parsed.host, parsed.port);
+    if addrs.is_empty() {
+        return Err(format!("DNS resolve failed: {}", parsed.host));
+    }
 
     for addr in addrs {
         if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
@@ -409,22 +447,21 @@ pub async fn wait_for_port(
     let deadline = start + check.timeout;
     let target = format!("{}:{}", check.host, check.port);
 
-    let addr_str = format!("{}:{}", check.host, check.port);
-    let addrs: Vec<_> = match addr_str.to_socket_addrs() {
-        Ok(a) => a.collect(),
-        Err(e) => {
-            return ReadinessResult {
-                success: false,
-                target: target.clone(),
-                elapsed: start.elapsed(),
-                message: format!("DNS resolution failed: {}", e),
-                suggested_action: Some(format!(
-                    "Ensure '{}' resolves to a valid address.",
-                    check.host
-                )),
-            };
-        }
-    };
+    // Loopback aliases included: a server bound to `::1` (Vite on Windows)
+    // must still satisfy a wait configured against `127.0.0.1`.
+    let addrs = resolve_loopback_addrs(&check.host, check.port);
+    if addrs.is_empty() {
+        return ReadinessResult {
+            success: false,
+            target: target.clone(),
+            elapsed: start.elapsed(),
+            message: format!("DNS resolution failed: {}", check.host),
+            suggested_action: Some(format!(
+                "Ensure '{}' resolves to a valid address.",
+                check.host
+            )),
+        };
+    }
 
     loop {
         if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -497,22 +534,21 @@ pub async fn wait_for_url(
         }
     };
 
-    let addr_str = format!("{}:{}", parsed.host, parsed.port);
-    let addrs: Vec<_> = match addr_str.to_socket_addrs() {
-        Ok(a) => a.collect(),
-        Err(e) => {
-            return ReadinessResult {
-                success: false,
-                target: check.url.clone(),
-                elapsed: start.elapsed(),
-                message: format!("DNS resolution failed: {}", e),
-                suggested_action: Some(format!(
-                    "Ensure '{}' resolves to a valid address.",
-                    parsed.host
-                )),
-            };
-        }
-    };
+    // Loopback aliases included: a server bound to `::1` (Vite on Windows)
+    // must still satisfy a URL wait configured against `127.0.0.1`.
+    let addrs = resolve_loopback_addrs(&parsed.host, parsed.port);
+    if addrs.is_empty() {
+        return ReadinessResult {
+            success: false,
+            target: check.url.clone(),
+            elapsed: start.elapsed(),
+            message: format!("DNS resolution failed: {}", parsed.host),
+            suggested_action: Some(format!(
+                "Ensure '{}' resolves to a valid address.",
+                parsed.host
+            )),
+        };
+    }
 
     let mut last_error = String::new();
 
@@ -689,6 +725,72 @@ mod tests {
         let _ = check_port("localhost", 1);
     }
 
+    /// A server bound to the IPv6 loopback ONLY (Vite on Windows: Node 17+
+    /// resolves `localhost` to ::1 first and binds just that interface)
+    /// must still be detected by a check configured against `127.0.0.1`.
+    #[test]
+    fn check_port_finds_ipv6_only_listener_via_loopback_aliases() {
+        fn bind_v6() -> Option<std::net::TcpListener> {
+            std::net::TcpListener::bind("[::1]:0").ok()
+        }
+        // A proper request/response loop: read the request first, then
+        // answer — matching a real HTTP server and avoiding the accept
+        // race of a write-only responder.
+        fn serve(listener: std::net::TcpListener, respond: bool) -> std::thread::JoinHandle<()> {
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    if respond {
+                        let mut reader = BufReader::new(&mut stream);
+                        let mut request = String::new();
+                        let _ = reader.read_line(&mut request);
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n");
+                    }
+                }
+            })
+        }
+
+        // Each check gets its own listener: the port check connects and
+        // immediately disconnects, which would race a shared listener.
+        let port_listener = match bind_v6() {
+            Some(l) => l,
+            None => return, // host without an IPv6 loopback — nothing to test
+        };
+        let port = port_listener.local_addr().unwrap().port();
+        let _thread = serve(port_listener, false);
+
+        assert!(
+            check_port("127.0.0.1", port).is_ok(),
+            "127.0.0.1 check must find a ::1-only listener"
+        );
+
+        let url_listener = match bind_v6() {
+            Some(l) => l,
+            None => return,
+        };
+        let url_port = url_listener.local_addr().unwrap().port();
+        let _thread = serve(url_listener, true);
+
+        let url = format!("http://127.0.0.1:{}/", url_port);
+        // Readiness checks are retried in production; the test polls the
+        // same way so a cold accept thread cannot make it flaky.
+        let mut last_err = String::new();
+        let mut ok = false;
+        for _ in 0..5 {
+            match check_url(&url) {
+                Ok(_) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = e;
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
+        assert!(ok, "URL check against 127.0.0.1 must reach a ::1-only listener: {last_err}");
+    }
+
     #[test]
     fn check_url_does_not_panic() {
         let _ = check_url("http://localhost:1/health");
@@ -782,5 +884,22 @@ mod tests {
         assert_eq!(check.url, "http://localhost:3000");
         assert_eq!(check.timeout, Duration::from_secs(10));
         assert!(check.expected_status.is_none());
+    }
+
+    #[test]
+    fn loopback_aliases_cover_localhost_variants() {
+        let aliases = loopback_host_aliases("localhost");
+        assert!(aliases.contains(&"127.0.0.1".to_string()));
+        assert!(aliases.contains(&"::1".to_string()));
+        let aliases = loopback_host_aliases("127.0.0.1");
+        assert!(aliases.contains(&"localhost".to_string()));
+        // Foreign hosts pass through untouched.
+        assert_eq!(loopback_host_aliases("192.168.1.10"), vec!["192.168.1.10"]);
+        assert_eq!(
+            loopback_host_aliases("api.example.com"),
+            vec!["api.example.com"]
+        );
+        // Resolver skips unresolvable aliases instead of failing wholesale.
+        assert!(!resolve_loopback_addrs("127.0.0.1", 5174).is_empty());
     }
 }

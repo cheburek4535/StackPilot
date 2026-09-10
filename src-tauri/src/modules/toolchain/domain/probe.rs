@@ -134,14 +134,15 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> String 
 pub async fn run_probe(program: &str, args: &[String], timeout_after: Duration) -> ProbeOutput {
     let (program, args) = platforms::resolve_command(program, args);
 
-    let mut child = match TokioCommand::new(&program)
-        .args(&args)
+    let mut cmd = TokioCommand::new(&program);
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let mut out = ProbeOutput::empty();

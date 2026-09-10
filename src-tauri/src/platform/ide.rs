@@ -318,10 +318,10 @@ fn registry_app_path(exe_name: &str) -> Option<String> {
             "{}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{}",
             hive, key_name
         );
-        let out = Command::new("reg")
-            .args(["query", &key, "/ve"])
-            .output()
-            .ok()?;
+        let mut cmd = Command::new("reg");
+        cmd.args(["query", &key, "/ve"]);
+        crate::platform::suppress_child_console(&mut cmd);
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             continue;
         }
@@ -361,18 +361,18 @@ fn vswhere_devenv() -> Option<String> {
     if !Path::new(&vswhere).is_file() {
         return None;
     }
-    let out = Command::new(&vswhere)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.VisualStudio.Workload.Universal",
-            "-property",
-            "installationPath",
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(&vswhere);
+    cmd.args([
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Workload.Universal",
+        "-property",
+        "installationPath",
+    ]);
+    crate::platform::suppress_child_console(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }

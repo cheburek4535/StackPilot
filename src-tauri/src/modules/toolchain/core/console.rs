@@ -243,13 +243,14 @@ pub async fn piped_run(
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
     let (program, args) = platforms::resolve_command(program, args);
-    let mut child = match TokioCommand::new(program.as_str())
-        .args(&args)
+    let mut cmd = TokioCommand::new(program.as_str());
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             return Err(format!("Не удалось запустить `{program}`: {e}"));

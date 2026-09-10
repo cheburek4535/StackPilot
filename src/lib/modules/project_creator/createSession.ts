@@ -38,6 +38,7 @@ const LIGHT_FIELDS = new Set<string>([
   "testing",
   "git",
   "vscode",
+  "readmeLocale",
   "projectName",
   "selectedFolder",
   "conflictResolvedFolder",

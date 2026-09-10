@@ -752,7 +752,7 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Eclipse Adoptium"
+        "C:/Program Files/Eclipse Adoptium/*/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\JavaSoft\\JDK"
@@ -780,6 +780,7 @@
           "kind": "Official",
           "id": "temurin-msi",
           "url": "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse",
+          "file_name": "temurin-jdk.msi",
           "args": [
             "/quiet"
           ],
@@ -809,7 +810,7 @@
     "size_mb": 200,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.1.12-hotspot\\bin"
+      "C:\\Program Files\\Eclipse Adoptium\\*\\bin"
     ],
     "bundled_with": null,
     "health_checks": [

@@ -505,9 +505,11 @@ fn kill_process_tree(child: &mut std::process::Child, pid: u32) -> Result<bool, 
 
 /// Kill a process tree on Windows using `taskkill /F /T /PID`.
 fn kill_windows_tree(pid: u32) -> Result<bool, String> {
-    let status = std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    let status = cmd.status();
 
     match status {
         Ok(s) if s.success() => Ok(true),

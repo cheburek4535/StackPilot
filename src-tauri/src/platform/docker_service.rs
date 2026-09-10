@@ -677,12 +677,13 @@ impl DockerService {
                 detected_os: os,
             });
         };
-        match std::process::Command::new(&cli)
-            .args(["desktop", "start"])
+        let mut cmd = std::process::Command::new(&cli);
+        cmd.args(["desktop", "start"])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        crate::platform::suppress_child_console(&mut cmd);
+        match cmd.spawn() {
             Ok(_) => {
                 eprintln!(
                     "[docker] started Desktop engine via `{} desktop start`",
@@ -867,6 +868,8 @@ fn run_cli_bounded_in(
     cmd.args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }

@@ -9,6 +9,7 @@ export default defineConfig({
     include: [
       "src/lib/modules/toolchain/*.test.ts",
       "src/lib/modules/devlauncher/*.test.ts",
+      "src/lib/modules/project_creator/*.test.ts",
     ],
     environment: "node",
   },

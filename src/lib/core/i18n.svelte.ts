@@ -14,6 +14,11 @@ export type TranslationKey = string;
 class I18nService {
   locale = $state<Locale>('ru');
 
+  /** Все активные словари, адресуемые по id локали. Выбор языка — это
+   *  индексация карты, а не ветвление: RU/EN-варианты обрабатываются
+   *  одним и тем же кодом (см. translateIn). */
+  private dicts: Record<Locale, TranslationDict> = { en, ru };
+
   constructor() {
     if (browser) {
       const saved = localStorage.getItem('sp-locale') as Locale;
@@ -30,9 +35,10 @@ class I18nService {
     }
   }
 
-  t(key: string, vars?: Record<string, string | number>) {
-    const dicts: Record<Locale, TranslationDict> = { en, ru };
-    const dict = dicts[this.locale] || en;
+  /** Перевод на ЯВНО указанную локаль (для генерации артефактов в языке,
+   *  отличном от языка интерфейса — например README). */
+  translateIn(locale: Locale, key: string, vars?: Record<string, string | number>) {
+    const dict = this.dicts[locale] || this.dicts.en;
     let text = (dict as Record<string, string>)[key] || (en as Record<string, string>)[key] || key;
     if (vars) {
       for (const [k, v] of Object.entries(vars)) {
@@ -42,6 +48,10 @@ class I18nService {
       }
     }
     return text;
+  }
+
+  t(key: string, vars?: Record<string, string | number>) {
+    return this.translateIn(this.locale, key, vars);
   }
 }
 

@@ -6,6 +6,7 @@ use crate::modules::devlauncher::models::*;
 use crate::modules::project_creator::models::WizardContext;
 use crate::platform::docker_service::DockerService;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Graph builder
@@ -423,37 +424,128 @@ fn is_frontend_framework(fw: &str) -> bool {
     )
 }
 
-/// Working directory for a framework side: `./backend` / `./frontend` only
-/// when the wizard configured a split architecture (both sides present);
-/// otherwise the project root (None). The wizard itself creates these
-/// directories, so they are explicit relative paths anchored to the
-/// profile's `project_root`.
+/// Manifest files that prove a framework's code actually lives in a
+/// directory. Used by the split-layout search below: a step is anchored to
+/// the subdirectory that OWNS the required manifest, never to a guessed
+/// folder name.
+fn framework_manifests(fw: &str) -> &'static [&'static str] {
+    match fw {
+        // Rust backends / Tauri shells
+        "axum" | "actix" | "actix-web" | "rocket" | "warp" | "tauri" => &["Cargo.toml"],
+        // Go backends
+        "gin" | "echo" | "fiber" | "chi" | "gorilla" => &["go.mod"],
+        // Python backends
+        "fastapi" | "flask" | "django" | "litestar" => {
+            &["requirements.txt", "pyproject.toml", "Pipfile", "manage.py"]
+        }
+        // JVM backends
+        "spring-boot" | "spring" | "ktor" => {
+            &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"]
+        }
+        // PHP backends
+        "laravel" | "symfony" => &["composer.json", "artisan", "symfony.lock"],
+        // Ruby backends
+        "rails" => &["Gemfile", "config.ru"],
+        // .NET backends
+        "aspnet" | "aspnetcore" | "blazor" | "maui" => &["*.csproj", "*.fsproj", "*.sln"],
+        // Everything Node-based (backends and frontends)
+        _ => &["package.json"],
+    }
+}
+
+/// Does `dir` contain any of the given manifest files? `*.csproj`-style
+/// entries are matched against real filenames in the directory.
+fn dir_has_manifest(dir: &Path, manifests: &[&str]) -> bool {
+    manifests.iter().any(|m| {
+        if let Some(glob) = m.strip_prefix('*') {
+            let suffix = glob.to_ascii_lowercase();
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        e.path()
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.to_ascii_lowercase().ends_with(&suffix))
+                    })
+                })
+                .unwrap_or(false)
+        } else {
+            dir.join(m).is_file()
+        }
+    })
+}
+
+/// Locate the working directory for a framework side in a SPLIT-structure
+/// project: the project root when the manifest lives there, otherwise the
+/// subdirectory that actually owns the framework's required manifest.
+///
+/// The wizard's own scaffold is explicit (`./backend` / `./frontend`), but
+/// externally created projects routinely use other folder names (`server/`,
+/// `api/`, `app/`...) or a single side without the other. Launching `cargo
+/// run`/`npm run dev` from the project root then fails with the cryptic
+/// "could not find Cargo.toml in <root> or any parent directory" — cargo
+/// walks UP, never down. The search is deterministic and manifest-driven:
+///
+///   1. the root itself owns the manifest → `None` (run in the root);
+///   2. the canonical side folder (`backend`/`frontend`) owns it → `./<side>`;
+///   3. the first immediate subdirectory (sorted) that owns it → `./<dir>`.
+///
+/// Returns a RELATIVE directory anchored to the profile's `project_root`,
+/// or `None` when the project path is missing (nothing to anchor to) or the
+/// side is not laid out in subdirectories.
+fn locate_side_dir(root: &Path, side: &str, fw: &str) -> Option<String> {
+    let manifests = framework_manifests(fw);
+    if dir_has_manifest(root, manifests) {
+        return None;
+    }
+    let preferred: &[&str] = if side == "frontend" {
+        &["frontend", "client", "web", "ui"]
+    } else {
+        &["backend", "server", "api", "app"]
+    };
+    for name in preferred {
+        let candidate = root.join(name);
+        if candidate.is_dir() && dir_has_manifest(&candidate, manifests) {
+            return Some(format!("./{}", name));
+        }
+    }
+    let mut subdirs: Vec<PathBuf> = std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.path())
+                .collect()
+        })
+        .unwrap_or_default();
+    subdirs.sort();
+    subdirs
+        .iter()
+        .find(|d| dir_has_manifest(d, manifests))
+        .and_then(|d| d.strip_prefix(root).ok())
+        .map(|rel| format!("./{}", rel.to_string_lossy().replace('\\', "/")))
+}
+
+/// Working directory for a framework side: the manifest-owned directory in
+/// split-layout projects (see [`locate_side_dir`]); the project root (None)
+/// when the framework's manifest lives there. The wizard itself creates
+/// `backend/` / `frontend/` for split architectures, so the canonical names
+/// are preferred — but the search never forces a folder that does not own
+/// the side's required files.
 ///
 /// When the project path is missing there is nothing to anchor a relative
 /// dir to: a relative working directory would make every command run in the
 /// app's own working directory ("The system cannot find the path
 /// specified", cmd exit code 3). Emit `None` — the run-time preflight then
 /// fails with the real reason.
-fn side_dir(ctx: &WizardContext, side: &str) -> Option<String> {
-    let has_backend = !backend_frameworks(ctx).is_empty();
-    let has_frontend = !frontend_frameworks(ctx).is_empty();
-    if has_backend && has_frontend {
-        // Only use a split-side directory when it actually exists.  Profiles
-        // can be rebuilt for an integrated/existing project whose context
-        // still lists both frameworks; blindly forcing `./backend` or
-        // `./frontend` makes every npm/composer command fail with ENOENT.
-        if let Some(root) = ctx.project_path.as_ref() {
-            let candidate = root.join(side);
-            if candidate.is_dir() {
-                return Some(format!("./{}", side));
-            }
-            None
-        } else {
-            None
-        }
-    } else {
-        None
+fn side_dir(ctx: &WizardContext, side: &str, fw: &str) -> Option<String> {
+    let Some(root) = ctx.project_path.as_ref() else {
+        return None;
+    };
+    if !root.is_dir() {
+        return None;
     }
+    locate_side_dir(root, side, fw)
 }
 
 /// Pick the Go package containing the executable entry point.  Go projects
@@ -1037,7 +1129,7 @@ pub fn build_profile_v2_from_context_with_options(
     // compose-published ports and already-allocated backend ports.
     let mut allocated_backend_ports: Vec<u16> = Vec::new();
     for fw in &backend_frameworks(ctx) {
-        let dir = side_dir(ctx, "backend");
+        let dir = side_dir(ctx, "backend", fw);
         let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
             "express" | "fastify" | "hono" | "nestjs" | "nest" => {
@@ -1396,7 +1488,7 @@ pub fn build_profile_v2_from_context_with_options(
     // so the frontend keeps its canonical port for Tauri stacks.
     let has_tauri = ctx.frameworks.iter().any(|f| f == "tauri");
     for fw in &frontend_frameworks(ctx) {
-        let dir = side_dir(ctx, "frontend");
+        let dir = side_dir(ctx, "frontend", fw);
         let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
@@ -1757,6 +1849,8 @@ mod tests {
             vscode_config: false,
             answers: Default::default(),
             environment_binding_id: None,
+            readme_locale: None,
+            readme_content: None,
         }
     }
 
@@ -2402,5 +2496,150 @@ mod tests {
             StepKind::OpenUrl { url } => assert_eq!(url, "http://localhost:8000/docs"),
             other => panic!("expected OpenUrl, got {:?}", other),
         }
+    }
+
+    /// A Rust backend whose manifest lives in `backend/` must be launched
+    /// FROM that directory — never from the project root, where cargo fails
+    /// with "could not find Cargo.toml ... or any parent directory".
+    #[test]
+    fn rust_backend_in_backend_dir_gets_manifest_owned_working_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_split_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("backend")).unwrap();
+        std::fs::create_dir_all(dir.join("frontend")).unwrap();
+        std::fs::write(
+            dir.join("backend/Cargo.toml"),
+            "[package]\nname = \"api\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("frontend/package.json"),
+            r#"{"name":"web","dependencies":{"vite":"^8"},"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+
+        let mut c = ctx(&["rust", "typescript"], &["axum", "vue"], &[], false);
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+
+        let rust = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Rust backend"))
+            .expect("rust step");
+        assert_eq!(
+            rust.working_directory.as_deref(),
+            Some("./backend"),
+            "cargo run must run in the directory that owns Cargo.toml: {:?}",
+            rust.working_directory
+        );
+
+        let frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("frontend step");
+        assert_eq!(frontend.working_directory.as_deref(), Some("./frontend"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Split projects whose sides use NON-canonical folder names (`server/`,
+    /// `client/`) are located by the manifest search, not by folder names.
+    #[test]
+    fn split_rust_search_finds_non_canonical_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_search_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("server")).unwrap();
+        std::fs::create_dir_all(dir.join("client")).unwrap();
+        std::fs::write(
+            dir.join("server/Cargo.toml"),
+            "[package]\nname = \"api\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("client/package.json"),
+            r#"{"name":"web","dependencies":{"vue":"^3"},"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+
+        let mut c = ctx(&["rust", "typescript"], &["axum", "vue"], &[], false);
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+
+        let rust = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Rust backend"))
+            .expect("rust step");
+        assert_eq!(
+            rust.working_directory.as_deref(),
+            Some("./server"),
+            "manifest search must find Cargo.toml in server/: {:?}",
+            rust.working_directory
+        );
+
+        let frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("frontend step");
+        assert_eq!(frontend.working_directory.as_deref(), Some("./client"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A backend whose manifest is at the project root stays at the root:
+    /// the search must not invent a subdirectory for it.
+    #[test]
+    fn rust_backend_at_root_stays_at_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_root_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"api\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("frontend")).unwrap();
+        std::fs::write(
+            dir.join("frontend/package.json"),
+            r#"{"name":"web","dependencies":{"vue":"^3"},"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+
+        let mut c = ctx(&["rust", "typescript"], &["axum", "vue"], &[], false);
+        c.project_path = Some(dir.clone());
+        let (profile, _) = build(&c);
+
+        let rust = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Rust backend"))
+            .expect("rust step");
+        assert_eq!(
+            rust.working_directory, None,
+            "root-owned Cargo.toml keeps the step in the project root"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

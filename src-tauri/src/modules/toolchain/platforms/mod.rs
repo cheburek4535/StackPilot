@@ -55,13 +55,14 @@ pub trait PlatformAdapter: Send + Sync {
 /// Повторяет паттерн discovery::run_capture, но с именами аргументов
 /// String — так удобнее собирать PowerShell-скрипты.
 pub(crate) async fn run_command(program: &str, args: &[String]) -> Result<String, String> {
-    let output = timeout(
-        Duration::from_secs(30),
-        TokioCommand::new(program).args(args).output(),
-    )
-    .await
-    .map_err(|_| format!("Таймаут команды {program}"))?
-    .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
+    let mut cmd = TokioCommand::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let output = timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| format!("Таймаут команды {program}"))?
+        .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(

@@ -1,5 +1,7 @@
 use super::host::{current_os, HostOs};
 use super::shell::{default_shell_for_platform, resolve_shell, ShellKind};
+#[cfg(target_os = "windows")]
+use super::{suppress_child_console, suppress_child_console_async};
 
 /// How a command should be launched.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,8 @@ pub fn build_tokio_command(
             let resolved = resolve_program_for_direct(program, os);
             let mut cmd = tokio::process::Command::new(&resolved);
             cmd.args(args);
+            #[cfg(target_os = "windows")]
+            suppress_child_console_async(&mut cmd);
             Ok(cmd)
         }
         CommandMode::Shell(shell) => {
@@ -81,6 +85,8 @@ pub fn build_tokio_command(
             // Build the full script line for the shell
             let script = build_script_line(program, args, resolved_shell);
             cmd.arg(script);
+            #[cfg(target_os = "windows")]
+            suppress_child_console_async(&mut cmd);
             Ok(cmd)
         }
     }
@@ -99,6 +105,8 @@ pub fn build_std_command(
             let resolved = resolve_program_for_direct(program, os);
             let mut cmd = std::process::Command::new(&resolved);
             cmd.args(args);
+            #[cfg(target_os = "windows")]
+            suppress_child_console(&mut cmd);
             Ok(cmd)
         }
         CommandMode::Shell(shell) => {
@@ -109,6 +117,8 @@ pub fn build_std_command(
             cmd.arg(flag);
             let script = build_script_line(program, args, resolved_shell);
             cmd.arg(script);
+            #[cfg(target_os = "windows")]
+            suppress_child_console(&mut cmd);
             Ok(cmd)
         }
     }

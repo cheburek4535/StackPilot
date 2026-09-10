@@ -1083,10 +1083,10 @@ $targets = foreach ($r in $roots) {{
 $targets | Where-Object {{ $_ }} | Select-Object -Unique -First 1"#,
         name = app_name.replace('*', "").replace('?', "")
     );
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    crate::platform::suppress_child_console(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -1155,10 +1155,10 @@ fn registry_app_path(exe_name: &str) -> Option<String> {
             "{}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{}",
             hive, key_name
         );
-        let out = std::process::Command::new("reg")
-            .args(["query", &key, "/ve"])
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("reg");
+        cmd.args(["query", &key, "/ve"]);
+        crate::platform::suppress_child_console(&mut cmd);
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             continue;
         }
@@ -1203,18 +1203,18 @@ fn vswhere_devenv() -> Option<String> {
     if !Path::new(&vswhere).is_file() {
         return None;
     }
-    let out = std::process::Command::new(&vswhere)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.VisualStudio.Workload.Universal",
-            "-property",
-            "installationPath",
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(&vswhere);
+    cmd.args([
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Workload.Universal",
+        "-property",
+        "installationPath",
+    ]);
+    crate::platform::suppress_child_console(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }

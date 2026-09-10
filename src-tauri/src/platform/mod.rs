@@ -42,3 +42,31 @@ pub mod readiness;
 pub mod shell;
 pub mod shell_service;
 pub mod terminal;
+
+/// `CREATE_NO_WINDOW` (0x08000000): the child must not create a new
+/// console window.
+#[cfg(target_os = "windows")]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Hide the console of a background child process on Windows.
+///
+/// Release builds run as GUI applications without an attached console
+/// (`windows_subsystem = "windows"` in `main.rs`), so every console-mode
+/// child (cmd, powershell, reg, taskkill, npm...) would otherwise open a
+/// visible console window that flashes and closes. Debug builds inherit
+/// the developer console instead, which is why this problem only shows
+/// up in release binaries (.exe/.msi) while `tauri dev` looks fine.
+///
+/// Works with both `std::process::Command` and `tokio::process::Command` —
+/// both implement `std::os::windows::process::CommandExt`.
+#[cfg(target_os = "windows")]
+pub fn suppress_child_console<C: std::os::windows::process::CommandExt>(cmd: &mut C) {
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Same as [`suppress_child_console`], but for `tokio::process::Command`
+/// (tokio exposes `creation_flags` natively instead of the std trait).
+#[cfg(target_os = "windows")]
+pub fn suppress_child_console_async(cmd: &mut tokio::process::Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}

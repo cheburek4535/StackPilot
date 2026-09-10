@@ -2001,7 +2001,9 @@ impl RunOrchestrator {
         // Resolve the host plus its loopback aliases: on dual-stack hosts
         // `localhost` may resolve to ::1 only while the server binds
         // 127.0.0.1 (and vice versa). Trying both makes the wait robust
-        // across platform/stack configurations.
+        // across platform/stack configurations — Node 17+ resolves
+        // `localhost` to ::1 first on Windows, so Vite binds ONLY the IPv6
+        // loopback while the profile waits on 127.0.0.1.
         //
         // Candidate ports: dev servers (Vite, Next.js, Expo) auto-increment
         // their port when the configured one is already taken. The wait
@@ -2013,26 +2015,21 @@ impl RunOrchestrator {
                 ports.push(*p);
             }
         }
-        let hosts = loopback_host_aliases(host);
+        // Unresolvable aliases are skipped, never fatal: a host without an
+        // IPv6 loopback must not abort the whole wait over `::1`.
         let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
-        for h in &hosts {
-            for p in &ports {
-                let addr_str = format!("{}:{}", h, p);
-                match addr_str.to_socket_addrs() {
-                    Ok(a) => addrs.extend(a),
-                    Err(e) => {
-                        return StepCompletion {
-                            step_id: step_id.to_string(),
-                            success: false,
-                            error: Some(format!("DNS resolve failed: {}", e)),
-                            process_id: None,
-                            attempt_number: 0,
-                        };
-                    }
-                }
-            }
+        for p in &ports {
+            addrs.extend(crate::platform::readiness::resolve_loopback_addrs(host, *p));
         }
-        addrs.dedup();
+        if addrs.is_empty() {
+            return StepCompletion {
+                step_id: step_id.to_string(),
+                success: false,
+                error: Some(format!("DNS resolve failed: {}", host)),
+                process_id: None,
+                attempt_number: 0,
+            };
+        }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
         let poll_interval = Duration::from_secs(1);
@@ -2071,7 +2068,7 @@ impl RunOrchestrator {
                     run_id,
                     Some(step_id),
                     LogSource::Readiness,
-                    DiagnosticSeverity::Warning,
+                    DiagnosticSeverity::Error,
                     msg.clone(),
                     app_handle,
                 );
@@ -2156,36 +2153,35 @@ impl RunOrchestrator {
 
             // Try HTTP request
             if let Ok(parsed) = parse_http_url(url) {
-                for host in loopback_host_aliases(&parsed.host) {
-                    let addr_str = format!("{}:{}", host, parsed.port);
-                    if let Ok(addrs) = addr_str.to_socket_addrs() {
-                        for addr in addrs {
-                            if let Ok(mut stream) =
-                                TcpStream::connect_timeout(&addr, Duration::from_secs(2))
-                            {
-                                let request = format!(
-                                    "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-                                    parsed.path, parsed.host
-                                );
-                                if stream.write_all(request.as_bytes()).is_ok() {
-                                    use std::io::{BufRead, BufReader};
-                                    let mut reader = BufReader::new(&stream);
-                                    let mut first_line = String::new();
-                                    if reader.read_line(&mut first_line).is_ok() {
-                                        let parts: Vec<&str> =
-                                            first_line.split_whitespace().collect();
-                                        if let Some(code_str) = parts.get(1) {
-                                            if let Ok(code) = code_str.parse::<u16>() {
-                                                if (200..400).contains(&code) {
-                                                    return StepCompletion {
-                                                        step_id: step_id.to_string(),
-                                                        success: true,
-                                                        error: None,
-                                                        process_id: None,
-                                                        attempt_number: 0,
-                                                    };
-                                                }
-                                            }
+                // Loopback aliases included: a server bound to `::1` (Vite
+                // on Windows) must still satisfy a URL wait on `127.0.0.1`.
+                for addr in crate::platform::readiness::resolve_loopback_addrs(
+                    &parsed.host,
+                    parsed.port,
+                ) {
+                    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+                    {
+                        let request = format!(
+                            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                            parsed.path, parsed.host
+                        );
+                        if stream.write_all(request.as_bytes()).is_ok() {
+                            use std::io::{BufRead, BufReader};
+                            let mut reader = BufReader::new(&stream);
+                            let mut first_line = String::new();
+                            if reader.read_line(&mut first_line).is_ok() {
+                                let parts: Vec<&str> =
+                                    first_line.split_whitespace().collect();
+                                if let Some(code_str) = parts.get(1) {
+                                    if let Ok(code) = code_str.parse::<u16>() {
+                                        if (200..400).contains(&code) {
+                                            return StepCompletion {
+                                                step_id: step_id.to_string(),
+                                                success: true,
+                                                error: None,
+                                                process_id: None,
+                                                attempt_number: 0,
+                                            };
                                         }
                                     }
                                 }
@@ -2878,10 +2874,12 @@ impl RunOrchestrator {
             let docker = crate::platform::docker_service::DockerService::resolve_cli()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "docker".to_string());
-            let _ = std::process::Command::new(&docker)
-                .args(["compose", "down", "--remove-orphans"])
-                .current_dir(root)
-                .status();
+            let mut cmd = std::process::Command::new(&docker);
+            cmd.args(["compose", "down", "--remove-orphans"])
+                .current_dir(root);
+            #[cfg(target_os = "windows")]
+            crate::platform::suppress_child_console(&mut cmd);
+            let _ = cmd.status();
         }
         Ok(killed)
     }
@@ -3898,17 +3896,9 @@ fn output_tail_hint(process_manager: &Arc<dyn ProcessManager>, proc_id: &str) ->
 /// Loopback aliases for a host name: `localhost` ↔ `127.0.0.1` (plus
 /// `::1`), so a port wait works regardless of which interface the server
 /// bound to. Other hosts pass through unchanged.
-fn loopback_host_aliases(host: &str) -> Vec<String> {
-    let lower = host.trim().to_ascii_lowercase();
-    match lower.as_str() {
-        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" => vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        _ => vec![host.to_string()],
-    }
-}
+///
+/// Shared implementation lives in `platform::readiness` — see
+/// `crate::platform::readiness::loopback_host_aliases`.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -4636,6 +4626,7 @@ mod tests {
 
     #[test]
     fn loopback_aliases_cover_localhost_variants() {
+        use crate::platform::readiness::loopback_host_aliases;
         let aliases = loopback_host_aliases("localhost");
         assert!(aliases.contains(&"127.0.0.1".to_string()));
         assert!(aliases.contains(&"::1".to_string()));

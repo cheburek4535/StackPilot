@@ -61,13 +61,14 @@ fn cap_bytes(mut data: Vec<u8>) -> Vec<u8> {
 /// health-проверок из tools.json.
 pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String> {
     let (program, args) = platforms::resolve_command(program, args);
-    let output = timeout(
-        Duration::from_secs(PROBE_TIMEOUT_SECS),
-        TokioCommand::new(program).args(args).output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let mut cmd = TokioCommand::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let output = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
 
     if output.status.success() {
         let capped = cap_bytes(output.stdout);
@@ -365,11 +366,11 @@ async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
 /// На не-Windows reg.exe нет — команда падает, получаем false.
 /// Вызывается ТОЛЬКО с Windows; на других ОС never_registry_found.
 async fn registry_key_exists(key: &str) -> bool {
-    let result = timeout(
-        Duration::from_secs(PROBE_TIMEOUT_SECS),
-        TokioCommand::new("reg").args(["query", key]).output(),
-    )
-    .await;
+    let mut cmd = TokioCommand::new("reg");
+    cmd.args(["query", key]);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
     matches!(result, Ok(Ok(out)) if out.status.success())
 }
 
@@ -380,15 +381,14 @@ async fn registry_key_exists(key: &str) -> bool {
 /// установщиков — это единственный надёжный способ узнать реальный путь
 /// установки, когда пользователь выбрал нестандартный каталог.
 async fn registry_read_string(key: &str, value_name: &str) -> Option<String> {
-    let output = timeout(
-        Duration::from_secs(PROBE_TIMEOUT_SECS),
-        TokioCommand::new("reg")
-            .args(["query", key, "/v", value_name])
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let mut cmd = TokioCommand::new("reg");
+    cmd.args(["query", key, "/v", value_name]);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let output = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
 
     if !output.status.success() {
         return None;

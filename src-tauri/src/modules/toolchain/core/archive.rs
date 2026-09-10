@@ -109,13 +109,14 @@ const SYMLINK_MARK: &str = "\u{1}symlink:";
 async fn capture_output(program: &str, args: &[String]) -> Result<String, String> {
     use tokio::process::Command as TokioCommand;
     use tokio::time::{timeout, Duration};
-    let output = timeout(
-        Duration::from_secs(120),
-        TokioCommand::new(program).args(args).output(),
-    )
-    .await
-    .map_err(|_| format!("Таймаут чтения списка записей ({program})"))?
-    .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
+    let mut cmd = TokioCommand::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    let output = timeout(Duration::from_secs(120), cmd.output())
+        .await
+        .map_err(|_| format!("Таймаут чтения списка записей ({program})"))?
+        .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "{program} завершился с кодом {}: {}",

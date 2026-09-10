@@ -248,11 +248,15 @@ impl LaunchEngine for ProcessLaunchEngine {
 
             ActionType::WaitForUrl { url, timeout_secs } => {
                 let parsed = parse_http_url(url)?;
-                let addr_str = format!("{}:{}", parsed.host, parsed.port);
-                let addrs = addr_str
-                    .to_socket_addrs()
-                    .map_err(|e| format!("DNS resolve failed: {}", e))?
-                    .collect::<Vec<_>>();
+                // Loopback aliases included: a server bound to `::1` (Vite
+                // on Windows) must still satisfy a wait on `127.0.0.1`.
+                let addrs = crate::platform::readiness::resolve_loopback_addrs(
+                    &parsed.host,
+                    parsed.port,
+                );
+                if addrs.is_empty() {
+                    return Err(format!("DNS resolve failed: {}", parsed.host));
+                }
 
                 for _ in 0..*timeout_secs {
                     for addr in &addrs {
@@ -303,11 +307,12 @@ impl LaunchEngine for ProcessLaunchEngine {
                 port,
                 timeout_secs,
             } => {
-                let addr_str = format!("{}:{}", host, port);
-                let addrs = addr_str
-                    .to_socket_addrs()
-                    .map_err(|e| format!("DNS resolve failed: {}", e))?
-                    .collect::<Vec<_>>();
+                // Loopback aliases included: a server bound to `::1` (Vite
+                // on Windows) must still satisfy a wait on `127.0.0.1`.
+                let addrs = crate::platform::readiness::resolve_loopback_addrs(host, *port);
+                if addrs.is_empty() {
+                    return Err(format!("DNS resolve failed: {}", host));
+                }
 
                 for _ in 0..*timeout_secs {
                     for addr in &addrs {

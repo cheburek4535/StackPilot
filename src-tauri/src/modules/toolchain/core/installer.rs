@@ -765,6 +765,26 @@ pub async fn execute_plan(
     secrets
 }
 
+/// Магические байты установщиков, по которым определяется реальный тип
+/// скачанного файла, когда у URL нет расширения (API-редиректы вроде
+/// Adoptium) и file_name в tools.json не задан:
+/// - MSI/WiX — OLE-контейнер (D0 CF 11 E0 A1 B1 1A E1);
+/// - exe (NSIS, ...) — PE-заголовок MZ (4D 5A).
+fn sniff_installer_extension(path: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 8];
+    let read = file.read(&mut head).ok()?;
+    let head = &head[..read];
+    if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return Some("msi");
+    }
+    if head.starts_with(&[0x4D, 0x5A]) {
+        return Some("exe");
+    }
+    None
+}
+
 /// Одна задача установки. Возвращает финальное состояние;
 /// TaskCompleted сверху эмитит execute_plan, здесь — только
 /// Start/Phase/Progress.
@@ -1402,7 +1422,25 @@ async fn try_install_source(
                     let _ = std::fs::remove_file(&dest);
                     return Err(e);
                 }
-                offline_path = Some(dest);
+                offline_path = Some(dest.clone());
+                // У URL без расширения (API-редиректы: Adoptium и т.п.) и без
+                // file_name в tools.json файл скачивается как .bin — такой
+                // «установщик» нельзя запустить напрямую (msiexec не
+                // вызывается, .bin падает с кодом 1). Определяем реальный
+                // тип по магическим байтам и переименовываем, чтобы
+                // build_install_command построил правильную команду
+                // (msi → msiexec /i, exe → запуск).
+                if source.file_name.is_none() {
+                    if let Some(sniffed) = sniff_installer_extension(&dest) {
+                        let mut typed = dest.clone();
+                        typed.set_extension(sniffed);
+                        if typed != dest {
+                            if std::fs::rename(&dest, &typed).is_ok() {
+                                offline_path = Some(typed);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2439,6 +2477,140 @@ mod tests {
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%USERPROFILE%/flutter");
         assert_eq!(target, expected);
+    }
+
+    /// Регрессия Java: каталог установки Temurin версионированный
+    /// (jdk-21.0.x-hotspot), поэтому known_paths/path_entries обязаны быть
+    /// glob-шаблоном `*/bin`, а не жёсткой версией — иначе winget-установка
+    /// «не подтверждается» (детект ищет бинарь в несуществующем каталоге),
+    /// а PATH после MSI не обновляется. Официальный источник (Adoptium
+    /// API-редирект без расширения в URL) обязан декларировать file_name,
+    /// иначе файл качается как .bin и запускается напрямую вместо msiexec.
+    #[test]
+    fn java_temurin_defines_glob_paths_and_msi_file_name() {
+        let java = defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == "java")
+            .expect("java в tools.json");
+
+        assert_eq!(java.detection.known_paths, vec!["C:/Program Files/Eclipse Adoptium/*/bin"]);
+        assert_eq!(
+            java.path_entries,
+            vec!["C:\\Program Files\\Eclipse Adoptium\\*\\bin"]
+        );
+
+        let msi = java
+            .sources
+            .windows
+            .iter()
+            .find(|s| s.id == "temurin-msi")
+            .expect("temurin-msi источник");
+        assert_eq!(
+            msi.file_name.as_deref(),
+            Some("temurin-jdk.msi"),
+            "файл без расширения в URL качается как .bin и не попадает в msiexec"
+        );
+
+        // Собранная команда обязана идти через msiexec /i, а не запускать
+        // .bin напрямую.
+        let cmd = build_install_command(
+            &java,
+            msi,
+            Some(Path::new("C:\\temp\\tc-java-1.msi")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cmd.program.to_ascii_lowercase(), "msiexec");
+        assert_eq!(cmd.args[0], "/i");
+    }
+
+    /// Установщик, скачанный как .bin (нет file_name и расширения в URL),
+    /// распознаётся по магическим байтам: MSI — OLE-контейнер, exe — MZ.
+    #[test]
+    fn sniff_installer_extension_detects_msi_and_exe() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_tc_sniff_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let msi = dir.join("x.bin");
+        std::fs::write(&msi, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00]).unwrap();
+        assert_eq!(sniff_installer_extension(&msi), Some("msi"));
+
+        let exe = dir.join("y.bin");
+        std::fs::write(&exe, [0x4D, 0x5A, 0x90, 0x00, 0x03]).unwrap();
+        assert_eq!(sniff_installer_extension(&exe), Some("exe"));
+
+        let garbage = dir.join("z.bin");
+        std::fs::write(&garbage, b"PK\x03\x04 not an installer").unwrap();
+        assert_eq!(sniff_installer_extension(&garbage), None);
+
+        assert_eq!(sniff_installer_extension(&dir.join("missing.bin")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Скачанный .bin с MSI-содержимым обязан переименовываться в .msi,
+    /// чтобы build_install_command построил команду msiexec — регрессия
+    /// «temurin-msi: Установщик завершился с кодом 1».
+    #[test]
+    fn downloaded_msi_bin_is_routed_through_msiexec() {
+        let mut def = bare_def();
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_tc_msiroute_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("tc-java-1.bin");
+        std::fs::write(&bin, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00]).unwrap();
+
+        let msi_path = if let Some(ext) = sniff_installer_extension(&bin) {
+            let mut typed = bin.clone();
+            typed.set_extension(ext);
+            assert_eq!(
+                typed.extension().and_then(|e| e.to_str()),
+                Some("msi"),
+                "sniff должен вернуть msi-расширение"
+            );
+            typed
+        } else {
+            bin.clone()
+        };
+
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "temurin-msi".to_string(),
+            url: Some("https://api.adoptium.net/v3/binary/...".to_string()),
+            args: vec!["/quiet".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+        };
+        let cmd = build_install_command(&def, &source, Some(&msi_path), None).unwrap();
+        assert_eq!(cmd.program.to_ascii_lowercase(), "msiexec");
+        assert!(cmd.args.iter().any(|a| a == "/i"), "{:?}", cmd.args);
+        assert!(cmd.args.iter().any(|a| a.contains("tc-java-1.msi")));
+
+        // Без sniffing (.bin как есть) команда шла бы «запустить .bin»
+        // напрямую — именно это падало с кодом 1.
+        let raw_cmd = build_install_command(&def, &source, Some(&bin), None).unwrap();
+        assert_ne!(raw_cmd.program.to_ascii_lowercase(), "msiexec");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

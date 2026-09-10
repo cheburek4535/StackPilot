@@ -480,8 +480,11 @@ pub fn go_minor_version(raw: &str) -> Option<String> {
 /// При любой ошибке возвращает DEFAULT_GO_VERSION (безопасно: это нижняя
 /// граница, образ всегда >= версии, которую напишет go mod init).
 pub fn detect_go_version() -> String {
-    if let Ok(out) = std::process::Command::new("go")
-        .arg("version")
+    let mut cmd = std::process::Command::new("go");
+    cmd.arg("version");
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    if let Ok(out) = cmd
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     {
@@ -529,8 +532,11 @@ pub fn rust_minor_version(raw: &str) -> Option<String> {
 
 /// Определяет мажор+минор установленного rustc. При ошибке — RUST_DOCKERFILE_FLOOR.
 pub fn detect_rust_version() -> String {
-    if let Ok(out) = std::process::Command::new("rustc")
-        .arg("--version")
+    let mut cmd = std::process::Command::new("rustc");
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    if let Ok(out) = cmd
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     {
@@ -569,8 +575,11 @@ pub fn dotnet_minor_version(raw: &str) -> Option<String> {
 
 /// Определяет мажор+минор установленного .NET SDK. При ошибке — DOTNET_DOCKERFILE_FLOOR.
 pub fn detect_dotnet_version() -> String {
-    if let Ok(out) = std::process::Command::new("dotnet")
-        .arg("--version")
+    let mut cmd = std::process::Command::new("dotnet");
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    if let Ok(out) = cmd
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     {

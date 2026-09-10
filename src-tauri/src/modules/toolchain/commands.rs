@@ -1416,19 +1416,22 @@ mod pc_compat_tests {
 
 /// Проверяет, доступен ли исполняемый файл в PATH (через --version).
 fn command_exists(program: &str) -> bool {
-    std::process::Command::new(program)
-        .arg("--version")
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg("--version")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Запускает программу удаления и возвращает осмысленную ошибку при провале.
 fn run_uninstall_program(program: &str, args: &[&str]) -> Result<(), String> {
-    let out = std::process::Command::new(program)
-        .args(args)
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("Не удалось запустить {program}: {e}"))?;
     if out.status.success() {

@@ -782,13 +782,13 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
         // Compose availability is a property of the CLI, not the daemon:
         // `docker compose version` answers even when the daemon is down.
         let has_compose = if has_docker {
-            std::process::Command::new("docker")
-                .args(["compose", "version"])
+            let mut cmd = std::process::Command::new("docker");
+            cmd.args(["compose", "version"])
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            crate::platform::suppress_child_console(&mut cmd);
+            cmd.status().map(|s| s.success()).unwrap_or(false)
         } else {
             false
         };

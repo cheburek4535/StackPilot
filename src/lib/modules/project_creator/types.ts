@@ -230,6 +230,12 @@ export type WizardContext = {
   git_init: boolean;
   vscode_config: boolean;
   answers: Record<string, string[]>;
+  /** Язык сгенерированного README ("en" | "ru"). Информационное поле:
+   *  сам текст уже локализован фронтендом в readme_content. */
+  readme_locale?: "en" | "ru";
+  /** Готовый Markdown README из i18n-системы. Когда задан, бэкенд пишет
+   *  его как есть; иначе используется встроенный англоязычный генератор. */
+  readme_content?: string | null;
 };
 
 export type WizardSession = {

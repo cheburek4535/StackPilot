@@ -448,6 +448,15 @@ pub struct WizardContext {
     /// and command execution. Absent/None uses host environment (backward compat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_binding_id: Option<String>,
+    /// Язык сгенерированного README ("en" | "ru"). Информационное поле:
+    /// сам текст уже локализован фронтендом через i18n (см. readme_content).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readme_locale: Option<String>,
+    /// Готовый Markdown README, собранный фронтендом из i18n-ключей. Когда
+    /// задан, движок пишет его как есть; иначе используется встроенный
+    /// англоязычный генератор readme.rs (обратная совместимость).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readme_content: Option<String>,
 }
 
 impl Default for WizardContext {
@@ -477,6 +486,8 @@ impl Default for WizardContext {
             vscode_config: false,
             answers: std::collections::HashMap::new(),
             environment_binding_id: None,
+            readme_locale: None,
+            readme_content: None,
         }
     }
 }

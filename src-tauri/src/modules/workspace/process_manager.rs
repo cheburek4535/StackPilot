@@ -308,7 +308,10 @@ impl OsProcessManager {
             HostOs::Windows => {
                 use std::os::windows::process::CommandExt;
                 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-                cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+                // CREATE_NO_WINDOW: these are captured (hidden) processes —
+                // without it every one would flash a console window in
+                // release builds, which have no console to inherit.
+                cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | crate::platform::CREATE_NO_WINDOW);
             }
             HostOs::Linux | HostOs::Macos => {
                 #[cfg(unix)]
@@ -541,9 +544,11 @@ fn quote_for_shell(token: &str) -> String {
 // ============================================================================
 
 fn kill_windows_tree(pid: u32) -> Result<bool, String> {
-    let status = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    let status = cmd.status();
 
     match status {
         Ok(s) if s.success() => Ok(true),

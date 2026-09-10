@@ -57,8 +57,14 @@ import type {
 } from "$lib/modules/toolchain/compat";
 import { statusKind, taskStateKind, identityMatches } from "$lib/modules/toolchain/compat";
 import TechIcon from "$lib/components/TechIcon.svelte";
-import { i18n } from "$lib/core/i18n.svelte";
-import type { TranslationKey } from "$lib/core/i18n.svelte";
+import Icon from "$lib/components/ui/Icon.svelte";
+import { i18n, availableLocales } from "$lib/core/i18n.svelte";
+import type { TranslationKey, Locale } from "$lib/core/i18n.svelte";
+import {
+  buildReadme,
+  type ReadmeInput,
+  type ReadmeNamedItem,
+} from "$lib/modules/project_creator/readme";
 import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
 import { goto } from "$app/navigation";
 import { deleteProfile } from "$lib/modules/devlauncher/api";
@@ -150,6 +156,65 @@ let archMode = $derived.by<"integrated" | "decoupled" | null>(() => {
   if (fws.some((f) => f.side === "frontend" && linked.has(f.id))) return "integrated";
 
   return "decoupled";
+});
+
+// ---- README language (RU/EN, i18n) ----
+/** Язык генерируемого README (только en/ru — см. availableLocales).
+ *  По умолчанию совпадает с языком интерфейса; пользователь может
+ *  переключить его на финальной странице перед генерацией. */
+let readmeLocale = $state<Locale>(i18n.locale);
+/** Пользователь трогал переключатель — не следуем за сменой языка UI. */
+let readmeLocaleTouched = $state(false);
+let readmeHelpOpen = $state(false);
+
+$effect(() => {
+  if (!readmeLocaleTouched) readmeLocale = i18n.locale;
+});
+
+let readmeLocaleLabel = $derived(
+  availableLocales.find((l) => l.id === readmeLocale)?.index ?? readmeLocale.toUpperCase(),
+);
+
+/** Переключение языка README: идём по availableLocales (без ветвлений RU/EN). */
+function toggleReadmeLocale() {
+  const ids = availableLocales.map((l) => l.id);
+  const index = ids.indexOf(readmeLocale);
+  readmeLocale = ids[(index + 1) % ids.length];
+  readmeLocaleTouched = true;
+}
+
+/** Элемент README: id + i18n-ключ подписи (из wizard_tree). */
+function readmeItems(
+  ids: string[],
+  defs: { id: string; label: string }[] | undefined,
+): ReadmeNamedItem[] {
+  return ids.map((id) => ({
+    id,
+    labelKey: defs?.find((d) => d.id === id)?.label ?? id,
+  }));
+}
+
+/** Локализованный README.md: собирается из i18n-ключей на выбранном языке.
+ *  Переводчик с явной локалью — код не содержит ветвлений RU/EN. */
+let readmeContent = $derived.by(() => {
+  const input: ReadmeInput = {
+    projectName: conflictResolvedFolder ?? projectName,
+    projectType: selectedType ? { id: selectedType.id, labelKey: selectedType.label } : null,
+    backendLanguages: readmeItems(backendLangs, tree?.languages),
+    frontendLanguages: readmeItems(frontendLangs, tree?.languages),
+    frameworks: readmeItems(selectedFrameworks, tree?.frameworks),
+    tools: readmeItems(selectedTools, tree?.tools),
+    localInfraTools: readmeItems([...envLocalInfra], tree?.tools),
+    architecture: archMode ?? "unknown",
+    features: {
+      docker: dockerEnabled(),
+      testing,
+      git,
+      vscode,
+      ci: false,
+    },
+  };
+  return buildReadme(input, (key, vars) => i18n.translateIn(readmeLocale, key, vars));
 });
 
 /** Автоочистка backend-состояния, если серверная сторона недоступна
@@ -328,6 +393,7 @@ function buildSnapshot(): Record<string, unknown> {
     testing,
     git,
     vscode,
+    readmeLocale,
     projectName,
     selectedFolder,
     conflictResolvedFolder,
@@ -381,6 +447,11 @@ function restoreSnapshot(snap: Record<string, unknown>) {
   testing = bool(s.testing);
   git = bool(s.git);
   vscode = bool(s.vscode);
+  const restoredReadmeLocale = str(s.readmeLocale) as Locale;
+  if ((availableLocales.map((l) => l.id) as string[]).includes(restoredReadmeLocale)) {
+    readmeLocale = restoredReadmeLocale;
+    readmeLocaleTouched = true;
+  }
   projectName = str(s.projectName);
   selectedFolder = str(s.selectedFolder) || null;
   conflictResolvedFolder = str(s.conflictResolvedFolder) || null;
@@ -1922,6 +1993,8 @@ function buildWizardContext(): WizardContext {
     git_init: git,
     vscode_config: vscode,
     answers: buildAnswers(),
+    readme_locale: readmeLocale,
+    readme_content: readmeContent,
   };
 }
 
@@ -1948,6 +2021,8 @@ async function doCreateProject() {
     git_init: git,
     vscode_config: vscode,
     answers: buildAnswers(),
+    readme_locale: readmeLocale,
+    readme_content: readmeContent,
   };
 
   phase = 6;
@@ -2917,6 +2992,40 @@ function resetAll() {
               {/if}
             </div>
 
+            <!-- README language: компактный переключатель RU/EN + пояснение -->
+            <div class="readme-row">
+              <span class="readme-label">{i18n.t("create.readme.toggle_label") as TranslationKey}</span>
+              <button
+                type="button"
+                class="readme-switch"
+                role="switch"
+                aria-checked={readmeLocale === availableLocales[1].id}
+                aria-label={i18n.t("create.readme.toggle_aria") as TranslationKey}
+                onclick={toggleReadmeLocale}
+              >
+                <span class="readme-switch-knob"></span>
+              </button>
+              <span class="readme-lang">{readmeLocaleLabel}</span>
+              <span class="readme-help-wrap">
+                <button
+                  type="button"
+                  class="readme-help"
+                  aria-label={i18n.t("create.readme.toggle_hint") as TranslationKey}
+                  onmouseenter={() => (readmeHelpOpen = true)}
+                  onmouseleave={() => (readmeHelpOpen = false)}
+                  onfocus={() => (readmeHelpOpen = true)}
+                  onblur={() => (readmeHelpOpen = false)}
+                >
+                  <Icon name="help" size={14} />
+                </button>
+                {#if readmeHelpOpen}
+                  <span class="readme-tip" role="tooltip">
+                    {i18n.t("create.readme.toggle_hint") as TranslationKey}
+                  </span>
+                {/if}
+              </span>
+            </div>
+
             <div class="preview-section">
               {#if PreviewPanel}
                 <PreviewPanel
@@ -2929,6 +3038,8 @@ function resetAll() {
                   {testing}
                   {git}
                   {vscode}
+                  {readmeLocale}
+                  {readmeContent}
                   projectName={projectName || ""}
                   projectFolder={selectedFolder || ""}
                   bind:removedStepIds
@@ -3598,6 +3709,17 @@ function resetAll() {
 .pn-input { width: 100%; padding: 0.65rem 0.8rem; border-radius: 8px; border: 1px solid var(--sp-border-strong); background: var(--sp-bg-1); color: #fff; font-size: 1rem; box-sizing: border-box; outline: none; }
 .pn-input:focus { border-color: var(--sp-accent-strong); box-shadow: 0 0 0 2px rgba(108,92,231,0.25); }
 .pn-input::placeholder { color: var(--sp-text-3); }
+.readme-row { display: flex; align-items: center; gap: 0.5rem; margin: -0.35rem 0 1rem; }
+.readme-label { font-size: 0.82rem; color: var(--sp-text-2); }
+.readme-switch { position: relative; width: 34px; height: 18px; padding: 0; border-radius: 999px; border: 1px solid var(--sp-border-strong); background: var(--sp-bg-2); cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.readme-switch[aria-checked="true"] { background: var(--sp-accent); border-color: var(--sp-accent); }
+.readme-switch-knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--sp-text-3); transition: transform 0.15s, background 0.15s; }
+.readme-switch[aria-checked="true"] .readme-switch-knob { transform: translateX(16px); background: #fff; }
+.readme-lang { min-width: 1.6rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; color: var(--sp-text-2); }
+.readme-help-wrap { position: relative; display: inline-flex; }
+.readme-help { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; border-radius: 50%; background: none; color: var(--sp-text-3); cursor: help; }
+.readme-help:hover, .readme-help:focus-visible { color: var(--sp-accent-strong); }
+.readme-tip { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: 280px; padding: 0.5rem 0.65rem; background: var(--sp-bg-1); border: 1px solid var(--sp-border-strong); border-radius: 8px; box-shadow: var(--sp-shadow-1); color: var(--sp-text-1); font-size: 0.75rem; line-height: 1.35; z-index: 20; }
 .folder-row { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
 .btn-select-folder { background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--sp-border-strong); cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
 .btn-select-folder:hover { border-color: var(--sp-accent-strong); color: #fff; }

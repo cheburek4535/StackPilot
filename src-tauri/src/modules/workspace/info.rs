@@ -60,11 +60,12 @@ impl DefaultInfoService {
     }
 
     fn get_git_branch(&self, path: &str) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(path)
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(path);
+        #[cfg(target_os = "windows")]
+        crate::platform::suppress_child_console(&mut cmd);
+        let output = cmd.output().ok()?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
