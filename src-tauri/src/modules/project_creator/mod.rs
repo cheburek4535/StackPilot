@@ -79,6 +79,7 @@ pub fn count_project_files_on_disk(path: &std::path::Path, limit: u64) -> models
     }
 }
 
+#[allow(dead_code)]
 pub struct ProjectCreatorState {
     pub wizard: WizardEngine,
     pub analyzer: Arc<dyn ProjectAnalyzer>,

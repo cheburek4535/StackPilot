@@ -59,6 +59,7 @@ pub enum ProcessStatus {
 
 impl ProcessStatus {
     /// Returns true if the process is in a terminal (non-running) state.
+    #[allow(dead_code)]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -94,6 +95,7 @@ impl ProcessStatus {
     }
 
     /// Returns a human-readable label for the status.
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             ProcessStatus::Starting => "Starting",
@@ -360,6 +362,7 @@ impl BoundedLogBuffer {
     }
 
     /// Clear all log lines.
+    #[allow(dead_code)]
     pub fn clear(&self) {
         if let Ok(mut buf) = self.stdout.try_lock() {
             buf.clear();

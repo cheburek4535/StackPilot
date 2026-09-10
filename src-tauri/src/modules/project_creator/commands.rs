@@ -171,7 +171,7 @@ pub fn get_stack_recommendations(
 }
 
 #[tauri::command]
-pub fn preview_project_recipe(
+pub async fn preview_project_recipe(
     state: State<'_, ProjectCreatorState>,
     context: WizardContext,
     project_path: String,
@@ -188,8 +188,14 @@ pub fn preview_project_recipe(
         return Err(err);
     }
     let path = PathBuf::from(&project_path);
-    let plan = state.engine.plan(&context, &path)?;
-    Ok(state.engine.preview(&plan))
+    let engine = Arc::clone(&state.engine);
+    // Построение плана + превью — тяжёлая синхронная работа: вне рантайма.
+    tauri::async_runtime::spawn_blocking(move || {
+        let plan = engine.plan(&context, &path)?;
+        Ok(engine.preview(&plan))
+    })
+    .await
+    .map_err(|e| format!("Recipe preview task failed: {e}"))?
 }
 
 /// Предпросмотр файловой структуры проекта: дерево файлов с уровнями
@@ -204,7 +210,7 @@ pub fn preview_project_recipe(
 /// удаление: они исключаются из плана ДО построения дерева, поэтому
 /// предпросмотр и генерация всегда совпадают (одна схема).
 #[tauri::command]
-pub fn preview_project_files(
+pub async fn preview_project_files(
     state: State<'_, ProjectCreatorState>,
     context: WizardContext,
     project_path: String,
@@ -224,30 +230,36 @@ pub fn preview_project_files(
     } else {
         PathBuf::from(&project_path)
     };
+    let engine = Arc::clone(&state.engine);
+    // Построение дерева файлов — тяжёлая синхронная работа: вне рантайма.
     // Если plan() не удаётся (неполный контекст), строим пустой preview
     // вместо ошибки — пользователь ещё не закончил выбор стека.
-    match state.engine.plan(&context, &path) {
-        Ok(plan) => match super::engine::apply_step_removals(plan, &removed_step_ids) {
-            Ok(plan) => Ok(super::engine::build_project_file_preview(&plan)),
-            Err(e) => Err(e),
-        },
-        Err(_e) => Ok(ProjectFilePreview {
-            files: Vec::new(),
-            layout: super::models::LayoutSummary {
-                class: "unknown".into(),
-                generated_directories: Vec::new(),
-                root_owner: None,
-                framework_placement: Vec::new(),
+    tauri::async_runtime::spawn_blocking(move || {
+        match engine.plan(&context, &path) {
+            Ok(plan) => match super::engine::apply_step_removals(plan, &removed_step_ids) {
+                Ok(plan) => Ok(super::engine::build_project_file_preview(&plan)),
+                Err(e) => Err(e),
             },
-            removable_step_ids: Vec::new(),
-            summary: super::models::ProjectPreviewSummary {
-                certain_count: 0,
-                expected_count: 0,
-                unknown_count: 0,
-                dir_count: 0,
-            },
-        }),
-    }
+            Err(_e) => Ok(ProjectFilePreview {
+                files: Vec::new(),
+                layout: super::models::LayoutSummary {
+                    class: "unknown".into(),
+                    generated_directories: Vec::new(),
+                    root_owner: None,
+                    framework_placement: Vec::new(),
+                },
+                removable_step_ids: Vec::new(),
+                summary: super::models::ProjectPreviewSummary {
+                    certain_count: 0,
+                    expected_count: 0,
+                    unknown_count: 0,
+                    dir_count: 0,
+                },
+            }),
+        }
+    })
+    .await
+    .map_err(|e| format!("Preview task failed: {e}"))?
 }
 
 /// Запустить выполнение плана проекта. `removed_step_ids` — опциональные
@@ -273,7 +285,13 @@ pub async fn start_project_execution(
         return Err(err);
     }
     let path = PathBuf::from(&project_path);
-    let plan = state.engine.plan(&context, &path)?;
+    let engine = Arc::clone(&state.engine);
+    // Построение рецепта — тяжёлая синхронная работа (докерфайлы с
+    // версионными пробами go/rustc/dotnet, префлайты, большой план):
+    // выполняем вне async-рантайма, чтобы не блокировать другие задачи.
+    let plan = tauri::async_runtime::spawn_blocking(move || engine.plan(&context, &path))
+        .await
+        .map_err(|e| format!("Plan task failed: {e}"))??;
     let plan = super::engine::apply_step_removals(plan, &removed_step_ids)?;
     let plan_clone = plan.clone();
     let engine = Arc::clone(&state.engine);

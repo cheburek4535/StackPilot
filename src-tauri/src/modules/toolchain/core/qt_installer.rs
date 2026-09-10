@@ -672,11 +672,11 @@ pub async fn install_qt_online(
             session_id,
         ));
         if let Err(e) = path_service::add_to_user_path(&def.path_entries).await {
-            eprintln!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
+            log::error!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
         }
     }
     if let Err(e) = path_service::sync_process_path().await {
-        eprintln!("[toolchain] не удалось обновить PATH процесса: {e}");
+        log::error!("[toolchain] не удалось обновить PATH процесса: {e}");
     }
 
     // 6. Проверка установки тем же discovery, что и в проверке окружения.
@@ -893,7 +893,7 @@ mod tests {
             resolve_latest_version(repo, 0, 1, "qt", "qt", "s-live", &sink, abort.clone())
                 .await
                 .expect("resolve_latest_version");
-        eprintln!("live: version_dir={version_dir}, version={qt_version}");
+        log::debug!("live: version_dir={version_dir}, version={qt_version}");
         assert!(
             qt_version.starts_with("6.8."),
             "ожидали 6.8.x: {qt_version}"
@@ -924,7 +924,7 @@ mod tests {
             &format!("desktop/{version_dir}/{version_dir}"),
             &want_refs,
         );
-        eprintln!("live: packages = {packages:?}");
+        log::debug!("live: packages = {packages:?}");
         assert_eq!(packages.len(), 3, "все пакеты должны найтись");
 
         // base-пакет (в XML идёт ПОСЛЕ addons — каталог отсортирован по алфавиту)
@@ -967,7 +967,7 @@ exit 1
         .await
         .expect("head script");
         assert!(res.success, "HEAD {url} должен отвечать 200");
-        eprintln!("live: OK — {url}, target={target}");
+        log::debug!("live: OK — {url}, target={target}");
         let _ = std::fs::remove_file(&dest);
     }
 }

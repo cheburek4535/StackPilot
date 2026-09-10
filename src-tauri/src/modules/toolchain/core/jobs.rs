@@ -105,7 +105,7 @@ impl JobJournal {
             .write(&session.started_at, session.status, &session.plan)
             .is_err()
         {
-            eprintln!("[toolchain] не удалось зафиксировать Interrupted в журнале заданий");
+            log::warn!("[toolchain] не удалось зафиксировать Interrupted в журнале заданий");
         }
         Some(session)
     }

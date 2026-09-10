@@ -34,6 +34,7 @@ impl WizardEngine {
     }
 
     /// Возвращает языки, доступные для указанного типа проекта
+#[allow(dead_code)]
     pub fn get_languages_for(&self, project_type: &str) -> Vec<&LanguageDef> {
         self.tree
             .project_language_map
@@ -47,6 +48,7 @@ impl WizardEngine {
     }
 
     /// Возвращает фреймворки, доступные для указанного языка
+#[allow(dead_code)]
     pub fn get_frameworks_for(&self, language: &str) -> Vec<&FrameworkDef> {
         self.tree
             .language_framework_map
@@ -60,6 +62,7 @@ impl WizardEngine {
     }
 
     /// Возвращает инструменты, доступные для указанного фреймворка
+#[allow(dead_code)]
     pub fn get_tools_for(&self, framework: &str) -> Vec<&ToolDef> {
         self.tree
             .framework_tool_map

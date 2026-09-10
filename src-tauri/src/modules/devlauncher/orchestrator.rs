@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpStream;
-use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,6 +60,7 @@ struct StepCompletion {
     success: bool,
     error: Option<String>,
     process_id: Option<String>,
+#[allow(dead_code)]
     attempt_number: u32,
 }
 
@@ -160,7 +160,7 @@ impl RunOrchestrator {
         let profile = normalize_profile_for_run(profile, &mut validation.diagnostics);
 
         // Docker compose bootstrap preflight: a compose step whose config
-        // file does not exist can never succeed — docker dies immediately
+        // file does not exist can never succeed вЂ” docker dies immediately
         // with the cryptic "no configuration file provided: not found" and
         // the StopRun policy aborts the whole run. Skip such steps up front
         // (with a clear diagnostic) so the rest of the run proceeds.
@@ -354,7 +354,7 @@ impl RunOrchestrator {
         self.emit_status(run_id, RunStatus::Cancelled);
 
         // Kill every managed process of this run (not just steps that are
-        // currently `Running` — long-running services report Succeeded).
+        // currently `Running` вЂ” long-running services report Succeeded).
         let processes_to_kill: Vec<String> = handle
             .process_ids
             .lock()
@@ -390,7 +390,7 @@ impl RunOrchestrator {
     }
 
     // -----------------------------------------------------------------------
-    // Scheduler loop — runs in a tokio task per run
+    // Scheduler loop вЂ” runs in a tokio task per run
     // -----------------------------------------------------------------------
 
     async fn scheduler_loop(
@@ -426,7 +426,7 @@ impl RunOrchestrator {
         let mut running: HashSet<String> = HashSet::new();
         // Steps whose retry backoff is pending: (step_id, ready_at).
         let mut retry_schedule: Vec<(String, tokio::time::Instant)> = Vec::new();
-        // Steps currently inside `retry_schedule` — excluded from the
+        // Steps currently inside `retry_schedule` вЂ” excluded from the
         // ready set so the scheduler never double-spawns a retried step.
         let mut scheduled_retries: HashSet<String> = HashSet::new();
 
@@ -593,7 +593,7 @@ impl RunOrchestrator {
                             if completion.success {
                                 step_state.status = StepStatus::Succeeded;
                             } else if handle.cancelled.load(Ordering::SeqCst) {
-                                // User-initiated cancellation — keep the step as
+                                // User-initiated cancellation вЂ” keep the step as
                                 // Cancelled instead of Failed.
                                 step_state.status = StepStatus::Cancelled;
                                 step_state.error = completion.error.clone();
@@ -745,7 +745,7 @@ impl RunOrchestrator {
             }
         }
 
-        // All steps done — finalize
+        // All steps done вЂ” finalize
         let final_status = Self::compute_final_status(&handle);
         Self::finalize_run(
             &handle,
@@ -828,8 +828,8 @@ impl RunOrchestrator {
         // Resolve working directory against the profile's explicit project
         // root. Relative directories (e.g. "./backend") must never resolve
         // against the app's own working directory or the globally active
-        // workspace project — the profile is self-contained (see path model
-        // in docs/devlauncher-contract.md §E).
+        // workspace project вЂ” the profile is self-contained (see path model
+        // in docs/devlauncher-contract.md В§E).
         let working_dir: Option<String> = match step.working_directory.as_deref() {
             Some(dir) => resolve_working_directory(profile.project_root.as_deref(), Some(dir)),
             None => profile.project_root.clone(),
@@ -840,7 +840,7 @@ impl RunOrchestrator {
         // resolve against. Without it the spawn silently runs in the APP's
         // own working directory, so every relative command (`.venv\Scripts\
         // python.exe`, npm scripts, ...) dies with the cryptic "The system
-        // cannot find the path specified" (cmd exit code 3) — or, worse,
+        // cannot find the path specified" (cmd exit code 3) вЂ” or, worse,
         // starts in the wrong place and the following port waits time out.
         // Surface the real cause up front.
         let root_missing = profile
@@ -878,7 +878,7 @@ impl RunOrchestrator {
                 // resolve the command string into program + args (falling back
                 // to the platform shell for shell-syntax command lines).
                 // Visible-terminal steps resolve WITHOUT the batch-shim
-                // `cmd /C` wrapper — the terminal's own shell runs batch
+                // `cmd /C` wrapper вЂ” the terminal's own shell runs batch
                 // files natively (nested cmd breaks the command line).
                 //
                 // Docker preflight runs on the RAW command string (never the
@@ -1219,11 +1219,11 @@ impl RunOrchestrator {
         // against the step's working directory. The command resolver checks
         // relative paths against the APP's own cwd, so without this the spawn
         // would run in the project root while cmd fails with the cryptic
-        // "The system cannot find the path specified" (exit code 3) — exactly
+        // "The system cannot find the path specified" (exit code 3) вЂ” exactly
         // what the startup probe reports for a missing venv interpreter.
         // When the executable is genuinely absent but it is a venv
         // interpreter, fall back to the closest ancestor `.venv` or the
-        // system interpreter (with a warning) before giving up — a project
+        // system interpreter (with a warning) before giving up вЂ” a project
         // copied or cloned without its `.venv` must not dead-end the run.
         let (program, args) = match resolve_relative_program(program, args, working_dir) {
             Ok(pinned) => pinned,
@@ -1297,7 +1297,7 @@ impl RunOrchestrator {
         // command writes its exit code to a startup-probe marker after it
         // exits; the ProcessStarted probe then verifies the marker (see
         // `probe_startup_marker`). Plain interactive terminals (`cmd` with no
-        // args) get no marker — there is no command to verify.
+        // args) get no marker вЂ” there is no command to verify.
         //
         // Docker compose bootstraps request the marker too: the
         // DockerComposeUp completion waits for the marker to report the real
@@ -1933,7 +1933,7 @@ impl RunOrchestrator {
                     let _ = tokio::time::timeout(poll_interval, cancel_notify.notified()).await;
                 }
                 Some(ProcessStatus::ExternalLaunchAccepted) | Some(ProcessStatus::Unknown) => {
-                    // Cannot track further — treat as unknown completion
+                    // Cannot track further вЂ” treat as unknown completion
                     let untrackable = status.clone().unwrap_or(ProcessStatus::Unknown);
                     return StepCompletion {
                         step_id: step_id.to_string(),
@@ -1953,7 +1953,7 @@ impl RunOrchestrator {
                     // For terminal-wrapper steps a clean detach is the NORMAL
                     // case (the terminal owns the real process from here on).
                     // For directly-tracked one-shots, report an error instead
-                    // of silently claiming success — that would mask a failed
+                    // of silently claiming success вЂ” that would mask a failed
                     // `docker compose up` as a successful step.
                     let is_wrapper = matches!(
                         tracking_quality,
@@ -2001,7 +2001,7 @@ impl RunOrchestrator {
         // Resolve the host plus its loopback aliases: on dual-stack hosts
         // `localhost` may resolve to ::1 only while the server binds
         // 127.0.0.1 (and vice versa). Trying both makes the wait robust
-        // across platform/stack configurations — Node 17+ resolves
+        // across platform/stack configurations вЂ” Node 17+ resolves
         // `localhost` to ::1 first on Windows, so Vite binds ONLY the IPv6
         // loopback while the profile waits on 127.0.0.1.
         //
@@ -2218,7 +2218,7 @@ impl RunOrchestrator {
                 Some(step_id),
                 LogSource::Preflight,
                 DiagnosticSeverity::Info,
-                "Docker daemon is not running — attempting to start \
+                "Docker daemon is not running вЂ” attempting to start \
                  Docker Desktop / the Docker daemon"
                     .to_string(),
                 app_handle,
@@ -2307,12 +2307,12 @@ impl RunOrchestrator {
     /// for `npm ci`, ...) must fail this step, not report success.
     ///
     /// Two independent signals, whichever fires first:
-    /// 1. The startup marker — the terminal wrapper writes the inner
+    /// 1. The startup marker вЂ” the terminal wrapper writes the inner
     ///    command's real exit code after `docker compose up -d` exits.
     ///    Non-zero means the build/start failed; zero means compose detached
     ///    cleanly (all services up).
     /// 2. A captured `docker compose ps --status running --quiet` poll in the
-    ///    step's working directory — NO terminal window, the user must not
+    ///    step's working directory вЂ” NO terminal window, the user must not
     ///    see the check. Non-empty output means at least one container of
     ///    the project is actually running.
     async fn wait_for_docker_compose_up(
@@ -2352,7 +2352,7 @@ impl RunOrchestrator {
             // 1. Authoritative failure signal: once the compose command
             //    finishes, the startup marker holds its real exit code. A
             //    non-zero exit (broken build, failed start) fails the step
-            //    immediately — no waiting out the timeout.
+            //    immediately вЂ” no waiting out the timeout.
             if let Some(marker) = marker {
                 if let Ok(meta) = std::fs::metadata(marker) {
                     if meta.is_file() {
@@ -2365,7 +2365,7 @@ impl RunOrchestrator {
                                         Some(step_id),
                                         LogSource::Readiness,
                                         DiagnosticSeverity::Info,
-                                        "Docker Compose exited 0 — containers started".to_string(),
+                                        "Docker Compose exited 0 вЂ” containers started".to_string(),
                                         app_handle,
                                     );
                                     return StepCompletion {
@@ -2613,13 +2613,13 @@ impl RunOrchestrator {
         process_manager: &Arc<dyn ProcessManager>,
     ) {
         // A Failed (abort) or Cancelled run must not leave the processes of
-        // the failed/in-flight steps running — but it must also NOT tear down
+        // the failed/in-flight steps running вЂ” but it must also NOT tear down
         // services that already came up. Killing every process on a Failed
         // run is what destroyed an already-starting `docker compose up` when
         // an unrelated leaf step (e.g. `npm install`) failed: the containers
         // never got to start. So:
-        //   - Cancelled  (user asked to stop) → kill everything.
-        //   - Failed     → kill only processes NOT owned by a Succeeded step;
+        //   - Cancelled  (user asked to stop) в†’ kill everything.
+        //   - Failed     в†’ kill only processes NOT owned by a Succeeded step;
         //                 keep the infra/services that are already running.
         if matches!(final_status, RunStatus::Failed | RunStatus::Cancelled) {
             let keep_alive: HashSet<String> = {
@@ -2694,7 +2694,7 @@ impl RunOrchestrator {
                         | RunStatus::Cancelled
                         | RunStatus::PartialSuccess
                 ) {
-                    // created_at is RFC3339 — lexicographic order == chronological.
+                    // created_at is RFC3339 вЂ” lexicographic order == chronological.
                     finished.push((id.clone(), run.created_at.clone()));
                 }
             }
@@ -2845,7 +2845,7 @@ impl RunOrchestrator {
         };
         let handle = handle.ok_or_else(|| format!("Run '{}' not found", run_id))?;
 
-        // Kill every managed process spawned by this run — long-running
+        // Kill every managed process spawned by this run вЂ” long-running
         // services keep running after their step reports Succeeded, so the
         // step-status filter alone would find nothing to kill.
         let processes_to_kill: Vec<String> = handle
@@ -2885,7 +2885,7 @@ impl RunOrchestrator {
     }
 
     // -----------------------------------------------------------------------
-    // Logs retrieval — combined for run, per-process for step
+    // Logs retrieval вЂ” combined for run, per-process for step
     // -----------------------------------------------------------------------
 
     pub fn get_run_logs(&self, run_id: &str) -> Result<RunLogs, String> {
@@ -2935,7 +2935,7 @@ impl RunOrchestrator {
             .ok_or_else(|| format!("Step '{}' not found in run '{}'", step_id, run_id))?;
 
         // Steps that never spawned a process (URL opens, port waits, delay,
-        // failed spawns) have nothing to show — an empty log sheet, not an
+        // failed spawns) have nothing to show вЂ” an empty log sheet, not an
         // error. The frontend hides the button anyway, but a stale click
         // (or a step whose process was already pruned) must never surface
         // a confusing "no associated process" failure.
@@ -2975,7 +2975,7 @@ impl RunOrchestrator {
     }
 
     // -----------------------------------------------------------------------
-    // List ALL runs (including completed) — for history/audit
+    // List ALL runs (including completed) вЂ” for history/audit
     // -----------------------------------------------------------------------
 
     pub fn list_all_runs(&self) -> Vec<LaunchRun> {
@@ -3022,7 +3022,7 @@ impl RunOrchestrator {
     /// Unlike [`Self::resolve_command_target`], batch shims are NOT wrapped
     /// in a nested `cmd /C`: the terminal's own shell executes batch files
     /// natively, and nesting cmd inside cmd breaks the command line (quote
-    /// mangling) — the terminal would open empty with nothing running.
+    /// mangling) вЂ” the terminal would open empty with nothing running.
     fn resolve_terminal_command(command: &str) -> (String, Vec<String>) {
         let resolved =
             crate::platform::command_resolver::resolve_command_string(command, None, None);
@@ -3137,7 +3137,7 @@ fn is_venv_interpreter_program(program: &str) -> bool {
     if !script_dir_ok {
         return false;
     }
-    let mut exe = comps[comps.len() - 1].to_ascii_lowercase();
+    let exe = comps[comps.len() - 1].to_ascii_lowercase();
     let exe = exe.strip_suffix(".exe").unwrap_or(&exe);
     exe == "python" || exe == "python3" || exe.starts_with("python3.")
 }
@@ -3171,7 +3171,7 @@ fn find_venv_interpreter_above(start: &Path) -> Option<PathBuf> {
 /// working directory, find a usable replacement: the closest `.venv`/`venv`
 /// in an ancestor directory, otherwise the system interpreter on PATH. The
 /// replacement is returned with a human-readable warning for the user.
-/// Returns `None` when no replacement is available — the caller reports the
+/// Returns `None` when no replacement is available вЂ” the caller reports the
 /// original "Executable not found" error then.
 fn resolve_venv_program_fallback(
     program: &str,
@@ -3283,7 +3283,7 @@ fn pin_docker_compose_config(
 ///   for every step EXCEPT the docker compose bootstrap. Profiles generated
 ///   before the resilience rework baked `StopRun` into every step that had
 ///   dependents, so a failing `npm install` hard-aborted the whole run and
-///   killed a still-starting `docker compose up` — the exact symptom where
+///   killed a still-starting `docker compose up` вЂ” the exact symptom where
 ///   "Start Docker Compose" dies with the generic "Run aborted by a failing
 ///   step; process terminated" while docker itself was never at fault.
 fn normalize_profile_for_run(
@@ -3293,7 +3293,7 @@ fn normalize_profile_for_run(
     for step in &mut profile.steps {
         // Compose bootstrap upgrade: profiles generated before the
         // DockerComposeUp completion reported success as soon as the
-        // visible-terminal probe window (6s) expired — a build that failed
+        // visible-terminal probe window (6s) expired вЂ” a build that failed
         // minutes later (broken Dockerfile, missing package-lock.json for
         // `npm ci`) was silently marked "started". Rewrite the completion
         // so the run verifies running containers (captured check, no extra
@@ -3424,7 +3424,7 @@ fn bridge_disabled_step_dependencies(
 
     for d in &disabled {
         // Enabled upstream steps of the disabled step (its own deps that are
-        // enabled — those actually do work the dependents should wait for).
+        // enabled вЂ” those actually do work the dependents should wait for).
         let upstream: Vec<String> = profile
             .steps
             .iter()
@@ -3590,7 +3590,7 @@ fn self_emit_run_finished(
 ///
 /// Operates on the RAW command (as the user wrote it), not the resolved
 /// program path: the resolver turns `docker` into `C:\Program Files\...\
-/// docker.exe`, which no longer starts with "docker" — a program-based check
+/// docker.exe`, which no longer starts with "docker" вЂ” a program-based check
 /// would silently skip the daemon preflight for every Docker step.
 ///
 /// Fast-fails only on definitively-broken states (CLI missing, daemon down),
@@ -3692,14 +3692,14 @@ fn create_startup_marker_path() -> std::path::PathBuf {
 /// process (wt.exe and similar wrappers) detaches by design once the window
 /// is up, so its exit status says nothing about the inner command. Treating
 /// a detached wrapper as "started" is what let instantly-failing commands
-/// (a broken `cd`, a missing interpreter) report success — the launcher
+/// (a broken `cd`, a missing interpreter) report success вЂ” the launcher
 /// exits 0 before the marker is ever written, and the probe short-circuited.
 ///
 /// Returns:
-/// - `Ok(true)` — the marker reports exit code 0 (command completed
+/// - `Ok(true)` вЂ” the marker reports exit code 0 (command completed
 ///   successfully), or no marker appeared within the probe window (a
 ///   long-running dev server never exits, so it never writes a marker).
-/// - `Err(msg)` — the marker reports a non-zero exit code (the command ran
+/// - `Err(msg)` вЂ” the marker reports a non-zero exit code (the command ran
 ///   and FAILED, e.g. a broken `.venv` invocation), or the terminal process
 ///   itself failed to open (non-zero launcher exit).
 async fn probe_startup_marker(
@@ -3727,7 +3727,7 @@ async fn probe_startup_marker(
                         );
                         // The wrapper's captured output (cmd backend) usually
                         // carries the real failure line ("The system cannot
-                        // find the path specified" and similar) — surface it.
+                        // find the path specified" and similar) вЂ” surface it.
                         let tail = output_tail_hint(process_manager, proc_id);
                         if !tail.is_empty() {
                             msg.push_str(&tail);
@@ -3736,7 +3736,7 @@ async fn probe_startup_marker(
                     }
                     Err(_) => {
                         // Marker exists but holds no number yet (e.g. a
-                        // PowerShell wrapper writing asynchronously) — keep
+                        // PowerShell wrapper writing asynchronously) вЂ” keep
                         // waiting for a valid value.
                     }
                 }
@@ -3780,12 +3780,12 @@ async fn probe_startup_marker(
 
 /// Check that a freshly-spawned process is still alive after a short grace
 /// period. Returns:
-/// - `Ok(true)` — process is running (or already finished naturally);
-/// - `Ok(false)` — process exited before the probe (instant-exit spawn);
-/// - `Err(msg)` — the manager reported an unexpected state.
+/// - `Ok(true)` вЂ” process is running (or already finished naturally);
+/// - `Ok(false)` вЂ” process exited before the probe (instant-exit spawn);
+/// - `Err(msg)` вЂ” the manager reported an unexpected state.
 ///
 /// Terminal-wrapper processes (`tracking == TerminalWrapper`) are probed
-/// leniently: the launcher process (wt.exe, osascript, gnome-terminal, …)
+/// leniently: the launcher process (wt.exe, osascript, gnome-terminal, вЂ¦)
 /// detaches as soon as the terminal window is up, and the real command
 /// keeps running inside it. A wrapper exiting with code 0 is the NORMAL
 /// case; only a non-zero exit (real spawn failure) fails the probe. The
@@ -3831,7 +3831,7 @@ async fn probe_process_alive(
             | Some(ProcessStatus::Killed) => return Ok(false),
             None => {
                 // Process no longer tracked: it exited (or the manager was
-                // restarted). For a wrapper this is still a clean launch —
+                // restarted). For a wrapper this is still a clean launch вЂ”
                 // the terminal window owns the real process from here on.
                 if is_wrapper {
                     return Ok(true);
@@ -3886,18 +3886,18 @@ fn output_tail_hint(process_manager: &Arc<dyn ProcessManager>, proc_id: &str) ->
     tail.reverse();
     let text = tail.join("\n");
     let text = if text.len() > 2048 {
-        format!("…{}", &text[text.len() - 2048..])
+        format!("вЂ¦{}", &text[text.len() - 2048..])
     } else {
         text
     };
     format!("\n--- last output ---\n{}", text)
 }
 
-/// Loopback aliases for a host name: `localhost` ↔ `127.0.0.1` (plus
+/// Loopback aliases for a host name: `localhost` в†” `127.0.0.1` (plus
 /// `::1`), so a port wait works regardless of which interface the server
 /// bound to. Other hosts pass through unchanged.
 ///
-/// Shared implementation lives in `platform::readiness` — see
+/// Shared implementation lives in `platform::readiness` вЂ” see
 /// `crate::platform::readiness::loopback_host_aliases`.
 
 // ---------------------------------------------------------------------------
@@ -4458,7 +4458,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Integration tests — pure unit tests (no OS dependencies)
+    // Integration tests вЂ” pure unit tests (no OS dependencies)
     // ===================================================================
 
     // -------------------------------------------------------------------
@@ -4577,7 +4577,7 @@ mod tests {
     fn normalize_profile_upgrades_compose_bootstrap_completion() {
         // Profiles generated before the DockerComposeUp completion reported
         // "Start Docker Compose" success as soon as the 6s probe window
-        // expired — a build failing minutes later was silently masked.
+        // expired вЂ” a build failing minutes later was silently masked.
         // Run-time normalization must rewrite the completion so the run
         // verifies running containers before reporting success.
         let mut compose = make_step("compose", vec![]);
@@ -5084,7 +5084,7 @@ mod tests {
         let result = orchestrator.cancel_run(&run.run_id).await;
         assert!(result.is_ok());
 
-        // Cancel again — should be a no-op
+        // Cancel again вЂ” should be a no-op
         let result = orchestrator.cancel_run(&run.run_id).await;
         assert!(result.is_ok());
 
@@ -5201,7 +5201,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
-        // Stop again — still safe
+        // Stop again вЂ” still safe
         let result = orchestrator.stop_run_processes(&run.run_id);
         assert!(result.is_ok());
     }
@@ -5282,7 +5282,7 @@ mod tests {
                 &self,
                 _: &str,
             ) -> Result<crate::modules::workspace::models::ProcessStatus, String> {
-                // Process not found — returns error
+                // Process not found вЂ” returns error
                 Err("Process not found".to_string())
             }
             fn get_logs(
@@ -5314,7 +5314,7 @@ mod tests {
         let app_handle = Arc::new(Mutex::new(None));
 
         // A directly-tracked (non-wrapper) process that vanishes without an
-        // exit status cannot be confirmed as successful — the step must fail
+        // exit status cannot be confirmed as successful вЂ” the step must fail
         // (this is what would otherwise mask a failed `docker compose up`).
         let result = tokio::runtime::Runtime::new().unwrap().block_on(
             RunOrchestrator::wait_for_process_exit(
@@ -5334,7 +5334,7 @@ mod tests {
         assert!(result.error.unwrap().contains("no longer tracked"));
 
         // A terminal-wrapper process detaching cleanly is the NORMAL case
-        // (the terminal owns the real process from here on) — success.
+        // (the terminal owns the real process from here on) вЂ” success.
         let result = tokio::runtime::Runtime::new().unwrap().block_on(
             RunOrchestrator::wait_for_process_exit(
                 "run-1",
@@ -5354,7 +5354,7 @@ mod tests {
         );
     }
 
-    /// Test 11: Legacy run_profile compatibility — verify V2 conversion.
+    /// Test 11: Legacy run_profile compatibility вЂ” verify V2 conversion.
     #[test]
     fn test_legacy_to_v2_conversion_preserves_actions() {
         let legacy = LaunchProfile {
@@ -5526,7 +5526,7 @@ mod tests {
         assert_eq!(step_env.get("PORT").unwrap(), "3000");
     }
 
-    /// Test 15: Event correlation — verify run_id and step_id are consistent.
+    /// Test 15: Event correlation вЂ” verify run_id and step_id are consistent.
     #[test]
     fn test_event_correlation_ids() {
         struct MockPM;
@@ -5759,7 +5759,7 @@ mod tests {
     /// Test: Platform capabilities detection (unit-level).
     #[test]
     fn test_platform_capabilities_detection() {
-        // This is a pure unit test — just verify the types serialize
+        // This is a pure unit test вЂ” just verify the types serialize
         let caps = models::PlatformCapabilities {
             os: "windows".to_string(),
             arch: "x86_64".to_string(),
@@ -6222,13 +6222,13 @@ mod tests {
         .unwrap();
         assert_eq!(p, exe.to_string_lossy());
 
-        // Missing executable → actionable error (this is the exit-code-3
+        // Missing executable в†’ actionable error (this is the exit-code-3
         // scenario: `.venv\Scripts\python.exe` not found in the cwd).
         let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, Some(&dir_str))
             .unwrap_err();
         assert!(err.contains("not found"), "{err}");
 
-        // Relative program with NO working directory → clear error instead
+        // Relative program with NO working directory в†’ clear error instead
         // of silently spawning in the app's own cwd.
         let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, None).unwrap_err();
         assert!(err.contains("no working directory"), "{err}");
@@ -6240,7 +6240,7 @@ mod tests {
     async fn startup_marker_probe_assumes_running_when_no_marker() {
         // No marker appears and the terminal keeps running: a long-running
         // dev server. The probe must NOT claim success on a failed command
-        // — it must keep waiting and finally assume the process is running.
+        // вЂ” it must keep waiting and finally assume the process is running.
         let marker = std::env::temp_dir().join(format!(
             "stackpilot_dl_probe_running_{}.txt",
             std::process::id()
@@ -6320,7 +6320,7 @@ mod tests {
             resolve_venv_program_fallback(".venv\\Scripts\\python.exe", &args, Some(&dir_str))
                 .unwrap();
         // Compare canonicalized paths: the resolver joins with `/` while
-        // the test builds with `\` — both name the same file on Windows.
+        // the test builds with `\` вЂ” both name the same file on Windows.
         assert_eq!(
             std::fs::canonicalize(&p).unwrap(),
             std::fs::canonicalize(&interp).unwrap()

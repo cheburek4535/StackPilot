@@ -16,6 +16,7 @@ pub const PROCESS_EVENT_STATUS: &str = "process-status";
 #[cfg(unix)]
 const UNIX_KILL_GRACE_MS: u64 = 2000;
 
+#[allow(dead_code)]
 struct ActiveProcess {
     info: TrackedProcess,
     child: Option<Child>,
@@ -210,6 +211,7 @@ pub trait ProcessManager: Send + Sync {
         id: &str,
     ) -> Option<Arc<crate::modules::workspace::models::BoundedLogBuffer>>;
     /// Get truncation metadata for a process's logs.
+    #[allow(dead_code)]
     fn get_log_truncation(&self, id: &str) -> Option<(LogTruncation, LogTruncation)>;
 }
 
@@ -1084,7 +1086,6 @@ impl OsProcessManager {
                     raw_tail.map(String::from),
                 )
             };
-        let mut spawn_args = spawn_args;
         let mut raw_last = raw_last;
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
@@ -1108,6 +1109,13 @@ impl OsProcessManager {
 
         let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
         let pid = child.id();
+        crate::core::process_registry::register(
+            pid,
+            label.to_string(),
+            command.to_string(),
+            args.iter().map(|s| s.to_string()).collect(),
+            "workspace",
+        );
         let id = generate_process_id();
         let started_at = timestamp_now();
 
@@ -1199,6 +1207,7 @@ impl OsProcessManager {
     }
 
     /// Spawn a tracked visible-terminal process.
+    #[allow(dead_code)]
     fn spawn_and_track_visible(
         &self,
         command: &str,
@@ -1222,6 +1231,7 @@ impl OsProcessManager {
     }
 
     /// Spawn a tracked visible-terminal process with an environment overlay.
+    #[allow(dead_code)]
     fn spawn_and_track_visible_with_overlay(
         &self,
         command: &str,

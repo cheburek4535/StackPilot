@@ -79,7 +79,7 @@ pub async fn run_check(
 
     for (index, id) in requested.iter().enumerate() {
         let Some(def) = definitions.iter().find(|d| &d.id == id) else {
-            eprintln!("[toolchain] неизвестный инструмент: {id}");
+            log::warn!("[toolchain] неизвестный инструмент: {id}");
             continue;
         };
         let def_clone = def.clone();
@@ -100,7 +100,7 @@ pub async fn run_check(
     let collect = async {
         while let Some(res) = set.join_next().await {
             let Ok((def, status, index)) = res else {
-                eprintln!("[toolchain] задача обнаружения прервана: {res:?}");
+                log::warn!("[toolchain] задача обнаружения прервана: {res:?}");
                 continue;
             };
             done += 1;
@@ -193,7 +193,7 @@ pub async fn run_check(
     };
 
     if timeout(CHECK_DEADLINE, collect).await.is_err() {
-        eprintln!(
+        log::warn!(
             "[toolchain] проверка окружения превысила лимит {}с, отдаю частичный отчёт ({done}/{} инструментов)",
             CHECK_DEADLINE.as_secs(),
             total

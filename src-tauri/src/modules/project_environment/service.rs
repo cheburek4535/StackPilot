@@ -63,7 +63,7 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
                             Ok(binding) => bindings.push(binding),
                             Err(e) => {
                                 // Skip corrupt files, don't fail the whole list
-                                eprintln!(
+                                log::warn!(
                                     "Warning: skipping corrupt binding {}: {}",
                                     path.display(),
                                     e
@@ -72,7 +72,7 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
                         }
                     }
                     Err(e) => {
-                        eprintln!("Warning: cannot read {}: {}", path.display(), e);
+                        log::warn!("Warning: cannot read {}: {}", path.display(), e);
                     }
                 }
             }

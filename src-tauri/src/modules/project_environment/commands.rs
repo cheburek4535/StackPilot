@@ -101,7 +101,7 @@ pub struct ResolvedOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::project_environment::models::*;
+    
     use crate::modules::project_environment::resolver::resolve_with_diagnostics;
     use crate::modules::project_environment::service::*;
     use std::collections::HashMap;
@@ -149,10 +149,10 @@ mod tests {
         let dir = temp_dir("cmd_list");
         let svc = JsonEnvironmentBindingService::new(dir.clone());
 
-        let mut b1 =
+        let b1 =
             EnvironmentBinding::new(Some("First".into()), Some("/path/to/project1".into()));
         svc.save(&b1).unwrap();
-        let mut b2 = EnvironmentBinding::new(Some("Second".into()), None);
+        let b2 = EnvironmentBinding::new(Some("Second".into()), None);
         svc.save(&b2).unwrap();
 
         let list = svc.list().unwrap();

@@ -684,7 +684,7 @@ async fn probe_version_at_install_dirs(def: &ToolDefinition) -> Option<String> {
 /// Если wildcard в самом первом компоненте — возвращается корень.
 fn parent_dir_with_wildcard(path: &str) -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(path);
-    let mut components: Vec<std::path::Component> = p.components().collect();
+    let components: Vec<std::path::Component> = p.components().collect();
     // Ищем компонент с `*` и возвращаем всё до него.
     for i in 0..components.len() {
         let comp_str = components[i].as_os_str().to_string_lossy();

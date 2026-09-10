@@ -301,7 +301,7 @@ const WAIT_PORT_TIMEOUT_SECS: u64 = 90;
 
 /// Default timeout for the "Start Docker Compose" verification. Image
 /// builds (npm ci, pip install, ...) routinely take minutes on cold
-/// starts, so the step gets generous headroom — but it still fails fast
+/// starts, so the step gets generous headroom вЂ” but it still fails fast
 /// when the compose command itself exits non-zero (the startup probe
 /// reports the real exit code as soon as the build dies).
 const COMPOSE_UP_TIMEOUT_SECS: u64 = 600;
@@ -483,12 +483,12 @@ fn dir_has_manifest(dir: &Path, manifests: &[&str]) -> bool {
 /// externally created projects routinely use other folder names (`server/`,
 /// `api/`, `app/`...) or a single side without the other. Launching `cargo
 /// run`/`npm run dev` from the project root then fails with the cryptic
-/// "could not find Cargo.toml in <root> or any parent directory" — cargo
+/// "could not find Cargo.toml in <root> or any parent directory" вЂ” cargo
 /// walks UP, never down. The search is deterministic and manifest-driven:
 ///
-///   1. the root itself owns the manifest → `None` (run in the root);
-///   2. the canonical side folder (`backend`/`frontend`) owns it → `./<side>`;
-///   3. the first immediate subdirectory (sorted) that owns it → `./<dir>`.
+///   1. the root itself owns the manifest в†’ `None` (run in the root);
+///   2. the canonical side folder (`backend`/`frontend`) owns it в†’ `./<side>`;
+///   3. the first immediate subdirectory (sorted) that owns it в†’ `./<dir>`.
 ///
 /// Returns a RELATIVE directory anchored to the profile's `project_root`,
 /// or `None` when the project path is missing (nothing to anchor to) or the
@@ -530,13 +530,13 @@ fn locate_side_dir(root: &Path, side: &str, fw: &str) -> Option<String> {
 /// split-layout projects (see [`locate_side_dir`]); the project root (None)
 /// when the framework's manifest lives there. The wizard itself creates
 /// `backend/` / `frontend/` for split architectures, so the canonical names
-/// are preferred — but the search never forces a folder that does not own
+/// are preferred вЂ” but the search never forces a folder that does not own
 /// the side's required files.
 ///
 /// When the project path is missing there is nothing to anchor a relative
 /// dir to: a relative working directory would make every command run in the
 /// app's own working directory ("The system cannot find the path
-/// specified", cmd exit code 3). Emit `None` — the run-time preflight then
+/// specified", cmd exit code 3). Emit `None` вЂ” the run-time preflight then
 /// fails with the real reason.
 fn side_dir(ctx: &WizardContext, side: &str, fw: &str) -> Option<String> {
     let Some(root) = ctx.project_path.as_ref() else {
@@ -655,7 +655,7 @@ fn port_candidates(port: u16, spread: u16) -> Vec<u16> {
 }
 
 /// Allocate the local dev-server port for a backend framework: the canonical
-/// framework port (shared [`crate::ports`] table — the same one the wizard's
+/// framework port (shared [`crate::ports`] table вЂ” the same one the wizard's
 /// scaffolds and docker-compose use), bumped past ports already claimed by
 /// the compose bootstrap or by other backends. Keeps every backend on a
 /// distinct port and off the containers' host ports.
@@ -725,6 +725,7 @@ pub struct ProfileBuildOptions {
     pub vscode: Option<String>,
     /// User-configured browser path/CLI (settings.browser_path); URL steps
     /// honor it at run time. Not used at build time.
+#[allow(dead_code)]
     pub browser: Option<String>,
     /// User-configured database viewer path/CLI (settings.db_viewer_path);
     /// the first resolvable candidate wins when empty.
@@ -799,8 +800,8 @@ pub fn db_viewer_display_name(cli: &str) -> String {
 ///
 /// The graph is structured like a real development session:
 ///   1. IDE/tool windows open first (independent roots).
-///   2. Docker infrastructure: Docker Desktop → wait for daemon →
-///      compose up → wait for database readiness.
+///   2. Docker infrastructure: Docker Desktop в†’ wait for daemon в†’
+///      compose up в†’ wait for database readiness.
 ///   3. Backend service starts (visible terminal), gated by the
 ///      infrastructure they need.
 ///   4. Readiness waits on backend ports, then API docs open.
@@ -822,8 +823,8 @@ pub fn build_profile_v2_from_context(
 ///
 /// The graph is structured like a real development session:
 ///   1. IDE/tool windows open first (independent roots).
-///   2. Docker infrastructure: Docker Desktop → wait for daemon →
-///      compose up → wait for database readiness.
+///   2. Docker infrastructure: Docker Desktop в†’ wait for daemon в†’
+///      compose up в†’ wait for database readiness.
 ///   3. Backend service starts (visible terminal), gated by the
 ///      infrastructure they need.
 ///   4. Readiness waits on backend ports, then API docs open.
@@ -955,7 +956,7 @@ pub fn build_profile_v2_from_context_with_options(
         // file; `docker compose up` in a directory without one dies with
         // the cryptic "no configuration file provided: not found". Pin the
         // file with `-f` and omit the step (with a diagnostic) when it is
-        // missing — the run then continues with the local install/start
+        // missing вЂ” the run then continues with the local install/start
         // steps instead of aborting on a file that does not exist.
         let compose_file = ctx
             .project_path
@@ -998,14 +999,14 @@ pub fn build_profile_v2_from_context_with_options(
             compose_published_ports.sort_unstable();
             compose_published_ports.dedup();
             // The compose bootstrap runs in a VISIBLE terminal (the user
-            // watches the build — hidden failures are the #1 support
+            // watches the build вЂ” hidden failures are the #1 support
             // question), but its completion is NOT "process started". A
             // `ProcessStarted` completion is a 6-second probe: a build that
             // is still running when the probe window expires reports
             // "success" even when it dies moments later (e.g. `npm ci`
             // failing on a missing package-lock.json). The DockerComposeUp
-            // completion keeps polling — via a captured `docker compose ps`
-            // (no extra terminal window) and the command's real exit code —
+            // completion keeps polling вЂ” via a captured `docker compose ps`
+            // (no extra terminal window) and the command's real exit code вЂ”
             // until containers are actually running. Readiness of specific
             // services is additionally verified by the port waits that
             // depend on this step.
@@ -1046,14 +1047,14 @@ pub fn build_profile_v2_from_context_with_options(
             ));
         }
 
-        // Database readiness waits for compose-managed tools — only when the
+        // Database readiness waits for compose-managed tools вЂ” only when the
         // compose bootstrap exists (a missing compose file means no services).
         let mut db_waits: Vec<String> = Vec::new();
         for tool in &ctx.tools {
             if !is_docker_tool(tool) {
                 continue;
             }
-            // Tools deployed locally are NOT in the compose file — no wait.
+            // Tools deployed locally are NOT in the compose file вЂ” no wait.
             if ctx.local_infra_tools.iter().any(|t| t == tool) {
                 diagnostics.push(AnalysisDiagnostic::new(
                     DiagnosticSeverity::Info,
@@ -1092,7 +1093,7 @@ pub fn build_profile_v2_from_context_with_options(
 
         // The database viewer opens after the daemon is up. Only when the
         // project actually has database tools: a viewer step is added ONLY
-        // if at least one supported database application is resolvable —
+        // if at least one supported database application is resolvable вЂ”
         // never a broken step for an unavailable app. The user-configured
         // viewer (settings.db_viewer_path) wins; otherwise the first
         // detected candidate is used.
@@ -1821,7 +1822,7 @@ fn build_description(ctx: &WizardContext) -> String {
     if parts.is_empty() {
         "Project profile".into()
     } else {
-        parts.join(" · ")
+        parts.join(" В· ")
     }
 }
 
@@ -2031,7 +2032,7 @@ mod tests {
     fn kafka_readiness_wait_gets_generous_timeout_and_candidate_port() {
         // Kafka is the slowest compose tool to become reachable (image
         // pull + broker bootstrap routinely exceeds the generic 60s), so
-        // its readiness wait must carry a longer timeout — otherwise the
+        // its readiness wait must carry a longer timeout вЂ” otherwise the
         // wait dies with "Timeout: none of ports [9092] on 127.0.0.1 open
         // after 60s" while the broker is still starting.
         let dir = std::env::temp_dir().join(format!(
@@ -2379,7 +2380,7 @@ mod tests {
     fn compose_up_starts_only_infra_services_not_the_app() {
         // The wizard's compose file carries the app service (`app:` building
         // the backend). The dev session runs the app locally, so the compose
-        // bootstrap must start only the infrastructure services — otherwise
+        // bootstrap must start only the infrastructure services вЂ” otherwise
         // the app container and the local dev server race for the same port.
         let dir = compose_dir(
             "services:\n\
@@ -2417,7 +2418,7 @@ mod tests {
     #[test]
     fn frontend_avoids_grafana_and_backend_ports() {
         // Next.js + backend + Grafana: the frontend's default 3001 (shifted
-        // off the backend's 3000) collides with Grafana's host port 3001 —
+        // off the backend's 3000) collides with Grafana's host port 3001 вЂ”
         // it must move to 3002 and pass `--port 3002` to the dev server.
         let dir = compose_dir(
             "services:\n\
@@ -2505,7 +2506,7 @@ mod tests {
     }
 
     /// A Rust backend whose manifest lives in `backend/` must be launched
-    /// FROM that directory — never from the project root, where cargo fails
+    /// FROM that directory вЂ” never from the project root, where cargo fails
     /// with "could not find Cargo.toml ... or any parent directory".
     #[test]
     fn rust_backend_in_backend_dir_gets_manifest_owned_working_dir() {

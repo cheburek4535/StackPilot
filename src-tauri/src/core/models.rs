@@ -76,6 +76,10 @@ pub struct AppSettings {
     pub restore_last_route: bool,
     /// Ask for confirmation before a factory reset.
     pub confirm_before_reset: bool,
+    /// Поведение при закрытии приложения с запущенными процессами:
+    /// "ask" — диалог, "always" — завершить все без диалога,
+    /// "never" — просто закрыть.
+    pub quit_process_behavior: String,
 
     pub personal: PersonalSettings,
     pub ai: AiSettings,

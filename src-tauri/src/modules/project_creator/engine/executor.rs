@@ -23,6 +23,7 @@ pub struct StepExecutor {
 }
 
 impl StepExecutor {
+#[allow(dead_code)]
     pub fn new() -> Self {
         Self::with_command_runner(Arc::new(ProcessRunner))
     }

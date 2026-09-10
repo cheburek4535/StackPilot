@@ -21,6 +21,7 @@ pub const SCAFFOLD_TARGET: &str = "__TARGET__";
 #[async_trait]
 pub trait Generator: Send + Sync {
     fn id(&self) -> &str;
+#[allow(dead_code)]
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
@@ -87,6 +88,7 @@ impl GeneratorRegistry {
         self.generators.get(id).cloned()
     }
 
+#[allow(dead_code)]
     pub fn list_descriptors(&self) -> Vec<GeneratorDescriptor> {
         self.generators
             .values()
@@ -1481,7 +1483,17 @@ async fn run_named_directory_scaffold(
         }
 
         if needs_merge {
-            merge_dir_contents(&created_dir, target).map_err(|e| {
+            // Перенос содержимого (node_modules-масштаба деревья) — тяжёлая
+            // синхронная работа: выносим с async-рантайма в блокирующий поток.
+            let merge_from = created_dir.clone();
+            let merge_to = target.to_path_buf();
+            let merge_result: Result<(), String> =
+                tokio::task::spawn_blocking(move || merge_dir_contents(&merge_from, &merge_to))
+                    .await
+                    .map_err(|e| {
+                        format!("Scaffold '{}': merge task panicked: {e}", cfg.command)
+                    })?;
+            merge_result.map_err(|e| {
                 format!(
                     "Scaffold '{}': failed to move '{}' into '{}': {}",
                     cfg.command, created_name, cfg.target_dir, e
@@ -1505,7 +1517,15 @@ async fn run_named_directory_scaffold(
         let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let nested = target.join(&created_name);
         if created_name != target_name && nested.is_dir() {
-            merge_dir_contents(&nested, target).map_err(|e| {
+            let flatten_from = nested.clone();
+            let flatten_to = target.to_path_buf();
+            let flatten_result: Result<(), String> =
+                tokio::task::spawn_blocking(move || merge_dir_contents(&flatten_from, &flatten_to))
+                    .await
+                    .map_err(|e| {
+                        format!("Scaffold '{}': flatten task panicked: {e}", cfg.command)
+                    })?;
+            flatten_result.map_err(|e| {
                 format!(
                     "Scaffold '{}': failed to flatten nested '{}' into '{}': {}",
                     cfg.command, created_name, cfg.target_dir, e

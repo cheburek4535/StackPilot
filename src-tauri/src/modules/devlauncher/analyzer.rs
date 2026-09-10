@@ -266,6 +266,7 @@ pub struct RubyProject {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ComposerProject {
     pub dir: PathBuf,
     pub manifest: PathBuf,
@@ -278,6 +279,7 @@ pub struct ComposerProject {
 /// `ports:` mappings and build contexts tell us which local directories are
 /// *governed* by the container (a local run there would conflict).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ComposeService {
     pub name: String,
     /// Build context directory, resolved relative to the compose file dir.

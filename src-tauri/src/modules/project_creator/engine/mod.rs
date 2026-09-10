@@ -58,6 +58,7 @@ impl DefaultRecipeEngine {
 
     /// Движок с переопределённым экзекутором (мок-шина процессов,
     /// мок-генераторы) — для тестов исполнения.
+#[allow(dead_code)]
     pub fn with_executor(executor: Arc<executor::StepExecutor>) -> Self {
         Self { executor }
     }
@@ -4798,6 +4799,7 @@ impl<'a> ScaffoldExtras<'a> {
         self.interactive = entries;
         self
     }
+#[allow(dead_code)]
     fn in_dir(mut self, wd: &'a str) -> Self {
         self.working_dir = Some(wd);
         self
@@ -4807,6 +4809,7 @@ impl<'a> ScaffoldExtras<'a> {
         self.temp_dir_allowed = Some(allowed);
         self
     }
+#[allow(dead_code)]
     fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
@@ -12639,7 +12642,7 @@ mod tests {
             "run",
         );
         std::fs::write(dir.join("package.json"), "{}").unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
         let result = engine.execute(plan, tx).await;
         drop(rx);
         assert_eq!(result.step_results.len(), 1);

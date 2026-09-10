@@ -26,6 +26,7 @@ impl ProfileValidationResult {
         }
     }
 
+#[allow(dead_code)]
     fn error(code: &str, message: String) -> Self {
         Self {
             valid: false,
@@ -461,6 +462,7 @@ fn detect_cycle(profile: &LaunchProfileV2) -> Result<Vec<String>, String> {
 
 /// Compute topological order of enabled steps (for execution scheduling).
 /// Skips disabled steps and their dependents.
+#[allow(dead_code)]
 pub fn topological_order(profile: &LaunchProfileV2) -> Vec<String> {
     let enabled_ids: HashSet<&str> = profile
         .steps
@@ -743,7 +745,7 @@ mod tests {
         ]);
         let order = topological_order(&profile);
         assert_eq!(order.len(), 3);
-        // All should be roots (in_degree 0) — any order is valid but deterministic
+        // All should be roots (in_degree 0) вЂ” any order is valid but deterministic
     }
 
     #[test]

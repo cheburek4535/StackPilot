@@ -70,12 +70,12 @@ pub async fn tc_check_environment(
     requirements: ProjectRequirements,
 ) -> Result<EnvironmentCheck, String> {
     let requested = core::requirements::resolve(&requirements);
-    eprintln!("[toolchain] check_environment: требования = {requested:?}");
+    log::info!("[toolchain] check_environment: требования = {requested:?}");
 
     // Опции установки (Qt: UI-модули qt-qml/qt-webengine/...) — уезжают
     // в план и говорят установщику, какие пакеты репозитория ставить.
     let install_options = core::requirements::resolve_install_options(&requirements);
-    eprintln!("[toolchain] check_environment: опции установки = {install_options:?}");
+    log::info!("[toolchain] check_environment: опции установки = {install_options:?}");
 
     // Прогресс по каждому инструменту стримится на фронтенд —
     // пользователь видит «проверяется X (2/N)» вместо тишины.
@@ -107,7 +107,7 @@ pub async fn tc_check_environment(
     // тогда они переезжают в requirements (local_infra_tools).
     check.optional_requirements =
         core::requirements::docker_optional_requirements(&requirements, &merged);
-    eprintln!(
+    log::info!(
         "[toolchain] check_environment: готово — {} требований, {} опциональных (docker), {} МБ, complete={}, all_ready={}",
         check.requirements.len(),
         check.optional_requirements.len(),
@@ -123,7 +123,7 @@ pub async fn tc_check_environment(
         let mut meta = meta_arc.lock().expect("metadata poisoned");
         meta.touch_last_scan(core::console::timestamp());
         if let Err(e) = meta.save() {
-            eprintln!("[toolchain] state.json не сохранился: {e}");
+            log::error!("[toolchain] state.json не сохранился: {e}");
         }
     }
 
@@ -468,7 +468,7 @@ pub async fn tcx_adopt_tool(
         let mut meta = meta_arc.lock().expect("metadata poisoned");
         meta.record_adoption(&tool_id, core::console::timestamp());
         if let Err(e) = meta.save() {
-            eprintln!("[toolchainx] state.json не сохранился: {e}");
+            log::error!("[toolchainx] state.json не сохранился: {e}");
         }
     }
     Ok(version)
@@ -642,7 +642,7 @@ async fn run_and_finalize(
             }
         }
         if let Err(e) = meta.save() {
-            eprintln!("[toolchain] state.json не сохранился: {e}");
+            log::error!("[toolchain] state.json не сохранился: {e}");
         }
     }
 
@@ -650,7 +650,7 @@ async fn run_and_finalize(
     for (key, value) in &secrets {
         let mut store = ctx.secrets_arc.lock().expect("secret store poisoned");
         if let Err(e) = store.set_secret(key, value) {
-            eprintln!("[toolchain] секрет {key} не сохранился в защищённом хранилище: {e}");
+            log::error!("[toolchain] секрет {key} не сохранился в защищённом хранилище: {e}");
         }
     }
     {
@@ -676,7 +676,7 @@ async fn run_and_finalize(
             .journal
             .write(&compat.started_at, status, &final_plan)
         {
-            eprintln!("[toolchain] журнал заданий не обновился: {e}");
+            log::error!("[toolchain] журнал заданий не обновился: {e}");
         }
         job_engine.remove_sink(&compat.bridge);
 
@@ -781,7 +781,7 @@ pub async fn tc_run_install(
         .journal()
         .write(&started_at, InstallSessionStatus::Running, &legacy_plan)
     {
-        eprintln!("[toolchain] журнал заданий не записался: {e}");
+        log::error!("[toolchain] журнал заданий не записался: {e}");
     }
 
     // Сброс легаси-флага отмены перед стартом (прежний контракт).
@@ -1491,41 +1491,48 @@ pub async fn tcx_uninstall_tool(
         });
     };
 
-    let pkg_id = pkg.id.as_str();
-    match os.as_str() {
-        "windows" => {
-            run_uninstall_program(
-                "winget",
-                &[
-                    "uninstall",
-                    "--id",
-                    pkg_id,
-                    "--silent",
-                    "--accept-source-agreements",
-                ],
-            )?;
-        }
-        "macos" => {
-            run_uninstall_program("brew", &["uninstall", pkg_id])?;
-        }
-        "linux" => {
-            if command_exists("apt-get") {
-                run_uninstall_program("apt-get", &["remove", "-y", pkg_id])?;
-            } else if command_exists("dnf") {
-                run_uninstall_program("dnf", &["remove", "-y", pkg_id])?;
-            } else if command_exists("pacman") {
-                run_uninstall_program("pacman", &["-R", "--noconfirm", pkg_id])?;
-            } else {
-                return Err(
-                    "Не найден менеджер пакетов (apt-get/dnf/pacman) — удалите инструмент вручную."
-                        .to_string(),
-                );
+    let pkg_id = pkg.id.clone();
+    // winget/brew/apt-get uninstall могут работать десятки секунд — вне
+    // async-рантайма, чтобы не блокировать другие задачи (UI события,
+    // прогресс-стримы установки).
+    tauri::async_runtime::spawn_blocking(move || {
+        match os.as_str() {
+            "windows" => {
+                run_uninstall_program(
+                    "winget",
+                    &[
+                        "uninstall",
+                        "--id",
+                        &pkg_id,
+                        "--silent",
+                        "--accept-source-agreements",
+                    ],
+                )?;
+            }
+            "macos" => {
+                run_uninstall_program("brew", &["uninstall", &pkg_id])?;
+            }
+            "linux" => {
+                if command_exists("apt-get") {
+                    run_uninstall_program("apt-get", &["remove", "-y", &pkg_id])?;
+                } else if command_exists("dnf") {
+                    run_uninstall_program("dnf", &["remove", "-y", &pkg_id])?;
+                } else if command_exists("pacman") {
+                    run_uninstall_program("pacman", &["-R", "--noconfirm", &pkg_id])?;
+                } else {
+                    return Err(
+                        "Не найден менеджер пакетов (apt-get/dnf/pacman) — удалите инструмент вручную."
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err("Удаление инструментов на этой ОС не поддерживается.".to_string());
             }
         }
-        _ => {
-            return Err("Удаление инструментов на этой ОС не поддерживается.".to_string());
-        }
-    }
 
-    Ok(true)
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Uninstall task failed: {e}"))?
 }

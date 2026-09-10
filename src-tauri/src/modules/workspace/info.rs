@@ -3,6 +3,7 @@ use std::fs;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProjectInfo {
     pub profile_name: String,
     pub project_path: Option<String>,
@@ -15,6 +16,7 @@ pub struct ProjectInfo {
 
 /// Service for project metadata.
 /// Aggregates info from ProjectContext + file system + git.
+#[allow(dead_code)]
 pub trait InfoService: Send + Sync {
     fn get_info(&self, ctx: &ProjectContext) -> ProjectInfo;
     fn get_readme(&self, path: &str) -> Option<String>;
@@ -59,6 +61,7 @@ impl DefaultInfoService {
         Self
     }
 
+#[allow(dead_code)]
     fn get_git_branch(&self, path: &str) -> Option<String> {
         let mut cmd = std::process::Command::new("git");
         cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])

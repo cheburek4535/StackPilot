@@ -910,7 +910,7 @@ async fn run_task(
 /// неудавшийся способ установки.
 fn debug_log(msg: &str) {
     if std::env::var("DEVLAUNCHER_DEBUG").is_ok() {
-        eprintln!("{msg}");
+        log::debug!("{msg}");
     }
 }
 
@@ -1656,7 +1656,7 @@ async fn try_install_source(
                 if let Some(bin) = find_bin_dir(Path::new(&root), &probe_binaries(def)) {
                     let bin_str = bin.to_string_lossy().into_owned();
                     if let Err(e) = path_service::add_to_user_path(&[bin_str]).await {
-                        eprintln!(
+                        log::error!(
                             "[toolchain] не удалось добавить {bin:?} в PATH для {tool_id}: {e}"
                         );
                     }
@@ -1666,7 +1666,7 @@ async fn try_install_source(
 
         if let Err(e) = path_service::add_to_user_path(&def.path_entries).await {
             // PATH не критичен для установки — логируем и продолжаем.
-            eprintln!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
+            log::error!("[toolchain] не удалось добавить PATH для {tool_id}: {e}");
         }
 
         // NSIS-инсталлятор Erlang/OTP: после установки добавляем реальный
@@ -1680,7 +1680,7 @@ async fn try_install_source(
         if def.id == "erlang" {
             if let Some(reg_bin) = discovery::registry_install_bin_path(def).await {
                 if let Err(e) = path_service::add_to_user_path(&[reg_bin.clone()]).await {
-                    eprintln!(
+                    log::error!(
                         "[toolchain] не удалось добавить реестровый путь {reg_bin} в PATH для {tool_id}: {e}"
                     );
                 }
@@ -1688,7 +1688,7 @@ async fn try_install_source(
         }
     }
     if let Err(e) = path_service::sync_process_path().await {
-        eprintln!("[toolchain] не удалось обновить PATH процесса: {e}");
+        log::error!("[toolchain] не удалось обновить PATH процесса: {e}");
     }
 
     // composer.phar (phar-источник) не является исполняемым файлом —
@@ -2560,7 +2560,7 @@ mod tests {
     /// «temurin-msi: Установщик завершился с кодом 1».
     #[test]
     fn downloaded_msi_bin_is_routed_through_msiexec() {
-        let mut def = bare_def();
+        let def = bare_def();
         let dir = std::env::temp_dir().join(format!(
             "stackpilot_tc_msiroute_{}_{}",
             std::process::id(),

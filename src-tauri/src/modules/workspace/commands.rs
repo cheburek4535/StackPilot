@@ -8,6 +8,7 @@ use crate::modules::workspace::project::ProjectService;
 use crate::modules::workspace::session;
 use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::WorkspaceState;
+use std::sync::Arc;
 use tauri::State;
 
 // ===== Process commands =====
@@ -39,8 +40,14 @@ pub fn list_processes(state: State<'_, WorkspaceState>) -> Vec<TrackedProcess> {
 }
 
 #[tauri::command]
-pub fn kill_process(state: State<'_, WorkspaceState>, id: String) -> Result<(), String> {
-    state.process_manager.kill(&id)
+pub async fn kill_process(state: State<'_, WorkspaceState>, id: String) -> Result<(), String> {
+    // Tree-kill может блокировать секунды (Unix: SIGTERM + 2s grace + SIGKILL):
+    // вне главного потока, чтобы UI не замирал.
+    let manager = Arc::clone(&state.process_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.kill(&id))
+        .await
+        .map_err(|e| format!("Kill task failed: {e}"))??;
+    Ok(())
 }
 
 #[tauri::command]

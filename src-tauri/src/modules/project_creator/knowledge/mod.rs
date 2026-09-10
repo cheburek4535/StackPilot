@@ -56,11 +56,13 @@ fn load_tree() -> WizardTree {
         .expect("wizard_tree.json must parse (build-time invariant)")
 }
 
+#[allow(dead_code)]
 pub trait KnowledgeBase: Send + Sync {
     fn get_entry(&self, key: &str) -> Option<KnowledgeEntry>;
     fn search(&self, query: &str) -> Vec<KnowledgeEntry>;
 }
 
+#[allow(dead_code)]
 pub struct DefaultKnowledgeBase {
     entries: Vec<KnowledgeEntry>,
 }

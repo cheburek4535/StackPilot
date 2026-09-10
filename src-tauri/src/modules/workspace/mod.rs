@@ -15,6 +15,7 @@ use crate::modules::workspace::process_manager::ProcessManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[allow(dead_code)]
 pub struct WorkspaceState {
     pub process_manager: Arc<dyn ProcessManager>,
     pub project: project::DefaultProjectService,

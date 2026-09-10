@@ -336,6 +336,7 @@ pub struct PresetFeatures {
 
 // Устаревшие типы — будут удалены после миграции
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Category {
     pub id: String,
     pub label: String,
@@ -346,6 +347,7 @@ pub struct Category {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SubCategory {
     pub id: String,
     pub label: String,
@@ -986,6 +988,7 @@ pub struct ExecutionSnapshot {
 // ============================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct GeneratorDescriptor {
     pub id: String,
     pub name: String,

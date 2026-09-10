@@ -168,21 +168,21 @@ impl JobEngine {
     fn write_record(&self, record: &PersistedJob) {
         let path = self.job_path(&record.job_id);
         if let Err(e) = std::fs::create_dir_all(&self.dir) {
-            eprintln!("[toolchainx] каталог заданий не создан: {e}");
+            log::error!("[toolchainx] каталог заданий не создан: {e}");
             return;
         }
         match serde_json::to_string_pretty(record) {
             Ok(raw) => {
                 let tmp = path.with_extension("json.tmp");
                 if let Err(e) = std::fs::write(&tmp, &raw) {
-                    eprintln!("[toolchainx] запись задания не удалась: {e}");
+                    log::error!("[toolchainx] запись задания не удалась: {e}");
                     return;
                 }
                 if let Err(e) = std::fs::rename(&tmp, &path) {
-                    eprintln!("[toolchainx] сохранение задания не удалось: {e}");
+                    log::error!("[toolchainx] сохранение задания не удалось: {e}");
                 }
             }
-            Err(e) => eprintln!("[toolchainx] сериализация задания не удалась: {e}"),
+            Err(e) => log::error!("[toolchainx] сериализация задания не удалась: {e}"),
         }
     }
 

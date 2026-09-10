@@ -48,6 +48,7 @@ impl TemplateEngine {
 
     /// Загрузить шаблон из встроенной строки (для использования в Recipe).
     /// В будущем может загружать из файлов.
+#[allow(dead_code)]
     pub fn load_template(&self, name: &str, content: &str) -> String {
         // TBD: кэширование, валидация
         let _ = name;

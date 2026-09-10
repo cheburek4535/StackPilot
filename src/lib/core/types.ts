@@ -46,6 +46,9 @@ export type AppSettings = {
   restore_last_route: boolean;
   confirm_before_reset: boolean;
 
+  /** "ask" | "always" | "never" — поведение при закрытии с запущенными процессами. */
+  quit_process_behavior: string;
+
   personal: PersonalSettings;
   ai: AiSettings;
 };

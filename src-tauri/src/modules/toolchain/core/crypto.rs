@@ -243,32 +243,32 @@ pub fn random_bytes(len: usize) -> Result<Vec<u8>, String> {
 
 #[cfg(target_os = "windows")]
 fn bcrypt_gen_random(len: usize) -> Option<Vec<u8>> {
-    use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
+    use std::os::raw::{c_int, c_uchar, c_ulong};
 
     // BCRYPT_USE_SYSTEM_PREFERRED_RNG = 0x00000002
     const USE_SYSTEM_PREFERRED_RNG: c_ulong = 0x0000_0002;
 
     type BCryptGenRandomFn = unsafe extern "system" fn(
-        hAlgorithm: isize,
-        pBuffer: *mut c_uchar,
-        cbBuffer: c_ulong,
-        dwFlags: c_ulong,
+        h_algorithm: isize,
+        p_buffer: *mut c_uchar,
+        cb_buffer: c_ulong,
+        dw_flags: c_ulong,
     ) -> c_int;
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn LoadLibraryA(lpFileName: *const c_char) -> isize;
-        fn GetProcAddress(hModule: isize, lpProcName: *const c_char) -> isize;
+        fn LoadLibraryA(lpFileName: *const u8) -> isize;
+        fn GetProcAddress(hModule: isize, lpProcName: *const u8) -> isize;
     }
 
     unsafe {
         let dll = b"bcrypt.dll\0";
-        let lib = LoadLibraryA(dll.as_ptr() as *const c_char);
+        let lib = LoadLibraryA(dll.as_ptr());
         if lib == 0 {
             return None;
         }
         let name = b"BCryptGenRandom\0";
-        let addr = GetProcAddress(lib, name.as_ptr() as *const c_char);
+        let addr = GetProcAddress(lib, name.as_ptr());
         if addr == 0 {
             return None;
         }

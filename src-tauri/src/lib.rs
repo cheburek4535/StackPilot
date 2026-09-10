@@ -27,6 +27,8 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data dir");
 
+            core::logging::init(&data_dir);
+
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 
             std::fs::create_dir_all(data_dir.join("profiles"))
@@ -287,6 +289,11 @@ pub fn run() {
             #[cfg(feature = "plugins")]
             mini_ide::commands::format_code,
         ])
-        .run(tauri::generate_context!())
-        .expect("Error starting Tauri application");
+        .build(tauri::generate_context!())
+        .expect("Error building Tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                core::process_registry::handle_exit_request(app_handle, api, code);
+            }
+        });
 }

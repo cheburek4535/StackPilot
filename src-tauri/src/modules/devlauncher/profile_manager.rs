@@ -713,7 +713,7 @@ fn merge_legacy_into_v2(
 mod tests {
     use super::*;
     use serde_json::Map;
-    use std::time::{Instant, SystemTime};
+    use std::time::SystemTime;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

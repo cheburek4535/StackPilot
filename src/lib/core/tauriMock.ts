@@ -46,6 +46,7 @@ export function initTauriMock() {
     accent_color: "violet",
     restore_last_route: true,
     confirm_before_reset: true,
+    quit_process_behavior: "ask",
     personal: { name: "", username: "", email: "" },
     ai: {
       enabled: false,

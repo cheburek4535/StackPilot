@@ -48,22 +48,22 @@ mod dpapi {
     }
 
     type ProtectFn = unsafe extern "system" fn(
-        pDataIn: *const Blob,
-        szDataDescr: *const u16,
-        pOptionalEntropy: *const Blob,
-        pvReserved: isize,
-        pPromptStruct: isize,
-        dwFlags: u32,
-        pDataOut: *mut Blob,
+        p_data_in: *const Blob,
+        sz_data_descr: *const u16,
+        p_optional_entropy: *const Blob,
+        pv_reserved: isize,
+        p_prompt_struct: isize,
+        dw_flags: u32,
+        p_data_out: *mut Blob,
     ) -> i32;
     type UnprotectFn = unsafe extern "system" fn(
-        pDataIn: *const Blob,
-        ppDataDescr: *mut isize,
-        pOptionalEntropy: *const Blob,
-        pvReserved: isize,
-        pPromptStruct: isize,
-        dwFlags: u32,
-        pDataOut: *mut Blob,
+        p_data_in: *const Blob,
+        pp_data_descr: *mut isize,
+        p_optional_entropy: *const Blob,
+        pv_reserved: isize,
+        p_prompt_struct: isize,
+        dw_flags: u32,
+        p_data_out: *mut Blob,
     ) -> i32;
 
     #[link(name = "kernel32")]
@@ -249,7 +249,7 @@ impl SecretStore {
             values: HashMap<String, String>,
         }
         let Ok(parsed) = serde_json::from_str::<FileFormat>(&raw) else {
-            eprintln!("[toolchain] secrets.bin повреждён — начинаю с пустого хранилища");
+            log::error!("[toolchain] secrets.bin повреждён — начинаю с пустого хранилища");
             return;
         };
         self.encrypted = parsed.encrypted;
@@ -268,7 +268,7 @@ impl SecretStore {
                 None => {
                     // Чужой профиль/машина/повреждение: ключ не восстанавливаем,
                     // но и не роняем приложение — просто сообщаем.
-                    eprintln!(
+                    log::warn!(
                         "[toolchain] секрет «{key}» не удалось расшифровать (смена профиля/машины?)"
                     );
                 }

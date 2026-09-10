@@ -23,6 +23,7 @@ pub trait FileExplorerService: Send + Sync {
     fn read_file(&self, path: &str) -> Result<FileContent, String>;
     fn write_file(&self, path: &str, content: &str) -> Result<(), String>;
     fn open_in_vscode(&self, path: &str, vscode_path: Option<&str>) -> Result<(), String>;
+#[allow(dead_code)]
     fn detect_language(&self, path: &str) -> String;
 }
 
@@ -127,11 +128,11 @@ impl FileExplorerService for DefaultFileExplorerService {
         // Resolve the CLI name to an absolute path using the shared
         // cross-platform discovery (PATH, Windows App Paths registry, macOS
         // bundles). A bare `code` fails on Windows whenever the app's PATH
-        // lacks the user's shell additions — resolution fixes that.
+        // lacks the user's shell additions вЂ” resolution fixes that.
         let resolved = crate::platform::ide::resolve_ide_executable(cli).ok_or_else(|| {
             format!(
                 "Failed to open VSCode: '{}' was not found on this system. \
-                     Make sure the path is correct in Settings → System.",
+                     Make sure the path is correct in Settings в†’ System.",
                 cli
             )
         })?;
@@ -151,7 +152,7 @@ impl FileExplorerService for DefaultFileExplorerService {
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(format!(
-                "Failed to open VSCode ({}): {}. Make sure the path is correct in Settings → System.",
+                "Failed to open VSCode ({}): {}. Make sure the path is correct in Settings в†’ System.",
                 resolved, e
             )),
         }

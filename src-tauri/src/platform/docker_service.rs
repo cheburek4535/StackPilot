@@ -2,7 +2,7 @@
 //!
 //! Distinguishes between various Docker failure modes and provides
 //! structured diagnostics for each. Docker readiness operations are
-//! separate from project actions — a Docker failure does not disable
+//! separate from project actions вЂ” a Docker failure does not disable
 //! unrelated project actions.
 
 use std::net::ToSocketAddrs;
@@ -254,7 +254,7 @@ impl DockerService {
             return cli_check;
         }
         // `check_cli` and `resolve_cli` must agree; a divergence here is a
-        // hard failure, never a panic — a panic inside the async wait path
+        // hard failure, never a panic вЂ” a panic inside the async wait path
         // would hang the whole run (the step task never completes).
         let Some(cli) = Self::resolve_cli() else {
             return DockerDiagnostic {
@@ -283,7 +283,7 @@ impl DockerService {
                 detected_os: os,
             },
             // A successful `docker version` means the engine responded. The
-            // version may legitimately be empty on some configs — that is
+            // version may legitimately be empty on some configs вЂ” that is
             // still a ready daemon, not an error.
             Some((true, out, _)) => {
                 let version = out.trim().to_string();
@@ -411,14 +411,14 @@ impl DockerService {
                     if !is_service_running(service) {
                         if !logged_service_wait {
                             logged_service_wait = true;
-                            eprintln!(
+                            log::info!(
                                 "[docker] daemon ready but service '{}' not running; \
                                  waiting (bounded by {}s)",
                                 service,
                                 check.timeout.as_secs()
                             );
                         }
-                        // Daemon ready but service not running — keep waiting.
+                        // Daemon ready but service not running вЂ” keep waiting.
                         if tokio::time::Instant::now() >= deadline {
                             return DockerReadinessResult {
                                 status: DockerStatus::DaemonStarting,
@@ -443,7 +443,7 @@ impl DockerService {
                     if !is_port_open(port) {
                         if !logged_port_wait {
                             logged_port_wait = true;
-                            eprintln!(
+                            log::info!(
                                 "[docker] daemon ready but port {} not listening; \
                                  waiting (bounded by {}s)",
                                 port,
@@ -482,9 +482,9 @@ impl DockerService {
             // as soon as `docker version` answers.
             if check.auto_launch && !auto_launched {
                 auto_launched = true;
-                eprintln!("[docker] daemon not ready; attempting to auto-launch");
+                log::info!("[docker] daemon not ready; attempting to auto-launch");
                 if let Err(diag) = Self::try_launch_docker() {
-                    eprintln!("[docker] auto-launch failed: {}", diag);
+                    log::warn!("[docker] auto-launch failed: {}", diag);
                 }
             }
 
@@ -557,7 +557,7 @@ impl DockerService {
                             ),
                         ));
                     }
-                    eprintln!(
+                    log::info!(
                         "[docker] launched Docker Desktop via '{}'",
                         launcher.program
                     );
@@ -583,7 +583,7 @@ impl DockerService {
                                 Some("Start Docker Desktop manually.".to_string()),
                             ));
                         }
-                        eprintln!("[docker] launched Docker Desktop via '{}'", candidate);
+                        log::info!("[docker] launched Docker Desktop via '{}'", candidate);
                         Self::best_effort_engine_start();
                         return Ok(());
                     }
@@ -607,7 +607,7 @@ impl DockerService {
                         Some("Start Docker Desktop from /Applications manually.".to_string()),
                     ));
                 }
-                eprintln!("[docker] launched Docker Desktop via `open -a Docker`");
+                log::info!("[docker] launched Docker Desktop via `open -a Docker`");
                 Self::best_effort_engine_start();
                 Ok(())
             }
@@ -620,7 +620,7 @@ impl DockerService {
                             Some("Start Docker Desktop manually.".to_string()),
                         ));
                     }
-                    eprintln!("[docker] launched Docker Desktop via `docker-desktop`");
+                    log::info!("[docker] launched Docker Desktop via `docker-desktop`");
                     Self::best_effort_engine_start();
                     return Ok(());
                 }
@@ -630,7 +630,7 @@ impl DockerService {
                 if resolve_executable("systemctl", None).is_some() {
                     let _ =
                         spawn_detached("systemctl", &["start".to_string(), "docker".to_string()]);
-                    eprintln!("[docker] attempted `systemctl start docker`");
+                    log::info!("[docker] attempted `systemctl start docker`");
                     return Ok(());
                 }
                 Err(err_diag(
@@ -646,12 +646,12 @@ impl DockerService {
     }
 
     /// Fire the `docker desktop start` engine bootstrap and log any failure.
-    /// The launch itself is best-effort — the daemon wait loop reports the
-    /// authoritative state — so a failure here is a log line, not an abort.
+    /// The launch itself is best-effort вЂ” the daemon wait loop reports the
+    /// authoritative state вЂ” so a failure here is a log line, not an abort.
     fn best_effort_engine_start() {
         match Self::docker_desktop_start() {
             Ok(()) => {}
-            Err(diag) => eprintln!("[docker] engine start failed: {}", diag),
+            Err(diag) => log::error!("[docker] engine start failed: {}", diag),
         }
     }
 
@@ -660,7 +660,7 @@ impl DockerService {
     /// backend frequently ends up in this state after sleep or a crash).
     /// `docker desktop start` (Docker Desktop 4.26+) boots the engine
     /// without restarting the GUI and is idempotent. Older versions print
-    /// an unknown-command error to stderr (discarded) — harmless.
+    /// an unknown-command error to stderr (discarded) вЂ” harmless.
     ///
     /// Returns `Ok(())` when a launch attempt was made; `Err` carries a
     /// structured diagnostic when the CLI is unavailable or the spawn failed.
@@ -685,7 +685,7 @@ impl DockerService {
         crate::platform::suppress_child_console(&mut cmd);
         match cmd.spawn() {
             Ok(_) => {
-                eprintln!(
+                log::info!(
                     "[docker] started Desktop engine via `{} desktop start`",
                     cli.display()
                 );
@@ -700,7 +700,7 @@ impl DockerService {
         }
     }
 
-    /// Preflight check for Docker commands — validates daemon state
+    /// Preflight check for Docker commands вЂ” validates daemon state
     /// before executing a Docker command.
     pub fn preflight_for_command(command: &str) -> Result<(), DockerDiagnostic> {
         let trimmed = command.trim_start();
@@ -795,12 +795,12 @@ fn classify_docker_error(stderr: &str, os: crate::platform::host::HostOs) -> Doc
 
 /// Check if a Docker service is running.
 ///
-/// Uses the resolved CLI (never the bare `docker` name — GUI-launched apps
+/// Uses the resolved CLI (never the bare `docker` name вЂ” GUI-launched apps
 /// may lack it on PATH), and each attempt is bounded so a hung `docker ps`
 /// cannot block the readiness wait loop indefinitely.
 fn is_service_running(service_name: &str) -> bool {
     let Some(cli) = DockerService::resolve_cli() else {
-        eprintln!("[docker] is_service_running: docker CLI not resolvable");
+        log::warn!("[docker] is_service_running: docker CLI not resolvable");
         return false;
     };
     run_cli_bounded(
@@ -821,12 +821,12 @@ fn is_service_running(service_name: &str) -> bool {
 /// List the container IDs of running services for the compose project in
 /// `dir`. Runs `docker compose ps --status running --quiet` inside `dir`
 /// (compose's own config discovery), so it verifies the SAME project the
-/// `docker compose up` step booted. The check is captured — it never opens
+/// `docker compose up` step booted. The check is captured вЂ” it never opens
 /// a terminal window. Returns an empty vector when no container is running
 /// or when the check cannot complete (CLI missing, command error, timeout).
 pub fn compose_running_ids(dir: &std::path::Path) -> Vec<String> {
     let Some(cli) = DockerService::resolve_cli() else {
-        eprintln!("[docker] compose_running_ids: docker CLI not resolvable");
+        log::warn!("[docker] compose_running_ids: docker CLI not resolvable");
         return Vec::new();
     };
     run_cli_bounded_in(
@@ -848,7 +848,7 @@ pub fn compose_running_ids(dir: &std::path::Path) -> Vec<String> {
 ///
 /// Returns `Some((success, stdout, stderr))` when the process finished within
 /// `timeout`, or `None` when it was killed after exceeding the timeout (or
-/// could not be spawned). Spawn/poll failures are logged — never panicked.
+/// could not be spawned). Spawn/poll failures are logged вЂ” never panicked.
 fn run_cli_bounded(
     cli: &std::path::Path,
     args: &[&str],
@@ -876,7 +876,7 @@ fn run_cli_bounded_in(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
+            log::error!(
                 "[docker] failed to execute {} {}: {}",
                 cli.display(),
                 args.join(" "),
@@ -901,7 +901,7 @@ fn run_cli_bounded_in(
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                eprintln!(
+                log::error!(
                     "[docker] failed to poll {} {}: {}",
                     cli.display(),
                     args.join(" "),

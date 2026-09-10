@@ -84,11 +84,13 @@ fn tooling_categories() -> &'static [&'static str] {
     ]
 }
 
+#[allow(dead_code)]
 pub trait PackRegistry: Send + Sync {
     fn list_packs(&self, kind: Option<PackKind>) -> Vec<PackInfo>;
     fn get_pack(&self, id: &str) -> Option<PackInfo>;
 }
 
+#[allow(dead_code)]
 pub struct DefaultPackRegistry {
     packs: Vec<PackInfo>,
 }

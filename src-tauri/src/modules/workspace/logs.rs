@@ -2,17 +2,20 @@ use crate::modules::workspace::models::ProcessLogs;
 
 /// Service for aggregating and filtering process logs.
 /// Wraps ProcessManager's get_logs and can add search/filter capabilities.
+#[allow(dead_code)]
 pub trait LogsService: Send + Sync {
     fn filter_logs(&self, logs: &ProcessLogs, query: &str, stream: Option<&str>) -> ProcessLogs;
     fn merge_logs(&self, all_logs: Vec<(&str, ProcessLogs)>) -> MergedLog;
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MergedLog {
     pub entries: Vec<LogEntry>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LogEntry {
     pub process_id: String,
     pub stream: String,

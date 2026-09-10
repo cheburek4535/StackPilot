@@ -6,7 +6,7 @@ use super::host::{current_os, HostOs};
 use crate::modules::devlauncher::models::ProcessTrackingQuality;
 
 // ---------------------------------------------------------------------------
-// TerminalBackend — platform abstraction for native terminal execution
+// TerminalBackend вЂ” platform abstraction for native terminal execution
 // ---------------------------------------------------------------------------
 
 /// Which terminal emulator to launch.
@@ -72,7 +72,7 @@ impl fmt::Display for TerminalBackend {
 }
 
 // ---------------------------------------------------------------------------
-// TerminalWindowPolicy — new window vs tab
+// TerminalWindowPolicy вЂ” new window vs tab
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,7 +88,7 @@ pub enum TerminalWindowPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// TerminalConfig — configuration for a terminal launch
+// TerminalConfig вЂ” configuration for a terminal launch
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +141,7 @@ impl Default for TerminalConfig {
 }
 
 // ---------------------------------------------------------------------------
-// TerminalPlan — resolved launch command for a specific terminal
+// TerminalPlan вЂ” resolved launch command for a specific terminal
 // ---------------------------------------------------------------------------
 
 /// A resolved terminal launch plan: the program to execute and its arguments.
@@ -165,8 +165,8 @@ pub struct TerminalPlan {
     /// with spaces, silently killing the whole chain. The spawner therefore
     /// pops the LAST argument and appends it raw, UNQUOTED: cmd parses
     /// everything after `/K` itself, and wt forwards the tail to cmd
-    /// unchanged. (Wrapping the tail in outer quotes — the value stored
-    /// here — does NOT survive cmd's first/last-quote stripping: the nested
+    /// unchanged. (Wrapping the tail in outer quotes вЂ” the value stored
+    /// here вЂ” does NOT survive cmd's first/last-quote stripping: the nested
     /// quotes get mangled and the command dies with "C:\Program is not
     /// recognized".)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,7 +261,7 @@ pub fn resolve_terminal_plan(config: &TerminalConfig) -> Result<TerminalPlan, St
 /// gets it via `--startingDirectory` (see `resolve_windows_terminal`). A
 /// `cd /d "path"` prefix is fragile under `wt`'s command-line re-parsing
 /// (quotes get stripped, so a path with spaces breaks the `cd` and the
-/// command silently never runs). POSIX terminals keep the `cd` prefix —
+/// command silently never runs). POSIX terminals keep the `cd` prefix вЂ”
 /// their launchers start the shell in the launcher's own directory.
 fn build_inner_command(command: &str, working_dir: Option<&str>) -> String {
     match working_dir {
@@ -341,6 +341,7 @@ fn batch_escape(s: &str) -> String {
 }
 
 /// Shell-quote a single token for terminal argument.
+#[allow(dead_code)]
 fn shell_quote(token: &str) -> String {
     let needs_quote = token.is_empty()
         || token
@@ -361,7 +362,7 @@ fn resolve_windows_terminal(
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
     let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Cmd);
-    // wt.exe -w new cmd /K "<inner>" — the command is passed as a single
+    // wt.exe -w new cmd /K "<inner>" вЂ” the command is passed as a single
     // argv entry so cmd.exe receives it literally (no temp batch script:
     // the user sees the exact command in the terminal and nothing leaks
     // into %TEMP%). The tail is cmd-style quoted and appended RAW: wt
@@ -407,7 +408,7 @@ fn resolve_windows_terminal(
 
     // `raw_tail` is a FLAG: the spawner pops the last `args` element (the
     // unquoted payload) and appends it raw. The value stored here is not
-    // appended itself — cmd's first/last-quote stripping mangles a
+    // appended itself вЂ” cmd's first/last-quote stripping mangles a
     // quote-wrapped tail and the command dies with "C:\Program is not
     // recognized".
     let raw_tail = format!("\"{}\"", inner_cmd);
@@ -424,7 +425,7 @@ fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan,
     // `cmd /K <tail>`: the tail is a raw command line parsed by cmd itself.
     // `&&` separators must NOT be escaped (`^&^&` would join the pieces
     // into one command) and the tail must reach cmd without backslash
-    // re-escaping — hence `raw_tail`.
+    // re-escaping вЂ” hence `raw_tail`.
     let mut args = Vec::new();
     // `/V:ON` enables delayed expansion so the startup probe can capture the
     // inner command's exit code with `!ERRORLEVEL!`.
@@ -443,7 +444,7 @@ fn resolve_cmd(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan,
 
     // `raw_tail` is a FLAG: the spawner pops the last `args` element (the
     // unquoted `full_cmd`) and appends it raw. The value stored here is not
-    // appended itself — cmd's first/last-quote stripping would mangle the
+    // appended itself вЂ” cmd's first/last-quote stripping would mangle the
     // nested quotes (paths with spaces die with "C:\Program is not
     // recognized"). cmd parses the UNQUOTED tail after `/K` itself.
     let raw_tail = format!("\"{}\"", full_cmd);
@@ -820,7 +821,7 @@ mod tests {
         // The spawner pops the plan's LAST argument and appends it raw
         // (never re-quoted). If a resolver stops putting the payload last,
         // cmd/wt receive a mangled command line and every command with a
-        // quoted path dies with "C:\Program is not recognized" — the
+        // quoted path dies with "C:\Program is not recognized" вЂ” the
         // regression this test guards against.
         let cmd_config = TerminalConfig {
             backend: TerminalBackend::Cmd,
@@ -924,7 +925,7 @@ mod tests {
         assert!(idx.is_some(), "wt plan must carry --startingDirectory");
         let idx = idx.unwrap();
         assert_eq!(plan.args[idx + 1], "C:\\My Project\\app");
-        // The command line must not carry a `cd` prefix — the directory is
+        // The command line must not carry a `cd` prefix вЂ” the directory is
         // passed as a structured option instead.
         assert!(plan.args.iter().all(|a| !a.starts_with("cd ")));
     }

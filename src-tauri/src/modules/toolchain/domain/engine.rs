@@ -165,7 +165,7 @@ impl ScanEngine {
             // безопасно (recovery просто не найдёт «зависший» скан),
             // но причина сбоя обязана быть видна в логе.
             if let Err(e) = std::fs::rename(&tmp, &path) {
-                eprintln!("[toolchainx] журнал скана не сохранился: {e}");
+                log::error!("[toolchainx] журнал скана не сохранился: {e}");
             }
         }
     }
@@ -194,7 +194,7 @@ impl ScanEngine {
         job.recovered = true;
         self.write_journal(&job);
         self.inner.lock().expect("scan engine poisoned").last_job = Some(job.clone());
-        eprintln!(
+        log::warn!(
             "[toolchain] скан {} прерван перезапуском приложения",
             job.job_id
         );
@@ -466,7 +466,7 @@ impl ScanEngine {
         if deadline_hit {
             cancel.store(true, Ordering::SeqCst);
             set.abort_all();
-            eprintln!(
+            log::warn!(
                 "[toolchain] скан {job_id} превысил дедлайн {}с — частичный отчёт",
                 options.overall_deadline.as_secs()
             );

@@ -24,6 +24,7 @@ pub enum ProblemSeverity {
 /// - Any module can push problems here
 pub trait ProblemsService: Send + Sync {
     fn collect_from_processes(&self, processes: &[TrackedProcess]) -> Vec<Problem>;
+#[allow(dead_code)]
     fn add_problem(&self, problem: Problem);
     fn get_all(&self) -> Vec<Problem>;
     fn clear(&self);
@@ -172,11 +173,11 @@ mod tests {
         let service = DefaultProblemsService::new();
         let processes = vec![make_crashed_process("p1")];
 
-        // First call — should create 1 problem
+        // First call вЂ” should create 1 problem
         let problems = service.collect_from_processes(&processes);
         assert_eq!(problems.len(), 1);
 
-        // Second call with same process — should NOT create duplicates
+        // Second call with same process вЂ” should NOT create duplicates
         let problems = service.collect_from_processes(&processes);
         assert_eq!(problems.len(), 0);
 
@@ -207,7 +208,7 @@ mod tests {
         proc1.status = ProcessStatus::ExitedWithError(1);
         proc1.last_error = Some("exit code 1".to_string());
         let problems2 = service.collect_from_processes(&[proc1]);
-        // Different status — should create a new problem
+        // Different status вЂ” should create a new problem
         assert_eq!(problems2.len(), 1);
         assert_eq!(service.get_all().len(), 2);
     }
@@ -226,7 +227,7 @@ mod tests {
         service.add_problem(problem.clone());
         assert_eq!(service.get_all().len(), 1);
 
-        // Add same problem again — should be deduplicated
+        // Add same problem again вЂ” should be deduplicated
         service.add_problem(problem);
         assert_eq!(service.get_all().len(), 1);
     }

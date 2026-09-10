@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

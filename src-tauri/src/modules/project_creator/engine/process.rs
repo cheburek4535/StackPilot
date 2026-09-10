@@ -92,6 +92,7 @@ pub struct ProcessSpec {
 }
 
 impl ProcessSpec {
+    #[allow(dead_code)]
     pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
@@ -165,6 +166,7 @@ impl ProcessExecutionError {
     }
 
     /// Командная строка «command arg1 arg2 ...» для сообщений об ошибках.
+    #[allow(dead_code)]
     pub fn command_line(&self) -> String {
         command_display(&self.command, &self.args)
     }
@@ -302,7 +304,7 @@ impl ProcessRunner {
             .unwrap_or_else(|| PathBuf::from("."));
         let start = Instant::now();
 
-        let mut cmd = build_command(&spec);
+        let mut cmd = build_command(&spec)?;
         if let Some(dir) = &spec.working_dir {
             cmd.current_dir(dir);
         }
@@ -341,6 +343,13 @@ impl ProcessRunner {
                 });
             }
         };
+        crate::core::process_registry::register(
+            child.id().unwrap_or(0),
+            command.clone(),
+            command.clone(),
+            args.clone(),
+            "project_creator",
+        );
 
         let stdout_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -621,13 +630,26 @@ async fn check_triggers(
 ///   - Windows: PowerShell via `powershell -Command`; .cmd/.bat via
 ///     `cmd /D /C`; direct commands for everything else.
 ///   - Unix: `sh -c` with sh-quoted arguments (preserves existing behavior).
-fn build_command(spec: &ProcessSpec) -> TokioCommand {
+fn build_command(spec: &ProcessSpec) -> Result<TokioCommand, ProcessExecutionError> {
     use crate::platform::command::{build_tokio_command, infer_command_mode};
 
     let mode = infer_command_mode(&spec.command, &spec.args, None);
-    // infer_command_mode only returns OS-compatible shells, so Ok is guaranteed.
-    let mut cmd = build_tokio_command(&spec.command, &spec.args, mode)
-        .expect("infer_command_mode must return a valid mode for the current OS");
+    // CommandBuildError arises only when a shell is incompatible with the
+    // current OS. That would be a cross-function invariant violation on
+    // infer_command_mode's side — surface it as a Spawn error instead of
+    // panicking: the user gets a readable failure, not a crash.
+    let mut cmd = build_tokio_command(&spec.command, &spec.args, mode).map_err(|e| {
+        ProcessExecutionError {
+            kind: ProcessErrorKind::Spawn {
+                source: e.to_string(),
+            },
+            command: spec.command.clone(),
+            args: spec.args.clone(),
+            working_dir: spec.working_dir.clone().unwrap_or_else(|| PathBuf::from(".")),
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        }
+    })?;
 
     // PowerShell heuristic: extra args appended after -Command <script>.
     if crate::platform::command::is_powershell_command(&spec.command) && !spec.args.is_empty() {
@@ -645,7 +667,7 @@ fn build_command(spec: &ProcessSpec) -> TokioCommand {
     #[cfg(target_os = "windows")]
     crate::platform::suppress_child_console_async(&mut cmd);
 
-    cmd
+    Ok(cmd)
 }
 
 // ============================================================================
@@ -653,11 +675,13 @@ fn build_command(spec: &ProcessSpec) -> TokioCommand {
 // ============================================================================
 
 /// Параметр в командную строку cmd.exe (делегирует в platform::command).
+#[allow(dead_code)]
 pub fn win_quote_arg(arg: &str) -> String {
     crate::platform::command::win_quote_arg(arg)
 }
 
 /// Командная строка для `cmd /S /C` (обёртка с внешними кавычками).
+#[allow(dead_code)]
 pub fn win_command_line(command: &str, args: &[String]) -> String {
     let mut line = win_quote_arg(command);
     for arg in args {
@@ -668,22 +692,26 @@ pub fn win_command_line(command: &str, args: &[String]) -> String {
 }
 
 /// Параметр для `sh -c` (делегирует в platform::command).
+#[allow(dead_code)]
 pub fn sh_quote(arg: &str) -> String {
     crate::platform::command::sh_quote(arg)
 }
 
 /// Имя исполняемого файла для прямого запуска на Windows
 /// (делегирует в platform::command).
+#[allow(dead_code)]
 pub fn windows_command_program(command: &str) -> String {
     crate::platform::command::resolve_windows_program_name(command)
 }
 
+#[allow(dead_code)]
 pub fn is_windows_batch(command: &str) -> bool {
     crate::platform::paths::is_batch_file(command)
 }
 
 /// Безопасная строка для cmd /C: кавычки только вокруг отдельных токенов,
 /// без внешней пары, которая превращала `node -e "..."` в один аргумент.
+#[allow(dead_code)]
 pub fn windows_shell_line(command: &str, args: &[String]) -> String {
     let mut line = win_quote_arg(command);
     for arg in args {
@@ -1087,6 +1115,33 @@ mod tests {
             "{}",
             err.format_command_error()
         );
+    }
+
+    #[test]
+    fn build_command_is_fallible_and_builds_ok() {
+        // Регрессия: build_command возвращает Result (CommandBuildError →
+        // Spawn), а не паникует на несовместимой оболочке. Для обычных
+        // команд (direct и платформенные shell-шимы) сборка обязана
+        // проходить без ошибок.
+        let direct = ProcessSpec::new("npm");
+        assert!(
+            build_command(&direct).is_ok(),
+            "direct command должен собираться"
+        );
+
+        #[cfg(target_os = "windows")]
+        {
+            let batch = ProcessSpec::new("gradle");
+            assert!(
+                build_command(&batch).is_ok(),
+                "batch-шим обязан собираться через cmd"
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let sh = ProcessSpec::new("ls");
+            assert!(build_command(&sh).is_ok(), "sh-команда обязана собираться");
+        }
     }
 
     #[tokio::test]

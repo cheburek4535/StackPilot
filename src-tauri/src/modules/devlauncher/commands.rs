@@ -183,7 +183,7 @@ pub async fn execute_action(
                 }
                 Err(e) => {
                     // Binding not found — log warning but continue with host env
-                    eprintln!(
+                    log::warn!(
                         "Warning: environment binding '{}' not found: {}. Using host environment.",
                         binding_id, e
                     );
@@ -379,7 +379,7 @@ pub async fn run_profile(
                     Some(ov)
                 }
                 Err(e) => {
-                    eprintln!(
+                    log::warn!(
                         "Warning: environment binding '{}' not found: {}. Using host environment.",
                         binding_id, e
                     );
@@ -654,7 +654,7 @@ pub async fn run_profile_v2(
                     Some(ov)
                 }
                 Err(e) => {
-                    eprintln!(
+                    log::warn!(
                         "Warning: environment binding '{}' not found: {}. Using host environment.",
                         binding_id, e
                     );
@@ -699,12 +699,17 @@ pub async fn run_profile_v2(
 // ---------------------------------------------------------------------------
 
 /// Kill all running processes associated with a run.
+/// `docker compose down` inside the teardown can take seconds — run off the
+/// main thread so the UI never freezes on Stop.
 #[tauri::command]
-pub fn stop_run_processes(
+pub async fn stop_run_processes(
     state: State<'_, DevLauncherState>,
     run_id: String,
 ) -> Result<Vec<String>, String> {
-    state.orchestrator.stop_run_processes(&run_id)
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || orchestrator.stop_run_processes(&run_id))
+        .await
+        .map_err(|e| format!("Stop task failed: {e}"))?
 }
 
 /// Get combined logs for all processes in a run.

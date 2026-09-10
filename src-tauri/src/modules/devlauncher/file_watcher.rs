@@ -104,6 +104,7 @@ impl FileWatcher {
         self.watching.load(Ordering::SeqCst)
     }
 
+#[allow(dead_code)]
     pub fn watched_path(&self) -> Option<PathBuf> {
         self.watched_path
             .lock()

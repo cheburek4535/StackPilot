@@ -3387,6 +3387,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "libc",
+ "log",
  "notify",
  "regex",
  "serde",

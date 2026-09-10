@@ -28,11 +28,13 @@ pub trait SessionService: Send + Sync {
     fn end_session(&self);
     fn get_session(&self) -> Option<SessionInfo>;
     fn link_process(&self, process_id: &str);
+#[allow(dead_code)]
     fn get_linked_processes(&self) -> Vec<String>;
     fn increment_errors(&self);
 }
 
 struct ActiveSession {
+#[allow(dead_code)]
     context: ProjectContext,
     key: String,
     started_at: u64,
@@ -92,7 +94,7 @@ impl DefaultSessionService {
     }
 
     /// Write the ledger to disk (atomic temp-file + rename). Failures are
-    /// logged to stderr only — time tracking must never break the workspace.
+    /// logged to stderr only вЂ” time tracking must never break the workspace.
     fn persist(&self, force: bool) {
         let path = match &self.stats_path {
             Some(p) => p.clone(),
@@ -116,7 +118,7 @@ impl DefaultSessionService {
                     }
                 }
             }
-            Err(e) => eprintln!("[session] failed to serialize stats: {e}"),
+            Err(e) => log::warn!("[session] failed to serialize stats: {e}"),
         }
     }
 
@@ -339,7 +341,7 @@ mod tests {
             guard.as_mut().unwrap().started_at =
                 guard.as_mut().unwrap().started_at.saturating_sub(90);
         }
-        // Switch directly to another project — old elapsed must be persisted.
+        // Switch directly to another project вЂ” old elapsed must be persisted.
         svc.start_session(&ctx("b", Some("C:/dev/b")));
 
         // Reopen project A: its total reflects the folded 90s.

@@ -26,7 +26,7 @@ use super::shell::{parse_shell, ShellKind};
 // Structured command specification
 // ---------------------------------------------------------------------------
 
-/// Structured command specification — the authoritative representation
+/// Structured command specification вЂ” the authoritative representation
 /// of a command to execute. Unlike a flat string, this preserves the
 /// program, arguments, shell intent, and environment as distinct fields.
 ///
@@ -37,7 +37,7 @@ use super::shell::{parse_shell, ShellKind};
 pub struct ResolvedCommand {
     /// The program to execute (absolute path or bare name resolvable via PATH).
     pub program: String,
-    /// Structured arguments — never joined with `split_whitespace`.
+    /// Structured arguments вЂ” never joined with `split_whitespace`.
     pub args: Vec<String>,
     /// If set, the command must be executed through this shell.
     pub shell: Option<ShellKind>,
@@ -141,6 +141,7 @@ impl PathOverlay {
 // ---------------------------------------------------------------------------
 
 /// Known npm-ecosystem tool names that ship as `.cmd`/`.bat` shims on Windows.
+#[allow(dead_code)]
 const NPM_ECOSYSTEM_SHIMS: &[&str] = &[
     "npx",
     "npm",
@@ -180,11 +181,12 @@ const NPM_ECOSYSTEM_SHIMS: &[&str] = &[
 
 /// Resolve a Windows program name, appending `.cmd`/`.bat` for npm-ecosystem
 /// shims that `CreateProcess` cannot run directly.
+#[allow(dead_code)]
 fn resolve_windows_name(name: &str) -> String {
     let trimmed = name.trim();
     let lower = trimmed.to_ascii_lowercase();
 
-    // Already has extension or contains a path separator — pass through.
+    // Already has extension or contains a path separator вЂ” pass through.
     if lower.ends_with(".cmd")
         || lower.ends_with(".bat")
         || lower.ends_with(".exe")
@@ -243,15 +245,15 @@ fn resolve_unix_path(name: &str) -> Option<PathBuf> {
 ///
 /// # Arguments
 ///
-/// * `name` — bare command name (e.g. `"npm"`) or absolute/relative path.
-/// * `path_overlay` — additional PATH entries to search before system PATH.
+/// * `name` вЂ” bare command name (e.g. `"npm"`) or absolute/relative path.
+/// * `path_overlay` вЂ” additional PATH entries to search before system PATH.
 pub fn resolve_executable(name: &str, path_overlay: Option<&PathOverlay>) -> Option<PathBuf> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    // Absolute or relative path with separator — check directly.
+    // Absolute or relative path with separator вЂ” check directly.
     if trimmed.contains('/') || trimmed.contains('\\') {
         let p = Path::new(trimmed);
         if p.is_file() {
@@ -295,10 +297,10 @@ pub fn resolve_executable(name: &str, path_overlay: Option<&PathOverlay>) -> Opt
 ///
 /// # Arguments
 ///
-/// * `program` — the program name or path.
-/// * `args` — structured arguments (never `split_whitespace`).
-/// * `explicit_shell` — optional shell override from the step definition.
-/// * `path_overlay` — additional PATH entries to search.
+/// * `program` вЂ” the program name or path.
+/// * `args` вЂ” structured arguments (never `split_whitespace`).
+/// * `explicit_shell` вЂ” optional shell override from the step definition.
+/// * `path_overlay` вЂ” additional PATH entries to search.
 pub fn resolve_command(
     program: &str,
     args: Vec<String>,
@@ -442,7 +444,7 @@ pub fn resolve_command_target(command: &str) -> (String, Vec<String>) {
     let resolved = resolve_command_string(command, None, None).command;
 
     if resolved.program.is_empty() {
-        // Empty or pure-shell-syntax command — run through the platform shell.
+        // Empty or pure-shell-syntax command вЂ” run through the platform shell.
         let kind = super::shell::default_shell_for_platform();
         let (exe, flag) = super::shell::shell_executable(kind);
         return (exe.to_string(), vec![flag.to_string(), command.to_string()]);
@@ -454,7 +456,7 @@ pub fn resolve_command_target(command: &str) -> (String, Vec<String>) {
         // contains spaces, so `std::process::Command` re-quotes it and the
         // final command line becomes `cmd /C ""C:\...\npm.cmd" install"`,
         // which cmd breaks at the first space (`'C:\Program' is not
-        // recognized` → exit 1) — the real reason `npm install` steps died
+        // recognized` в†’ exit 1) вЂ” the real reason `npm install` steps died
         // with "Process exited with error code 1" on every profile. Return
         // the shim path + args and let the process manager invoke it through
         // `cmd /C` with a RAW command tail (see `resolve_spawn_plan` /
@@ -507,7 +509,7 @@ pub fn shell_script_line(program: &str, args: &[String], shell: ShellKind) -> St
 /// - Double-quoted strings allow `\"` escaping.
 /// - Backslash escapes the next character outside quotes.
 ///   EXCEPT on Windows, where `\` is a path separator and is always kept
-///   literal — old profiles carry commands like `cmd /C "python -m venv
+///   literal вЂ” old profiles carry commands like `cmd /C "python -m venv
 ///   .venv && .venv\Scripts\python.exe -m pip install ..."` and stripping
 ///   the separators turned them into `.venvScriptspython.exe` (exit 1).
 /// - Spaces separate tokens outside quotes.
@@ -583,7 +585,7 @@ mod tests {
     #[test]
     fn tokenize_backslash_escape() {
         // On Unix `\` escapes the next character (so `hello\ world` is one
-        // token). On Windows `\` is a path separator — never an escape — so
+        // token). On Windows `\` is a path separator вЂ” never an escape вЂ” so
         // the backslash is kept and the space still splits the tokens.
         let tokens = tokenize_command_string(r#"echo hello\ world"#);
         #[cfg(not(target_os = "windows"))]
@@ -756,7 +758,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the `npm install` → exit code 1 bug: on Windows a
+    /// Regression test for the `npm install` в†’ exit code 1 bug: on Windows a
     /// batch shim (npm.cmd, code.cmd, ...) must be returned as the program
     /// itself so the process manager wraps it through `cmd /C` with a RAW
     /// command tail. Pre-wrapping it into `cmd /C "<quoted line>"` made

@@ -37,6 +37,7 @@ pub fn load_legacy_definitions() -> Vec<ToolDefinition> {
 /// Объединённый каталог для ЛЕГАСИ-команд (tc_*): standalone-каталог +
 /// легаси-совместимость. Порядок: сначала основной каталог.
 /// Дубликаты id между файлами — ошибка разработчика (паника при старте).
+#[allow(dead_code)]
 pub fn load_merged_definitions() -> Vec<ToolDefinition> {
     let mut all = load_definitions();
     for legacy in load_legacy_definitions() {

@@ -100,12 +100,12 @@ impl ToolchainState {
         let mut secret_store = SecretStore::load(&dir);
         let legacy = { metadata_store.take_legacy_secrets() };
         if let Err(e) = secret_store.migrate_from_map(&legacy) {
-            eprintln!("[toolchain] миграция унаследованных секретов не удалась: {e}");
+            log::error!("[toolchain] миграция унаследованных секретов не удалась: {e}");
         }
         // Деградация защиты — не молчаливая: на Windows секреты обязаны
         // шифроваться DPAPI; если нет, пользователь узнаёт об этом из лога.
         if cfg!(target_os = "windows") && !secret_store.is_encrypted() && !legacy.is_empty() {
-            eprintln!("[toolchain] ВНИМАНИЕ: DPAPI недоступен — секреты хранятся без шифрования");
+            log::warn!("[toolchain] ВНИМАНИЕ: DPAPI недоступен — секреты хранятся без шифрования");
         }
 
         // Восстановление журнала заданий: незавершённая Running-сессия
@@ -113,7 +113,7 @@ impl ToolchainState {
         let journal = JobJournal::load(&dir);
         if let Some(recovered) = journal.recover_on_startup() {
             if matches!(recovered.status, InstallSessionStatus::Interrupted) {
-                eprintln!(
+                log::info!(
                     "[toolchain] восстановлена прерванная перезапуском установка от {}",
                     recovered.started_at
                 );
@@ -124,7 +124,7 @@ impl ToolchainState {
         // (Running → Interrupted) и загрузка кэша снапшотов.
         let scan_engine = Arc::new(ScanEngine::new(&dir));
         if let Some(recovered_scan) = scan_engine.recover_on_startup() {
-            eprintln!(
+            log::info!(
                 "[toolchain] восстановлен прерванный скан {} ({})",
                 recovered_scan.job_id, recovered_scan.scan_id
             );
@@ -134,7 +134,7 @@ impl ToolchainState {
         // (jobs/*.json) становятся Interrupted — «вечных» заданий нет.
         let job_engine = Arc::new(JobEngine::load(&dir));
         for recovered_job in job_engine.recover_on_startup() {
-            eprintln!(
+            log::info!(
                 "[toolchainx] восстановлено прерванное задание {} ({})",
                 recovered_job.job_id,
                 recovered_job.operation.as_str()

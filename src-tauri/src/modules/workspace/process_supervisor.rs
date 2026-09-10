@@ -20,6 +20,7 @@ use crate::platform::host::{current_os, HostOs};
 /// Contains the OS PID, tracking quality, ownership info, and a reference
 /// to the bounded log buffer. The handle is cloneable and thread-safe.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ProcessHandle {
     pub id: String,
     pub pid: u32,
@@ -38,10 +39,12 @@ impl ProcessHandle {
         self.started_at.elapsed().as_secs()
     }
 
+    #[allow(dead_code)]
     pub fn next_stdout_seq(&self) -> u64 {
         self.stdout_seq.fetch_add(1, Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     pub fn next_stderr_seq(&self) -> u64 {
         self.stderr_seq.fetch_add(1, Ordering::Relaxed)
     }
@@ -116,6 +119,7 @@ impl ProcessSupervisor {
     }
 
     /// Signal the supervisor to shut down cleanly.
+    #[allow(dead_code)]
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.notify.notify_waiters();
@@ -125,6 +129,7 @@ impl ProcessSupervisor {
     ///
     /// Returns a `ProcessHandle` that can be used to emit output events,
     /// check status, and retrieve logs.
+    #[allow(dead_code)]
     pub fn register_process(
         &self,
         id: String,
@@ -165,6 +170,7 @@ impl ProcessSupervisor {
     }
 
     /// Emit a process-output event for a specific process.
+    #[allow(dead_code)]
     pub fn emit_output(&self, process_id: &str, stream: &str, line: &str) {
         let (run_id, step_id, seq) = if let Ok(procs) = self.processes.read() {
             if let Some(entry) = procs.get(process_id) {
@@ -218,6 +224,7 @@ impl ProcessSupervisor {
     }
 
     /// Get a snapshot of a process handle.
+    #[allow(dead_code)]
     pub fn get_handle(&self, process_id: &str) -> Option<ProcessHandle> {
         self.processes
             .read()
@@ -226,6 +233,7 @@ impl ProcessSupervisor {
     }
 
     /// Get the current status of a tracked process.
+    #[allow(dead_code)]
     pub fn get_status(&self, process_id: &str) -> Option<ProcessStatus> {
         self.processes
             .read()
@@ -235,33 +243,47 @@ impl ProcessSupervisor {
 
     /// Kill a tracked process tree. Returns the outcome.
     pub fn kill(&self, process_id: &str) -> Result<ProcessStatus, String> {
-        let mut procs = self
-            .processes
-            .write()
-            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        // Снимок под замком, сам kill — вне него: блокирующее завершение
+        // дерева (Unix: SIGTERM + 2s grace + SIGKILL) не должно держать
+        // write-lock — иначе стриминг логов ВСЕХ процессов встанет на это
+        // время (emit_output ждёт read-lock).
+        let (pid, mut child) = {
+            let mut procs = self
+                .processes
+                .write()
+                .map_err(|e| format!("Lock poisoned: {}", e))?;
 
-        let entry = procs
-            .get_mut(process_id)
-            .ok_or_else(|| format!("Process '{}' not found", process_id))?;
+            let entry = procs
+                .get_mut(process_id)
+                .ok_or_else(|| format!("Process '{}' not found", process_id))?;
 
-        if entry.terminated {
-            return Ok(entry.status.clone());
-        }
+            if entry.terminated {
+                return Ok(entry.status.clone());
+            }
 
-        let pid = entry.handle.pid;
+            (entry.handle.pid, entry.child.take())
+        };
 
         // Try to kill the process tree
-        let kill_result = if let Some(ref mut child) = entry.child {
+        let kill_result = if let Some(ref mut child) = child {
             kill_process_tree(child, pid)
         } else {
             Ok(false)
         };
 
         // Reap
-        if let Some(ref mut child) = entry.child {
+        if let Some(ref mut child) = child {
             let _ = child.wait();
         }
-        entry.child = None;
+
+        // Update the entry under the lock
+        let mut procs = self
+            .processes
+            .write()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        let entry = procs
+            .get_mut(process_id)
+            .ok_or_else(|| format!("Process '{}' not found", process_id))?;
 
         match kill_result {
             Ok(was_running) => {
@@ -282,6 +304,7 @@ impl ProcessSupervisor {
     }
 
     /// Remove a process from tracking (e.g., after it has been reaped).
+    #[allow(dead_code)]
     pub fn remove(&self, process_id: &str) {
         if let Ok(mut procs) = self.processes.write() {
             procs.remove(process_id);
@@ -289,6 +312,7 @@ impl ProcessSupervisor {
     }
 
     /// Get the number of active (non-terminated) processes.
+    #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.processes
             .read()
@@ -297,6 +321,7 @@ impl ProcessSupervisor {
     }
 
     /// Get all tracked process IDs.
+    #[allow(dead_code)]
     pub fn list_process_ids(&self) -> Vec<String> {
         self.processes
             .read()

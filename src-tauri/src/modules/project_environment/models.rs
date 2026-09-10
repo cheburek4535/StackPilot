@@ -127,6 +127,7 @@ impl EnvironmentBinding {
     }
 
     /// Touch the updated_at timestamp.
+#[allow(dead_code)]
     pub fn touch(&mut self) {
         self.updated_at = chrono_now();
     }

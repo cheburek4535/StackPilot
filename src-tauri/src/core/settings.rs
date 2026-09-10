@@ -62,6 +62,7 @@ impl JsonSettingsService {
             accent_color: "orange".into(),
             restore_last_route: true,
             confirm_before_reset: true,
+            quit_process_behavior: "ask".into(),
             personal: PersonalSettings::default(),
             ai: AiSettings::default(),
         }
@@ -103,6 +104,10 @@ impl JsonSettingsService {
         } else {
             "orange".into()
         };
+
+        if !matches!(s.quit_process_behavior.as_str(), "ask" | "always" | "never") {
+            s.quit_process_behavior = "ask".into();
+        }
 
         s.personal.name = s.personal.name.trim().to_string();
         s.personal.username = s.personal.username.trim().to_string();

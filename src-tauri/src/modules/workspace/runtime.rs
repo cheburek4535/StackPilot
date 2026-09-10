@@ -3,6 +3,7 @@ use crate::modules::workspace::models::{ProcessStatus, TrackedProcess};
 /// Service for runtime process monitoring.
 /// Aggregates process data from ProcessManager and can add
 /// session-scoped filtering, restart logic, etc.
+#[allow(dead_code)]
 pub trait RuntimeService: Send + Sync {
     fn filter_session_processes(
         &self,
@@ -13,6 +14,7 @@ pub trait RuntimeService: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RuntimeCounts {
     pub running: usize,
     pub succeeded: usize,

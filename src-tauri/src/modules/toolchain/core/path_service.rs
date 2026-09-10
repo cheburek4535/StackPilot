@@ -221,7 +221,7 @@ pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
         if entry.contains('*') {
             // Wildcard не раскрылся (glob не совпал) — пропускаем,
             // чтобы не засорять PATH строкой вида `C:\erl*\bin`.
-            eprintln!("[toolchain] пропуск wildcard-записи PATH: {raw} → {entry} (glob не совпал)");
+            log::warn!("[toolchain] пропуск wildcard-записи PATH: {raw} → {entry} (glob не совпал)");
             continue;
         }
         if !is_absolute_entry(&entry) {

@@ -721,6 +721,20 @@
               </label>
             </div>
           </div>
+
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">{i18n.t("settings.behavior.quit_process")}</span>
+              <span class="sp-hint field-desc">{i18n.t("settings.behavior.quit_process_desc")}</span>
+            </div>
+            <div class="field-ctrl">
+              <select bind:value={draft.quit_process_behavior} onchange={onAnyChange}>
+                <option value="ask">{i18n.t("settings.behavior.quit_process_ask")}</option>
+                <option value="always">{i18n.t("settings.behavior.quit_process_always")}</option>
+                <option value="never">{i18n.t("settings.behavior.quit_process_never")}</option>
+              </select>
+            </div>
+          </div>
         </Card>
 
         <Card

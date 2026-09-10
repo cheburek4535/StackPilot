@@ -107,7 +107,7 @@ pub fn recommend_stack(
 
     // 3. Инструменты: тип проекта + языки + фреймворки (union, без дублей)
     let mut seen = std::collections::HashSet::new();
-    let mut push_tool = |id: &str,
+    let push_tool = |id: &str,
                          note: String,
                          rec: &mut StackRecommendations,
                          seen: &mut std::collections::HashSet<String>| {

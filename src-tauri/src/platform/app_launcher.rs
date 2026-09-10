@@ -58,7 +58,7 @@ impl Default for LaunchPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Application registry — known applications and their resolution hints
+// Application registry вЂ” known applications and their resolution hints
 // ---------------------------------------------------------------------------
 
 /// Known application identifiers and their platform-specific resolution.
@@ -379,9 +379,9 @@ fn known_applications() -> Vec<KnownApp> {
 ///
 /// # Arguments
 ///
-/// * `name` — application name, CLI name, or absolute path.
-/// * `custom_path` — optional user-configured absolute path override.
-/// * `path_overlay` — additional PATH entries to search.
+/// * `name` вЂ” application name, CLI name, or absolute path.
+/// * `custom_path` вЂ” optional user-configured absolute path override.
+/// * `path_overlay` вЂ” additional PATH entries to search.
 pub fn resolve_application(
     name: &str,
     custom_path: Option<&str>,
@@ -398,7 +398,7 @@ pub fn resolve_application(
         };
     }
 
-    // 1. Custom path override — highest priority.
+    // 1. Custom path override вЂ” highest priority.
     if let Some(custom) = custom_path {
         let custom_trimmed = custom.trim();
         if !custom_trimmed.is_empty() {
@@ -437,7 +437,7 @@ pub fn resolve_application(
         }
     }
 
-    // 2. Absolute/relative path with separator — check directly.
+    // 2. Absolute/relative path with separator вЂ” check directly.
     if trimmed.contains('/') || trimmed.contains('\\') {
         return resolve_path_input(trimmed, path_overlay);
     }
@@ -788,6 +788,7 @@ fn parse_flatpak_invocation(s: &str) -> ApplicationLauncher {
 }
 
 /// Check if a flatpak application is installed.
+#[allow(dead_code)]
 fn is_flatpak_installed(flatpak_id: &str) -> bool {
     std::process::Command::new("flatpak")
         .args(["info", flatpak_id])
@@ -1055,7 +1056,7 @@ fn resolve_windows_app(app: &KnownApp) -> Option<String> {
 fn start_menu_target(app_name: &str) -> Option<String> {
     let launcher = start_menu_launcher(app_name)?;
     if !launcher.args.is_empty() {
-        // Structured launcher (WindowsApps alias) — the path-only resolver
+        // Structured launcher (WindowsApps alias) вЂ” the path-only resolver
         // would drop its arguments.
         return None;
     }
@@ -1172,7 +1173,7 @@ fn registry_app_path(exe_name: &str) -> Option<String> {
 
 /// Extract the `(Default)` value from `reg query` output. The value may
 /// contain spaces ("Docker Desktop.exe", "Android Studio\bin\studio64.exe"),
-/// so the path is everything after the value-type token — never a
+/// so the path is everything after the value-type token вЂ” never a
 /// whitespace-split segment.
 #[cfg(target_os = "windows")]
 fn extract_registry_default_value(text: &str) -> Option<String> {
@@ -1275,6 +1276,7 @@ fn resolve_macos_app(app: &KnownApp) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 fn resolve_macos_app(_app: &KnownApp) -> Option<String> {
     None
 }
@@ -1384,7 +1386,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn registry_default_value_parses_paths_with_spaces() {
-        // Simulated `reg query` output — the value contains spaces, which
+        // Simulated `reg query` output вЂ” the value contains spaces, which
         // the old whitespace-split parsing truncated at the first space.
         let out = "\n\
             HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Docker Desktop.exe\n\
@@ -1413,14 +1415,14 @@ mod tests {
         // on Windows. Resolution must find real installs (this machine has
         // Android Studio, DBeaver and Docker Desktop installed).
         let pf = std::env::var("PROGRAMFILES").unwrap_or_default();
-        eprintln!("PROGRAMFILES='{}'", pf);
-        eprintln!(
+        log::debug!("PROGRAMFILES='{}'", pf);
+        log::debug!(
             "docker exe exists: {}",
             std::path::Path::new(r"C:\Program Files\Docker\Docker\Docker Desktop.exe").is_file()
         );
         for name in ["studio64", "Docker Desktop", "dbeaver"] {
             let result = resolve_application(name, None, None);
-            eprintln!(
+            log::debug!(
                 "'{}' -> found={} program='{}' diag={:?}",
                 name, result.found, result.program, result.diagnostics
             );
