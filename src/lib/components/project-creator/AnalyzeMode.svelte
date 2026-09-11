@@ -76,11 +76,30 @@
   .section-title { font-weight: 600; font-size: 0.9rem; color: var(--sp-text-2); margin-bottom: 0.3rem; }
   .tech-tags, .hint-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .tech-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-accent-soft); color: var(--sp-text-2); }
-  .tech-tag.certaion { background: rgba(132, 204, 22, 0.2); color: #fff; }
+  .tech-tag.certaion { background: var(--sp-success-soft); color: #fff; }
   .tech-tag.likely { background: var(--sp-accent-soft); }
   .tech-tag.possible { background: var(--sp-bg-2); }
   .hint-tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: var(--sp-bg-2); color: var(--sp-text-3); }
-  .hint-tag.docker { background: rgba(6, 182, 212, 0.15); color: var(--sp-info); }
+  .hint-tag.docker { background: var(--sp-info-soft); color: var(--sp-info); }
   .analyzed-path { font-size: 0.85rem; color: var(--sp-accent-strong); margin-top: 0.3rem; }
-  .btn-primary { background: var(--sp-accent-strong); color: #fff; padding: 0.6rem 1.5rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
+  .btn-primary {
+    background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
+    );
+    color: #fff;
+    padding: 0.6rem 1.5rem;
+    border-radius: var(--sp-radius-lg);
+    border: 1px solid rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.95rem;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
 </style>

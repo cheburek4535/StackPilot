@@ -781,8 +781,6 @@
     overflow-y: auto;
     padding: var(--sp-2);
     background: var(--sp-glass-strong);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--sp-border-strong);
     border-radius: var(--sp-radius-md);
     box-shadow: var(--sp-shadow-2);
@@ -967,8 +965,8 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-xs);
     color: var(--sp-cyan);
-    background: rgba(6, 182, 212, 0.07);
-    border: 1px solid rgba(6, 182, 212, 0.25);
+    background: var(--sp-info-soft);
+    border: 1px solid var(--sp-info-border);
     border-radius: var(--sp-radius-md);
   }
 

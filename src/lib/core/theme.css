@@ -32,7 +32,19 @@
   --sp-accent-strong: #e4570a;
   --sp-accent-soft: rgba(255, 138, 31, 0.09);
   --sp-accent-border: rgba(255, 138, 31, 0.22);
-  --sp-accent-glow: rgba(255, 138, 31, 0.35);
+  --sp-accent-glow: rgba(255, 138, 31, 0.28);
+
+  /* ---- Semantic surface tints (status chips, alerts) ---- */
+  --sp-danger-soft: rgba(239, 68, 68, 0.08);
+  --sp-danger-border: rgba(239, 68, 68, 0.28);
+  --sp-warning-soft: rgba(245, 158, 11, 0.08);
+  --sp-warning-border: rgba(245, 158, 11, 0.28);
+  --sp-success-soft: rgba(132, 204, 22, 0.08);
+  --sp-success-border: rgba(132, 204, 22, 0.26);
+  --sp-info-soft: rgba(6, 182, 212, 0.08);
+  --sp-info-border: rgba(6, 182, 212, 0.26);
+  --sp-blue-soft: rgba(111, 158, 232, 0.1);
+  --sp-blue-border: rgba(111, 158, 232, 0.3);
 
   /* ---- Typography ---- */
   --sp-font-sans:
@@ -43,8 +55,9 @@
     ui-monospace, SFMono-Regular, "Consolas", "Liberation Mono", monospace;
 
   --sp-text-1: #e6e9ef;
-  --sp-text-2: #98a2b3;
-  --sp-text-3: #5b6472;
+  --sp-text-2: #a3adbf;
+  --sp-text-3: #7b869a;
+  --sp-text-disabled: #556072;
 
   --sp-fs-xs: 0.75rem;
   --sp-fs-sm: 0.8125rem;
@@ -78,7 +91,7 @@
   --sp-radius-sm: 0.25rem;
   --sp-radius-md: 0.375rem;
   --sp-radius-lg: 0.5rem;
-  --sp-radius-xl: 0.625rem;
+  --sp-radius-xl: 0.75rem;
   --sp-radius-full: 9999px;
 
   /* ---- Elevation ---- */
@@ -96,9 +109,10 @@
     0 4px 24px rgba(228, 87, 10, 0.22);
 
   /* ---- Glossy surface helpers ---- */
-  --sp-gloss-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --sp-gloss-top-strong: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  --sp-surface-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, transparent 100%);
+  --sp-gloss-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --sp-gloss-top-strong: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --sp-surface-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, transparent 45%);
+  --sp-panel-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.035) 0%, transparent 28%);
 
   /* ---- Focus ---- */
   --sp-focus-ring:
@@ -112,6 +126,10 @@
   --sp-bg-3: #191c28;
   --sp-glass-bg: rgba(11, 11, 17, 0.82);
   --sp-glass-strong: rgba(7, 7, 12, 0.9);
+  /* Почти непрозрачная поверхность для постоянно видимых панелей (топбар,
+   * сайдбар, sticky-хедеры): заменяет backdrop-filter, который заставляет
+   * композитор пересобирать всё под панелью на каждом кадре. */
+  --sp-solid-chrome: rgba(11, 11, 17, 0.97);
   --sp-border: rgba(148, 163, 184, 0.08);
   --sp-border-strong: rgba(148, 163, 184, 0.14);
   --sp-border-faint: rgba(148, 163, 184, 0.04);
@@ -151,11 +169,23 @@
   --sp-accent-strong: #c44d00;
   --sp-accent-soft: rgba(224, 94, 0, 0.08);
   --sp-accent-border: rgba(224, 94, 0, 0.2);
-  --sp-accent-glow: rgba(224, 94, 0, 0.25);
+  --sp-accent-glow: rgba(224, 94, 0, 0.18);
+
+  --sp-danger-soft: rgba(220, 38, 38, 0.07);
+  --sp-danger-border: rgba(220, 38, 38, 0.25);
+  --sp-warning-soft: rgba(217, 119, 6, 0.08);
+  --sp-warning-border: rgba(217, 119, 6, 0.28);
+  --sp-success-soft: rgba(101, 163, 13, 0.08);
+  --sp-success-border: rgba(101, 163, 13, 0.28);
+  --sp-info-soft: rgba(8, 145, 178, 0.08);
+  --sp-info-border: rgba(8, 145, 178, 0.28);
+  --sp-blue-soft: rgba(37, 99, 235, 0.08);
+  --sp-blue-border: rgba(37, 99, 235, 0.28);
 
   --sp-text-1: #181a1f;
   --sp-text-2: #4b5162;
-  --sp-text-3: #7a8094;
+  --sp-text-3: #6b7285;
+  --sp-text-disabled: #9aa1b0;
 
   --sp-shadow-1: 0 1px 2px rgba(15, 20, 40, 0.06);
   --sp-shadow-2: 0 2px 8px rgba(15, 20, 40, 0.08);
@@ -174,6 +204,7 @@
   --sp-bg-3: #e6e9f1;
   --sp-glass-bg: rgba(255, 255, 255, 0.78);
   --sp-glass-strong: rgba(255, 255, 255, 0.92);
+  --sp-solid-chrome: rgba(255, 255, 255, 0.97);
   --sp-border: rgba(23, 28, 48, 0.1);
   --sp-border-strong: rgba(23, 28, 48, 0.18);
   --sp-border-faint: rgba(23, 28, 48, 0.05);
@@ -374,10 +405,4 @@ kbd {
   100% {
     transform: translateX(250%);
   }
-}
-
-/* ---- Ambient glow (for .sp-ambient-glow class) ---- */
-
-[data-theme="light"] .sp-ambient-glow {
-  display: none;
 }

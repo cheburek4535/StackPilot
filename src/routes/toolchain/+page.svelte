@@ -347,8 +347,8 @@
     gap: var(--sp-2);
     padding: var(--sp-1) var(--sp-3);
     border-radius: var(--sp-radius-full);
-    border: 1px solid rgba(6, 182, 212, 0.35);
-    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid var(--sp-info-border);
+    background: var(--sp-info-soft);
     color: var(--sp-cyan);
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-semibold);
@@ -357,7 +357,7 @@
   }
 
   .active-op:hover {
-    background: rgba(6, 182, 212, 0.16);
+    background: var(--sp-info-soft);
   }
 
   .active-op-dot {
@@ -393,15 +393,15 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-xs);
     color: var(--sp-danger);
-    border: 1px solid rgba(239, 68, 68, 0.28);
-    background: rgba(239, 68, 68, 0.07);
+    border: 1px solid var(--sp-danger-border);
+    background: var(--sp-danger-soft);
     border-radius: var(--sp-radius-md);
   }
 
   .issue-warn {
     color: var(--sp-warning);
-    border-color: rgba(245, 158, 11, 0.3);
-    background: rgba(245, 158, 11, 0.07);
+    border-color: var(--sp-warning-border);
+    background: var(--sp-warning-soft);
   }
 
   .modes {

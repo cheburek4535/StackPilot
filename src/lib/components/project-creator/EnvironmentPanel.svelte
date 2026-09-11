@@ -465,7 +465,7 @@
   .env-optional .group-label { color: var(--sp-danger); margin: 0 0 0.35rem; }
   .env-optional .env-row { background: var(--sp-bg-1); }
   .env-optional .env-row.ok { border-left-color: var(--sp-success); }
-  .env-optional-local { border-color: rgba(132, 204, 22, 0.35); background: rgba(132, 204, 22, 0.04); }
+  .env-optional-local { border-color: var(--sp-success-border); background: var(--sp-success-soft); }
   .env-optional-local .group-label { color: var(--sp-success); }
   .infra-toggle {
     display: inline-flex;
@@ -509,7 +509,7 @@
   .env-progress-row .env-status { margin-left: auto; }
   .env-task { display: flex; flex-direction: column; gap: 0.2rem; }
   .dl-bar { height: 6px; border-radius: 3px; background: var(--sp-bg-3); overflow: hidden; margin-left: 1.9rem; margin-right: 0.4rem; }
-  .dl-fill { height: 100%; background: linear-gradient(90deg, var(--sp-blue), var(--sp-accent)); border-radius: 3px; transition: width 0.3s ease; }
+  .dl-fill { height: 100%; background: var(--sp-accent-strong); border-radius: 3px; transition: width 0.3s ease; }
   .spin { display: inline-block; width: 0.8rem; height: 0.8rem; border: 2px solid var(--sp-border-strong); border-top-color: var(--sp-blue); border-radius: 50%; animation: tc-spin 0.8s linear infinite; vertical-align: -2px; margin-right: 0.3rem; }
   @keyframes tc-spin { to { transform: rotate(360deg); } }
   .group-label { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; color: var(--sp-text-2); text-transform: capitalize; }
@@ -517,7 +517,7 @@
   .secret-name { flex: 0 0 110px; font-size: 0.85rem; color: var(--sp-text-2); font-weight: 600; }
   .secret-value { flex: 1; font-family: Consolas, monospace; font-size: 0.85rem; background: var(--sp-bg-2); border: 1px solid var(--sp-border-strong); border-radius: 6px; padding: 0.4rem 0.6rem; color: var(--sp-accent-strong); overflow-x: auto; white-space: nowrap; user-select: all; }
   .secret-row .btn-secondary { flex: 0 0 auto; }
-  .conflict-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .conflict-overlay { position: fixed; inset: 0; background: rgba(2,3,6,0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 1000; }
   .conflict-dialog { background: var(--sp-bg-1); border: 1px solid var(--sp-accent-strong); border-radius: 12px; padding: 1.5rem; max-width: 480px; width: 90%; }
   .conflict-dialog h3 { margin: 0 0 0.75rem; color: var(--sp-warning); }
   .conflict-dialog p { font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 1.25rem; line-height: 1.4; }
@@ -528,7 +528,26 @@
   .btn-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }
   .btn-back { background: none; border: 1px solid var(--sp-border-strong); color: var(--sp-text-3); padding: 0.4rem 0.9rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
   .btn-back:hover { border-color: var(--sp-accent-strong); color: #fff; }
-  .btn-primary { background: var(--sp-accent-strong); color: #fff; padding: 0.6rem 1.5rem; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 0.95rem; }
+  .btn-primary {
+    background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
+    );
+    color: #fff;
+    padding: 0.6rem 1.5rem;
+    border-radius: var(--sp-radius-lg);
+    border: 1px solid rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.95rem;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
   .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-secondary { background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.6rem 1.5rem; border-radius: 8px; border: 1px solid var(--sp-border-strong); cursor: pointer; font-size: 0.95rem; }
 </style>

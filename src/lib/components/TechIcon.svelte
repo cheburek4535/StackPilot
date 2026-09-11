@@ -61,7 +61,7 @@
   .tech-icon-xl { width: 56px; height: 56px; }
 
   .tech-icon-fallback {
-    color: var(--tech-icon-fallback, #6c5ce7);
+    color: var(--tech-icon-fallback, var(--sp-text-3));
     opacity: 0.75;
   }
   .tech-icon-fallback svg {

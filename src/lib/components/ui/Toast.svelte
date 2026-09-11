@@ -79,17 +79,17 @@
   }
 
   .sp-toast-success .sp-toast-icon {
-    background: rgba(132, 204, 22, 0.12);
+    background: var(--sp-success-soft);
     color: var(--sp-lime);
   }
 
   .sp-toast-warning .sp-toast-icon {
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--sp-warning-soft);
     color: var(--sp-amber);
   }
 
   .sp-toast-error .sp-toast-icon {
-    background: rgba(239, 68, 68, 0.12);
+    background: var(--sp-danger-soft);
     color: var(--sp-red);
   }
 

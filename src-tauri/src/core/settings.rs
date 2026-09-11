@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tauri::State;
 
 use crate::core::models::*;
@@ -16,12 +16,19 @@ pub trait SettingsService: Send + Sync {
 
 pub struct JsonSettingsService {
     settings_path: PathBuf,
+    /// In-memory copy of the last loaded/saved settings. `get_settings` is
+    /// called on nearly every command invocation; re-reading and re-parsing
+    /// settings.json from disk each time stalls the main thread. The cache
+    /// is invalidated on every write (update/reset), which are the only
+    /// mutation paths, so it can never go stale within a session.
+    cache: RwLock<Option<AppSettings>>,
 }
 
 impl JsonSettingsService {
     pub fn new(app_data_dir: PathBuf) -> Self {
         Self {
             settings_path: app_data_dir.join("settings.json"),
+            cache: RwLock::new(None),
         }
     }
 
@@ -142,18 +149,33 @@ impl JsonSettingsService {
 
 impl SettingsService for JsonSettingsService {
     fn get_settings(&self) -> Result<AppSettings, String> {
-        self.load_or_default()
+        if let Ok(guard) = self.cache.read() {
+            if let Some(cached) = guard.as_ref() {
+                return Ok(cached.clone());
+            }
+        }
+        let loaded = self.load_or_default()?;
+        if let Ok(mut guard) = self.cache.write() {
+            *guard = Some(loaded.clone());
+        }
+        Ok(loaded)
     }
 
     fn update_settings(&self, settings: &AppSettings) -> Result<AppSettings, String> {
         let normalized = Self::normalize(settings.clone());
         self.save(&normalized)?;
+        if let Ok(mut guard) = self.cache.write() {
+            *guard = Some(normalized.clone());
+        }
         Ok(normalized)
     }
 
     fn reset_to_defaults(&self) -> Result<AppSettings, String> {
         let defaults = Self::defaults();
         self.save(&defaults)?;
+        if let Ok(mut guard) = self.cache.write() {
+            *guard = Some(defaults.clone());
+        }
         Ok(defaults)
     }
 
@@ -170,37 +192,56 @@ impl SettingsService for JsonSettingsService {
 /// Обёртка для регистрации в Tauri State
 pub struct SettingsState(pub Arc<dyn SettingsService>);
 
+/// Синхронные команды Tauri исполняются на главном потоке: дисковый IO
+/// (чтение/запись settings.json) там замораживает UI. Все команды ниже —
+/// async с переносом блокирующей работы в spawn_blocking.
 #[tauri::command]
-pub fn get_settings(state: State<'_, SettingsState>) -> Result<AppSettings, String> {
-    state.0.get_settings()
+pub async fn get_settings(state: State<'_, SettingsState>) -> Result<AppSettings, String> {
+    let svc = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || svc.get_settings())
+        .await
+        .map_err(|e| format!("Settings task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn update_settings(
+pub async fn update_settings(
     state: State<'_, SettingsState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    state.0.update_settings(&settings)
+    let svc = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || svc.update_settings(&settings))
+        .await
+        .map_err(|e| format!("Settings task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn reset_settings(state: State<'_, SettingsState>) -> Result<AppSettings, String> {
-    state.0.reset_to_defaults()
+pub async fn reset_settings(state: State<'_, SettingsState>) -> Result<AppSettings, String> {
+    let svc = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || svc.reset_to_defaults())
+        .await
+        .map_err(|e| format!("Settings task failed: {e}"))?
 }
 
 /// True when a file or directory exists at the given path (empty → false).
 /// Bare CLI names (e.g. `code`, `docker`) are validated through the shared
 /// executable resolver so the settings UI does not flag them as broken.
+///
+/// Резолвер может спавнить `reg query` и сканировать директории — это
+/// блокирующая работа, ей не место на главном потоке.
 #[tauri::command]
-pub fn settings_check_path(path: String) -> Result<bool, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Ok(false);
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Ok(std::fs::metadata(trimmed).is_ok());
-    }
-    Ok(crate::platform::ide::resolve_ide_executable(trimmed).is_some())
+pub async fn settings_check_path(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') {
+            return Ok(std::fs::metadata(trimmed).is_ok());
+        }
+        Ok(crate::platform::ide::resolve_ide_executable(trimmed).is_some())
+    })
+    .await
+    .map_err(|e| format!("Path check task failed: {e}"))?
 }
 
 /// The app data folder (contains settings.json and profiles).

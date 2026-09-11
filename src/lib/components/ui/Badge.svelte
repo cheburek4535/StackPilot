@@ -66,8 +66,8 @@
   }
 
   .sp-badge-cyan {
-    background: rgba(6, 182, 212, 0.07);
-    border: 1px solid rgba(6, 182, 212, 0.15);
+    background: var(--sp-info-soft);
+    border: 1px solid var(--sp-info-soft);
     color: var(--sp-cyan);
   }
 
@@ -78,19 +78,19 @@
   }
 
   .sp-badge-lime {
-    background: rgba(132, 204, 22, 0.07);
-    border: 1px solid rgba(132, 204, 22, 0.15);
+    background: var(--sp-success-soft);
+    border: 1px solid var(--sp-success-soft);
     color: var(--sp-lime);
   }
 
   .sp-badge-amber {
-    background: rgba(245, 158, 11, 0.07);
-    border: 1px solid rgba(245, 158, 11, 0.15);
+    background: var(--sp-warning-soft);
+    border: 1px solid var(--sp-warning-border);
     color: var(--sp-amber);
   }
 
   .sp-badge-red {
-    background: rgba(239, 68, 68, 0.07);
+    background: var(--sp-danger-soft);
     border: 1px solid rgba(239, 68, 68, 0.15);
     color: var(--sp-red);
   }

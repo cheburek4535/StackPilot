@@ -1,7 +1,9 @@
 // Web emulator for Tauri IPC commands and events when running in browser mode
+//
+// Каталог тулов (~77 КБ) и wizard_tree (~104 КБ) грузятся лениво через
+// dynamic import: в проде (Tauri) этот модуль вообще не выполняет полезную
+// работу, и тяжёлые JSON не должны попадать в основной бандл.
 
-import toolsJson from "../../../src-tauri/src/modules/toolchain/tools.json";
-import wizardTreeJson from "../../../src-tauri/src/modules/project_creator/knowledge/wizard_tree.json";
 import type { ToolDefinition } from "$lib/modules/toolchain/types";
 import type { WizardTreeData, ProjectTypeDef } from "$lib/modules/project_creator/types";
 
@@ -93,9 +95,20 @@ export function initTauriMock() {
     }
   };
 
-  // Preload initial catalog and tools
-  const catalog: ToolDefinition[] = toolsJson as any;
-  const wizardTree: WizardTreeData = wizardTreeJson as any;
+  // Preload initial catalog and tools (лениво, при первом invoke)
+  let catalog: ToolDefinition[] = [];
+  let wizardTree: WizardTreeData | null = null;
+  let jsonPromise: Promise<void> | null = null;
+  const ensureCatalog = (): Promise<void> => {
+    jsonPromise ??= Promise.all([
+      import("../../../src-tauri/src/modules/toolchain/tools.json"),
+      import("../../../src-tauri/src/modules/project_creator/knowledge/wizard_tree.json"),
+    ]).then(([tools, tree]) => {
+      catalog = (tools.default ?? tools) as any;
+      wizardTree = (tree.default ?? tree) as any;
+    });
+    return jsonPromise;
+  };
 
   // Tracked processes
   let processes: Array<{
@@ -274,6 +287,7 @@ export function initTauriMock() {
 
   const invoke = async (cmd: string, args: Record<string, any> = {}): Promise<any> => {
     // console.log("[Tauri Mock Invoke]", cmd, args);
+    await ensureCatalog();
 
     // ==========================================
     // Core & Settings
@@ -488,7 +502,7 @@ export function initTauriMock() {
     }
 
     if (cmd === "get_project_types") {
-      return wizardTree.project_types || [];
+      return wizardTree?.project_types || [];
     }
 
     if (cmd === "start_wizard") {

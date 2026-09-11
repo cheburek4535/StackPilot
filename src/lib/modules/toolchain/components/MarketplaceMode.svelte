@@ -618,8 +618,8 @@
     padding: var(--sp-2) var(--sp-3);
     font-size: var(--sp-fs-xs);
     color: var(--sp-cyan);
-    background: rgba(6, 182, 212, 0.07);
-    border: 1px solid rgba(6, 182, 212, 0.25);
+    background: var(--sp-info-soft);
+    border: 1px solid var(--sp-info-border);
     border-radius: var(--sp-radius-md);
   }
 

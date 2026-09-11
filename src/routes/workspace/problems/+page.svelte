@@ -142,8 +142,8 @@
     height: 3rem;
     border-radius: var(--sp-radius-full);
     color: var(--sp-success);
-    background: rgba(132, 204, 22, 0.12);
-    border: 1px solid rgba(132, 204, 22, 0.3);
+    background: var(--sp-success-soft);
+    border: 1px solid var(--sp-success-border);
     flex-shrink: 0;
   }
 
@@ -186,7 +186,7 @@
     height: 1.5rem;
     border-radius: var(--sp-radius-sm);
     color: var(--sp-danger);
-    background: rgba(239, 68, 68, 0.12);
+    background: var(--sp-danger-soft);
     flex-shrink: 0;
   }
 
@@ -216,8 +216,8 @@
   .sp-problem-error {
     font-size: var(--sp-fs-xs);
     color: var(--sp-danger);
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid rgba(239, 68, 68, 0.25);
+    background: var(--sp-danger-soft);
+    border: 1px solid var(--sp-danger-border);
     padding: var(--sp-2) var(--sp-3);
     border-radius: var(--sp-radius-sm);
     white-space: pre-wrap;

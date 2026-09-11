@@ -47,7 +47,6 @@
 </script>
 
 <div class="sp-app">
-  <div class="sp-ambient-glow" aria-hidden="true"></div>
   <header class="sp-topbar">
     <a href="/" class="sp-brand">
       <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
@@ -133,26 +132,6 @@
     font-family: var(--sp-font-sans);
   }
 
-  /* ---- ambient glow (deep orange fog behind glass chrome) ---- */
-
-  .sp-ambient-glow {
-    position: fixed;
-    top: -25vh;
-    left: 30%;
-    width: 50vw;
-    height: 50vh;
-    border-radius: 50%;
-    background: radial-gradient(
-      ellipse at center,
-      var(--sp-accent-glow) 0%,
-      transparent 65%
-    );
-    opacity: 0.18;
-    filter: blur(80px);
-    pointer-events: none;
-    z-index: 0;
-  }
-
   /* ---- topbar (glass) ---- */
 
   .sp-topbar {
@@ -164,9 +143,8 @@
     gap: var(--sp-4);
     height: var(--sp-topbar-h);
     padding: 0 var(--sp-4);
-    background: var(--sp-glass-bg);
-    backdrop-filter: blur(16px) saturate(1.4);
-    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    background: var(--sp-panel-sheen),
+      var(--sp-solid-chrome);
     border-bottom: 1px solid var(--sp-border);
     box-shadow: var(--sp-gloss-top-strong);
     z-index: 10;
@@ -217,12 +195,10 @@
   .sp-brand-logo {
     height: 30px;
     width: auto;
-    filter: drop-shadow(0 0 14px var(--sp-accent-glow));
-    transition: filter 0.3s ease;
   }
 
   .sp-brand:hover .sp-brand-logo {
-    filter: drop-shadow(0 0 20px var(--sp-accent-glow));
+    opacity: 0.92;
   }
 
   .sp-topbar-actions {
@@ -248,9 +224,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--sp-glass-bg);
-    backdrop-filter: blur(14px) saturate(1.3);
-    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    background: var(--sp-panel-sheen),
+      var(--sp-solid-chrome);
     border-right: 1px solid var(--sp-border);
     box-shadow: var(--sp-gloss-top);
   }
@@ -324,7 +299,6 @@
     transform: translateY(-50%);
     background: var(--sp-accent);
     opacity: 0;
-    box-shadow: 0 0 6px var(--sp-accent-glow);
     transition: opacity 0.15s ease;
   }
 
@@ -335,8 +309,12 @@
   }
 
   .sp-nav-item-active {
-    background: var(--sp-bg-2);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-2);
     color: var(--sp-text-1);
+    box-shadow:
+      var(--sp-gloss-top-strong),
+      inset 0 0 0 1px var(--sp-border);
   }
 
   .sp-nav-item-active::before {
@@ -344,8 +322,12 @@
   }
 
   .sp-nav-item-active:hover {
-    background: var(--sp-bg-2);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-2);
     color: var(--sp-text-1);
+    box-shadow:
+      var(--sp-gloss-top-strong),
+      inset 0 0 0 1px var(--sp-border);
   }
 
   .sp-nav-item-label {

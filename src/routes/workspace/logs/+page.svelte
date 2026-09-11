@@ -62,7 +62,10 @@
 
   function startAutoRefresh() {
     if (autoRefreshId) return;
-    autoRefreshId = setInterval(() => refreshSelectedLogs(), 3000);
+    autoRefreshId = setInterval(() => {
+      if (document.hidden) return;
+      refreshSelectedLogs();
+    }, 5000);
   }
 
   function stopAutoRefresh() {

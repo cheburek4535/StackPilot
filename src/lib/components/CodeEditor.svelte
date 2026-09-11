@@ -94,8 +94,8 @@
   .cm-container {
     height: 100%;
     overflow: hidden;
-    border-radius: 6px;
-    border: 1px solid #e0e0e0;
+    border-radius: var(--sp-radius-md);
+    border: 1px solid var(--sp-border-strong);
   }
   .cm-container :global(.cm-editor) {
     height: 100%;
@@ -106,7 +106,7 @@
 
   @media (prefers-color-scheme: dark) {
     .cm-container {
-      border-color: #333;
+      border-color: var(--sp-border-strong);
     }
   }
 </style>

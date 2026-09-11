@@ -161,31 +161,32 @@
     background: var(--sp-accent-strong);
     background: linear-gradient(
       180deg,
-      color-mix(in srgb, var(--sp-accent) 88%, white) 0%,
-      var(--sp-accent) 40%,
-      var(--sp-accent-strong) 100%
+      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
     );
     color: #fff;
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(0, 0, 0, 0.35);
     box-shadow:
       var(--sp-gloss-top),
       var(--sp-shadow-1),
-      0 2px 12px rgba(228, 87, 10, 0.15);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      0 2px 14px rgba(228, 87, 10, 0.2);
+    text-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.55),
+      0 0 1px rgba(0, 0, 0, 0.4);
   }
 
   .sp-btn-primary:hover:not(.sp-btn-disabled) {
-    background: var(--sp-accent);
+    background: var(--sp-accent-strong);
     background: linear-gradient(
       180deg,
-      color-mix(in srgb, var(--sp-accent) 92%, white) 0%,
-      var(--sp-accent) 50%,
-      var(--sp-accent-strong) 100%
+      color-mix(in srgb, var(--sp-accent-strong) 62%, black) 0%,
+      var(--sp-accent-strong) 40%,
+      color-mix(in srgb, var(--sp-accent) 88%, var(--sp-accent-strong)) 100%
     );
     box-shadow:
       var(--sp-gloss-top-strong),
-      var(--sp-shadow-accent),
-      0 0 24px var(--sp-accent-glow);
+      var(--sp-shadow-accent);
   }
 
   .sp-btn-secondary {
@@ -229,9 +230,9 @@
   }
 
   .sp-btn-danger {
-    background: rgba(239, 68, 68, 0.1);
+    background: var(--sp-danger-soft);
     color: var(--sp-danger);
-    border-color: rgba(239, 68, 68, 0.25);
+    border-color: var(--sp-danger-border);
     box-shadow: var(--sp-gloss-top);
   }
 

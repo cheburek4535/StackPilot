@@ -223,8 +223,6 @@
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-lg);
     background: var(--sp-glass-bg);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
     box-shadow: var(--sp-shadow-1);
     transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     min-width: 0;

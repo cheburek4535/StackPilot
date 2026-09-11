@@ -44,9 +44,7 @@
   });
   let detectedApps = $state<DetectedApplications | null>(null);
 
-  const dirty = $derived(
-    !!saved && !!draft && JSON.stringify(saved) !== JSON.stringify(draft),
-  );
+  const dirty = $derived(!!saved && !!draft && !settingsEqual(saved, draft));
 
   const emailInvalid = $derived(
     !!draft &&
@@ -89,29 +87,76 @@
         ? s.accent_color
         : (ACCENT_PRESETS[s.accent_color] ?? ACCENT_PRESETS.orange);
       preview();
-      void refreshPathCheck("vscode_path", s.vscode_path);
-      void refreshPathCheck("browser_path", s.browser_path);
-      void refreshPathCheck("db_viewer_path", s.db_viewer_path);
-      void refreshPathCheck("terminal", s.terminal);
-      try {
-        dataDir = await getAppDataDir();
-      } catch {
-        dataDir = "";
-      }
-      try {
-        detectedApps = await detectApplications();
-      } catch {
-        detectedApps = null;
-      }
     } catch (e) {
       notifyError(i18n.t("error.load"), String(e));
     } finally {
       loading = false;
     }
+    // Тяжёлые вызовы (сканирование реестра/диска) — в фоне, чтобы страница
+    // открылась мгновенно и не держала спиннер.
+    void refreshPathCheck("vscode_path", draft?.vscode_path ?? "");
+    void refreshPathCheck("browser_path", draft?.browser_path ?? "");
+    void refreshPathCheck("db_viewer_path", draft?.db_viewer_path ?? "");
+    void refreshPathCheck("terminal", draft?.terminal ?? "");
+    try {
+      dataDir = await getAppDataDir();
+    } catch {
+      dataDir = "";
+    }
+    try {
+      detectedApps = await detectApplications();
+    } catch {
+      detectedApps = null;
+    }
   });
 
   function clone(s: AppSettings): AppSettings {
     return structuredClone(s);
+  }
+
+  /** O(полей) сравнение настроек вместо JSON.stringify всего объекта на
+   *  каждое нажатие клавиши (JSON.stringify был узким местом при вводе). */
+  function settingsEqual(a: AppSettings, b: AppSettings): boolean {
+    const scalar =
+      a.vscode_path === b.vscode_path &&
+      a.browser_path === b.browser_path &&
+      a.db_viewer_path === b.db_viewer_path &&
+      a.terminal === b.terminal &&
+      a.theme === b.theme &&
+      a.language === b.language &&
+      a.auto_save_profiles === b.auto_save_profiles &&
+      a.auto_save === b.auto_save &&
+      a.font_size === b.font_size &&
+      a.reduced_motion === b.reduced_motion &&
+      a.show_interface_hints === b.show_interface_hints &&
+      a.accent_color === b.accent_color &&
+      a.restore_last_route === b.restore_last_route &&
+      a.confirm_before_reset === b.confirm_before_reset &&
+      a.quit_process_behavior === b.quit_process_behavior;
+    if (!scalar) return false;
+    const pa = a.personal;
+    const pb = b.personal;
+    if (
+      pa.name !== pb.name ||
+      pa.username !== pb.username ||
+      pa.email !== pb.email
+    ) {
+      return false;
+    }
+    const aa = a.ai;
+    const ab = b.ai;
+    return (
+      aa.enabled === ab.enabled &&
+      aa.provider === ab.provider &&
+      aa.base_url === ab.base_url &&
+      aa.api_key === ab.api_key &&
+      aa.model === ab.model &&
+      aa.temperature === ab.temperature &&
+      aa.max_tokens === ab.max_tokens &&
+      aa.timeout_secs === ab.timeout_secs &&
+      aa.system_prompt === ab.system_prompt &&
+      aa.page_context === ab.page_context
+    );
   }
 
   function preview(): void {
@@ -554,9 +599,9 @@
             </div>
             <div class="field-ctrl">
               <select bind:value={draft.theme} onchange={onAnyChange}>
-                <option value="system">{i18n.t("settings.theme.system")}</option>
-                <option value="light">{i18n.t("settings.theme.light")}</option>
                 <option value="dark">{i18n.t("settings.theme.dark")}</option>
+                <option value="light">{i18n.t("settings.theme.light")}</option>
+                <option value="system">{i18n.t("settings.theme.system")}</option>
               </select>
             </div>
           </div>
@@ -1014,8 +1059,6 @@
       var(--sp-bg-0) 70%,
       color-mix(in srgb, var(--sp-bg-0) 88%, transparent)
     );
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
   }
 
   .sp-minitabs {
@@ -1055,7 +1098,7 @@
   }
 
   .sp-minitab-active {
-    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(6, 182, 212, 0.06));
+    background: linear-gradient(135deg, var(--sp-accent-soft), var(--sp-info-soft));
     color: var(--sp-accent);
     box-shadow: inset 0 0 0 1px var(--sp-accent-border);
   }
@@ -1378,7 +1421,7 @@
     font-weight: var(--sp-fw-bold);
     font-size: var(--sp-fs-lg);
     color: var(--sp-accent);
-    background: linear-gradient(135deg, var(--sp-accent-soft), rgba(6, 182, 212, 0.08));
+    background: linear-gradient(135deg, var(--sp-accent-soft), var(--sp-info-soft));
     border: 1px solid var(--sp-accent-border);
   }
 
@@ -1452,7 +1495,7 @@
   }
 
   .tp-dark {
-    background: #08090c;
+    background: var(--sp-bg-0);
   }
 
   .tp-light {
@@ -1503,7 +1546,7 @@
   }
 
   .danger-card {
-    border-color: rgba(239, 68, 68, 0.35);
+    border-color: var(--sp-danger-border);
   }
 
   .ai-banner {
@@ -1512,8 +1555,8 @@
     gap: var(--sp-4);
     padding: var(--sp-5) var(--sp-6);
     border-radius: var(--sp-radius-lg);
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(239, 68, 68, 0.1));
-    border: 1px solid rgba(245, 158, 11, 0.4);
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), var(--sp-danger-soft));
+    border: 1px solid var(--sp-warning-border);
     box-shadow: var(--sp-shadow-1);
     animation: sp-rise-in 0.2s ease;
   }
@@ -1527,8 +1570,8 @@
     flex: 0 0 auto;
     border-radius: var(--sp-radius-md);
     color: var(--sp-amber);
-    background: rgba(245, 158, 11, 0.14);
-    border: 1px solid rgba(245, 158, 11, 0.35);
+    background: var(--sp-warning-soft);
+    border: 1px solid var(--sp-warning-border);
   }
 
   .ai-banner-text {

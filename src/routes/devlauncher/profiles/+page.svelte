@@ -157,7 +157,7 @@
       if (run) {
         activeRun = run;
         if (!isRunTerminal(run.status)) {
-          setTimeout(() => pollRun(runId), 1000);
+          setTimeout(() => pollRun(runId), 5000);
         }
       }
     } catch { /* non-critical */ }

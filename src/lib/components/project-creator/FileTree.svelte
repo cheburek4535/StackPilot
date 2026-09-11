@@ -189,11 +189,11 @@
   }
 
   .ft-badge.ft-certainty-certain {
-    background: rgba(132, 204, 22, 0.15);
+    background: var(--sp-success-soft);
   }
 
   .ft-badge.ft-certainty-expected {
-    background: rgba(245, 158, 11, 0.15);
+    background: var(--sp-warning-border);
   }
 
   .ft-badge.ft-certainty-unknown {

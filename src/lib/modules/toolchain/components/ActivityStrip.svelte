@@ -131,8 +131,6 @@
     border: 1px solid var(--sp-accent-border);
     border-radius: var(--sp-radius-lg);
     background: var(--sp-glass-bg);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
     box-shadow: var(--sp-shadow-1);
   }
 
@@ -162,8 +160,8 @@
     flex: 0 0 auto;
     border-radius: var(--sp-radius-md);
     color: var(--sp-cyan);
-    background: rgba(6, 182, 212, 0.12);
-    border: 1px solid rgba(6, 182, 212, 0.3);
+    background: var(--sp-info-soft);
+    border: 1px solid var(--sp-info-border);
   }
 
   .op-icon.spin :global(svg) {

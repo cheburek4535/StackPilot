@@ -68,30 +68,48 @@ fn generate_id() -> String {
     format!("act_{}", nanos)
 }
 
+/// CRUD профилей читает/пишет файлы на диск — в Tauri v2 синхронные команды
+/// исполняются на главном потоке, поэтому каждая команда ниже async и
+/// переносит дисковый IO в spawn_blocking.
 #[tauri::command]
-pub fn list_profiles(state: State<'_, DevLauncherState>) -> Result<Vec<LaunchProfile>, String> {
-    state.profile_manager.list_profiles()
+pub async fn list_profiles(state: State<'_, DevLauncherState>) -> Result<Vec<LaunchProfile>, String> {
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.list_profiles())
+        .await
+        .map_err(|e| format!("List profiles task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_profile(
+pub async fn get_profile(
     state: State<'_, DevLauncherState>,
     name: String,
 ) -> Result<LaunchProfile, String> {
-    state.profile_manager.get_profile(&name)
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.get_profile(&name))
+        .await
+        .map_err(|e| format!("Get profile task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn save_profile(
+pub async fn save_profile(
     state: State<'_, DevLauncherState>,
     profile: LaunchProfile,
 ) -> Result<(), String> {
-    state.profile_manager.save_profile(&profile)
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.save_profile(&profile))
+        .await
+        .map_err(|e| format!("Save profile task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn delete_profile(state: State<'_, DevLauncherState>, name: String) -> Result<(), String> {
-    state.profile_manager.delete_profile(&name)
+pub async fn delete_profile(
+    state: State<'_, DevLauncherState>,
+    name: String,
+) -> Result<(), String> {
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.delete_profile(&name))
+        .await
+        .map_err(|e| format!("Delete profile task failed: {e}"))?
 }
 
 /// Относительный working_dir действия (например "./backend") резолвится
@@ -265,55 +283,82 @@ pub async fn analyze_project_v2(
 /// List all profiles in V2 format. Tolerant: malformed profile files are
 /// skipped with per-file diagnostics instead of aborting the listing.
 #[tauri::command]
-pub fn list_profiles_v2(
+pub async fn list_profiles_v2(
     state: State<'_, DevLauncherState>,
 ) -> Result<Vec<LaunchProfileV2>, String> {
-    state.profile_manager.list_profiles_v2()
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.list_profiles_v2())
+        .await
+        .map_err(|e| format!("List profiles task failed: {e}"))?
 }
 
 /// List profiles together with per-file parse diagnostics.
 #[tauri::command]
-pub fn profile_load_diagnostics(
+pub async fn profile_load_diagnostics(
     state: State<'_, DevLauncherState>,
 ) -> Result<super::profile_manager::ProfileLoadResult, String> {
-    state.profile_manager.list_profiles_with_diagnostics()
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.list_profiles_with_diagnostics())
+        .await
+        .map_err(|e| format!("Profile diagnostics task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_profile_v2(
+pub async fn get_profile_v2(
     state: State<'_, DevLauncherState>,
     name: String,
 ) -> Result<LaunchProfileV2, String> {
-    state.profile_manager.get_profile_v2(&name)
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.get_profile_v2(&name))
+        .await
+        .map_err(|e| format!("Get profile task failed: {e}"))?
 }
 
 /// Persist a V2 profile. The stable profile ID is preserved (or adopted
 /// from an existing profile with the same name / project path) and the
 /// file is written atomically.
 #[tauri::command]
-pub fn save_profile_v2(
+pub async fn save_profile_v2(
     state: State<'_, DevLauncherState>,
     profile: LaunchProfileV2,
 ) -> Result<(), String> {
-    state.profile_manager.save_profile_v2(&profile)
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.save_profile_v2(&profile))
+        .await
+        .map_err(|e| format!("Save profile task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn delete_profile_v2(state: State<'_, DevLauncherState>, name: String) -> Result<(), String> {
-    state.profile_manager.delete_profile_v2(&name)
+pub async fn delete_profile_v2(
+    state: State<'_, DevLauncherState>,
+    name: String,
+) -> Result<(), String> {
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.delete_profile_v2(&name))
+        .await
+        .map_err(|e| format!("Delete profile task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn delete_profile_by_id(state: State<'_, DevLauncherState>, id: String) -> Result<(), String> {
-    state.profile_manager.delete_profile_by_id(&id)
+pub async fn delete_profile_by_id(
+    state: State<'_, DevLauncherState>,
+    id: String,
+) -> Result<(), String> {
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.delete_profile_by_id(&id))
+        .await
+        .map_err(|e| format!("Delete profile task failed: {e}"))?
 }
 
 /// Rewrite all legacy (v1) profile files on disk to the V2 schema.
 #[tauri::command]
-pub fn migrate_profiles(
+pub async fn migrate_profiles(
     state: State<'_, DevLauncherState>,
 ) -> Result<super::profile_manager::MigrationReport, String> {
-    state.profile_manager.migrate_legacy()
+    let manager = Arc::clone(&state.profile_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.migrate_legacy())
+        .await
+        .map_err(|e| format!("Migrate profiles task failed: {e}"))?
 }
 
 /// Launch the preferred IDE for a project. Returns true if the IDE was
@@ -353,13 +398,20 @@ pub async fn run_profile(
     let engine = Arc::clone(&state.launch_engine);
 
     // 1. Launch the preferred IDE first so the user sees it open immediately.
+    // Резолв IDE может сканировать реестр/директории — не блокируем tokio
+    // worker, уводим в spawn_blocking.
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     if let Some(ide) = &profile.preferred_ide {
         let project_path = profile
             .project_path
             .clone()
             .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
-        let _ = engine.launch_ide(ide, project_path.as_deref(), None, vscode_path.as_deref());
+        let engine_for_ide = Arc::clone(&engine);
+        let ide = ide.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            engine_for_ide.launch_ide(&ide, project_path.as_deref(), None, vscode_path.as_deref())
+        })
+        .await;
     }
 
     // 2. Convert legacy profile to V2 and run through the orchestrator.
@@ -480,58 +532,68 @@ pub async fn run_profile(
 /// format; the legacy `LaunchProfile` response is derived from the graph
 /// for backward compatibility with existing callers.
 #[tauri::command]
-pub fn build_profile_from_context(
+pub async fn build_profile_from_context(
     state: State<'_, DevLauncherState>,
     settings: State<'_, SettingsState>,
     context: WizardContext,
 ) -> Result<LaunchProfile, String> {
-    let mut diagnostics = Vec::new();
+    let manager = Arc::clone(&state.profile_manager);
     let opts = builder_options_from_settings(&settings);
-    let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
-        &context,
-        &mut diagnostics,
-        &opts,
-    );
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut diagnostics = Vec::new();
+        let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
+            &context,
+            &mut diagnostics,
+            &opts,
+        );
 
-    // Check if a profile already exists for this project path
-    if let Some(ref path) = profile.project_root {
-        if let Some(existing) = state.profile_manager.find_by_project_path_v2(path) {
-            // Update existing profile: keep its name and stable ID,
-            // overwrite the rest.
-            profile.name = existing.name;
-            profile.id = existing.id;
+        // Check if a profile already exists for this project path
+        if let Some(ref path) = profile.project_root {
+            if let Some(existing) = manager.find_by_project_path_v2(path) {
+                // Update existing profile: keep its name and stable ID,
+                // overwrite the rest.
+                profile.name = existing.name;
+                profile.id = existing.id;
+            }
         }
-    }
 
-    state.profile_manager.save_profile_v2(&profile)?;
-    Ok(LaunchProfile::from(profile))
+        manager.save_profile_v2(&profile)?;
+        Ok(LaunchProfile::from(profile))
+    })
+    .await
+    .map_err(|e| format!("Build profile task failed: {e}"))?
 }
 
 /// Build and persist a V2 profile from a wizard context. Returns the full
 /// step graph (never the flattened legacy form).
 #[tauri::command]
-pub fn build_profile_v2_from_context(
+pub async fn build_profile_v2_from_context(
     state: State<'_, DevLauncherState>,
     settings: State<'_, SettingsState>,
     context: WizardContext,
 ) -> Result<LaunchProfileV2, String> {
-    let mut diagnostics = Vec::new();
+    let manager = Arc::clone(&state.profile_manager);
     let opts = builder_options_from_settings(&settings);
-    let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
-        &context,
-        &mut diagnostics,
-        &opts,
-    );
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut diagnostics = Vec::new();
+        let mut profile = super::profile_builder::build_profile_v2_from_context_with_options(
+            &context,
+            &mut diagnostics,
+            &opts,
+        );
 
-    if let Some(ref path) = profile.project_root {
-        if let Some(existing) = state.profile_manager.find_by_project_path_v2(path) {
-            profile.name = existing.name;
-            profile.id = existing.id;
+        if let Some(ref path) = profile.project_root {
+            if let Some(existing) = manager.find_by_project_path_v2(path) {
+                profile.name = existing.name;
+                profile.id = existing.id;
+            }
         }
-    }
 
-    state.profile_manager.save_profile_v2(&profile)?;
-    Ok(profile)
+        manager.save_profile_v2(&profile)?;
+        Ok(profile)
+    })
+    .await
+    .map_err(|e| format!("Build profile task failed: {e}"))?
 }
 
 /// Start watching a project directory for source file changes.
@@ -631,7 +693,8 @@ pub async fn run_profile_v2(
     _session_id: Option<String>,
     environment_binding_id: Option<String>,
 ) -> Result<LaunchRun, String> {
-    // 1. Launch the preferred IDE first
+    // 1. Launch the preferred IDE first (spawn_blocking: резолв IDE может
+    // сканировать реестр/директории).
     let engine = Arc::clone(&state.launch_engine);
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     if let Some(ide) = &profile.preferred_ide {
@@ -639,7 +702,12 @@ pub async fn run_profile_v2(
             .project_root
             .clone()
             .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
-        let _ = engine.launch_ide(ide, project_path.as_deref(), None, vscode_path.as_deref());
+        let engine_for_ide = Arc::clone(&engine);
+        let ide = ide.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            engine_for_ide.launch_ide(&ide, project_path.as_deref(), None, vscode_path.as_deref())
+        })
+        .await;
     }
 
     // 2. Resolve the environment overlay from the profile's binding once
@@ -821,49 +889,69 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
 
 /// Resolve an application name to its executable path on the current platform.
 /// Checks PATH, App Paths registry, known install directories, and flatpak.
+///
+/// Резолв спавнит дочерние процессы (`reg query`, powershell) — уводим в
+/// spawn_blocking, чтобы не блокировать главный поток.
 #[tauri::command]
-pub fn resolve_application(name: String) -> Result<serde_json::Value, String> {
-    // First try IDE resolver (broader coverage)
-    if let Some(path) = crate::platform::ide::resolve_ide_executable(&name) {
-        return Ok(serde_json::json!({
-            "program": path,
-            "args": [],
-            "found": true,
-            "source": "ide_resolver",
-        }));
-    }
+pub async fn resolve_application(name: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // First try IDE resolver (broader coverage)
+        if let Some(path) = crate::platform::ide::resolve_ide_executable(&name) {
+            return Ok(serde_json::json!({
+                "program": path,
+                "args": [],
+                "found": true,
+                "source": "ide_resolver",
+            }));
+        }
 
-    // Then try the application launcher (free function)
-    let result = crate::platform::app_launcher::resolve_application(&name, None, None);
-    Ok(serde_json::json!({
-        "program": result.program,
-        "args": result.args,
-        "is_flatpak": result.is_flatpak,
-        "found": result.found,
-        "diagnostics": result.diagnostics,
-    }))
+        // Then try the application launcher (free function)
+        let result = crate::platform::app_launcher::resolve_application(&name, None, None);
+        Ok(serde_json::json!({
+            "program": result.program,
+            "args": result.args,
+            "is_flatpak": result.is_flatpak,
+            "found": result.found,
+            "diagnostics": result.diagnostics,
+        }))
+    })
+    .await
+    .map_err(|e| format!("Resolve application task failed: {e}"))?
 }
 
 /// Detect applications available on the host for the browser / database
 /// viewer selection UIs: all supported browsers, all supported database
 /// viewers, and the user-configured VS Code (settings path or default).
+///
+/// Детект тяжёлый: до 15 резолвов приложений, каждый из которых спавнит
+/// `reg query` и может рекурсивно сканировать Start Menu через powershell.
+/// Команда async — вся работа уходит в spawn_blocking, иначе главный поток
+/// (и вместе с ним весь UI) замирает на секунды при каждом вызове.
 #[tauri::command]
-pub fn detect_applications(
+pub async fn detect_applications(
     settings: State<'_, SettingsState>,
 ) -> Result<crate::platform::app_launcher::DetectedApplications, String> {
-    let configured_vscode = settings.0.get_settings().ok().and_then(|s| {
-        let p = s.vscode_path.trim().to_string();
-        if p.is_empty() {
-            None
-        } else {
-            Some(p)
-        }
-    });
-    Ok(crate::platform::app_launcher::DetectedApplications {
-        browsers: crate::platform::app_launcher::detect_browsers(),
-        db_viewers: crate::platform::app_launcher::detect_db_viewers(),
-        vscode: crate::platform::app_launcher::detect_vscode(configured_vscode.as_deref()),
+    let configured_vscode = settings
+        .0
+        .get_settings()
+        .ok()
+        .and_then(|s| {
+            let p = s.vscode_path.trim().to_string();
+            if p.is_empty() {
+                None
+            } else {
+                Some(p)
+            }
+        });
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::platform::app_launcher::DetectedApplications {
+            browsers: crate::platform::app_launcher::detect_browsers(),
+            db_viewers: crate::platform::app_launcher::detect_db_viewers(),
+            vscode: crate::platform::app_launcher::detect_vscode(configured_vscode.as_deref()),
+        })
     })
+    .await
+    .map_err(|e| format!("Detect applications task failed: {e}"))?
 }
 
 /// Build profile-builder options from the user's settings: the configured

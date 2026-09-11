@@ -462,7 +462,7 @@
   }
 
   .sp-file-tone-orange {
-    color: #fb923c;
+    color: var(--sp-accent);
   }
 
   .sp-file-tone-cyan {
@@ -478,7 +478,7 @@
   }
 
   .sp-file-tone-green {
-    color: #4ade80;
+    color: var(--sp-success);
   }
 
   .sp-file-tone-neutral {

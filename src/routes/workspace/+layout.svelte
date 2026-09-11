@@ -148,10 +148,8 @@
     position: sticky;
     top: 0;
     z-index: 5;
-    background: var(--sp-glass-strong);
+    background: var(--sp-solid-chrome);
     border-bottom: 1px solid var(--sp-border);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
   }
 
   .sp-ws-head-inner {
@@ -179,9 +177,10 @@
     height: 2.5rem;
     flex: 0 0 auto;
     border-radius: var(--sp-radius-lg);
-    color: #fff;
-    background: linear-gradient(135deg, var(--sp-violet-strong), var(--sp-blue-strong));
-    box-shadow: var(--sp-shadow-1);
+    color: var(--sp-text-2);
+    background: var(--sp-surface-grad), var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
   }
 
   .sp-ws-title-text {

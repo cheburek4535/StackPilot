@@ -83,7 +83,6 @@
     letter-spacing: -0.03em;
     line-height: var(--sp-lh-tight);
     color: var(--sp-text-1);
-    text-shadow: 0 0 28px var(--sp-accent-glow);
   }
 
   .sp-page-header-desc {

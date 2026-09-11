@@ -77,8 +77,7 @@
     inset: 0 auto 0 0;
     height: 100%;
     border-radius: var(--sp-radius-full);
-    background: linear-gradient(90deg, var(--sp-violet-strong), var(--sp-cyan));
-    box-shadow: 0 0 12px rgba(160, 139, 232, 0.35);
+    background: linear-gradient(90deg, var(--sp-accent-strong), var(--sp-accent));
     transition: width 0.25s ease;
   }
 

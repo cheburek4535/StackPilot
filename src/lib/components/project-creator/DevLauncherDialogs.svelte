@@ -92,10 +92,10 @@
     gap: 0.25rem;
     margin-top: 0.9rem;
     padding: 0.75rem 0.9rem;
-    border: 1px solid rgba(245, 158, 11, 0.45);
+    border: 1px solid var(--sp-warning-border);
     border-left: 4px solid var(--sp-warning);
     border-radius: 8px;
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--sp-warning-soft);
     font-size: 0.85rem;
     color: var(--sp-text-2);
     line-height: 1.45;

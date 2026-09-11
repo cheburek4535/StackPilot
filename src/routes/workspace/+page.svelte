@@ -142,12 +142,15 @@
   });
 
   /** Живое обновление: таймеры (процессы, сессия) считаются на бэкенде,
-   *  поэтому страница опрашивает их, пока открыта. */
+   *  поэтому страница опрашивает их, пока открыта. Интервал 5с + пауза
+   *  при скрытом окне: IPC-опрос каждые 2с даром не давался — это лишние
+   *  пробуждения и ререндеры. */
   function startPolling() {
     if (pollId) return;
     pollId = setInterval(() => {
+      if (document.hidden) return;
       loadData();
-    }, 2000);
+    }, 5000);
   }
 
   function stopPolling() {
@@ -1026,8 +1029,8 @@
 
   .sp-stat-icon-lime {
     color: var(--sp-success);
-    background: rgba(132, 204, 22, 0.12);
-    border: 1px solid rgba(132, 204, 22, 0.3);
+    background: var(--sp-success-soft);
+    border: 1px solid var(--sp-success-border);
   }
 
   .sp-stat-icon-violet {
@@ -1038,14 +1041,14 @@
 
   .sp-stat-icon-amber {
     color: var(--sp-warning);
-    background: rgba(245, 158, 11, 0.12);
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    background: var(--sp-warning-soft);
+    border: 1px solid var(--sp-warning-border);
   }
 
   .sp-stat-icon-cyan {
     color: var(--sp-info);
-    background: rgba(6, 182, 212, 0.12);
-    border: 1px solid rgba(6, 182, 212, 0.3);
+    background: var(--sp-info-soft);
+    border: 1px solid var(--sp-info-border);
   }
 
   .sp-stat-text {
@@ -1232,7 +1235,7 @@
   .sp-step-row.step-pending { opacity: 0.5; }
   .sp-step-row.step-running { background: var(--sp-accent-soft); }
   .sp-step-row.step-succeeded { color: var(--sp-success); }
-  .sp-step-row.step-failed { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .sp-step-row.step-failed { color: var(--sp-danger); background: var(--sp-danger-soft); }
   .sp-step-row.step-skipped { color: var(--sp-warning); opacity: 0.7; }
   .sp-step-row.step-cancelled { color: var(--sp-text-3); text-decoration: line-through; }
   .sp-step-row.step-retrying { color: var(--sp-amber); }
@@ -1274,8 +1277,8 @@
     border-radius: var(--sp-radius-sm);
   }
 
-  .sp-diag-err { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
-  .sp-diag-warn { color: var(--sp-warning); background: rgba(251,191,36,0.08); }
+  .sp-diag-err { color: var(--sp-danger); background: var(--sp-danger-soft); }
+  .sp-diag-warn { color: var(--sp-warning); background: var(--sp-warning-soft); }
   .sp-diag-info { color: var(--sp-text-3); }
 
   /* processes */

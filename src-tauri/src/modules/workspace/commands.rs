@@ -13,23 +13,31 @@ use tauri::State;
 
 // ===== Process commands =====
 
+// Спавн процессов — блокирующая работа (резолв команд, создание pipe):
+// async + spawn_blocking, чтобы не занимать главный поток Tauri.
+
 #[tauri::command]
-pub fn spawn_process(
+pub async fn spawn_process(
     state: State<'_, WorkspaceState>,
     command: String,
     args: Vec<String>,
     working_dir: Option<String>,
     label: String,
 ) -> Result<TrackedProcess, String> {
-    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let session_id = session::ensure_session(&state);
-    let proc = state.process_manager.spawn_and_track(
-        &command,
-        &args_refs,
-        working_dir.as_deref(),
-        &label,
-        session_id,
-    )?;
+    let manager = Arc::clone(&state.process_manager);
+    let proc = tauri::async_runtime::spawn_blocking(move || {
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        manager.spawn_and_track(
+            &command,
+            &args_refs,
+            working_dir.as_deref(),
+            &label,
+            session_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("Spawn task failed: {e}"))??;
     state.session.link_process(&proc.id);
     Ok(proc)
 }
@@ -51,11 +59,14 @@ pub async fn kill_process(state: State<'_, WorkspaceState>, id: String) -> Resul
 }
 
 #[tauri::command]
-pub fn refresh_process(
+pub async fn refresh_process(
     state: State<'_, WorkspaceState>,
     id: String,
 ) -> Result<ProcessStatus, String> {
-    state.process_manager.refresh_status(&id)
+    let manager = Arc::clone(&state.process_manager);
+    tauri::async_runtime::spawn_blocking(move || manager.refresh_status(&id))
+        .await
+        .map_err(|e| format!("Refresh task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -68,23 +79,28 @@ pub fn get_process_logs(
 
 /// Spawn a process in a new native terminal window (visible to the user).
 #[tauri::command]
-pub fn spawn_process_visible(
+pub async fn spawn_process_visible(
     state: State<'_, WorkspaceState>,
     command: String,
     args: Vec<String>,
     working_dir: Option<String>,
     label: String,
 ) -> Result<TrackedProcess, String> {
-    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let session_id = session::ensure_session(&state);
-    let proc = state.process_manager.spawn_visible(
-        &command,
-        &args_refs,
-        working_dir.as_deref(),
-        &label,
-        session_id,
-        None,
-    )?;
+    let manager = Arc::clone(&state.process_manager);
+    let proc = tauri::async_runtime::spawn_blocking(move || {
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        manager.spawn_visible(
+            &command,
+            &args_refs,
+            working_dir.as_deref(),
+            &label,
+            session_id,
+            None,
+        )
+    })
+    .await
+    .map_err(|e| format!("Spawn task failed: {e}"))??;
     state.session.link_process(&proc.id);
     Ok(proc)
 }
@@ -162,40 +178,56 @@ pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo>
 
 // ===== File explorer commands =====
 
+// Файловый IO (read_dir, чтение/запись файлов) — блокирующая работа:
+// async + spawn_blocking, чтобы навигация по файлам не фризила UI.
+
 #[tauri::command]
-pub fn list_directory(
+pub async fn list_directory(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<Vec<file_explorer::FileEntry>, String> {
-    state.file_explorer.list_directory(&path)
+    let explorer = Arc::clone(&state.file_explorer);
+    tauri::async_runtime::spawn_blocking(move || explorer.list_directory(&path))
+        .await
+        .map_err(|e| format!("List directory task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn read_file(
+pub async fn read_file(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<file_explorer::FileContent, String> {
-    state.file_explorer.read_file(&path)
+    let explorer = Arc::clone(&state.file_explorer);
+    tauri::async_runtime::spawn_blocking(move || explorer.read_file(&path))
+        .await
+        .map_err(|e| format!("Read file task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn write_file(
+pub async fn write_file(
     state: State<'_, WorkspaceState>,
     path: String,
     content: String,
 ) -> Result<(), String> {
-    state.file_explorer.write_file(&path, &content)
+    let explorer = Arc::clone(&state.file_explorer);
+    tauri::async_runtime::spawn_blocking(move || explorer.write_file(&path, &content))
+        .await
+        .map_err(|e| format!("Write file task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn open_in_vscode(
+pub async fn open_in_vscode(
     state: State<'_, WorkspaceState>,
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<(), String> {
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
-    let vscode_ref = vscode_path.as_deref();
-    state.file_explorer.open_in_vscode(&path, vscode_ref)
+    let explorer = Arc::clone(&state.file_explorer);
+    tauri::async_runtime::spawn_blocking(move || {
+        explorer.open_in_vscode(&path, vscode_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Open in VS Code task failed: {e}"))?
 }
 
 // ===== Problems commands =====

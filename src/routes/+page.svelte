@@ -36,7 +36,12 @@
 
   onMount(async () => {
     await Promise.all([loadProject(), loadProfiles(), loadHealth(), loadActiveRuns()]);
-    runsPollId = setInterval(() => loadActiveRuns(), 3000);
+    // 5с + пауза при скрытом окне: активные раннеры и так обновляются
+    // событиями runStore, поллинг — только страховка.
+    runsPollId = setInterval(() => {
+      if (document.hidden) return;
+      loadActiveRuns();
+    }, 5000);
   });
 
   onDestroy(() => {

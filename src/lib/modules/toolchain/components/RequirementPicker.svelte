@@ -423,7 +423,7 @@
     height: 0.9rem;
     margin-left: var(--sp-1);
     border-radius: var(--sp-radius-xs);
-    background: rgba(96, 165, 250, 0.16);
+    background: var(--sp-blue-soft);
     color: var(--sp-blue);
     font-size: 0.625rem;
     font-weight: var(--sp-fw-bold);

@@ -233,9 +233,9 @@
     align-items: center;
     justify-content: center;
     padding: var(--sp-6);
-    background: rgba(5, 6, 10, 0.68);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: rgba(2, 3, 6, 0.72);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     animation: sp-fade-in 0.18s ease;
   }
 
@@ -257,9 +257,8 @@
     height: 0.25rem;
     background: linear-gradient(
       90deg,
-      var(--sp-violet-strong),
-      var(--sp-cyan),
-      var(--sp-lime)
+      var(--sp-accent-strong),
+      var(--sp-accent)
     );
   }
 
@@ -283,7 +282,7 @@
     background: linear-gradient(
       135deg,
       var(--sp-accent-soft),
-      rgba(6, 182, 212, 0.1)
+      var(--sp-info-soft)
     );
     color: var(--sp-accent);
     border: 1px solid var(--sp-accent-border);
@@ -366,8 +365,8 @@
     font-size: var(--sp-fs-2xs);
     font-weight: var(--sp-fw-semibold);
     color: var(--sp-success);
-    background: rgba(163, 230, 53, 0.12);
-    border: 1px solid rgba(163, 230, 53, 0.3);
+    background: var(--sp-success-soft);
+    border: 1px solid var(--sp-success-border);
     border-radius: var(--sp-radius-full);
     padding: 0.125rem 0.5rem;
     white-space: nowrap;

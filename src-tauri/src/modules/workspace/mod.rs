@@ -25,7 +25,7 @@ pub struct WorkspaceState {
     pub logs: logs::DefaultLogsService,
     pub problems: problems::DefaultProblemsService,
     pub info: info::DefaultInfoService,
-    pub file_explorer: file_explorer::DefaultFileExplorerService,
+    pub file_explorer: Arc<file_explorer::DefaultFileExplorerService>,
 }
 
 impl WorkspaceState {
@@ -39,7 +39,7 @@ impl WorkspaceState {
             logs: logs::DefaultLogsService::new(),
             problems: problems::DefaultProblemsService::new(),
             info: info::DefaultInfoService::new(),
-            file_explorer: file_explorer::DefaultFileExplorerService::new(),
+            file_explorer: Arc::new(file_explorer::DefaultFileExplorerService::new()),
         }
     }
 }

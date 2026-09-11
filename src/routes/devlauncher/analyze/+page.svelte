@@ -475,14 +475,14 @@
   .hint { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.75rem 0 0; }
   .msg { margin-top: 0.75rem; padding: 0.6rem 1rem; border-radius: var(--sp-radius-md); font-size: var(--sp-fs-sm); }
   .msg.error {
-    background: rgba(239, 68, 68, 0.12);
+    background: var(--sp-danger-soft);
     color: var(--sp-danger);
-    border: 1px solid rgba(239, 68, 68, 0.35);
+    border: 1px solid var(--sp-danger-border);
   }
   .msg.success {
-    background: rgba(132, 204, 22, 0.12);
+    background: var(--sp-success-soft);
     color: var(--sp-success);
-    border: 1px solid rgba(132, 204, 22, 0.35);
+    border: 1px solid var(--sp-success-border);
   }
   .msg .link {
     background: none;
@@ -693,8 +693,8 @@
   }
 
   .toggle-btn.on {
-    background: rgba(132, 204, 22, 0.14);
-    border-color: rgba(132, 204, 22, 0.4);
+    background: var(--sp-success-soft);
+    border-color: var(--sp-success-border);
     color: var(--sp-success);
   }
 
@@ -786,15 +786,23 @@
   button.primary {
     padding: 0.5rem 1.2rem;
     border-radius: var(--sp-radius-md);
-    border: none;
+    border: 1px solid rgba(0, 0, 0, 0.35);
     background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
+    );
     color: #fff;
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-semibold);
     cursor: pointer;
-    transition: background 0.15s;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+    transition: background 0.15s, box-shadow 0.15s;
   }
-  button.primary:hover:not(:disabled) { background: var(--sp-accent); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
   button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
   button.secondary {

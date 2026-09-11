@@ -1,6 +1,6 @@
 // Тесты i18n-словарей README (locales/readme/*.json): полнота, согласованность
 // RU/EN, целостность плейсхолдеров и доступность через i18n-сервис.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll } from "vitest";
 import en from "../../core/locales/readme/en.json";
 import ru from "../../core/locales/readme/ru.json";
 import { i18n } from "../../core/i18n.svelte";
@@ -10,6 +10,9 @@ function placeholders(text: string): string[] {
 }
 
 describe("readme i18n dictionaries", () => {
+  beforeAll(async () => {
+    await i18n.ensureReadmeDicts();
+  });
   it("en and ru have identical key sets", () => {
     expect(Object.keys(ru).sort()).toEqual(Object.keys(en).sort());
   });

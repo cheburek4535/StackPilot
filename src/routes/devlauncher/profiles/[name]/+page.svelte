@@ -202,10 +202,12 @@
     refreshHistory();
   }
 
-  /** Poll a V2 run for updates (supplements store events). */
+  /** Poll a V2 run for updates (fallback: основной источник — события
+   *  runStore). 5с + пауза при скрытом окне. */
   function startPolling(runId: string) {
     stopPolling();
     pollTimer = setInterval(() => {
+      if (document.hidden) return;
       void (async () => {
         if (pollingInFlight) return;
         pollingInFlight = true;
@@ -221,7 +223,7 @@
           pollingInFlight = false;
         }
       })();
-    }, 1000);
+    }, 5000);
   }
 
   function stopPolling() {
@@ -1009,7 +1011,7 @@
     font-size: var(--sp-fs-sm);
     font-family: var(--sp-font-sans);
   }
-  .danger-outline:hover { background: rgba(239, 68, 68, 0.14); }
+  .danger-outline:hover { background: var(--sp-danger-soft); }
   .danger-outline:disabled { opacity: 0.5; cursor: default; }
 
   h1 { margin: 0; font-size: var(--sp-fs-xl); color: var(--sp-text-1); }
@@ -1018,8 +1020,8 @@
   .empty { color: var(--sp-text-3); font-style: italic; }
 
   .error-card {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.35);
+    background: var(--sp-danger-soft);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-md);
     padding: 1.5rem;
     text-align: center;
@@ -1055,11 +1057,11 @@
     border-radius: var(--sp-radius-xs);
   }
   .run-status.pending { background: var(--sp-bg-2); color: var(--sp-text-2); }
-  .run-status.running { background: rgba(163,230,53,0.14); color: var(--sp-success); }
-  .run-status.succeeded { background: rgba(163,230,53,0.14); color: var(--sp-success); }
-  .run-status.failed { background: rgba(248,113,113,0.14); color: var(--sp-danger); }
-  .run-status.cancelled { background: rgba(251,191,36,0.14); color: var(--sp-warning); }
-  .run-status.partial_success { background: rgba(251,191,36,0.14); color: var(--sp-warning); }
+  .run-status.running { background: var(--sp-success-soft); color: var(--sp-success); }
+  .run-status.succeeded { background: var(--sp-success-soft); color: var(--sp-success); }
+  .run-status.failed { background: var(--sp-danger-soft); color: var(--sp-danger); }
+  .run-status.cancelled { background: var(--sp-warning-soft); color: var(--sp-warning); }
+  .run-status.partial_success { background: var(--sp-warning-soft); color: var(--sp-warning); }
 
   .run-steps { display: flex; flex-direction: column; gap: 0.3rem; }
 
@@ -1075,7 +1077,7 @@
   .run-step.step-pending { opacity: 0.5; }
   .run-step.step-running { background: var(--sp-accent-soft); }
   .run-step.step-succeeded { color: var(--sp-success); }
-  .run-step.step-failed { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
+  .run-step.step-failed { color: var(--sp-danger); background: var(--sp-danger-soft); }
   .run-step.step-skipped { color: var(--sp-warning); opacity: 0.7; }
   .run-step.step-cancelled { color: var(--sp-text-3); text-decoration: line-through; }
   .run-step.step-retrying { color: var(--sp-amber); }
@@ -1146,8 +1148,8 @@
   .run-diagnostics h3 { font-size: var(--sp-fs-sm); margin: 0 0 0.5rem; color: var(--sp-text-2); }
 
   .diag { margin: 0; font-size: var(--sp-fs-xs); font-family: var(--sp-font-mono); padding: 0.25rem 0.5rem; border-radius: var(--sp-radius-sm); }
-  .diag-err { color: var(--sp-danger); background: rgba(248,113,113,0.08); }
-  .diag-warn { color: var(--sp-warning); background: rgba(251,191,36,0.08); }
+  .diag-err { color: var(--sp-danger); background: var(--sp-danger-soft); }
+  .diag-warn { color: var(--sp-warning); background: var(--sp-warning-soft); }
   .diag-info { color: var(--sp-text-3); }
   .diag-step { color: var(--sp-text-3); font-size: var(--sp-fs-2xs); }
 
@@ -1185,7 +1187,7 @@
     color: var(--sp-success);
     transition: background 0.15s;
   }
-  .run-btn:hover:not(:disabled) { background: rgba(132, 204, 22, 0.14); border-color: var(--sp-success); }
+  .run-btn:hover:not(:disabled) { background: var(--sp-success-soft); border-color: var(--sp-success); }
   .run-btn:disabled { color: var(--sp-text-3); cursor: default; }
 
   .toggle { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }
@@ -1259,14 +1261,14 @@
 
   .delete-btn {
     padding: 0.3rem 0.5rem;
-    border: 1px solid rgba(239, 68, 68, 0.35);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-sm);
     background: transparent;
     cursor: pointer;
     font-size: var(--sp-fs-sm);
     color: var(--sp-danger);
   }
-  .delete-btn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); }
+  .delete-btn:hover:not(:disabled) { background: var(--sp-danger-soft); }
   .delete-btn:disabled { opacity: 0.5; cursor: default; }
 
   .action-deps {
@@ -1288,16 +1290,24 @@
   button.primary {
     padding: 0.5rem 1.2rem;
     border-radius: var(--sp-radius-md);
-    border: none;
+    border: 1px solid rgba(0, 0, 0, 0.35);
     background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
+    );
     color: #fff;
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-semibold);
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+    transition: background 0.15s, box-shadow 0.15s;
   }
-  button.primary:hover:not(:disabled) { background: var(--sp-accent); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
   button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
   button.secondary {

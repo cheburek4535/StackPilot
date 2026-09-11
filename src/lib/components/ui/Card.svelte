@@ -52,8 +52,6 @@
 
   .sp-card-glass {
     background: var(--sp-glass-bg);
-    backdrop-filter: blur(12px) saturate(1.3);
-    -webkit-backdrop-filter: blur(12px) saturate(1.3);
     box-shadow:
       var(--sp-gloss-top),
       var(--sp-shadow-1);

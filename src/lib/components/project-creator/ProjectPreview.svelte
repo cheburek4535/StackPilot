@@ -300,8 +300,8 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-3) var(--sp-4);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    background: var(--sp-danger-soft);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-md);
     color: var(--sp-red);
     font-size: var(--sp-fs-sm);
@@ -311,7 +311,7 @@
     margin-left: auto;
     padding: var(--sp-1) var(--sp-3);
     background: none;
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-sm);
     color: var(--sp-red);
     font-size: var(--sp-fs-xs);
@@ -319,7 +319,7 @@
   }
 
   .pp-retry:hover {
-    background: rgba(239, 68, 68, 0.1);
+    background: var(--sp-danger-soft);
   }
 
   .pp-summary-bar {
@@ -392,8 +392,8 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-3) var(--sp-4);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    background: var(--sp-danger-soft);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-sm);
     color: var(--sp-red);
     font-size: var(--sp-fs-sm);

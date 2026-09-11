@@ -623,9 +623,9 @@
     inset: 0;
     border: none;
     padding: 0;
-    background: rgba(5, 6, 10, 0.5);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
+    background: rgba(2, 3, 6, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     cursor: default;
     animation: sp-fade-in 0.15s ease;
   }
@@ -998,8 +998,8 @@
     font-family: var(--sp-font-mono);
     font-size: var(--sp-fs-xs);
     color: var(--sp-danger);
-    background: rgba(239, 68, 68, 0.06);
-    border: 1px solid rgba(239, 68, 68, 0.25);
+    background: var(--sp-danger-soft);
+    border: 1px solid var(--sp-danger-border);
     border-radius: var(--sp-radius-md);
     padding: var(--sp-2) var(--sp-3);
     white-space: pre-wrap;
@@ -1032,13 +1032,13 @@
     padding: var(--sp-2) var(--sp-5);
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-2);
-    background: rgba(6, 182, 212, 0.06);
+    background: var(--sp-info-soft);
     border-bottom: 1px solid var(--sp-border-faint);
   }
 
   .details-error {
     color: var(--sp-danger);
-    background: rgba(239, 68, 68, 0.07);
+    background: var(--sp-danger-soft);
   }
 
   .details-error-text {
@@ -1062,7 +1062,7 @@
   }
 
   .details-retry:hover {
-    background: rgba(239, 68, 68, 0.12);
+    background: var(--sp-danger-soft);
   }
 
   .foot {

@@ -1,7 +1,4 @@
-import readme from "./readme/en.json";
-
 export default {
-  ...readme,
   "nav.home": "Home",
   "nav.devlauncher": "DevLauncher",
   "nav.devlauncher.overview": "Overview",

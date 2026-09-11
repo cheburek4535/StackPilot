@@ -19,6 +19,12 @@ class I18nService {
    *  одним и тем же кодом (см. translateIn). */
   private dicts: Record<Locale, TranslationDict> = { en, ru };
 
+  /** README-словари (~135 КБ JSON) грузятся лениво: в основном бандле им
+   *  делать нечего — рантайм фронтенда их ключи не использует, а README
+   *  генерируется на стороне Rust (там JSON встроен через include_str!). */
+  private readmeDicts: Partial<Record<Locale, Record<string, string>>> = {};
+  private readmePromise: Promise<void> | null = null;
+
   constructor() {
     if (browser) {
       const saved = localStorage.getItem('sp-locale') as Locale;
@@ -26,6 +32,19 @@ class I18nService {
         this.locale = saved;
       }
     }
+  }
+
+  /** Ленивая загрузка README-словарей (нужно только тестам/генерации артефактов). */
+  async ensureReadmeDicts(): Promise<void> {
+    if (this.readmeDicts.en && this.readmeDicts.ru) return;
+    this.readmePromise ??= Promise.all([
+      import('./locales/readme/en.json'),
+      import('./locales/readme/ru.json')
+    ]).then(([enReadme, ruReadme]) => {
+      this.readmeDicts.en = enReadme.default as Record<string, string>;
+      this.readmeDicts.ru = ruReadme.default as Record<string, string>;
+    });
+    await this.readmePromise;
   }
 
   setLocale(l: Locale) {
@@ -39,7 +58,12 @@ class I18nService {
    *  отличном от языка интерфейса — например README). */
   translateIn(locale: Locale, key: string, vars?: Record<string, string | number>) {
     const dict = this.dicts[locale] || this.dicts.en;
-    let text = (dict as Record<string, string>)[key] || (en as Record<string, string>)[key] || key;
+    let text =
+      (dict as Record<string, string>)[key] ||
+      this.readmeDicts[locale]?.[key] ||
+      this.readmeDicts.en?.[key] ||
+      (en as Record<string, string>)[key] ||
+      key;
     if (vars) {
       for (const [k, v] of Object.entries(vars)) {
         // Поддерживаем оба стиля плейсхолдеров: {{k}} и {k}.

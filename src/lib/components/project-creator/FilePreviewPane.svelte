@@ -143,15 +143,15 @@
   }
 
   .fpb-certain {
-    background: rgba(132, 204, 22, 0.14);
+    background: var(--sp-success-soft);
     color: var(--sp-success);
-    border: 1px solid rgba(132, 204, 22, 0.3);
+    border: 1px solid var(--sp-success-border);
   }
 
   .fpb-expected {
-    background: rgba(245, 158, 11, 0.14);
+    background: var(--sp-warning-soft);
     color: var(--sp-warning);
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    border: 1px solid var(--sp-warning-border);
   }
 
   .fpb-unknown {
@@ -189,10 +189,10 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-4);
-    background: rgba(245, 158, 11, 0.08);
+    background: var(--sp-warning-soft);
     color: var(--sp-warning);
     font-size: var(--sp-fs-xs);
-    border-bottom: 1px solid rgba(245, 158, 11, 0.15);
+    border-bottom: 1px solid var(--sp-warning-border);
     flex-shrink: 0;
   }
 
