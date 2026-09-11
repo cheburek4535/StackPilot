@@ -28,18 +28,19 @@
   --sp-info: #06b6d4;
   --sp-warning: #f59e0b;
   --sp-danger: #ef4444;
-  --sp-accent: #f59e0b;
-  --sp-accent-strong: #c98209;
-  --sp-accent-soft: rgba(245, 158, 11, 0.16);
-  --sp-accent-border: rgba(245, 158, 11, 0.4);
+  --sp-accent: #ff8a1f;
+  --sp-accent-strong: #e4570a;
+  --sp-accent-soft: rgba(255, 138, 31, 0.09);
+  --sp-accent-border: rgba(255, 138, 31, 0.22);
+  --sp-accent-glow: rgba(255, 138, 31, 0.35);
 
   /* ---- Typography ---- */
   --sp-font-sans:
-    "Inter", "Segoe UI", "SF Pro Display", -apple-system, "Helvetica Neue",
-    Arial, sans-serif;
+    "Inter Variable", "Inter", "Segoe UI", "SF Pro Display", -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
   --sp-font-mono:
-    "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular,
-    "Consolas", "Liberation Mono", monospace;
+    "JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "Fira Code",
+    ui-monospace, SFMono-Regular, "Consolas", "Liberation Mono", monospace;
 
   --sp-text-1: #e6e9ef;
   --sp-text-2: #98a2b3;
@@ -81,35 +82,48 @@
   --sp-radius-full: 9999px;
 
   /* ---- Elevation ---- */
-  --sp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
-  --sp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --sp-shadow-1:
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 1px 3px rgba(0, 0, 0, 0.35);
+  --sp-shadow-2:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 6px 20px rgba(0, 0, 0, 0.4);
   --sp-shadow-3:
-    0 8px 24px rgba(0, 0, 0, 0.55), 0 16px 48px rgba(0, 0, 0, 0.45);
-  --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
-    0 4px 20px rgba(217, 119, 6, 0.28);
+    0 8px 28px rgba(0, 0, 0, 0.6),
+    0 20px 56px rgba(0, 0, 0, 0.5);
+  --sp-shadow-accent:
+    0 0 0 1px var(--sp-accent-border),
+    0 4px 24px rgba(228, 87, 10, 0.22);
+
+  /* ---- Glossy surface helpers ---- */
+  --sp-gloss-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --sp-gloss-top-strong: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --sp-surface-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, transparent 100%);
 
   /* ---- Focus ---- */
-  --sp-focus-ring: 0 0 0 2px var(--sp-bg-0), 0 0 0 4px var(--sp-accent);
+  --sp-focus-ring:
+    0 0 0 2px var(--sp-bg-0),
+    0 0 0 4px var(--sp-accent);
 
-  /* ---- Surfaces (deep, blue-tinted neutral — no flat plastic layers) ---- */
-  --sp-bg-0: #08090c;
-  --sp-bg-1: #0e1016;
-  --sp-bg-2: #161a23;
-  --sp-bg-3: #1e2330;
-  --sp-glass-bg: rgba(14, 16, 22, 0.82);
-  --sp-glass-strong: rgba(10, 12, 16, 0.9);
-  --sp-border: rgba(148, 163, 184, 0.1);
-  --sp-border-strong: rgba(148, 163, 184, 0.18);
-  --sp-border-faint: rgba(148, 163, 184, 0.05);
+  /* ---- Surfaces (deep, neutral black — no plastic layers) ---- */
+  --sp-bg-0: #050507;
+  --sp-bg-1: #0b0b11;
+  --sp-bg-2: #12141d;
+  --sp-bg-3: #191c28;
+  --sp-glass-bg: rgba(11, 11, 17, 0.82);
+  --sp-glass-strong: rgba(7, 7, 12, 0.9);
+  --sp-border: rgba(148, 163, 184, 0.08);
+  --sp-border-strong: rgba(148, 163, 184, 0.14);
+  --sp-border-faint: rgba(148, 163, 184, 0.04);
 
-  --sp-code-bg: rgba(148, 163, 184, 0.08);
+  --sp-code-bg: rgba(148, 163, 184, 0.07);
 
   /* ---- App chrome ---- */
   --sp-topbar-h: 3.25rem;
   --sp-sidebar-w: 14.5rem;
 
-  --sp-scrollbar-thumb: rgba(148, 163, 184, 0.22);
-  --sp-scrollbar-thumb-hover: rgba(148, 163, 184, 0.34);
+  --sp-scrollbar-thumb: rgba(148, 163, 184, 0.18);
+  --sp-scrollbar-thumb-hover: rgba(148, 163, 184, 0.28);
 }
 
 /*
@@ -133,10 +147,11 @@
   --sp-info: #0891b2;
   --sp-warning: #d97706;
   --sp-danger: #dc2626;
-  --sp-accent: #f59e0b;
-  --sp-accent-strong: #c98209;
-  --sp-accent-soft: rgba(217, 119, 6, 0.12);
-  --sp-accent-border: rgba(217, 119, 6, 0.35);
+  --sp-accent: #e05e00;
+  --sp-accent-strong: #c44d00;
+  --sp-accent-soft: rgba(224, 94, 0, 0.08);
+  --sp-accent-border: rgba(224, 94, 0, 0.2);
+  --sp-accent-glow: rgba(224, 94, 0, 0.25);
 
   --sp-text-1: #181a1f;
   --sp-text-2: #4b5162;
@@ -145,8 +160,13 @@
   --sp-shadow-1: 0 1px 2px rgba(15, 20, 40, 0.06);
   --sp-shadow-2: 0 2px 8px rgba(15, 20, 40, 0.08);
   --sp-shadow-3: 0 8px 24px rgba(15, 20, 40, 0.12);
-  --sp-shadow-accent: 0 0 0 1px var(--sp-accent-border),
-    0 4px 20px rgba(217, 119, 6, 0.15);
+  --sp-shadow-accent:
+    0 0 0 1px var(--sp-accent-border),
+    0 4px 20px rgba(224, 94, 0, 0.12);
+
+  --sp-gloss-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --sp-gloss-top-strong: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --sp-surface-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, transparent 100%);
 
   --sp-bg-0: #f5f7fb;
   --sp-bg-1: #ffffff;
@@ -286,6 +306,8 @@ kbd {
   display: none !important;
 }
 
+/* ---- Glossy animation keyframes ---- */
+
 @keyframes sp-fade-in {
   from {
     opacity: 0;
@@ -317,7 +339,6 @@ kbd {
   }
 }
 
-/* Плавное появление модального окна: подъём + лёгкий «пружинный» масштаб */
 @keyframes sp-modal-in {
   from {
     opacity: 0;
@@ -353,4 +374,10 @@ kbd {
   100% {
     transform: translateX(250%);
   }
+}
+
+/* ---- Ambient glow (for .sp-ambient-glow class) ---- */
+
+[data-theme="light"] .sp-ambient-glow {
+  display: none;
 }

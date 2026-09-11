@@ -45,9 +45,11 @@
     align-items: center;
     gap: var(--sp-1);
     padding: 0.125rem;
-    background: var(--sp-bg-1);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-1);
     border: 1px solid var(--sp-border-faint);
     border-radius: var(--sp-radius-md);
+    box-shadow: var(--sp-gloss-top);
     width: max-content;
     max-width: 100%;
     overflow-x: auto;
@@ -67,6 +69,7 @@
     font-weight: var(--sp-fw-medium);
     white-space: nowrap;
     cursor: pointer;
+    box-shadow: var(--sp-gloss-top);
     transition:
       background-color 0.15s ease,
       color 0.15s ease;
@@ -78,12 +81,13 @@
   }
 
   .sp-tab-active {
-    background: var(--sp-accent-soft);
+    background: var(--sp-bg-2);
     color: var(--sp-accent);
+    box-shadow: var(--sp-gloss-top-strong);
   }
 
   .sp-tab-active:hover {
-    background: var(--sp-accent-soft);
+    background: var(--sp-bg-2);
     color: var(--sp-accent);
   }
 

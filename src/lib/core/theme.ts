@@ -30,7 +30,7 @@ export const ACCENT_PRESETS: Record<string, string> = {
   violet: "#8b5cf6",
   blue: "#3b82f6",
   green: "#22c55e",
-  orange: "#f97316",
+  orange: "#ff8a1f",
   red: "#ef4444",
   cyan: "#06b6d4",
 };
@@ -71,15 +71,19 @@ export function applyAccentColor(value: string): void {
     );
     root.style.setProperty(
       "--sp-accent-soft",
-      rgb(fallback.r, fallback.g, fallback.b, 0.16),
+      rgb(fallback.r, fallback.g, fallback.b, 0.09),
     );
     root.style.setProperty(
       "--sp-accent-border",
-      rgb(fallback.r, fallback.g, fallback.b, 0.4),
+      rgb(fallback.r, fallback.g, fallback.b, 0.22),
+    );
+    root.style.setProperty(
+      "--sp-accent-glow",
+      rgb(fallback.r, fallback.g, fallback.b, 0.35),
     );
     root.style.setProperty(
       "--sp-shadow-accent",
-      `0 0 0 1px rgb(${fallback.r},${fallback.g},${fallback.b},0.4), 0 4px 20px rgb(${fallback.r},${fallback.g},${fallback.b},0.25)`,
+      `0 0 0 1px rgb(${fallback.r},${fallback.g},${fallback.b},0.3), 0 4px 24px rgb(${fallback.r},${fallback.g},${fallback.b},0.22)`,
     );
     root.style.setProperty(
       "--sp-focus-ring",
@@ -94,14 +98,18 @@ export function applyAccentColor(value: string): void {
   };
   root.style.setProperty("--sp-accent", rgb(parsed.r, parsed.g, parsed.b));
   root.style.setProperty("--sp-accent-strong", rgb(strong.r, strong.g, strong.b));
-  root.style.setProperty("--sp-accent-soft", rgb(parsed.r, parsed.g, parsed.b, 0.16));
+  root.style.setProperty("--sp-accent-soft", rgb(parsed.r, parsed.g, parsed.b, 0.09));
   root.style.setProperty(
     "--sp-accent-border",
-    rgb(parsed.r, parsed.g, parsed.b, 0.4),
+    rgb(parsed.r, parsed.g, parsed.b, 0.22),
+  );
+  root.style.setProperty(
+    "--sp-accent-glow",
+    rgb(parsed.r, parsed.g, parsed.b, 0.35),
   );
   root.style.setProperty(
     "--sp-shadow-accent",
-    `0 0 0 1px rgb(${parsed.r},${parsed.g},${parsed.b},0.4), 0 4px 20px rgb(${parsed.r},${parsed.g},${parsed.b},0.25)`,
+    `0 0 0 1px rgb(${parsed.r},${parsed.g},${parsed.b},0.3), 0 4px 24px rgb(${parsed.r},${parsed.g},${parsed.b},0.22)`,
   );
   root.style.setProperty(
     "--sp-focus-ring",

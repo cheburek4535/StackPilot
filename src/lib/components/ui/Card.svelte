@@ -47,20 +47,33 @@
     border-radius: var(--sp-radius-lg);
     border: 1px solid var(--sp-border);
     min-width: 0;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
   .sp-card-glass {
     background: var(--sp-glass-bg);
-    box-shadow: var(--sp-shadow-1);
+    backdrop-filter: blur(12px) saturate(1.3);
+    -webkit-backdrop-filter: blur(12px) saturate(1.3);
+    box-shadow:
+      var(--sp-gloss-top),
+      var(--sp-shadow-1);
   }
 
   .sp-card-elevated {
-    background: var(--sp-bg-1);
-    box-shadow: var(--sp-shadow-2);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-1);
+    box-shadow:
+      var(--sp-gloss-top),
+      var(--sp-shadow-2);
+  }
+
+  .sp-card-elevated:hover {
+    border-color: var(--sp-border-strong);
   }
 
   .sp-card-outline {
     background: transparent;
+    box-shadow: var(--sp-gloss-top);
   }
 
   .sp-card-pad-sm .sp-card-body {

@@ -40,9 +40,11 @@
     text-align: center;
     gap: var(--sp-2);
     padding: var(--sp-10) var(--sp-6);
-    border: 1px dashed var(--sp-border-strong);
+    border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-lg);
-    background: var(--sp-bg-1);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-1);
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
   }
 
   .sp-empty-compact {
@@ -56,9 +58,11 @@
     width: 3.25rem;
     height: 3.25rem;
     border-radius: var(--sp-radius-full);
-    background: var(--sp-accent-soft);
-    color: var(--sp-accent);
-    border: 1px solid var(--sp-accent-border);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-2);
+    color: var(--sp-text-2);
+    border: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top-strong);
     margin-bottom: var(--sp-1);
   }
 

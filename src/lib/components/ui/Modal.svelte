@@ -102,9 +102,9 @@
     align-items: center;
     justify-content: center;
     padding: var(--sp-6);
-    background: rgba(5, 6, 10, 0.6);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgba(2, 3, 6, 0.72);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     animation: sp-fade-in 0.2s ease;
   }
 
@@ -116,7 +116,9 @@
     background: var(--sp-glass-strong);
     border: 1px solid var(--sp-border-strong);
     border-radius: var(--sp-radius-xl);
-    box-shadow: var(--sp-shadow-3);
+    box-shadow:
+      var(--sp-gloss-top-strong),
+      var(--sp-shadow-3);
     animation: sp-modal-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
     outline: none;
   }

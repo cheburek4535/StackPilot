@@ -47,6 +47,7 @@
 </script>
 
 <div class="sp-app">
+  <div class="sp-ambient-glow" aria-hidden="true"></div>
   <header class="sp-topbar">
     <a href="/" class="sp-brand">
       <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
@@ -122,6 +123,7 @@
 
 <style>
   .sp-app {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -131,9 +133,30 @@
     font-family: var(--sp-font-sans);
   }
 
-  /* ---- topbar ---- */
+  /* ---- ambient glow (deep orange fog behind glass chrome) ---- */
+
+  .sp-ambient-glow {
+    position: fixed;
+    top: -25vh;
+    left: 30%;
+    width: 50vw;
+    height: 50vh;
+    border-radius: 50%;
+    background: radial-gradient(
+      ellipse at center,
+      var(--sp-accent-glow) 0%,
+      transparent 65%
+    );
+    opacity: 0.18;
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ---- topbar (glass) ---- */
 
   .sp-topbar {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: center;
@@ -141,8 +164,11 @@
     gap: var(--sp-4);
     height: var(--sp-topbar-h);
     padding: 0 var(--sp-4);
-    background: var(--sp-bg-1);
+    background: var(--sp-glass-bg);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
     border-bottom: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top-strong);
     z-index: 10;
   }
 
@@ -152,6 +178,7 @@
     gap: var(--sp-2);
     text-decoration: none;
     color: var(--sp-text-1);
+    position: relative;
   }
 
   .sp-brand:hover {
@@ -166,8 +193,10 @@
     height: 1.75rem;
     border-radius: var(--sp-radius-md);
     color: #fff;
-    background: linear-gradient(135deg, var(--sp-violet-strong), var(--sp-blue-strong));
-    box-shadow: var(--sp-shadow-1);
+    background: linear-gradient(135deg, var(--sp-accent), var(--sp-accent-strong));
+    box-shadow:
+      var(--sp-gloss-top),
+      0 2px 8px rgba(228, 87, 10, 0.35);
   }
 
   .sp-brand-name {
@@ -188,6 +217,12 @@
   .sp-brand-logo {
     height: 30px;
     width: auto;
+    filter: drop-shadow(0 0 14px var(--sp-accent-glow));
+    transition: filter 0.3s ease;
+  }
+
+  .sp-brand:hover .sp-brand-logo {
+    filter: drop-shadow(0 0 20px var(--sp-accent-glow));
   }
 
   .sp-topbar-actions {
@@ -202,15 +237,22 @@
     flex: 1 1 auto;
     display: flex;
     min-height: 0;
+    position: relative;
+    z-index: 1;
   }
+
+  /* ---- sidebar (glass) ---- */
 
   .sp-sidebar {
     flex: 0 0 var(--sp-sidebar-w);
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--sp-bg-1);
+    background: var(--sp-glass-bg);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
     border-right: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top);
   }
 
   .sp-nav {
@@ -241,7 +283,6 @@
     color: var(--sp-text-1);
   }
 
-  /* The project section is de-emphasized until a project is open. */
   .sp-nav-group-muted .sp-nav-group-label {
     color: var(--sp-text-3);
   }
@@ -265,9 +306,11 @@
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-medium);
     text-decoration: none;
+    box-shadow: var(--sp-gloss-top);
     transition:
       background-color 0.15s ease,
-      color 0.15s ease;
+      color 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .sp-nav-item::before {
@@ -281,6 +324,7 @@
     transform: translateY(-50%);
     background: var(--sp-accent);
     opacity: 0;
+    box-shadow: 0 0 6px var(--sp-accent-glow);
     transition: opacity 0.15s ease;
   }
 
@@ -333,6 +377,7 @@
     text-align: left;
     text-decoration: none;
     cursor: pointer;
+    box-shadow: var(--sp-gloss-top);
     transition: background-color 0.15s ease, color 0.15s ease;
   }
 

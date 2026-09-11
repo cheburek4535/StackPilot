@@ -65,14 +65,11 @@
     height: 2.5rem;
     flex: 0 0 auto;
     border-radius: var(--sp-radius-lg);
-    color: var(--sp-accent);
-    background: linear-gradient(
-      135deg,
-      var(--sp-accent-soft),
-      rgba(6, 182, 212, 0.08)
-    );
-    border: 1px solid var(--sp-accent-border);
-    box-shadow: var(--sp-shadow-1);
+    color: var(--sp-text-2);
+    background: var(--sp-surface-grad),
+      var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
   }
 
   .sp-page-header-text {
@@ -83,9 +80,10 @@
     margin: 0;
     font-size: var(--sp-fs-2xl);
     font-weight: var(--sp-fw-bold);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.03em;
     line-height: var(--sp-lh-tight);
     color: var(--sp-text-1);
+    text-shadow: 0 0 28px var(--sp-accent-glow);
   }
 
   .sp-page-header-desc {
