@@ -269,15 +269,21 @@
 
   {#if execPlan}
     <button
-      class="devl-chip"
-      class:missing={!devlProfileExists}
+      class="devl-btn"
       onclick={onreopendevl}
       title={devlProfileExists
         ? (i18n.t("create.devl_chip_open") as TranslationKey)
         : (i18n.t("create.devl_chip_add") as TranslationKey)}
     >
-      <span class="devl-chip-icon">{devlProfileExists ? "→" : "+"}</span>
-      <span class="devl-chip-label">DevLauncher</span>
+      <span class="devl-btn-icon" aria-hidden="true">{devlProfileExists ? "→" : "+"}</span>
+      <span class="devl-btn-text">
+        <span class="devl-btn-title">DevLauncher</span>
+        <span class="devl-btn-sub">
+          {devlProfileExists
+            ? (i18n.t("create.devl_btn_run") as TranslationKey)
+            : (i18n.t("create.devl_btn_add") as TranslationKey)}
+        </span>
+      </span>
     </button>
   {/if}
 {:else if execOverallStatus === "error" || execOverallStatus === "cancelled"}
@@ -308,25 +314,47 @@
   .exec-finished p { margin: 0.3rem 0; }
   .exec-finished.error { color: var(--sp-danger); }
   .exec-plan-path { font-size: 0.85rem; color: var(--sp-text-3); }
-  /* Маленькая кнопка DevLauncher на финальной странице */
-  .devl-chip {
-    display: inline-flex;
+  /* Заметная кнопка DevLauncher на финальной странице */
+  .devl-btn {
+    display: flex;
     align-items: center;
-    gap: 0.4rem;
-    margin-top: 1rem;
-    padding: 0.35rem 0.8rem;
-    border: 1px solid var(--sp-border-strong);
-    border-radius: 999px;
-    background: var(--sp-bg-1);
-    color: var(--sp-text-2);
-    font-size: 0.8rem;
+    justify-content: center;
+    gap: 0.65rem;
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 0.85rem 1.25rem;
+    border-radius: var(--sp-radius-lg);
+    border: 1px solid var(--sp-accent-strong);
+    background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 86%, black) 0%,
+      var(--sp-accent-strong) 45%,
+      var(--sp-accent) 100%
+    );
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.98rem;
     cursor: pointer;
-    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 16px rgba(228, 87, 10, 0.35);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+    transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
   }
-  .devl-chip:hover { border-color: var(--sp-accent-strong); color: #fff; }
-  .devl-chip.missing { border-style: dashed; }
-  .devl-chip-icon { font-weight: 700; line-height: 1; }
-  .devl-chip-label { font-weight: 600; }
+  .devl-btn:hover {
+    background: var(--sp-accent-strong);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sp-accent-strong) 76%, black) 0%,
+      var(--sp-accent-strong) 40%,
+      color-mix(in srgb, var(--sp-accent) 88%, var(--sp-accent-strong)) 100%
+    );
+    box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-accent);
+    transform: translateY(-1px);
+  }
+  .devl-btn-icon { font-size: 1.15rem; font-weight: 800; line-height: 1; }
+  .devl-btn-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+  .devl-btn-title { font-size: 1rem; }
+  .devl-btn-sub { font-size: 0.72rem; font-weight: 500; opacity: 0.85; }
   .about-project-section { border: 1px solid var(--sp-border-strong); border-radius: 10px; padding: 1rem; margin: 1rem 0; background: var(--sp-bg-1); }
   .about-title { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; color: var(--sp-text-1); }
   .about-hint { margin: 0 0 0.75rem; font-size: 0.8rem; color: var(--sp-text-3); }

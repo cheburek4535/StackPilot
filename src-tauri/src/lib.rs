@@ -268,6 +268,9 @@ pub fn run() {
             core::settings::reset_settings,
             core::settings::settings_check_path,
             core::settings::get_app_data_dir,
+            // Exit flow: ответы вкладки на диалог «завершить процессы?»
+            core::process_registry::resolve_exit_request,
+            core::process_registry::cancel_exit_request,
             // ProjectEnvironment commands
             modules::project_environment::commands::pe_list_bindings,
             modules::project_environment::commands::pe_get_binding,
@@ -292,6 +295,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Error building Tauri application")
         .run(|app_handle, event| {
+            // Клик по «Х» / Alt+F4: «ask» показывает диалог в приложении и
+            // держит окно открытым, «always/never» закрываются сразу.
+            if let tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = event
+            {
+                core::process_registry::handle_window_close_request(app_handle, api);
+                return;
+            }
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
                 core::process_registry::handle_exit_request(app_handle, api, code);
             }

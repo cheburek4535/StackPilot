@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { page } from "$app/stores";
   import { APP_NAME, APP_VERSION } from "$lib/core/app";
@@ -12,15 +12,22 @@
   import { workspaceContext } from "$lib/modules/workspace/context";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { Locale, TranslationKey } from "$lib/core/i18n.svelte";
+  import { listenExitRequest } from "$lib/core/exit";
+  import type { ExitAskPayload } from "$lib/core/exit";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
   import ToastRegion from "./ToastRegion.svelte";
   import OnboardingOverlay from "./OnboardingOverlay.svelte";
+  import ExitDialog from "./ExitDialog.svelte";
 
   let { children }: { children: Snippet } = $props();
 
   let restoreRoute = $state(true);
+
+  /** Запрос выхода с запущенными процессами StackPilot (говорит бэкенд). */
+  let exitAsk = $state<ExitAskPayload | null>(null);
+  let unlistenExit: (() => void) | null = null;
 
   onMount(() => {
     initTheme();
@@ -33,6 +40,18 @@
       .catch(() => {});
     // First-run detection — open the welcome tour unless already seen.
     if (get(onboarding).firstRun) showOnboarding();
+    listenExitRequest((payload) => {
+      exitAsk = payload;
+    }).then((unlisten) => {
+      unlistenExit = unlisten;
+    }).catch(() => {
+      // Exit-диалог недоступен (например, браузерные dev-сборки без Tauri) —
+      // закрытие окна обрабатывает бэкенд штатным образом.
+    });
+  });
+
+  onDestroy(() => {
+    if (unlistenExit) unlistenExit();
   });
 
   const pathname = $derived($page.url.pathname);
@@ -107,6 +126,10 @@
   <ToastRegion />
   <OnboardingOverlay />
 </div>
+
+{#if exitAsk}
+  <ExitDialog payload={exitAsk} onclose={() => (exitAsk = null)} />
+{/if}
 
 {#snippet navItem(item: { id: string; label: string; href: string; icon: string; match: (p: string) => boolean })}
   <a

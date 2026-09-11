@@ -1748,7 +1748,7 @@ fn build_language_steps(ctx: &WizardContext, g: &mut GraphBuilder, infra: &[Stri
                 let start = service_step(
                     g,
                     "Run JVM project",
-                    "./gradlew run",
+                    &java_wrapper_command(ctx, "run"),
                     None,
                     Vec::new(),
                     "medium",

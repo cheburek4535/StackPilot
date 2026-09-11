@@ -3105,6 +3105,10 @@ fn resolve_relative_program(
     };
     let candidate = Path::new(dir).join(program);
     if !candidate.is_file() {
+        #[cfg(target_os = "windows")]
+        if let Some(shim) = resolve_windows_script_wrapper(&candidate) {
+            return Ok((shim.to_string_lossy().into_owned(), args.to_vec()));
+        }
         return Err(format!(
             "Executable '{}' not found in '{}'. The project's virtual environment may not \
              have been created: check that the install step ran (or is enabled), or \
@@ -3113,6 +3117,35 @@ fn resolve_relative_program(
         ));
     }
     Ok((candidate.to_string_lossy().into_owned(), args.to_vec()))
+}
+
+/// On Windows a Unix-style wrapper invocation such as `./gradlew` never
+/// exists on disk (`gradlew.bat` does). Profiles created before the
+/// platform-aware builder — or copied from a Unix machine — still carry
+/// `./gradlew` / `./mvnw`, which otherwise dead-ends with the "Executable
+/// not found" error. Resolve the batch shim sitting next to it instead.
+#[cfg(target_os = "windows")]
+fn resolve_windows_script_wrapper(candidate: &Path) -> Option<PathBuf> {
+    let file_name = candidate
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())?;
+    let has_extension = candidate.extension().is_some();
+    if has_extension {
+        return None;
+    }
+    let (base, replacements): (&str, &[&str]) = match file_name.as_str() {
+        "gradlew" => ("gradlew", &["bat", "cmd"]),
+        "mvnw" => ("mvnw", &["cmd", "bat"]),
+        _ => return None,
+    };
+    let dir = candidate.parent()?;
+    for ext in replacements {
+        let shim = dir.join(format!("{base}.{ext}"));
+        if shim.is_file() {
+            return Some(shim);
+        }
+    }
+    None
 }
 
 /// True when `program` is a relative virtual-env interpreter path such as
@@ -6232,6 +6265,28 @@ mod tests {
         // of silently spawning in the app's own cwd.
         let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, None).unwrap_err();
         assert!(err.contains("no working directory"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolve_relative_program_maps_gradlew_to_batch_shim() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_gradlew_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gradlew.bat"), "@echo off\r\n").unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let args = vec!["run".to_string()];
+
+        let (p, _) = resolve_relative_program("./gradlew", &args, Some(&dir_str)).unwrap();
+        assert_eq!(p, dir.join("gradlew.bat").to_string_lossy());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

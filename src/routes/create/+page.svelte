@@ -211,6 +211,40 @@ let conflictResolvedFolder = $state<string | null>(null);
 /** Ошибка бэкенд-валидации стека, показанная после клика по Create Project */
 let reviewError = $state<string | null>(null);
 
+/** Максимальная длина имени папки проекта: длиннее — режут файловые
+ *  системы и команды создания (npm/cargo/dotnet). */
+const PROJECT_NAME_MAX = 60;
+
+/** Зарезервированные имена Windows: папку с таким именем создать нельзя
+ *  (или она ведёт к системному устройству) даже с расширением. */
+const WINDOWS_RESERVED_NAMES = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+]);
+
+/** Ошибка имени НОВОЙ папки проекта (null — валидно). Проверяется только
+ *  создаваемый сегмент: родительский путь может содержать кириллицу,
+ *  пробелы и спецсимволы — такие папки уже существуют, и в них создавать
+ *  можно. Имя же попадает в package.json, Cargo.toml, docker-compose и
+ *  команды сборки, поэтому допускается лишь безопасный ASCII-набор. */
+let projectNameError = $derived.by<string | null>(() => {
+  if (!projectName) return null;
+  if (projectName.length > PROJECT_NAME_MAX) {
+    return i18n.t("create.name_too_long", { n: PROJECT_NAME_MAX });
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(projectName)) {
+    return i18n.t("create.name_invalid");
+  }
+  if (projectName.startsWith(".") || projectName.endsWith(".")) {
+    return i18n.t("create.name_dots");
+  }
+  if (WINDOWS_RESERVED_NAMES.has(projectName.toLowerCase())) {
+    return i18n.t("create.name_reserved", { name: projectName });
+  }
+  return null;
+});
+
 // ---- Analysis ----
 let analysisResult = $state<AnalysisReport | null>(null);
 let analysisError = $state<string | null>(null);
@@ -1857,6 +1891,7 @@ async function cancelInstall() {
 async function confirmAll() {
   const path = effectiveProjectPath();
   if (!path || !selectedFolder) return;
+  if (projectNameError) return;
   reviewError = null;
 
   try {
@@ -2909,24 +2944,58 @@ function resetAll() {
             <p class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</p>
             {@render archBanner()}
 
-            <div class="project-name-section">
-              <label class="pn-label" for="project-name">{i18n.t("create.project_name") as TranslationKey}</label>
+            <div class="dest-card" class:dest-card-attention={!selectedFolder}>
+              <div class="dest-head">
+                <span class="dest-icon" aria-hidden="true">📁</span>
+                <div class="dest-head-text">
+                  <p class="dest-title">{i18n.t("create.dest_title") as TranslationKey}</p>
+                  <p class="dest-subtitle">{i18n.t("create.dest_desc") as TranslationKey}</p>
+                </div>
+              </div>
+
+              <div class="dest-step">
+                <span class="dest-step-num">1</span>
+                <span class="dest-step-label">{i18n.t("create.dest_step_folder") as TranslationKey}</span>
+              </div>
+              <button
+                type="button"
+                class="folder-pick"
+                class:folder-pick-set={!!selectedFolder}
+                onclick={pickProjectFolder}
+              >
+                <span class="folder-pick-icon" aria-hidden="true">📂</span>
+                <span class="folder-pick-text">
+                  <span class="folder-pick-path" class:muted={!selectedFolder} title={selectedFolder ?? undefined}>
+                    {selectedFolder ?? (i18n.t("create.dest_no_folder") as TranslationKey)}
+                  </span>
+                  <span class="folder-pick-action">
+                    {selectedFolder
+                      ? (i18n.t("create.change_folder") as TranslationKey)
+                      : (i18n.t("create.select_folder_first") as TranslationKey)}
+                  </span>
+                </span>
+              </button>
+
+              <div class="dest-step">
+                <span class="dest-step-num">2</span>
+                <span class="dest-step-label">{i18n.t("create.dest_step_name") as TranslationKey}</span>
+              </div>
               <input
                 id="project-name"
                 class="pn-input"
+                class:pn-input-invalid={projectNameError !== null}
                 type="text"
                 placeholder={i18n.t("create.project_name_ph") as TranslationKey}
                 bind:value={projectName}
                 oninput={onProjectNameInput}
+                aria-invalid={projectNameError !== null}
               />
-              <div class="folder-row">
-                <button class="btn-select-folder" onclick={pickProjectFolder}>
-                  📁 {selectedFolder ? (i18n.t("create.change_folder") as TranslationKey) : (i18n.t("create.select_dest") as TranslationKey)}
-                </button>
-                {#if selectedFolder}
-                  <span class="folder-path" title={selectedFolder}>{selectedFolder}</span>
-                {/if}
-              </div>
+              {#if projectNameError}
+                <p class="name-error" role="alert">⛔ {projectNameError}</p>
+              {:else}
+                <p class="name-hint">{i18n.t("create.name_hint") as TranslationKey}</p>
+              {/if}
+
               {#if selectedFolder && projectName}
                 <div class="path-preview">
                   <span class="pp-label">{i18n.t("create.full_path") as TranslationKey}</span>
@@ -3027,14 +3096,16 @@ function resetAll() {
               <button class="btn-back" onclick={back}>{i18n.t("create.back") as TranslationKey}</button>
               <button
                 class="btn-primary create-btn"
-                disabled={!projectName || !selectedFolder || stackError !== null}
-                title={stackError ?? undefined}
+                disabled={!projectName || !selectedFolder || stackError !== null || projectNameError !== null}
+                title={stackError ?? projectNameError ?? undefined}
                 onclick={confirmAll}
               >
                 {i18n.t("create.create_project") as TranslationKey}
               </button>
             </div>
-            {#if !projectName || !selectedFolder}
+            {#if projectNameError}
+              <p class="review-hint">⚠ {projectNameError}</p>
+            {:else if !projectName || !selectedFolder}
               <p class="review-hint">
                 {!projectName ? (i18n.t("create.enter_name") as TranslationKey) : (i18n.t("create.select_folder_first") as TranslationKey)}
                 {stackError ? ` · ${stackError}` : ""}
@@ -3702,12 +3773,35 @@ function resetAll() {
 .stack-issue .recommendation { flex-basis: 100%; margin-top: 0.15rem; font-size: 0.9em; font-style: italic; color: var(--sp-text-3); }
 
 /* ---- Summary ---- */
-.project-name-section { border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-lg); padding: 1.25rem; margin-bottom: 1rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top), var(--sp-shadow-1); }
+.dest-card { position: relative; border: 1px solid var(--sp-accent-strong); border-radius: var(--sp-radius-xl); padding: 1.25rem 1.25rem 1.1rem; margin-bottom: 1rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 0 0 3px var(--sp-accent-soft); }
+.dest-card-attention { animation: dest-pulse 1.6s ease-in-out 3; }
+@keyframes dest-pulse {
+  0%, 100% { box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 0 0 3px var(--sp-accent-soft); }
+  50% { box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 0 0 7px var(--sp-accent-soft); }
+}
+.dest-head { display: flex; align-items: flex-start; gap: 0.7rem; margin-bottom: 0.9rem; }
+.dest-icon { font-size: 1.4rem; line-height: 1.2; }
+.dest-title { margin: 0; font-weight: 700; font-size: 1.05rem; color: var(--sp-text-1); }
+.dest-subtitle { margin: 0.15rem 0 0; font-size: 0.82rem; color: var(--sp-text-3); }
+.dest-step { display: flex; align-items: center; gap: 0.45rem; margin: 0.65rem 0 0.4rem; }
+.dest-step-num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sp-accent-strong); color: #fff; font-size: 0.68rem; font-weight: 700; }
+.dest-step-label { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sp-text-2); }
+.folder-pick { display: flex; align-items: center; gap: 0.7rem; width: 100%; padding: 0.7rem 0.9rem; border-radius: var(--sp-radius-lg); border: 1px dashed var(--sp-border-strong); background: var(--sp-bg-1); color: var(--sp-text-2); cursor: pointer; text-align: left; transition: border-color 0.15s, background 0.15s; }
+.folder-pick:hover { border-color: var(--sp-accent-strong); background: var(--sp-bg-2); }
+.folder-pick-set { border-style: solid; }
+.folder-pick-icon { font-size: 1.1rem; }
+.folder-pick-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.folder-pick-path { font-family: var(--sp-font-mono); font-size: 0.82rem; color: var(--sp-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-pick-path.muted { font-family: var(--sp-font-sans); color: var(--sp-text-3); }
+.folder-pick-action { font-size: 0.72rem; color: var(--sp-accent); margin-top: 0.1rem; }
 .preview-section { border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-lg); padding: 1rem; margin-bottom: 1rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top), var(--sp-shadow-1); min-height: 360px; }
-.pn-label { display: block; font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; color: var(--sp-text-1); }
-.pn-input { width: 100%; padding: 0.65rem 0.8rem; border-radius: var(--sp-radius-lg); border: 1px solid var(--sp-border-strong); background: var(--sp-bg-1); color: #fff; font-size: 1rem; box-sizing: border-box; outline: none; }
+.pn-input { width: 100%; padding: 0.7rem 0.85rem; border-radius: var(--sp-radius-lg); border: 1px solid var(--sp-border-strong); background: var(--sp-bg-1); color: #fff; font-size: 1rem; box-sizing: border-box; outline: none; }
 .pn-input:focus { border-color: var(--sp-accent-strong); box-shadow: 0 0 0 3px var(--sp-accent-soft); }
 .pn-input::placeholder { color: var(--sp-text-3); }
+.pn-input-invalid { border-color: var(--sp-danger); }
+.pn-input-invalid:focus { border-color: var(--sp-danger); box-shadow: 0 0 0 3px var(--sp-danger-soft); }
+.name-error { margin: 0.35rem 0 0; font-size: 0.8rem; color: var(--sp-danger); }
+.name-hint { margin: 0.35rem 0 0; font-size: 0.75rem; color: var(--sp-text-3); }
 .readme-row { display: flex; align-items: center; gap: 0.5rem; margin: -0.35rem 0 1rem; }
 .readme-label { font-size: 0.82rem; color: var(--sp-text-2); }
 .readme-switch { position: relative; width: 34px; height: 18px; padding: 0; border-radius: 999px; border: 1px solid var(--sp-border-strong); background: var(--sp-bg-2); cursor: pointer; transition: background 0.15s, border-color 0.15s; }
@@ -3719,10 +3813,6 @@ function resetAll() {
 .readme-help { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; border-radius: 50%; background: none; color: var(--sp-text-3); cursor: help; }
 .readme-help:hover, .readme-help:focus-visible { color: var(--sp-accent-strong); }
 .readme-tip { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: 280px; padding: 0.5rem 0.65rem; background: var(--sp-bg-1); border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-lg); box-shadow: var(--sp-shadow-1); color: var(--sp-text-1); font-size: 0.75rem; line-height: 1.35; z-index: 20; }
-.folder-row { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
-.btn-select-folder { background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.5rem 1rem; border-radius: var(--sp-radius-md); border: 1px solid var(--sp-border-strong); cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
-.btn-select-folder:hover { border-color: var(--sp-accent-strong); color: #fff; }
-.folder-path { font-size: 0.8rem; color: var(--sp-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px; }
 .path-preview { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
 .pp-label { font-size: 0.8rem; color: var(--sp-text-3); }
 .pp-path { font-size: 0.85rem; color: var(--sp-accent-strong); background: var(--sp-bg-1); padding: 0.2rem 0.5rem; border-radius: var(--sp-radius-sm); word-break: break-all; }
