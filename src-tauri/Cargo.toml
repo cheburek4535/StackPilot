@@ -1,8 +1,9 @@
 [package]
 name = "stackpilot"
-version = "1.2.1"
-description = "A Tauri App"
+version = "1.2.2"
+description = "Developer toolchain management and project workspace dashboard"
 authors = ["cheburek4535"]
+license = "AGPL-3.0-only"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
