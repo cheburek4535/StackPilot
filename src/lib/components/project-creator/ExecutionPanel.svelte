@@ -265,27 +265,26 @@
   <div class="btn-row">
     <button class="btn-secondary" onclick={onopenvscode}>{i18n.t("create.open_vscode") as TranslationKey}</button>
     <button class="btn-primary" onclick={onreset}>{i18n.t("create.create_another") as TranslationKey}</button>
-  </div>
-
-  {#if execPlan}
-    <button
-      class="devl-btn"
-      onclick={onreopendevl}
-      title={devlProfileExists
-        ? (i18n.t("create.devl_chip_open") as TranslationKey)
-        : (i18n.t("create.devl_chip_add") as TranslationKey)}
-    >
-      <span class="devl-btn-icon" aria-hidden="true">{devlProfileExists ? "→" : "+"}</span>
-      <span class="devl-btn-text">
-        <span class="devl-btn-title">DevLauncher</span>
-        <span class="devl-btn-sub">
-          {devlProfileExists
-            ? (i18n.t("create.devl_btn_run") as TranslationKey)
-            : (i18n.t("create.devl_btn_add") as TranslationKey)}
+    {#if execPlan}
+      <button
+        class="devl-chip"
+        onclick={onreopendevl}
+        title={devlProfileExists
+          ? (i18n.t("create.devl_chip_open") as TranslationKey)
+          : (i18n.t("create.devl_chip_add") as TranslationKey)}
+      >
+        <span class="devl-chip-icon" aria-hidden="true">{devlProfileExists ? "▸" : "+"}</span>
+        <span class="devl-chip-text">
+          <span class="devl-chip-title">DevLauncher</span>
+          <span class="devl-chip-sub">
+            {devlProfileExists
+              ? (i18n.t("create.devl_btn_run") as TranslationKey)
+              : (i18n.t("create.devl_btn_add") as TranslationKey)}
+          </span>
         </span>
-      </span>
-    </button>
-  {/if}
+      </button>
+    {/if}
+  </div>
 {:else if execOverallStatus === "error" || execOverallStatus === "cancelled"}
   <div class="exec-finished error">
     <p>{execOverallStatus === "cancelled" ? (i18n.t("create.cancelled") as TranslationKey) : (i18n.t("create.exec_error", { err: execError ?? "" }) as TranslationKey)}</p>
@@ -314,47 +313,51 @@
   .exec-finished p { margin: 0.3rem 0; }
   .exec-finished.error { color: var(--sp-danger); }
   .exec-plan-path { font-size: 0.85rem; color: var(--sp-text-3); }
-  /* Заметная кнопка DevLauncher на финальной странице */
-  .devl-btn {
-    display: flex;
+  /* Компактный акцентный чип DevLauncher на финальной странице — заметный,
+     но не доминирующий: мягкая подсветка, круглая иконка, авто-ширина. */
+  .devl-chip {
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 0.65rem;
-    width: 100%;
-    margin-top: 0.75rem;
-    padding: 0.85rem 1.25rem;
-    border-radius: var(--sp-radius-lg);
-    border: 1px solid var(--sp-accent-strong);
-    background: var(--sp-accent-strong);
+    gap: 0.6rem;
+    padding: 0.5rem 0.95rem 0.5rem 0.6rem;
+    border-radius: var(--sp-radius-full);
+    border: 1px solid var(--sp-accent-border);
     background: linear-gradient(
       180deg,
-      color-mix(in srgb, var(--sp-accent-strong) 86%, black) 0%,
-      var(--sp-accent-strong) 45%,
-      var(--sp-accent) 100%
+      var(--sp-accent-soft),
+      color-mix(in srgb, var(--sp-accent-soft) 68%, var(--sp-bg-1))
     );
-    color: #fff;
-    font-weight: 700;
-    font-size: 0.98rem;
+    color: var(--sp-text-1);
     cursor: pointer;
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 16px rgba(228, 87, 10, 0.35);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-    transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+    box-shadow: var(--sp-gloss-top);
+    transition: background 0.15s, box-shadow 0.15s, border-color 0.15s, transform 0.15s;
   }
-  .devl-btn:hover {
-    background: var(--sp-accent-strong);
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--sp-accent-strong) 76%, black) 0%,
-      var(--sp-accent-strong) 40%,
-      color-mix(in srgb, var(--sp-accent) 88%, var(--sp-accent-strong)) 100%
-    );
-    box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-accent);
+  .devl-chip:hover {
+    border-color: var(--sp-accent-strong);
+    background: color-mix(in srgb, var(--sp-accent-soft) 72%, var(--sp-accent) 7%);
+    box-shadow: var(--sp-shadow-accent);
     transform: translateY(-1px);
   }
-  .devl-btn-icon { font-size: 1.15rem; font-weight: 800; line-height: 1; }
-  .devl-btn-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
-  .devl-btn-title { font-size: 1rem; }
-  .devl-btn-sub { font-size: 0.72rem; font-weight: 500; opacity: 0.85; }
+  .devl-chip:active { transform: translateY(0) scale(0.99); }
+  .devl-chip:focus-visible { outline: none; box-shadow: var(--sp-focus-ring); }
+  .devl-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.45rem;
+    height: 1.45rem;
+    border-radius: 50%;
+    flex: none;
+    background: linear-gradient(180deg, var(--sp-accent-strong), var(--sp-accent));
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 700;
+    line-height: 1;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+  .devl-chip-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; gap: 0.12rem; }
+  .devl-chip-title { font-size: 0.85rem; font-weight: 700; }
+  .devl-chip-sub { font-size: 0.7rem; font-weight: 500; color: var(--sp-accent-strong); opacity: 0.9; }
   .about-project-section { border: 1px solid var(--sp-border-strong); border-radius: 10px; padding: 1rem; margin: 1rem 0; background: var(--sp-bg-1); }
   .about-title { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; color: var(--sp-text-1); }
   .about-hint { margin: 0 0 0.75rem; font-size: 0.8rem; color: var(--sp-text-3); }

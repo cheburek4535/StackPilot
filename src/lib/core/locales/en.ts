@@ -1708,7 +1708,7 @@ export default {
 
   // ---- README generation (RU/EN) ----
   "create.readme.toggle_label": "README language",
-  "create.readme.toggle_hint": "The generated README.md will be written in the selected language. Choose English if the project may be shared publicly or with an international team; choose Russian for personal or internal projects.",
+  "create.readme.toggle_hint": "The generated README.md will be written in the selected language",
   "create.readme.toggle_aria": "Switch README language",
 
   "nav.roadmap": "Roadmap",
