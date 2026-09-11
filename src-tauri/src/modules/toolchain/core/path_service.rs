@@ -352,6 +352,7 @@ mod tests {
         assert_eq!(merged.len(), 1, "нормализованный дубликат: {merged:?}");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn remove_dirs_never_touches_unrelated_entries() {
         let dirs = vec![
@@ -369,16 +370,25 @@ mod tests {
         assert_eq!(remove_dirs(&dirs, &[]), dirs);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn remove_dirs_never_touches_unrelated_entries_unix() {
+        // Unix: сравнение регистрозависимо, совпадающие записи удаляются.
+        let dirs = vec!["/usr/bin".to_string(), "/opt/nodejs".to_string()];
+        let removals = vec!["/opt/nodejs/".to_string()];
+        let remaining = remove_dirs(&dirs, &removals);
+        assert_eq!(remaining, vec!["/usr/bin".to_string()]);
+        // Пустые удаления — ничего не меняется.
+        assert_eq!(remove_dirs(&dirs, &[]), dirs);
+    }
+
+    #[cfg(target_os = "windows")]
     #[test]
     fn expand_known_and_unknown_vars() {
-        // Windows: %USERPROFILE% — настоящая переменная; Unix: %HOME%.
-        let (var, expected) = if let Ok(v) = std::env::var("USERPROFILE") {
-            ("%USERPROFILE%", v)
-        } else {
-            ("%HOME%", std::env::var("HOME").expect("нет HOME"))
-        };
+        // Windows: %USERPROFILE% — настоящая переменная.
+        let expected = std::env::var("USERPROFILE").expect("нет USERPROFILE");
         assert_eq!(
-            expand_env_vars(&format!("{var}\\dev")),
+            expand_env_vars("%USERPROFILE%\\dev"),
             format!("{expected}\\dev")
         );
 
@@ -387,6 +397,24 @@ mod tests {
             expand_env_vars("%NO_SUCH_VAR_XYZ%\\bin"),
             "%NO_SUCH_VAR_XYZ%\\bin"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn expand_known_and_unknown_vars_unix() {
+        // Unix: %VAR% не раскрывается, а $VAR и ~ — раскрываются.
+        assert_eq!(expand_env_vars("%HOME%/dev"), "%HOME%/dev");
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            assert_eq!(expand_env_vars("~/dev"), format!("{home}/dev"));
+            assert_eq!(
+                expand_env_vars("$HOME/dev"),
+                format!("{home}/dev")
+            );
+        }
+
+        // неизвестная переменная остаётся как есть
+        assert_eq!(expand_env_vars("$NO_SUCH_VAR_XYZ/bin"), "$NO_SUCH_VAR_XYZ/bin");
     }
 
     #[test]

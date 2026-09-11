@@ -163,6 +163,7 @@ mod tests {
     /// сериализуются этим локом (иначе параллельный прогон флейкает).
     static PATH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn resolve_command_keeps_exe_programs() {
         // cmd.exe — настоящий бинарь: which вернёт полный путь, и это ок.
@@ -171,6 +172,15 @@ mod tests {
             program.to_ascii_lowercase().ends_with("cmd.exe"),
             "{program}"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_command_passes_through_on_unix() {
+        // POSIX-шеллы разрешают скрипты через shebang: команда не трогается.
+        let (program, args) = resolve_command("sh", &["-c".to_string(), "echo".to_string()]);
+        assert_eq!(program, "sh");
+        assert_eq!(args, vec!["-c".to_string(), "echo".to_string()]);
     }
 
     #[test]
