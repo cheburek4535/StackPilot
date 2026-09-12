@@ -13,6 +13,12 @@
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2.x-ff3e00.svg)](https://kit.svelte.dev/)
 [![Download](https://img.shields.io/badge/Download-GitHub%20Releases-2ea44f.svg)](https://github.com/cheburek4535/StackPilot/releases)
 
+<p align="center">
+  <a href="https://cheburek4535.github.io/StackPilot">
+    <img src="https://img.shields.io/badge/Cайт_StackPilot-Открыть_лендинг-FF6B1A?style=for-the-badge&logo=vercel&logoColor=white&labelColor=0f1115" alt="Website">
+  </a>
+</p>
+
 **StackPilot** — кроссплатформенное десктопное приложение для начинающих и продвинутых разработчиков, которое ускоряет и упрощает создание проектов, настройку окружения и работу с ними.
 
 Вместо того чтобы тратить часы на установку инструментов, настройку Docker, создание конфигураций и ручной запуск команд — **StackPilot делает всё это автоматически**.
