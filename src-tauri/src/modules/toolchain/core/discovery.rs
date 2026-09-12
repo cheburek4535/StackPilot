@@ -960,12 +960,19 @@ mod tests {
 
     #[tokio::test]
     async fn missing_tool_is_detected_as_missing() {
-        let fake = def("sqlite").clone(); // sqlite3 почти ни у кого не установлен
+        let fake = def("sqlite").clone(); // сканируем реальный sqlite3
         let status = detect_tool(&fake).await;
-        // если sqlite3 вдруг установлен — тест всё равно валиден,
-        // главное: результат не может быть «грязной» ошибкой
+        // sqlite3 может быть не установлен (Missing), установлен (Installed)
+        // или устареть относительно recommended (UpdateAvailable — на
+        // ubuntu-22.04 раннерах стоит 3.37.2). Запрещены только «грязные»
+        // статусы: Failed / Unknown.
         assert!(
-            matches!(status, ToolStatus::Missing | ToolStatus::Installed { .. }),
+            matches!(
+                status,
+                ToolStatus::Missing
+                    | ToolStatus::Installed { .. }
+                    | ToolStatus::UpdateAvailable { .. }
+            ),
             "неожиданный статус: {status:?}"
         );
     }
