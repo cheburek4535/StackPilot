@@ -1,7 +1,7 @@
 # StackPilot
 
 <p align="center">
-  <img src="stackpilot-favicon.png" alt="StackPilot icon" width="72">
+  <img src="docs/stackpilot-favicon.png" alt="StackPilot icon" width="72">
   <br>
   <img src="static/images/logo-name.svg" alt="StackPilot" width="340">
 </p>
@@ -12,6 +12,12 @@
 [![Tauri 2](https://img.shields.io/badge/Tauri-2.x-24c8db.svg)](https://tauri.app/)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2.x-ff3e00.svg)](https://kit.svelte.dev/)
 [![Download](https://img.shields.io/badge/Download-GitHub%20Releases-2ea44f.svg)](https://github.com/cheburek4535/StackPilot/releases)
+
+<p align="center">
+  <a href="https://cheburek4535.github.io/StackPilot">
+    <img src="https://img.shields.io/badge/Cайт_StackPilot-Открыть_лендинг-FF6B1A?style=for-the-badge&logo=vercel&logoColor=white&labelColor=0f1115" alt="Website">
+  </a>
+</p>
 
 **StackPilot** — кроссплатформенное десктопное приложение для начинающих и продвинутых разработчиков, которое ускоряет и упрощает создание проектов, настройку окружения и работу с ними.
 
@@ -29,7 +35,7 @@
 > Установщик доступен в трёх форматах — **`.zip`** (portable), **`.exe`** и **`.msi`** — на странице [GitHub Releases](https://github.com/cheburek4535/StackPilot/releases). Подробная инструкция — в разделе [Установка и запуск](#установка-и-запуск).
 
 <p align="center">
-  <img src="screenshot3.png" alt="StackPilot — интерфейс приложения" width="100%">
+  <img src="docs/screenshot3.png" alt="StackPilot — интерфейс приложения" width="100%">
 </p>
 
 <p align="center">
