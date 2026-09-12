@@ -1,7 +1,7 @@
 # StackPilot
 
 <p align="center">
-  <img src="stackpilot-favicon.png" alt="StackPilot icon" width="72">
+  <img src="docs/stackpilot-favicon.png" alt="StackPilot icon" width="72">
   <br>
   <img src="static/images/logo-name.svg" alt="StackPilot" width="340">
 </p>
@@ -29,7 +29,7 @@
 > Установщик доступен в трёх форматах — **`.zip`** (portable), **`.exe`** и **`.msi`** — на странице [GitHub Releases](https://github.com/cheburek4535/StackPilot/releases). Подробная инструкция — в разделе [Установка и запуск](#установка-и-запуск).
 
 <p align="center">
-  <img src="screenshot3.png" alt="StackPilot — интерфейс приложения" width="100%">
+  <img src="docs/screenshot3.png" alt="StackPilot — интерфейс приложения" width="100%">
 </p>
 
 <p align="center">
