@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ru" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StackPilot | От идеи до проекта за 10 минут</title>
+    <meta name="description" content="Кроссплатформенное десктопное приложение для быстрого создания проектов, настройки окружения и запуска стека.">
+    
+    <!-- Подключаем Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Настройка кастомных цветов Tailwind (в стиле StackPilot) -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            900: '#0c4a6e',
+                        },
+                        dark: {
+                            900: '#0f1115', // Цвет фона из скринов
+                            800: '#1a1d24',
+                            700: '#2a2f3a',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Подключаем шрифты и иконки -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .gradient-text {
+            background: linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero-glow {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(14,165,233,0.15) 0%, rgba(15,17,21,0) 70%);
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: -1;
+            pointer-events: none;
+        }
+        .mockup-shadow {
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,0.05);
+        }
+    </style>
+</head>
+
+<body class="bg-dark-900 text-gray-300 antialiased selection:bg-brand-500 selection:text-white">
+
+    <!-- Навигация -->
+    <nav class="fixed w-full z-50 top-0 transition-all duration-300 backdrop-blur-md bg-dark-900/80 border-b border-white/5">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <!-- Логотип -->
+            <div class="flex-shrink-0 flex items-center gap-2 cursor-pointer" onclick="window.scrollTo(0,0)">
+                <img src="../stackpilot-favicon.png" alt="StackPilot" class="w-8 h-8">
+                <span class="text-white font-bold text-xl tracking-tight">StackPilot</span>
+            </div>
+                
+                <!-- Ссылки (Десктоп) -->
+                <div class="hidden md:flex items-center space-x-8">
+                    <a href="#features" class="text-sm font-medium text-gray-400 hover:text-white transition">Возможности</a>
+                    <a href="#how-it-works" class="text-sm font-medium text-gray-400 hover:text-white transition">Как работает</a>
+                    <a href="#tech" class="text-sm font-medium text-gray-400 hover:text-white transition">Под капотом</a>
+                    <a href="https://github.com/cheburek4535/StackPilot" target="_blank" class="flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white transition">
+                        <i class="ph ph-github-logo text-xl"></i>
+                        GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="pt-24 pb-16">
+        <!-- Hero Секция -->
+        <section class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-16 pb-20 text-center">
+            <div class="hero-glow"></div>
+            
+            <a href="https://github.com/cheburek4535/StackPilot/releases" target="_blank" class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-500/10 border border-brand-500/20 text-brand-500 text-xs font-semibold uppercase tracking-wider mb-8 hover:bg-brand-500/20 transition cursor-pointer">
+                <span class="relative flex h-2 w-2">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-500 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-brand-500"></span>
+                </span>
+                Вышла версия v1.2.2 (Windows/Linux/MacOS)
+            </a>
+            
+            <h1 class="text-5xl md:text-7xl font-extrabold text-white tracking-tight mb-6 leading-tight">
+                Меньше рутины.<br>
+                Больше <span class="gradient-text">кода.</span>
+            </h1>
+            
+            <p class="max-w-2xl mx-auto text-lg md:text-xl text-gray-400 mb-10">
+                От идеи до готового каркаса проекта за 10 минут. StackPilot автоматически установит инструменты, настроит Docker, сгенерирует файлы и запустит весь стек одной кнопкой.
+            </p>
+            
+            <div class="flex flex-col sm:flex-row justify-center items-center gap-4">
+                <a href="https://github.com/cheburek4535/StackPilot/releases" target="_blank" class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold transition shadow-lg shadow-brand-500/25 flex items-center justify-center gap-2">
+                    <i class="ph-bold ph-download-simple text-xl"></i>
+                    Скачать для Windows
+                </a>
+                <a href="https://github.com/cheburek4535/StackPilot" target="_blank" class="w-full sm:w-auto px-8 py-4 rounded-xl bg-dark-800 hover:bg-dark-700 border border-white/10 text-white font-semibold transition flex items-center justify-center gap-2">
+                    <i class="ph-fill ph-star text-yellow-500 text-xl"></i>
+                    Поставить звезду на GitHub
+                </a>
+            </div>
+            
+            <p class="mt-6 text-sm text-gray-500 flex items-center justify-center gap-2">
+                <i class="ph-bold ph-shield-check text-green-500"></i>
+                Бесплатно. Open-source. Локально.
+            </p>
+
+            <!-- Скриншот приложения -->
+            <div class="mt-16 relative rounded-2xl overflow-hidden mockup-shadow border border-white/10 bg-dark-800">
+                <!-- Mac-like top bar -->
+                <div class="bg-dark-700 px-4 py-3 flex items-center gap-2 border-b border-white/5">
+                    <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                    <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                    <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                    <div class="mx-auto text-xs font-medium text-gray-500">StackPilot - Project Creator</div>
+                </div>
+                <!-- Image -->
+                <img src="../screenshot3.png" alt="StackPilot Interface" class="w-full object-cover" onerror="this.src='https://placehold.co/1200x800/1a1d24/38bdf8?text=StackPilot+UI'">
+            </div>
+        </section>
+
+        <!-- Раздел возможностей -->
+        <section id="features" class="py-20 border-t border-white/5 bg-dark-900/50">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold text-white mb-4">Всё необходимое в одном приложении</h2>
+                    <p class="text-gray-400">StackPilot заменяет десятки разрозненных скриптов и ручных установок.</p>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <!-- Feature 1 -->
+                    <div class="bg-dark-800 rounded-2xl p-6 border border-white/5 hover:border-brand-500/30 transition group">
+                        <div class="w-12 h-12 rounded-lg bg-brand-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                            <i class="ph-fill ph-wrench text-brand-500 text-2xl"></i>
+                        </div>
+                        <h3 class="text-white font-semibold mb-2">Контроль окружения</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">Автоматически проверяет, скачивает и устанавливает нужные версии Python, Node.js, Git, Docker.</p>
+                    </div>
+
+                    <!-- Feature 2 -->
+                    <div class="bg-dark-800 rounded-2xl p-6 border border-white/5 hover:border-brand-500/30 transition group">
+                        <div class="w-12 h-12 rounded-lg bg-green-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                            <i class="ph-fill ph-magic-wand text-green-500 text-2xl"></i>
+                        </div>
+                        <h3 class="text-white font-semibold mb-2">Генерация каркасов</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">Собирайте стек как конструктор. Приложение само создаст файлы, docker-compose, зависимости и .env.</p>
+                    </div>
+
+                    <!-- Feature 3 -->
+                    <div class="bg-dark-800 rounded-2xl p-6 border border-white/5 hover:border-brand-500/30 transition group">
+                        <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                            <i class="ph-fill ph-play-circle text-purple-500 text-2xl"></i>
+                        </div>
+                        <h3 class="text-white font-semibold mb-2">Запуск одной кнопкой</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">Сложные сценарии запуска (БД, бекенд, фронтенд, IDE, браузер) выполняются в правильном порядке по клику.</p>
+                    </div>
+
+                    <!-- Feature 4 -->
+                    <div class="bg-dark-800 rounded-2xl p-6 border border-white/5 hover:border-brand-500/30 transition group">
+                        <div class="w-12 h-12 rounded-lg bg-orange-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                            <i class="ph-fill ph-monitor text-orange-500 text-2xl"></i>
+                        </div>
+                        <h3 class="text-white font-semibold mb-2">Рабочее пространство</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">Единая панель для мониторинга процессов, логов контейнеров и быстрого доступа к файлам проекта.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Как это работает -->
+        <section id="how-it-works" class="py-20">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex flex-col lg:flex-row gap-16 items-center">
+                    <div class="w-full lg:w-1/2">
+                        <h2 class="text-3xl font-bold text-white mb-6">Как создать проект мечты</h2>
+                        
+                        <div class="space-y-8">
+                            <div class="flex gap-4">
+                                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center text-white font-bold shadow-lg shadow-brand-500/30">1</div>
+                                <div>
+                                    <h4 class="text-lg font-semibold text-white mb-1">Выберите технологии</h4>
+                                    <p class="text-gray-400 text-sm">В визуальном конструкторе выберите язык, бекенд, фронтенд и БД. Умная система подскажет несовместимости.</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex gap-4">
+                                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center text-white font-bold shadow-lg shadow-brand-500/30">2</div>
+                                <div>
+                                    <h4 class="text-lg font-semibold text-white mb-1">StackPilot всё настроит</h4>
+                                    <p class="text-gray-400 text-sm">Программа сама скачает недостающее ПО через официальные каналы (winget/apt) и сгенерирует файлы проекта.</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex gap-4">
+                                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center text-white font-bold shadow-lg shadow-brand-500/30">3</div>
+                                <div>
+                                    <h4 class="text-lg font-semibold text-white mb-1">Нажмите Run</h4>
+                                    <p class="text-gray-400 text-sm">База данных поднимается в Docker, сервер стартует, фронт собирается, открывается VS Code и браузер. Вы можете писать код.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="w-full lg:w-1/2 bg-dark-800 rounded-2xl border border-white/5 p-8 relative overflow-hidden">
+                        <div class="absolute -right-10 -top-10 w-40 h-40 bg-brand-500/20 rounded-full blur-3xl"></div>
+                        <h3 class="text-xl font-bold text-white mb-4">Например, ваш стек:</h3>
+                        <div class="flex flex-wrap gap-2 mb-6">
+                            <span class="px-3 py-1 bg-dark-700 rounded-md text-sm border border-white/10 flex items-center gap-2"><i class="ph-fill ph-file-py text-blue-400"></i> Django</span>
+                            <span class="px-3 py-1 bg-dark-700 rounded-md text-sm border border-white/10 flex items-center gap-2"><i class="ph-fill ph-file-ts text-blue-500"></i> React</span>
+                            <span class="px-3 py-1 bg-dark-700 rounded-md text-sm border border-white/10 flex items-center gap-2"><i class="ph-fill ph-database text-blue-300"></i> PostgreSQL</span>
+                            <span class="px-3 py-1 bg-dark-700 rounded-md text-sm border border-white/10 flex items-center gap-2"><i class="ph-fill ph-hard-drives text-blue-600"></i> Docker</span>
+                            <span class="px-3 py-1 bg-dark-700 rounded-md text-sm border border-white/10 flex items-center gap-2">+ Kafka, Airflow...</span>
+                        </div>
+                        <div class="p-4 bg-black/50 rounded-lg border border-white/5 font-mono text-sm text-green-400 overflow-x-auto">
+                            > Окружение проверено: OK<br>
+                            > Генерация структуры: OK<br>
+                            > Настройка docker-compose: OK<br>
+                            > Запуск контейнеров...<br>
+                            > Проект успешно запущен.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Технологии и легкость -->
+        <section id="tech" class="py-20 border-t border-white/5 bg-dark-900/50">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+                <h2 class="text-3xl font-bold text-white mb-10">Сделано разработчиком для разработчиков</h2>
+                
+                <div class="flex flex-col md:flex-row justify-center items-center gap-8 md:gap-16 mb-16">
+                    <div class="text-center">
+                        <div class="text-4xl font-extrabold text-brand-500 mb-2">~5 MB</div>
+                        <div class="text-gray-400 text-sm uppercase tracking-wide">Оперативной памяти</div>
+                    </div>
+                    <div class="hidden md:block w-px h-16 bg-white/10"></div>
+                    <div class="text-center">
+                        <div class="text-4xl font-extrabold text-brand-500 mb-2">25 MB</div>
+                        <div class="text-gray-400 text-sm uppercase tracking-wide">На диске</div>
+                    </div>
+                    <div class="hidden md:block w-px h-16 bg-white/10"></div>
+                    <div class="text-center">
+                        <div class="text-4xl font-extrabold text-brand-500 mb-2">0</div>
+                        <div class="text-gray-400 text-sm uppercase tracking-wide">Телеметрии</div>
+                    </div>
+                </div>
+
+                <div class="inline-flex flex-wrap justify-center items-center gap-6 px-8 py-4 rounded-2xl bg-dark-800 border border-white/5 shadow-inner">
+                    <span class="text-gray-400 text-sm mr-2">Под капотом:</span>
+                    <div class="flex items-center gap-2 text-white"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Rust_programming_language_black_logo.svg" alt="Rust" class="w-6 h-6 invert opacity-80"> Rust</div>
+                    <div class="flex items-center gap-2 text-white"><i class="ph-fill ph-app-window text-2xl text-cyan-400"></i> Tauri 2</div>
+                    <div class="flex items-center gap-2 text-white"><i class="ph-fill ph-fire text-2xl text-orange-500"></i> SvelteKit</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA -->
+        <section class="py-24">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="bg-gradient-to-br from-brand-900 to-dark-800 rounded-3xl p-10 md:p-16 text-center border border-brand-500/20 shadow-2xl shadow-brand-500/10">
+                    <h2 class="text-3xl md:text-4xl font-bold text-white mb-6">Готов начать экономить часы?</h2>
+                    <p class="text-lg text-brand-100 mb-10 max-w-2xl mx-auto">Скачай StackPilot бесплатно прямо сейчас. Доступно для Windows (поддержка Linux и macOS в разработке).</p>
+                    
+                    <a href="https://github.com/cheburek4535/StackPilot/releases" target="_blank" class="inline-flex px-8 py-4 rounded-xl bg-white text-brand-900 font-bold hover:bg-gray-100 transition shadow-lg items-center gap-3">
+                        <i class="ph-bold ph-windows-logo text-xl"></i>
+                        Скачать инсталлятор (.msi)
+                    </a>
+                    
+                    <p class="mt-6 text-sm text-brand-200/60">
+                        Лицензия AGPL-3.0 • Репозиторий открыт
+                    </p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 py-8 text-center text-sm text-gray-500">
+        <div class="max-w-7xl mx-auto px-4 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div>
+                &copy; 2024 StackPilot. Создано <a href="https://github.com/cheburek4535" class="text-gray-300 hover:text-white transition">cheburek4535</a>.
+            </div>
+            <div class="flex gap-6">
+                <a href="https://github.com/cheburek4535/StackPilot" class="hover:text-white transition">GitHub</a>
+                <a href="https://github.com/cheburek4535/StackPilot/issues" class="hover:text-white transition">Сообщить о баге</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
