@@ -3445,8 +3445,13 @@ mod tests {
             &dir,
             &[
                 ("package.json", "{ not json !!"),
-                ("main.go", "package main\nfunc main() {}\n"),
-                ("go.mod", "module x\n"),
+                // Go-модуль в подкаталоге: сбой парсинга package.json
+                // занимает слот каталога в seen_dirs (общий для всех видов
+                // манифестов), поэтому go.mod рядом с ним детектируется
+                // только при одном порядке обхода readdir — на разных ФС
+                // сценарий был бы нестабильным.
+                ("backend/main.go", "package main\nfunc main() {}\n"),
+                ("backend/go.mod", "module x\n"),
             ],
         );
         let draft = analyze(&dir);
@@ -3499,8 +3504,13 @@ mod tests {
                     "docker-compose.yml",
                     "services:\n  web:\n    build: .\n    ports:\n      - \"3000:3000\"\n",
                 ),
-                ("package.json", PKG_JSON),
-                ("server.js", "1"),
+                // node-манифест в подкаталоге: package.json и compose-файл
+                // делят один слот каталога в seen_dirs, поэтому при порядке
+                // обхода readdir «package.json раньше» compose-файл не
+                // детектируется вовсе. Разносим по каталогам — детекция
+                // детерминированна на любой ФС.
+                ("app/package.json", PKG_JSON),
+                ("app/server.js", "1"),
             ],
         );
         let draft = analyze(&dir);

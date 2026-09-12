@@ -802,9 +802,15 @@ mod tests {
         );
         assert_eq!(requirements_path("."), "requirements.txt");
         assert_eq!(requirements_path("backend"), "backend/requirements.txt");
-        assert!(venv_abs("C:\\dev\\myapp", "backend")
+        // Абсолютный venv: разделитель платформенный — join использует
+        // MAIN_SEPARATOR, поэтому на Windows это myapp\backend\venv, на
+        // Unix myapp/backend/venv (проверяем через ожидание с sep).
+        let sep = std::path::MAIN_SEPARATOR;
+        let abs = venv_abs("C:/dev/myapp", "backend")
             .to_string_lossy()
-            .ends_with("myapp\\backend\\venv"));
+            .into_owned();
+        let expected = format!("myapp{sep}backend{sep}venv");
+        assert!(abs.ends_with(&expected), "{abs}");
     }
 
     #[test]

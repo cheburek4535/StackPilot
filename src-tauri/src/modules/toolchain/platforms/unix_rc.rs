@@ -333,16 +333,19 @@ mod tests {
             write_rc_user_path(&["/a\"$(rm -rf /)".to_string()]).unwrap();
             let entries = read_rc_user_path();
             assert_eq!(entries, vec!["/a(rm -rf /)".to_string()]);
-            // Verify no $ or ` in the actual file content
+            // Кавычки в блоке — только синтаксис export PATH="...":
+            // сама управляемая запись обязана быть очищена от опасных
+            // символов ("$, `, ', \) — проверяем строку целиком.
             let content =
                 std::fs::read_to_string(std::env::var("HOME").unwrap() + "/.bashrc").unwrap();
-            let block_start = content.find(RC_BEGIN).unwrap();
-            let block_end = content.find(RC_END).unwrap();
-            let block = &content[block_start..block_end];
-            assert!(!block.contains('"'), "no double quotes in block: {block}");
-            assert!(
-                !block.contains("$(rm"),
-                "command substitution removed: {block}"
+            let line = content
+                .lines()
+                .find(|l| l.contains("export PATH="))
+                .expect("export PATH line in block");
+            assert_eq!(
+                line.trim(),
+                r#"export PATH="/a(rm -rf /):$PATH""#,
+                "dangerous chars must be stripped from the managed entry"
             );
         });
     }

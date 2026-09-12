@@ -158,6 +158,20 @@ mod dpapi {
     }
 }
 
+/// Unix: DPAPI недоступен. Хранилище работает в открытом виде (encrypted=false),
+/// файл защищается правами 0600 — см. write_file. Заглушка сохраняет контракт
+/// вызовов, чтобы код не ветвился по ОС.
+#[cfg(not(target_os = "windows"))]
+mod dpapi {
+    pub fn protect(_plain: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
+    pub fn unprotect(_cipher: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+}
+
 fn b64_encode(data: &[u8]) -> String {
     // Компактный base64 без внешних крейтов.
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

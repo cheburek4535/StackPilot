@@ -907,6 +907,7 @@ mod tests {
         assert_eq!(cmd, "echo hello");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn wt_plan_carries_starting_directory() {
         let config = TerminalConfig {

@@ -297,8 +297,27 @@ fn source_description(def: &ToolDefinition) -> String {
 mod tests {
     use super::*;
 
+    /// PkgManager-источник, одинаковый для всех ОС: описание способа
+    /// установки не зависит от платформы прогона.
+    fn fake_source() -> InstallSource {
+        InstallSource {
+            kind: InstallSourceKind::PkgManager,
+            id: "Fake.Fake".to_string(),
+            url: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+        }
+    }
+
     /// Фейковое определение: гарантированно отсутствующий бинарник,
-    /// один источник в windows. Используется в детерминированных тестах
+    /// один источник для текущей ОС. Используется в детерминированных тестах
     /// (в отличие от реального tools.json, где всё зависит от машины).
     fn fake_def(id: &str) -> ToolDefinition {
         ToolDefinition {
@@ -315,22 +334,9 @@ mod tests {
             },
             versions: Default::default(),
             sources: InstallSources {
-                windows: vec![InstallSource {
-                    kind: InstallSourceKind::PkgManager,
-                    id: "Fake.Fake".to_string(),
-                    url: None,
-                    args: vec![],
-                    extra_args: vec![],
-                    dynamic_args: false,
-                    install_dir: None,
-                    needs_admin: None,
-                    file_name: None,
-                    execution: None,
-                    bootstrap: None,
-                    sha256: None,
-                }],
-                linux: vec![],
-                macos: vec![],
+                windows: vec![fake_source()],
+                linux: vec![fake_source()],
+                macos: vec![fake_source()],
             },
             size_mb: 10,
             needs_admin: true,

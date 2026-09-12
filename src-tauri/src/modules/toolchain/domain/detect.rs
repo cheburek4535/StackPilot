@@ -1499,6 +1499,20 @@ mod tests {
             .unwrap_or_else(|| panic!("{id} нет в tools.json"))
     }
 
+    /// Кроссплатформенная echo-проба: cmd /c echo на Windows, sh -c на Unix.
+    fn echo_probe(text: &str) -> Vec<String> {
+        if cfg!(target_os = "windows") {
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "echo".to_string(),
+                text.to_string(),
+            ]
+        } else {
+            vec!["sh".to_string(), "-c".to_string(), format!("echo {text}")]
+        }
+    }
+
     fn empty_rules_def(id: &str) -> ToolDefinition {
         ToolDefinition {
             id: id.to_string(),
@@ -1589,16 +1603,11 @@ mod tests {
 
     #[tokio::test]
     async fn echo_probe_def_is_detected_healthy() {
-        // Проба cmd /c echo отвечает → установлен; проверок здоровья нет,
+        // Проба echo отвечает → установлен; проверок здоровья нет,
         // но ответившая проба версии — сама по себе утверждение «работает»
         // (паритет интеграции Project Creator: ответившая проба = Installed).
         let mut def = empty_rules_def("fake-echo");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "5.5.5".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("5.5.5")];
         let ctx = ScanContext::default();
         let result = scan_tool(&def, &ctx).await;
 
@@ -1625,13 +1634,7 @@ mod tests {
     async fn malformed_version_output_still_detected_as_unparseable() {
         // Мусорный вывод пробы: инструмент установлен, версия Unparseable.
         let mut def = empty_rules_def("fake-garbage");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "build".to_string(),
-            "unknown".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("build unknown")];
         let ctx = ScanContext::default();
         let result = scan_tool(&def, &ctx).await;
 
@@ -1653,12 +1656,7 @@ mod tests {
         // ответившая проба — положительное утверждение, состояние —
         // InstalledHealthy (а не «здоровье не проверялось»).
         let mut def = empty_rules_def("fake-nochecks");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "1".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("1")];
         let ctx = ScanContext::default();
         let result = scan_tool(&def, &ctx).await;
 
@@ -2041,12 +2039,7 @@ mod tests {
         // min > recommended — сломанная политика каталога: честный
         // PolicyViolation вместо произвольного вердикта.
         let mut def = empty_rules_def("fake-policy");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "1.0.0".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("1.0.0")];
         def.versions.min = Some("3.0".to_string());
         def.versions.recommended = Some("2.0".to_string());
 
@@ -2064,16 +2057,11 @@ mod tests {
         // Проверки проходят, но версия ниже рекомендуемой: работает
         // с деградацией (HealthState::Degraded) и просит обновление.
         let mut def = empty_rules_def("fake-degraded");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "1.0.0".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("1.0.0")];
         def.versions.recommended = Some("2.0".to_string());
         def.health_checks = vec![HealthCheck {
             label: "always ok".to_string(),
-            command: vec!["cmd".to_string(), "/c".to_string(), "echo".to_string()],
+            command: echo_probe("ok"),
         }];
 
         let mut ctx = ScanContext::default();
@@ -2099,12 +2087,7 @@ mod tests {
         let mut def = empty_rules_def("fake-pip");
         def.sources = InstallSources::default();
         def.bundled_with = Some("fake-python".to_string());
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "24.0".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("24.0")];
         def.versions.recommended = Some("25".to_string());
 
         let mut ctx = ScanContext::default();
@@ -2129,12 +2112,7 @@ mod tests {
         // Проверка не запускается (бинаря нет): «не смогли проверить»,
         // НЕ «сломано» — презентационно InstalledHealthUnknown.
         let mut def = empty_rules_def("fake-failed-run");
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "9.9.9".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("9.9.9")];
         def.health_checks = vec![HealthCheck {
             label: "missing binary".to_string(),
             command: vec![
@@ -2521,12 +2499,7 @@ mod tests {
     async fn bundled_tool_provenance_names_host() {
         let mut def = empty_rules_def("fake-bundled-prov");
         def.bundled_with = Some("node".to_string());
-        def.detection.version_probes = vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "3.0.0".to_string(),
-        ]];
+        def.detection.version_probes = vec![echo_probe("3.0.0")];
 
         let ctx = ScanContext::default();
         let result = scan_tool(&def, &ctx).await;
@@ -2633,9 +2606,18 @@ mod tests {
         };
 
         // Тот же каталог (с точностью до регистра/слешей) + та же версия.
+        // На Unix нормализация регистрочувствительна: дубликат проверяем
+        // только различием разделителей (раскрывается одинаково).
+        #[cfg(target_os = "windows")]
+        let aliases = (
+            "C:\\Python312\\python.exe",
+            "c:/python312/PYTHON.exe",
+        );
+        #[cfg(not(target_os = "windows"))]
+        let aliases = ("/opt/Python312/python.exe", "/opt/Python312/python.exe/");
         let merged = dedupe_installs(vec![
-            mk("C:\\Python312\\python.exe", Some("3.12.1")),
-            mk("c:/python312/PYTHON.exe", Some("3.12.1")),
+            mk(aliases.0, Some("3.12.1")),
+            mk(aliases.1, Some("3.12.1")),
         ]);
         assert_eq!(merged.len(), 1, "алиас одной установки — дубликат");
 

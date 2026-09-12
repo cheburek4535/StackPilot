@@ -306,23 +306,23 @@ impl OsProcessManager {
         }
 
         // Platform-specific process group creation.
-        match current_os() {
-            HostOs::Windows => {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-                // CREATE_NO_WINDOW: these are captured (hidden) processes —
-                // without it every one would flash a console window in
-                // release builds, which have no console to inherit.
-                cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | crate::platform::CREATE_NO_WINDOW);
-            }
-            HostOs::Linux | HostOs::Macos => {
-                #[cfg(unix)]
-                unsafe {
-                    cmd.pre_exec(|| {
-                        libc::setsid();
-                        Ok(())
-                    });
-                }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            // CREATE_NO_WINDOW: these are captured (hidden) processes —
+            // without it every one would flash a console window in
+            // release builds, which have no console to inherit.
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | crate::platform::CREATE_NO_WINDOW);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
             }
         }
 
@@ -1428,11 +1428,14 @@ mod tests {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         #[cfg(unix)]
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
         }
 
         let mut child = cmd.spawn().expect("should spawn sleep");

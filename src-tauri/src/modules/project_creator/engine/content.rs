@@ -1980,13 +1980,25 @@ mod tests {
     #[test]
     fn csharp_dockerfile_uses_detected_version_not_hardcoded() {
         // dotnet new webapi пишет net10.0 под SDK 10.x — образ 8.0 не соберёт.
+        if !dotnet_tool_installed() {
+            eprintln!("skip: dotnet не установлен — detected-версия неотличима от фоллбэка");
+            return;
+        }
+        let detected = detect_dotnet_version();
         let dockerfile = generate_dockerfile_content("csharp", Some("aspnetcore"), "myweb")
             .expect("csharp dockerfile");
         assert!(dockerfile.contains("dotnet/sdk:"), "{dockerfile}");
+        // SDK-образ обязан совпадать с detected версией установленного SDK.
         assert!(
-            !dockerfile.contains("dotnet/sdk:8.0"),
-            "устаревший sdk:8.0 не соберёт net10: {dockerfile}"
+            dockerfile.contains(&format!("dotnet/sdk:{detected}")),
+            "образ обязан использовать detected версию SDK {detected}: {dockerfile}"
         );
+        if detected != DOTNET_DOCKERFILE_FLOOR {
+            assert!(
+                !dockerfile.contains(&format!("dotnet/sdk:{DOTNET_DOCKERFILE_FLOOR}")),
+                "образ не должен использовать фоллбэк при установленном SDK: {dockerfile}"
+            );
+        }
     }
 
     #[test]
@@ -1999,32 +2011,73 @@ mod tests {
         assert!(!dockerfile.contains("EXPOSE 8080"), "{dockerfile}");
     }
 
+    /// Go установлен в системе и выдаёт распознаваемую версию? Тесты
+    /// detected-версии зависят от реального вывода `go version`
+    /// (см. detect_go_version): без инструмента детект падает в фоллбэк
+    /// DEFAULT_GO_VERSION, неотличимый от detected версии, — такие тесты
+    /// пропускаются, а не падают.
+    fn go_tool_installed() -> bool {
+        std::process::Command::new("go")
+            .arg("version")
+            .output()
+            .map(|o| go_minor_version(&String::from_utf8_lossy(&o.stdout)).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Аналогично для .NET SDK (`dotnet --version`).
+    fn dotnet_tool_installed() -> bool {
+        std::process::Command::new("dotnet")
+            .arg("--version")
+            .output()
+            .map(|o| dotnet_minor_version(&String::from_utf8_lossy(&o.stdout)).is_some())
+            .unwrap_or(false)
+    }
+
     #[test]
     fn go_dockerfile_uses_detected_version_not_hardcoded() {
         // Dockerfile для Go НЕ должен содержать жёстко зашитую версию, иначе
         // он разъедется с go.mod, который `go mod init` пишет под установленный Go.
+        if !go_tool_installed() {
+            eprintln!("skip: go не установлен — detected-версия неотличима от фоллбэка");
+            return;
+        }
+        let detected = detect_go_version();
         let dockerfile =
             generate_dockerfile_content("go", Some("gin"), "myapi").expect("go dockerfile");
         assert!(dockerfile.contains("FROM golang:"), "{dockerfile}");
         assert!(dockerfile.contains("-alpine AS builder"), "{dockerfile}");
-        // Никакого «golang:1.24-alpine» захардкоженного.
+        // Образ обязан совпадать с detected версией установленного Go
+        // (захардкоженное значение — только если установлен именно фоллбэк).
         assert!(
-            !dockerfile.contains("FROM golang:1.24-alpine"),
-            "Dockerfile должен брать версию Go динамически: {dockerfile}"
+            dockerfile.contains(&format!("FROM golang:{detected}-alpine")),
+            "образ обязан использовать detected версию {detected}: {dockerfile}"
         );
+        if detected != DEFAULT_GO_VERSION {
+            assert!(
+                !dockerfile.contains(&format!("FROM golang:{DEFAULT_GO_VERSION}-alpine")),
+                "Dockerfile не должен использовать фоллбэк при установленном Go: {dockerfile}"
+            );
+        }
     }
 
     #[test]
     fn go_ci_uses_detected_version_not_hardcoded() {
+        if !go_tool_installed() {
+            eprintln!("skip: go не установлен — detected-версия неотличима от фоллбэка");
+            return;
+        }
+        let detected = detect_go_version();
         let ci = generate_ci_content("go", None, "myapi");
         assert!(
-            !ci.contains("go-version: '1.24'"),
-            "CI захардкожена версия: {ci}"
+            ci.contains(&format!("go-version: '{detected}'")),
+            "CI обязана использовать detected версию {detected}: {ci}"
         );
-        assert!(
-            ci.contains("go-version: '"),
-            "CI должна использовать detected версию: {ci}"
-        );
+        if detected != DEFAULT_GO_VERSION {
+            assert!(
+                !ci.contains(&format!("go-version: '{DEFAULT_GO_VERSION}'")),
+                "CI не должна использовать фоллбэк при установленном Go: {ci}"
+            );
+        }
     }
 
     #[test]

@@ -138,6 +138,25 @@ mod tests {
     // пересборка содержимого задач из каталога.
     // ------------------------------------------------------------
 
+    /// Официальный источник, одинаковый для всех ОС: канонизация берёт
+    /// источники слота текущей ОС, тесты не должны зависеть от платформы.
+    fn catalog_source() -> InstallSource {
+        InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "src".to_string(),
+            url: Some("https://example.com/x.exe".to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+        }
+    }
+
     fn catalog_def(id: &str) -> ToolDefinition {
         ToolDefinition {
             id: id.to_string(),
@@ -153,22 +172,9 @@ mod tests {
             },
             versions: Default::default(),
             sources: InstallSources {
-                windows: vec![InstallSource {
-                    kind: InstallSourceKind::Official,
-                    id: "src".to_string(),
-                    url: Some("https://example.com/x.exe".to_string()),
-                    args: vec![],
-                    extra_args: vec![],
-                    dynamic_args: false,
-                    install_dir: None,
-                    needs_admin: None,
-                    file_name: None,
-                    execution: None,
-                    bootstrap: None,
-                    sha256: None,
-                }],
-                linux: vec![],
-                macos: vec![],
+                windows: vec![catalog_source()],
+                linux: vec![catalog_source()],
+                macos: vec![catalog_source()],
             },
             size_mb: 42,
             needs_admin: true,

@@ -921,7 +921,10 @@ mod tests {
         assert!(
             found
                 .as_ref()
-                .map(|p| p.to_string_lossy().ends_with("\\17\\bin"))
+                .map(|p| {
+                    p.to_string_lossy().ends_with("\\17\\bin")
+                        || p.to_string_lossy().ends_with("/17/bin")
+                })
                 .unwrap_or(false),
             "glob обязан выбрать самую новую версию (17): {found:?}"
         );
@@ -1028,7 +1031,7 @@ mod tests {
             assert_eq!(
                 expanded,
                 PathBuf::from(format!("{home}/bin")),
-                "${HOME} should expand"
+                "${{HOME}} should expand"
             );
         }
     }

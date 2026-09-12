@@ -437,14 +437,17 @@ pub fn resolve_application(
         }
     }
 
-    // 2. Absolute/relative path with separator вЂ” check directly.
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return resolve_path_input(trimmed, path_overlay);
-    }
-
-    // 3. Flatpak invocation string (e.g. "flatpak run com.visualstudio.code").
+    // 2. Flatpak invocation string (e.g. "flatpak run com.visualstudio.code").
+    // Проверяется ДО ветки «строка с разделителем — это путь»: invocation
+    // может содержать аргументы-пути ("--project /tmp/proj"), но сама
+    // строка путём не является.
     if is_flatpak_invocation(trimmed) {
         return parse_flatpak_invocation(trimmed);
+    }
+
+    // 3. Absolute/relative path with separator — check directly.
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return resolve_path_input(trimmed, path_overlay);
     }
 
     // 4. Known application lookup.
@@ -766,15 +769,21 @@ fn parse_flatpak_invocation(s: &str) -> ApplicationLauncher {
     let tokens: Vec<String> = s.split_whitespace().map(String::from).collect();
 
     if tokens.len() >= 3 && tokens[0] == "flatpak" && tokens[1] == "run" {
+        // "run" обязан остаться в аргументах: `flatpak <id>` без run —
+        // нерабочая команда.
+        let mut args = vec!["run".to_string()];
+        args.extend(tokens[2..].iter().cloned());
         ApplicationLauncher {
             program: "flatpak".to_string(),
-            args: tokens[2..].to_vec(),
+            args,
             is_flatpak: true,
             found: true, // Assume found; actual check via `flatpak info`
-            diagnostics: vec![format!(
-                "Parsed as flatpak invocation with ID: {}",
-                tokens[2]
-            )],
+            diagnostics: vec![
+                format!(
+                    "Parsed as flatpak invocation with ID: {}",
+                    tokens[2]
+                )
+            ],
         }
     } else {
         ApplicationLauncher {
@@ -1338,9 +1347,21 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn custom_path_override() {
-        let result = resolve_application("code", Some("/usr/bin/code"), None);
-        assert_eq!(result.program, "/usr/bin/code");
-        assert!(result.found || !result.diagnostics.is_empty());
+        // Файл создаём во временной директории: тест не должен зависеть
+        // от того, установлено ли приложение в системе.
+        let dir = std::env::temp_dir().join(format!("sp-app-ovr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("mycustomapp");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755));
+        }
+        let result = resolve_application("code", Some(exe.to_str().unwrap()), None);
+        assert_eq!(result.program, exe.to_string_lossy());
+        assert!(result.found);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

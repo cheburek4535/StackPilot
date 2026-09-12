@@ -6344,17 +6344,25 @@ mod tests {
         let dir = temp_dir("venv_above");
         let backend = dir.join("backend");
         std::fs::create_dir_all(&backend).unwrap();
-        let venv = dir.join(".venv").join("Scripts");
+        // Раскладка venv платформенная — та же, что внутри
+        // find_venv_interpreter_above: Scripts/python.exe на Windows,
+        // bin/python на Unix.
+        let (script_dir, interp_name) = if cfg!(target_os = "windows") {
+            ("Scripts", "python.exe")
+        } else {
+            ("bin", "python")
+        };
+        let venv = dir.join(".venv").join(script_dir);
         std::fs::create_dir_all(&venv).unwrap();
-        std::fs::write(venv.join("python.exe"), "").unwrap();
+        std::fs::write(venv.join(interp_name), "").unwrap();
 
         // The venv lives ABOVE the step's working directory: ancestor search
         // finds it from any descendant (this is the monorepo layout where a
         // root `.venv` is shared by a `backend/` service).
         let found = find_venv_interpreter_above(&backend).expect("ancestor venv found");
         let found_str = found.to_string_lossy();
-        assert!(found_str.contains("Scripts"), "{found_str}");
-        assert!(found_str.ends_with("python.exe"), "{found_str}");
+        assert!(found_str.contains(script_dir), "{found_str}");
+        assert!(found_str.ends_with(interp_name), "{found_str}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6364,16 +6372,26 @@ mod tests {
         let dir = temp_dir("fallback");
         let backend = dir.join("backend");
         std::fs::create_dir_all(&backend).unwrap();
-        let venv = dir.join(".venv").join("Scripts");
+        // Платформенная раскладка venv (см. find_venv_interpreter_above).
+        let (script_dir, interp_name) = if cfg!(target_os = "windows") {
+            ("Scripts", "python.exe")
+        } else {
+            ("bin", "python")
+        };
+        let venv = dir.join(".venv").join(script_dir);
         std::fs::create_dir_all(&venv).unwrap();
-        let interp = venv.join("python.exe");
+        let interp = venv.join(interp_name);
         std::fs::write(&interp, "").unwrap();
         let dir_str = backend.to_string_lossy().into_owned();
         let args = vec!["manage.py".to_string(), "runserver".to_string()];
+        let venv_program = if cfg!(target_os = "windows") {
+            ".venv\\Scripts\\python.exe"
+        } else {
+            ".venv/bin/python"
+        };
 
         let (p, a, warning) =
-            resolve_venv_program_fallback(".venv\\Scripts\\python.exe", &args, Some(&dir_str))
-                .unwrap();
+            resolve_venv_program_fallback(venv_program, &args, Some(&dir_str)).unwrap();
         // Compare canonicalized paths: the resolver joins with `/` while
         // the test builds with `\` вЂ” both name the same file on Windows.
         assert_eq!(

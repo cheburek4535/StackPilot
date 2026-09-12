@@ -560,22 +560,35 @@ mod tests {
     // Windows batch command construction tests
     // ========================================================================
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn batch_file_uses_cmd_shell() {
         let mode = infer_command_mode("npx.cmd", &["create-vite@latest".into()], None);
         assert_eq!(mode, CommandMode::Shell(ShellKind::Cmd));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn bat_file_uses_cmd_shell() {
         let mode = infer_command_mode("composer.bat", &["install".into()], None);
         assert_eq!(mode, CommandMode::Shell(ShellKind::Cmd));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn npm_ecosystem_resolves_to_cmd() {
         let mode = infer_command_mode("npm", &["install".into()], None);
         assert_eq!(mode, CommandMode::Shell(ShellKind::Cmd));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_ecosystem_commands_run_through_sh() {
+        // Unix: npm/npx/gradle/mvn идут через sh — .cmd-шимов там нет.
+        for program in ["npm", "npx", "gradle", "mvn"] {
+            let mode = infer_command_mode(program, &["install".into()], None);
+            assert_eq!(mode, CommandMode::Shell(ShellKind::Sh), "{program}");
+        }
     }
 
     #[test]
@@ -687,6 +700,7 @@ mod tests {
         assert_eq!(resolve_windows_program_name("mvnw"), "mvnw.cmd");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn gradle_and_mvn_run_through_cmd_shell() {
         assert_eq!(

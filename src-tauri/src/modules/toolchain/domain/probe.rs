@@ -347,13 +347,18 @@ mod tests {
         // Спим заведомо дольше таймаута: проба обязана вернуть timed_out
         // быстро, а процесс — быть убитым (иначе тест висел бы).
         let started = Instant::now();
-        // ping сам по себе живёт ~N секунд: -n/-c задают число попыток.
+        // Команда должна существовать на любой системе: ping есть на
+        // Windows всегда, sleep (coreutils) — на любом Unix. ping в
+        // контейнерах может отсутствовать или не иметь CAP_NET_RAW.
         #[cfg(target_os = "windows")]
-        let args = vec!["-n".to_string(), "30".to_string(), "127.0.0.1".to_string()];
+        let (program, args) = (
+            "ping",
+            vec!["-n".to_string(), "30".to_string(), "127.0.0.1".to_string()],
+        );
         #[cfg(not(target_os = "windows"))]
-        let args = vec!["-c".to_string(), "30".to_string(), "127.0.0.1".to_string()];
+        let (program, args) = ("sleep", vec!["30".to_string()]);
 
-        let out = run_probe("ping", &args, Duration::from_millis(700)).await;
+        let out = run_probe(program, &args, Duration::from_millis(700)).await;
         assert!(out.timed_out, "проба должна упереться в таймаут");
         assert!(
             started.elapsed() < Duration::from_secs(5),

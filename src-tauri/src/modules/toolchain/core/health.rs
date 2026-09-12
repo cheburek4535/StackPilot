@@ -138,9 +138,41 @@ pub async fn run_health_report(definitions: &[ToolDefinition]) -> HealthReport {
 mod tests {
     use super::*;
 
+    /// Кроссплатформенная echo-команда: cmd /c echo на Windows, sh -c на Unix.
+    fn echo_command(text: &str) -> Vec<String> {
+        if cfg!(target_os = "windows") {
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "echo".to_string(),
+                text.to_string(),
+            ]
+        } else {
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("echo {text}"),
+            ]
+        }
+    }
+
+    /// Кроссплатформенная «неудачная» команда: exit 1 в обеих оболочках.
+    fn failing_command() -> Vec<String> {
+        if cfg!(target_os = "windows") {
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "exit".to_string(),
+                "1".to_string(),
+            ]
+        } else {
+            vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()]
+        }
+    }
+
     /// Определение с заданными health_checks (pattern — check.rs::fake_def).
-    /// Версионная проба = cmd /c echo: detect_tool считает тул
-    /// установленным, поэтому тесты отчёта видят Installed.
+    /// Версионная проба = echo: detect_tool считает тул установленным,
+    /// поэтому тесты отчёта видят Installed.
     fn def_with_checks(checks: Vec<Vec<String>>) -> ToolDefinition {
         ToolDefinition {
             id: "fake".to_string(),
@@ -149,12 +181,7 @@ mod tests {
             description: "тестовый инструмент".to_string(),
             icon: None,
             detection: DetectionRules {
-                version_probes: vec![vec![
-                    "cmd".to_string(),
-                    "/c".to_string(),
-                    "echo".to_string(),
-                    "1.2.3".to_string(),
-                ]],
+                version_probes: vec![echo_command("1.2.3")],
                 known_paths: vec![],
                 registry_keys: vec![],
                 ..Default::default()
@@ -180,12 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_tool_all_checks_ok() {
-        let def = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "hi".to_string(),
-        ]]);
+        let def = def_with_checks(vec![echo_command("hi")]);
         let health = check_tool(
             &def,
             &ToolStatus::Installed {
@@ -203,12 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn failing_check_marks_unhealthy() {
-        let def = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "exit".to_string(),
-            "1".to_string(),
-        ]]);
+        let def = def_with_checks(vec![failing_command()]);
         let health = check_tool(
             &def,
             &ToolStatus::Installed {
@@ -226,20 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_checks_all_must_pass() {
-        let def = def_with_checks(vec![
-            vec![
-                "cmd".to_string(),
-                "/c".to_string(),
-                "echo".to_string(),
-                "ok".to_string(),
-            ],
-            vec![
-                "cmd".to_string(),
-                "/c".to_string(),
-                "exit".to_string(),
-                "1".to_string(),
-            ],
-        ]);
+        let def = def_with_checks(vec![echo_command("ok"), failing_command()]);
         let health = check_tool(
             &def,
             &ToolStatus::Installed {
@@ -254,11 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_tool_is_unavailable_without_checks() {
-        let def = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-        ]]);
+        let def = def_with_checks(vec![echo_command("unused")]);
         let health = check_tool(&def, &ToolStatus::Missing).await;
 
         assert!(!health.ok);
@@ -269,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn path_broken_is_unavailable() {
-        let def = def_with_checks(vec![vec!["cmd".to_string()]]);
+        let def = def_with_checks(vec![echo_command("unused")]);
         let health = check_tool(
             &def,
             &ToolStatus::PathBroken {
@@ -320,12 +320,7 @@ mod tests {
     #[test]
     fn update_available_tool_is_checked() {
         // Устаревший тул всё равно проверяется на здоровье
-        let def = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "v1".to_string(),
-        ]]);
+        let def = def_with_checks(vec![echo_command("v1")]);
         let health = futures_block_on(check_tool(
             &def,
             &ToolStatus::UpdateAvailable {
@@ -338,22 +333,11 @@ mod tests {
         assert_eq!(health.state, HealthState::Healthy);
     }
 
-    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn report_score_counts_checked_only() {
-        let mut installed = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "echo".to_string(),
-            "hi".to_string(),
-        ]]);
+        let mut installed = def_with_checks(vec![echo_command("hi")]);
         installed.id = "checked-ok".to_string();
-        let mut failed = def_with_checks(vec![vec![
-            "cmd".to_string(),
-            "/c".to_string(),
-            "exit".to_string(),
-            "1".to_string(),
-        ]]);
+        let mut failed = def_with_checks(vec![failing_command()]);
         failed.id = "checked-bad".to_string();
         let mut unchecked = def_with_checks(vec![]);
         unchecked.id = "unchecked".to_string();

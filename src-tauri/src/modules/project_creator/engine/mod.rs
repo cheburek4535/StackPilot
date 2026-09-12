@@ -12671,17 +12671,29 @@ mod tests {
         } else {
             ("true".to_string(), vec![])
         };
+        // Команда провала — отдельно от успешной: на Unix `true <arg>`
+        // завершается с кодом 0, поэтому провалом должен быть вызов `false`.
+        let (fail_cmd, fail_args) = if cfg!(target_os = "windows") {
+            (
+                "cmd".to_string(),
+                vec!["/d".into(), "/c".into(), "exit 1".into()],
+            )
+        } else {
+            ("false".to_string(), vec![])
+        };
         let prereq = Step::Command {
             id: "prereq".into(),
             label: "Prerequisite step".into(),
             description: String::new(),
-            command: cmd.clone(),
+            command: if prereq_exit == "0" {
+                cmd.clone()
+            } else {
+                fail_cmd
+            },
             args: if prereq_exit == "0" {
                 ok_args.clone()
-            } else if cfg!(target_os = "windows") {
-                vec!["/d".into(), "/c".into(), "exit 1".into()]
             } else {
-                vec!["false".into()]
+                fail_args
             },
             working_dir: None,
             env: None,

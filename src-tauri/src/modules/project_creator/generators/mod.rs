@@ -2665,6 +2665,18 @@ mod tests {
             .unwrap();
             std::fs::write(dir.join("fake-fail.sh"), "#!/bin/sh\nexit 1\n").unwrap();
             std::fs::write(dir.join("fake-nothing.sh"), "#!/bin/sh\n").unwrap();
+            // CLI запускается через `sh -c '<путь> <args>'`: exec требует
+            // права на исполнение, иначе скрипт умирает с "Permission
+            // denied" ещё до запуска (на Windows .cmd это не важно).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for entry in std::fs::read_dir(&dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+            }
         }
         dir
     }

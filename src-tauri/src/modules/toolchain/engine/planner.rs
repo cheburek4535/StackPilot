@@ -967,12 +967,29 @@ mod tests {
 
     fn win_def(id: &str) -> ToolDefinition {
         let mut d = base_def(id);
-        d.sources.windows = vec![official_src(
-            "src-1",
-            "https://example.com/x.exe",
-            Some("aa"),
-        )];
+        // Источник кладётся во ВСЕ ОС-слоты: планировщик берёт слот текущей
+        // ОС, тесты обязаны работать одинаково на Windows/Linux/macOS.
+        let src = official_src("src-1", "https://example.com/x.exe", Some("aa"));
+        d.sources.windows = vec![src.clone()];
+        d.sources.linux = vec![src.clone()];
+        d.sources.macos = vec![src];
         d
+    }
+
+    /// Добавляет источник во все ОС-слоты (для тестов с несколькими
+    /// источниками у одного тула).
+    fn push_source(def: &mut ToolDefinition, src: InstallSource) {
+        def.sources.windows.push(src.clone());
+        def.sources.linux.push(src.clone());
+        def.sources.macos.push(src);
+    }
+
+    /// Заменяет источник во всех ОС-слотах.
+    fn set_official_source(def: &mut ToolDefinition, id: &str, url: &str, sha256: Option<&str>) {
+        let src = official_src(id, url, sha256);
+        def.sources.windows = vec![src.clone()];
+        def.sources.linux = vec![src.clone()];
+        def.sources.macos = vec![src];
     }
 
     fn installed(v: &str) -> ToolStatus {
@@ -1054,11 +1071,12 @@ mod tests {
     #[tokio::test]
     async fn valid_explicit_source_is_selected() {
         let mut d = win_def("git");
-        d.sources.windows.push(official_src(
-            "src-2",
-            "https://example.com/y.exe",
-            Some("bb"),
-        ));
+        // Источник добавляется во ВСЕ ОС-слоты: планировщик берёт слот
+        // текущей ОС, и явный выбор обязан работать на любой из них.
+        push_source(
+            &mut d,
+            official_src("src-2", "https://example.com/y.exe", Some("bb")),
+        );
         let defs = vec![d];
         let det = FakeDetector::default();
         let mut req = install_request(&["git"]);
@@ -1165,7 +1183,9 @@ mod tests {
     #[tokio::test]
     async fn update_plan_carries_current_target_source_admin_warnings() {
         let mut d = win_def("node");
-        d.needs_admin = true;
+        // Admin-поведение проверяем там, где elevation поддерживается;
+        // на Linux needs_admin=true отвалил бы план до всяких warning'ов.
+        d.needs_admin = cfg!(target_os = "windows");
         let defs = vec![d];
         let det = FakeDetector::with("node", update_avail("20.1", "22"));
         let mut req = EngineRequest::new(OperationKind::Update, vec![ToolRequest::id("node")]);
@@ -1182,13 +1202,17 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(plan.tasks[0].needs_admin);
         assert!(plan.tasks[0].source.is_some());
-        assert!(plan.needs_admin_any);
-        assert!(plan.warnings.iter().any(|w| matches!(
-            w,
-            PlanWarning::AdminRequired { tool_id } if tool_id == "node"
-        )));
+        if cfg!(target_os = "windows") {
+            assert!(plan.tasks[0].needs_admin);
+            assert!(plan.needs_admin_any);
+            assert!(plan.warnings.iter().any(|w| matches!(
+                w,
+                PlanWarning::AdminRequired { tool_id } if tool_id == "node"
+            )));
+        } else {
+            assert!(!plan.needs_admin_any);
+        }
     }
 
     #[tokio::test]
@@ -1268,18 +1292,26 @@ mod tests {
         let err = build_plan(&install_request(&["sdk"]), &inputs_for(&defs, &det))
             .await
             .unwrap_err();
-        assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
+        if cfg!(target_os = "windows") {
+            // Elevation поддерживается: без подтверждения план не строится.
+            assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
 
-        let mut req = install_request(&["sdk"]);
-        req.confirm_admin_elevation = true;
-        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
-        assert!(plan.needs_admin_any);
+            let mut req = install_request(&["sdk"]);
+            req.confirm_admin_elevation = true;
+            let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+            assert!(plan.needs_admin_any);
+        } else {
+            // Elevation не поддерживается (Linux/macOS): отказ до всяких
+            // подтверждений — это задокументированное поведение платформы.
+            assert!(matches!(err, PlanError::ElevationUnsupported { .. }));
+        }
     }
 
     #[tokio::test]
     async fn unverified_source_requires_confirmation_and_warns() {
         let mut d = win_def("app");
-        d.sources.windows = vec![official_src("src-1", "https://example.com/x.exe", None)];
+        // Заменяем источник во всех ОС-слотах: без sha256 → unverified.
+        set_official_source(&mut d, "src-1", "https://example.com/x.exe", None);
         let defs = vec![d];
         let det = FakeDetector::default();
 
@@ -1307,8 +1339,9 @@ mod tests {
     #[tokio::test]
     async fn preview_builds_unconfirmed_plan_with_warnings() {
         let mut d = win_def("app");
-        d.sources.windows = vec![official_src("src-1", "https://example.com/x.exe", None)];
-        d.needs_admin = true;
+        set_official_source(&mut d, "src-1", "https://example.com/x.exe", None);
+        // Admin-warning проверяем только там, где elevation поддерживается.
+        d.needs_admin = cfg!(target_os = "windows");
         let defs = vec![d];
         let det = FakeDetector::default();
 
@@ -1320,10 +1353,12 @@ mod tests {
             w,
             PlanWarning::UnverifiedSource { tool_id, .. } if tool_id == "app"
         )));
-        assert!(plan.warnings.iter().any(|w| matches!(
-            w,
-            PlanWarning::AdminRequired { tool_id } if tool_id == "app"
-        )));
+        if cfg!(target_os = "windows") {
+            assert!(plan.warnings.iter().any(|w| matches!(
+                w,
+                PlanWarning::AdminRequired { tool_id } if tool_id == "app"
+            )));
+        }
 
         // Тот же запрос БЕЗ preview обязан отказать до построения.
         let err = build_plan(&install_request(&["app"]), &inputs_for(&defs, &det))
@@ -1450,7 +1485,9 @@ mod tests {
     #[tokio::test]
     async fn mysql_missing_produces_host_install_task_never_docker_noop() {
         let mut mysql = win_def("mysql");
-        mysql.needs_admin = true;
+        // needs_admin существенен только на Windows: на Linux elevation
+        // не поддерживается, и план отказал бы до проверки execution.
+        mysql.needs_admin = cfg!(target_os = "windows");
         let defs = vec![mysql];
         let det = FakeDetector::default();
 

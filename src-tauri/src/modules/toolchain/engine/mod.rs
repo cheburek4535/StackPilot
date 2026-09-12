@@ -121,6 +121,22 @@ mod tests {
 
     fn fake_def(id: &str) -> crate::modules::toolchain::models::ToolDefinition {
         use crate::modules::toolchain::models::{InstallSource, InstallSourceKind};
+        // Источник кладётся во все ОС-слоты: планировщик берёт слот текущей
+        // ОС, тест обязан работать одинаково на Windows/Linux/macOS.
+        let src = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "src-1".into(),
+            url: Some("https://example.com/x.exe".into()),
+            file_name: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            execution: None,
+            bootstrap: None,
+            sha256: Some("aa".into()),
+        };
         crate::modules::toolchain::models::ToolDefinition {
             id: id.to_string(),
             category: "utility".into(),
@@ -130,22 +146,9 @@ mod tests {
             detection: DetectionRules::default(),
             versions: VersionRules::default(),
             sources: InstallSources {
-                windows: vec![InstallSource {
-                    kind: InstallSourceKind::Official,
-                    id: "src-1".into(),
-                    url: Some("https://example.com/x.exe".into()),
-                    file_name: None,
-                    args: vec![],
-                    extra_args: vec![],
-                    dynamic_args: false,
-                    install_dir: None,
-                    needs_admin: None,
-                    execution: None,
-                    bootstrap: None,
-                    sha256: Some("aa".into()),
-                }],
-                linux: vec![],
-                macos: vec![],
+                windows: vec![src.clone()],
+                linux: vec![src.clone()],
+                macos: vec![src],
             },
             size_mb: 5,
             needs_admin: false,

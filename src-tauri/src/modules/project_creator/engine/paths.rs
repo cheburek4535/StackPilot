@@ -204,30 +204,35 @@ mod tests {
 
     #[test]
     fn resolve_in_root_collapses_parent_segments() {
-        let root = Path::new("C:\\dev\\myapp");
+        // Кроссплатформенный корень: resolve_in_root — чистые операции над
+        // путём, каталог не обязан существовать. Абсолютный temp_dir даёт
+        // одинаковую логику на Windows и Unix (на Unix "C:\..." —
+        // относительный путь, что ломало бы сценарий абсолютного корня).
+        let root = std::env::temp_dir().join("stackpilot_paths_collapse");
         assert_eq!(
-            resolve_in_root(root, "backend/../frontend"),
-            Some(PathBuf::from("C:\\dev\\myapp\\frontend"))
+            resolve_in_root(&root, "backend/../frontend"),
+            Some(root.join("frontend"))
         );
-        assert_eq!(
-            resolve_in_root(root, "a/b/../../c"),
-            Some(PathBuf::from("C:\\dev\\myapp\\c"))
-        );
-        assert_eq!(resolve_in_root(root, "a/.."), Some(root.to_path_buf()));
-        assert!(resolve_in_root(root, "../a").is_none());
-        assert!(resolve_in_root(root, "a/../..").is_none());
+        assert_eq!(resolve_in_root(&root, "a/b/../../c"), Some(root.join("c")));
+        assert_eq!(resolve_in_root(&root, "a/.."), Some(root.to_path_buf()));
+        assert!(resolve_in_root(&root, "../a").is_none());
+        assert!(resolve_in_root(&root, "a/../..").is_none());
     }
 
     #[test]
     fn resolve_in_root_stays_inside_root() {
-        let root = Path::new("C:\\dev\\my app");
+        // Корень с пробелом в имени — строковые операции сохраняют его.
+        let root = std::env::temp_dir().join("stackpilot_paths_inside my app");
+        // Обратные слэши внутри ОТНОСИТЕЛЬНОГО пути нормализуются на любой ОС.
         assert_eq!(
-            resolve_in_root(root, "frontend\\package.json"),
-            Some(PathBuf::from("C:\\dev\\my app\\frontend/package.json"))
+            resolve_in_root(&root, "frontend\\package.json"),
+            Some(root.join("frontend/package.json"))
         );
-        assert!(resolve_in_root(root, "../outside").is_none());
-        assert!(resolve_in_root(root, "C:\\Windows").is_none());
-        assert!(resolve_in_root(root, "").is_none());
+        assert!(resolve_in_root(&root, "../outside").is_none());
+        assert!(resolve_in_root(&root, "").is_none());
+        // Дисковый префикс отвергается на обеих платформах: normalize_rel_path
+        // проверяет "X:" явно, а не через std::path is_absolute.
+        assert!(resolve_in_root(&root, "C:\\Windows").is_none());
     }
 
     #[test]
@@ -241,39 +246,61 @@ mod tests {
 
     #[test]
     fn resolve_working_dir_accepts_absolute_inside_root() {
-        let root = Path::new("C:\\dev\\myapp");
+        // Кроссплатформенный корень: temp_dir — абсолютный на обеих ОС,
+        // поэтому сценарий "абсолютный путь внутри корня" проходит один код.
+        let root = std::env::temp_dir().join("stackpilot_paths_abs");
+        let root_str = root.to_string_lossy().into_owned();
+        // Абсолютный путь, равный корню, — сам корень.
         assert_eq!(
-            resolve_working_dir(root, "C:\\dev\\myapp").unwrap(),
+            resolve_working_dir(&root, &root_str).unwrap(),
             root.to_path_buf()
         );
+        // Абсолютный путь с прямым слэшем внутри корня: PathBuf сравнивается
+        // покомпонентно, смешение разделителей допустимо на обеих ОС.
+        let inside = format!("{root_str}/frontend");
         assert_eq!(
-            resolve_working_dir(root, "C:\\dev\\myapp/frontend").unwrap(),
-            PathBuf::from("C:\\dev\\myapp/frontend")
+            resolve_working_dir(&root, &inside).unwrap(),
+            PathBuf::from(&inside)
         );
-        assert_eq!(resolve_working_dir(root, ".").unwrap(), root.to_path_buf());
+        assert_eq!(resolve_working_dir(&root, ".").unwrap(), root.to_path_buf());
         assert_eq!(
-            resolve_working_dir(root, "frontend").unwrap(),
-            PathBuf::from("C:\\dev\\myapp\\frontend")
+            resolve_working_dir(&root, "frontend").unwrap(),
+            root.join("frontend")
         );
         assert_eq!(
-            resolve_working_dir(root, "backend/../frontend").unwrap(),
-            PathBuf::from("C:\\dev\\myapp\\frontend")
+            resolve_working_dir(&root, "backend/../frontend").unwrap(),
+            root.join("frontend")
         );
     }
 
     #[test]
     fn resolve_working_dir_rejects_escaping() {
-        let root = Path::new("C:\\dev\\myapp");
-        assert!(resolve_working_dir(root, "C:\\dev\\other").is_err());
-        assert!(resolve_working_dir(root, "..\\other").is_err());
-        assert!(resolve_working_dir(root, "C:\\").is_err());
+        let root = std::env::temp_dir().join("stackpilot_paths_escape");
+        let root_str = root.to_string_lossy().into_owned();
+        // Соседний каталог вне корня — отказ.
+        let outside = std::env::temp_dir().join("stackpilot_paths_escape_other");
+        assert!(resolve_working_dir(&root, &outside.to_string_lossy()).is_err());
+        assert!(resolve_working_dir(&root, "../other").is_err());
         // .. внутри абсолютного пути не должен выводить за корень
-        assert!(resolve_working_dir(root, "C:\\dev\\myapp\\..\\evil").is_err());
-        assert!(resolve_working_dir(root, "C:\\dev\\myapp\\a\\..\\..\\evil").is_err());
+        assert!(resolve_working_dir(&root, &format!("{root_str}/a/../..")).is_err());
         // .. внутри корня, оставаясь в корне — допустим
         assert_eq!(
-            resolve_working_dir(root, "C:\\dev\\myapp\\backend\\..").unwrap(),
+            resolve_working_dir(&root, &format!("{root_str}/backend/..")).unwrap(),
             root.to_path_buf()
         );
+        // Windows-специфика: дисковый префикс вне корня и диск-корень.
+        #[cfg(target_os = "windows")]
+        {
+            let win_root = Path::new("C:\\dev\\myapp");
+            assert!(resolve_working_dir(win_root, "C:\\dev\\other").is_err());
+            assert!(resolve_working_dir(win_root, "..\\other").is_err());
+            assert!(resolve_working_dir(win_root, "C:\\").is_err());
+            assert!(resolve_working_dir(win_root, "C:\\dev\\myapp\\..\\evil").is_err());
+            assert!(resolve_working_dir(win_root, "C:\\dev\\myapp\\a\\..\\..\\evil").is_err());
+            assert_eq!(
+                resolve_working_dir(win_root, "C:\\dev\\myapp\\backend\\..").unwrap(),
+                win_root.to_path_buf()
+            );
+        }
     }
 }
