@@ -36,10 +36,12 @@ serde_yaml = "0.9"
 regex = "1"
 walkdir = "2"
 which = "8"
-winreg = "0.55"
 libc = "0.2"
 chrono = "0.4"
 log = "0.4"
 notify = "8.2"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
