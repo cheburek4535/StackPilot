@@ -1,6 +1,6 @@
 [package]
 name = "stackpilot"
-version = "1.2.2"
+version = "1.2.3"
 description = "Developer toolchain management and project workspace dashboard"
 authors = ["cheburek4535"]
 license = "AGPL-3.0-only"
