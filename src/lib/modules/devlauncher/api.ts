@@ -9,7 +9,6 @@ import type {
   RunLogs,
   StepLogs,
   DraftProfile,
-  DockerAuthState,
   WslState,
 } from "./types";
 import type { WizardContext } from "$lib/modules/project_creator/types";
@@ -178,26 +177,6 @@ export async function buildProfileV2FromContext(
   context: WizardContext,
 ): Promise<LaunchProfile> {
   return invoke("build_profile_v2_from_context", { context });
-}
-
-// ---------------------------------------------------------------------------
-// V2 Docker first-run authorization state
-// ---------------------------------------------------------------------------
-
-/**
- * Persistent Docker authorization state:
- * - `confirmed` — a docker-involved step has reached Succeeded at least once
- *   (proves Docker Desktop's first-run sign-in/service agreement was done).
- * - `installed_via_stackpilot` — Docker was installed by the toolchain
- *   installer (not adopted externally).
- */
-export async function getDockerAuthState(): Promise<DockerAuthState> {
-  return invoke("devl_get_docker_auth_state");
-}
-
-/** Explicitly set the Docker authorization flag (advanced/reset use). */
-export async function setDockerAuthConfirmed(confirmed: boolean): Promise<void> {
-  return invoke("devl_set_docker_auth_confirmed", { confirmed });
 }
 
 // ---------------------------------------------------------------------------

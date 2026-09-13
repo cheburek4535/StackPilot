@@ -2,9 +2,9 @@
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2, getDockerAuthState, getWslState, installWsl } from "$lib/modules/devlauncher/api";
+  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2, getWslState, installWsl } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
-  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun, DockerAuthState, WslState } from "$lib/modules/devlauncher/types";
+  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun, WslState } from "$lib/modules/devlauncher/types";
   import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel, profileHasDockerSteps } from "$lib/modules/devlauncher/types";
   import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
   import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
@@ -81,16 +81,6 @@
   /** Status of this profile's latest run seen by the last sync. */
   let lastSyncedStatus: import("$lib/modules/devlauncher/types").RunStatus | null = null;
 
-  // ---- Docker first-run authorization ----
-  /** Persistent docker auth state (confirmed + installed_via_stackpilot). */
-  let dockerAuth = $state<DockerAuthState | null>(null);
-  /** True while the pre-flight "authorize in Docker Desktop" warning is open. */
-  let showDockerAuthModal = $state(false);
-  /** True while the post-failure "authorize in Docker Desktop" callout is shown. */
-  let dockerAuthCallout = $state(false);
-  /** User dismissed the failure callout — don't auto-reappear until a new run. */
-  let dockerAuthCalloutDismissed = $state(false);
-
   // ---- WSL readiness (Docker on Windows requires WSL2) ----
   let wslState = $state<WslState | null>(null);
   let showWslModal = $state(false);
@@ -105,30 +95,14 @@
   const v2Profile = $derived<LaunchProfileV2 | null>(
     isV2 && profile ? (profile as unknown as LaunchProfileV2) : null,
   );
-  /** The profile includes docker steps that need an authorized Docker Desktop. */
+  /** The profile includes docker steps. */
   const hasDockerSteps = $derived(profileHasDockerSteps(v2Profile));
-  /** Docker first-run is still unresolved (never succeeded + StackPilot-installed). */
-  const dockerAuthPending = $derived(
-    !!hasDockerSteps &&
-      !!dockerAuth &&
-      !dockerAuth.confirmed &&
-      dockerAuth.installed_via_stackpilot,
-  );
   /** WSL is not installed on this machine (regardless of docker steps) —
- *  drives the always-visible "Download WSL" button. */
+   *  drives the always-visible "Download WSL" button. */
   const wslAbsent = $derived(!!wslState && !wslState.present);
   /** Docker steps exist but WSL (their Windows backend) is not installed.
    *  When true the launch is blocked behind the WSL install dialog instead. */
   const wslMissing = $derived(!!hasDockerSteps && wslAbsent);
-
-  /** Load the persistent docker authorization state once per relevant event. */
-  async function refreshDockerAuth() {
-    try {
-      dockerAuth = await getDockerAuthState();
-    } catch {
-      dockerAuth = null;
-    }
-  }
 
   /** Load the session-cached WSL state (cheap after the first call). */
   async function refreshWsl() {
@@ -184,23 +158,10 @@
     wslUnlisten = null;
   }
 
-  /** Watch the run lifecycle: on failure with docker steps while auth is
-   *  unconfirmed, surface the "authorize in Docker Desktop and try again"
-   *  callout; refresh auth after every terminal run (a successful docker
-   *  step flips `confirmed` on the backend). */
+  /** Stop polling once the active run reaches a terminal status. */
   $effect(() => {
     const status = activeRun?.status;
     if (status && isRunTerminal(status)) stopPolling();
-    if (hasDockerSteps && !!status && isRunTerminal(status)) {
-      // The docker-auth callout does not apply when WSL itself is missing —
-      // that case gets the WSL install dialog instead.
-      if (status === "failed" && dockerAuth?.confirmed === false && !wslMissing) {
-        if (!dockerAuthCalloutDismissed) dockerAuthCallout = true;
-      } else {
-        dockerAuthCallout = false;
-      }
-      void refreshDockerAuth();
-    }
   });
 
   // ---- Application selection (browser / database viewer) ----
@@ -246,7 +207,6 @@
       startPolling(activeRun.run_id);
     }
     void refreshDetectedApps();
-    void refreshDockerAuth();
     void refreshWsl();
   });
 
@@ -588,20 +548,9 @@
       return;
     }
 
-    // Docker first-run pre-flight: before the FIRST launch (auth still
-    // unconfirmed and Docker installed by StackPilot), warn the user to
-    // authorize in Docker Desktop. "Continue" bypasses the warning for this
-    // launch (force=true) — the backend only confirms the flag once a docker
-    // step actually succeeds.
-    if (!force && dockerAuthPending) {
-      showDockerAuthModal = true;
-      return;
-    }
-
     runningAll = true;
     activeRun = null;
     launched = true;
-    dockerAuthCallout = false;
 
     // Bind the profile to the workspace project so the Workspace module
     // (Overview/Runtime/Logs) shows the processes after the launch.
@@ -929,28 +878,13 @@
       </section>
     {/if}
 
-    <!-- Docker first-run failure callout -->
-    {#if dockerAuthCallout}
-      <div class="docker-auth-callout" role="alert">
-        <div>
-          <strong>{i18n.t("devl.docker_auth_failure_title") as TranslationKey}</strong>
-          <p>{i18n.t("devl.docker_auth_failure_body") as TranslationKey}</p>
-        </div>
-        <div class="callout-actions">
-          <button
-            class="primary"
-            onclick={() => {
-              dockerAuthCallout = false;
-              void runAll(true);
-            }}
-          >
-            {i18n.t("devl.docker_auth_try_again") as TranslationKey}
-          </button>
-          <button class="secondary" onclick={() => (dockerAuthCallout = false)}>
-            {i18n.t("devl.docker_auth_hide") as TranslationKey}
-          </button>
-        </div>
-      </div>
+    <!-- Docker sign-in note: purely informational. Docker Desktop may show a
+         sign-in / terms prompt on first launch — it is optional and does not
+         block containers. -->
+    {#if hasDockerSteps}
+      <p class="docker-signin-note">
+        {i18n.t("devl.docker_signin_hint") as TranslationKey}
+      </p>
     {/if}
 
     <!-- Run history -->
@@ -1197,42 +1131,7 @@
   </div>
 {/if}
 
-<!-- Docker first-run pre-flight warning modal -->
-{#if showDockerAuthModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-overlay" onclick={() => (showDockerAuthModal = false)} role="presentation">
-    <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
-    <div
-      class="modal-content docker-auth-modal"
-      onclick={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-label="Docker authorization"
-    >
-      <div class="modal-header">
-        <span>{i18n.t("devl.docker_auth_pre_warning_title") as TranslationKey}</span>
-        <button class="modal-close" onclick={() => (showDockerAuthModal = false)}>✕</button>
-      </div>
-      <div class="docker-auth-modal-body">
-        <p>{i18n.t("devl.docker_auth_pre_warning_body") as TranslationKey}</p>
-        <div class="modal-actions">
-          <button class="secondary" onclick={() => (showDockerAuthModal = false)}>
-            {i18n.t("devl.docker_auth_cancel") as TranslationKey}
-          </button>
-          <button
-            class="primary"
-            onclick={() => {
-              showDockerAuthModal = false;
-              void runAll(true);
-            }}
-          >
-            {i18n.t("devl.docker_auth_launch") as TranslationKey}
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-{/if}
-
+<!-- WSL pre-flight / install modal -->
 {#if showWslModal}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-overlay" onclick={closeWslInstall} role="presentation">
@@ -1285,7 +1184,7 @@
           <p class="error-text">{wslError}</p>
           <div class="modal-actions">
             <button class="secondary" onclick={closeWslInstall}>
-              {i18n.t("devl.docker_auth_cancel") as TranslationKey}
+              {i18n.t("devl.wsl_install_skip") as TranslationKey}
             </button>
             <button
               class="primary"
@@ -1293,7 +1192,7 @@
                 void runWslInstall();
               }}
             >
-              {i18n.t("devl.docker_auth_try_again") as TranslationKey}
+              {i18n.t("devl.wsl_install_retry") as TranslationKey}
             </button>
           </div>
         {:else}
@@ -1800,20 +1699,14 @@
     color: var(--sp-danger);
   }
 
-  /* Docker first-run failure callout */
-  .docker-auth-callout {
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 1rem;
+  /* Optional Docker sign-in note (informational, non-blocking) */
+  .docker-signin-note {
     margin: 1rem 0;
-    padding: 0.9rem 1.1rem;
-    border: 1px solid var(--sp-warning);
-    background: color-mix(in srgb, var(--sp-warning) 12%, var(--sp-bg-0));
-    border-radius: var(--sp-radius-md);
+    padding: 0.6rem 0.9rem;
+    border-left: 3px solid var(--sp-border);
+    color: var(--sp-text-2);
     font-size: var(--sp-fs-sm);
-  }
-  .docker-auth-callout p { margin: 0.25rem 0 0; color: var(--sp-text-2); }
-  .callout-actions {
-    display: flex; gap: 0.5rem; flex-shrink: 0;
+    line-height: 1.5;
   }
   .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
 </style>

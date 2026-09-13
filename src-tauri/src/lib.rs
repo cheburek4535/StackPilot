@@ -67,12 +67,6 @@ pub fn run() {
             app.manage(process_supervisor);
 
             // === DevLauncher module ===
-            // Docker authorization state is stored under data_dir/devlauncher
-            // and shared with the orchestrator (failure hints + confirmation).
-            let devlauncher_dir = data_dir.join("devlauncher");
-            let docker_auth_store = std::sync::Arc::new(
-                modules::devlauncher::docker_auth::DockerAuthStore::load(&devlauncher_dir),
-            );
             let devlauncher_state = modules::devlauncher::DevLauncherState::new(
                 data_dir.join("profiles"),
                 Arc::new(
@@ -82,7 +76,6 @@ pub fn run() {
                 ),
                 Arc::new(modules::devlauncher::analyzer::FsProjectAnalyzer),
                 process_manager.clone(),
-                docker_auth_store,
             );
 
             // Wire AppHandle into orchestrator for event emission
@@ -195,9 +188,6 @@ pub fn run() {
             modules::devlauncher::commands::get_run_logs,
             modules::devlauncher::commands::get_step_logs,
             modules::devlauncher::commands::list_all_runs,
-            // V2 Docker first-run authorization state
-            modules::devlauncher::commands::devl_get_docker_auth_state,
-            modules::devlauncher::commands::devl_set_docker_auth_confirmed,
             // V2 WSL readiness (docker backend) state + install
             modules::devlauncher::commands::devl_get_wsl_state,
             modules::devlauncher::commands::devl_wsl_install,

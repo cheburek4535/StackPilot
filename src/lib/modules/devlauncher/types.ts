@@ -156,16 +156,8 @@ export type LaunchProfileV2 = {
 };
 
 // ---------------------------------------------------------------------------
-// Docker first-run authorization state (backend `devl_get_docker_auth_state`)
+// Docker step helpers
 // ---------------------------------------------------------------------------
-
-export type DockerAuthState = {
-  /** A docker step reached Succeeded at least once — Docker Desktop's
-   *  first-run authorization was completed. */
-  confirmed: boolean;
-  /** Docker was installed by StackPilot's toolchain installer. */
-  installed_via_stackpilot: boolean;
-};
 
 /** True when a step touches the Docker stack (wait_for_docker gadget or a
  *  docker_compose_up bootstrap). Mirrors the backend `step_is_docker`. */

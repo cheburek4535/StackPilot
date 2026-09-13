@@ -54,16 +54,6 @@ struct RunHandle {
 // Step completion message sent from step tasks to the scheduler
 // ---------------------------------------------------------------------------
 
-/// True when a step touches the Docker stack: the `WaitForDocker` wait
-/// gadget or a `DockerComposeUp` bootstrap. These are the steps that can
-/// only succeed once Docker Desktop's first-run authorization (sign in /
-/// service agreement) is complete. A `Succeeded` for either proves the
-/// daemon booted, hence the global `docker_auth` confirmation.
-fn step_is_docker(step: &LaunchStep) -> bool {
-    matches!(step.kind, StepKind::WaitForDocker {})
-        || matches!(step.completion, Some(CompletionPolicy::DockerComposeUp { .. }))
-}
-
 #[derive(Debug, Clone)]
 struct StepCompletion {
     step_id: String,
@@ -83,24 +73,15 @@ pub struct RunOrchestrator {
     process_manager: Arc<dyn ProcessManager>,
     app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     concurrency_limit: usize,
-    /// Persistent Docker authorization state. Failed docker steps are
-    /// enriched with an auth hint while `confirmed` is false; a successful
-    /// docker step flips `confirmed` to true (proves Docker Desktop's
-    /// first-run sign-in was completed).
-    docker_auth: Arc<super::docker_auth::DockerAuthStore>,
 }
 
 impl RunOrchestrator {
-    pub fn new(
-        process_manager: Arc<dyn ProcessManager>,
-        docker_auth: Arc<super::docker_auth::DockerAuthStore>,
-    ) -> Self {
+    pub fn new(process_manager: Arc<dyn ProcessManager>) -> Self {
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
             process_manager,
             app_handle: Arc::new(Mutex::new(None)),
             concurrency_limit: 8,
-            docker_auth,
         }
     }
 
@@ -320,7 +301,6 @@ impl RunOrchestrator {
         let run_id_owned = run_id.to_string();
         let session_id = handle.session_id.clone();
         let browser_path = handle.browser_path.clone();
-        let docker_auth = self.docker_auth.clone();
 
         tokio::spawn(async move {
             Self::scheduler_loop(
@@ -331,7 +311,6 @@ impl RunOrchestrator {
                 concurrency_limit,
                 session_id,
                 browser_path,
-                docker_auth,
             )
             .await;
         });
@@ -422,7 +401,6 @@ impl RunOrchestrator {
         concurrency_limit: usize,
         session_id: Option<String>,
         browser_path: Option<String>,
-        docker_auth: Arc<super::docker_auth::DockerAuthStore>,
     ) {
         let handle = {
             let runs_guard = runs.read().expect("runs lock poisoned");
@@ -604,32 +582,6 @@ impl RunOrchestrator {
                 if let Some(completion) = rx.recv().await {
                     running.remove(&completion.step_id);
 
-                    // Docker-first-run assistance: while Docker authorization
-                    // is unconfirmed, a failed docker step is most likely a
-                    // "open Docker Desktop and authorize" situation. Enrich the
-                    // recorded error with an actionable hint (single occurrence,
-                    // so retries don't stack duplicates) for the step list UI.
-                    let is_docker_step = handle
-                        .profile
-                        .steps
-                        .iter()
-                        .find(|s| s.id == completion.step_id)
-                        .map(step_is_docker)
-                        .unwrap_or(false);
-                    let mut enriched_error = completion.error.clone();
-                    if !completion.success
-                        && is_docker_step
-                        && !docker_auth.confirmed()
-                        && enriched_error.as_ref().is_some_and(|e| {
-                            !e.contains(super::docker_auth::DOCKER_AUTH_HINT)
-                        })
-                    {
-                        if let Some(err) = enriched_error.as_mut() {
-                            err.push_str("\n\n");
-                            err.push_str(super::docker_auth::DOCKER_AUTH_HINT);
-                        }
-                    }
-
                     // Update step state
                     {
                         let mut run = handle.run.lock().expect("run lock poisoned");
@@ -640,12 +592,6 @@ impl RunOrchestrator {
                         {
                             if completion.success {
                                 step_state.status = StepStatus::Succeeded;
-                                // A docker step that reached Succeeded proves the
-                                // Docker Desktop first-run flow (sign in / service
-                                // agreement) was completed: record it forever.
-                                if is_docker_step {
-                                    docker_auth.set_confirmed(true);
-                                }
                             } else if handle.cancelled.load(Ordering::SeqCst) {
                                 // User-initiated cancellation — keep the step as
                                 // Cancelled instead of Failed.
@@ -653,7 +599,7 @@ impl RunOrchestrator {
                                 step_state.error = completion.error.clone();
                             } else {
                                 step_state.status = StepStatus::Failed;
-                                step_state.error = enriched_error.clone();
+                                step_state.error = completion.error.clone();
                             }
                             let now = default_now_iso();
                             step_state.finished_at = Some(now.clone());
@@ -4088,21 +4034,6 @@ mod tests {
     use crate::platform::environment::EnvironmentOverlay;
     use serde_json::Map;
 
-    /// A disposable DockerAuthStore for orchestrator tests. Degree of `todo!()`
-    /// freedom: the auth store can default to unconfirmed without touching the
-    /// filesystem outside the OS temp dir.
-    fn test_docker_auth() -> Arc<crate::modules::devlauncher::docker_auth::DockerAuthStore> {
-        let dir = std::env::temp_dir().join(format!(
-            "sp-orch-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        Arc::new(crate::modules::devlauncher::docker_auth::DockerAuthStore::load(&dir))
-    }
-
     fn make_step(id: &str, deps: Vec<&str>) -> LaunchStep {
         LaunchStep {
             id: id.to_string(),
@@ -4298,7 +4229,7 @@ mod tests {
             }
         }
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
 
         // Valid profile
         let profile = valid_profile(vec![make_step("a", vec![])]);
@@ -4444,7 +4375,7 @@ mod tests {
         let mut profile = valid_profile(vec![with_file, without_file]);
         profile.project_root = Some(dir.to_string_lossy().into_owned());
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let run = orchestrator.create_run(profile).unwrap();
         let by_id = |id: &str| run.steps.iter().find(|s| s.step_id == id).unwrap();
         assert_eq!(by_id("compose_ok").status, StepStatus::Pending);
@@ -5155,7 +5086,7 @@ mod tests {
             }
         }
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let profile = valid_profile(vec![make_step("a", vec![])]);
         let run = orchestrator.create_run(profile).unwrap();
 
@@ -5268,7 +5199,7 @@ mod tests {
             }
         }
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let profile = valid_profile(vec![make_step("a", vec![])]);
         let run = orchestrator.create_run(profile).unwrap();
 
@@ -5384,7 +5315,7 @@ mod tests {
             }
         }
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let profile = valid_profile(vec![make_step("a", vec![])]);
         let run = orchestrator.create_run(profile).unwrap();
 
@@ -5823,7 +5754,7 @@ mod tests {
             make_step("step-2", vec!["step-1"]),
         ]);
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let run = orchestrator.create_run(profile).unwrap();
 
         // Run ID should be a valid UUID
@@ -5938,7 +5869,7 @@ mod tests {
             }
         }
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let profile = valid_profile(vec![make_step("a", vec![])]);
         let run = orchestrator.create_run(profile).unwrap();
 
@@ -6238,7 +6169,7 @@ mod tests {
             extra: Map::new(),
         };
 
-        let orchestrator = RunOrchestrator::new(Arc::new(MockPM), test_docker_auth());
+        let orchestrator = RunOrchestrator::new(Arc::new(MockPM));
         let run = orchestrator.create_run(profile).unwrap();
         assert_eq!(run.steps[0].retries_remaining, Some(3));
     }
