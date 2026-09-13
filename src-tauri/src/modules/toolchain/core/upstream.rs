@@ -387,14 +387,18 @@ async fn resolve_ziglang() -> Result<ResolvedVersion, String> {
 // --- HashiCorp: releases.hashicorp.com/<product>/index.json ---------
 
 /// Парсит index.json HashiCorp: `{"name": ..., "versions": {v: {builds: [...]}}}`.
-/// Возвращает (версия, url, filename) первого стабильного windows/amd64 релиза
-/// (индекс отсортирован по убыванию версий).
-fn parse_hashicorp_index(body: &str, _product: &str) -> Option<(String, String, String)> {
-    let json: Value = serde_json::from_str(body).ok()?;
-    let versions = json.get("versions")?.as_object()?;
-    // Индекс НЕ отсортирован гарантированно (мы видим порядок вставки
-    // 0.1.0 → 1.16.0): выбираем МАКСИМАЛЬНУЮ стабильную версию.
-    let mut best: Option<(Vec<u32>, String, String, String)> = None;
+/// Возвращает ВСЕ стабильные windows/amd64 релизы, отсортированные по
+/// убыванию версии (первый — самый свежий). Индекс НЕ отсортирован
+/// гарантированно (порядок вставки 0.1.0 → 1.16.0), поэтому сортировка
+/// числовая, а не лексикографическая.
+fn parse_hashicorp_candidates(body: &str) -> Vec<(String, String, String)> {
+    let Ok(json) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(versions) = json.get("versions").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<(Vec<u32>, String, String, String)> = Vec::new();
     for version in versions.keys() {
         if version.contains('-') || version::parse_version(version).is_err() {
             continue; // пре-релизы (rc/beta/alpha/dev) пропускаются
@@ -423,15 +427,45 @@ fn parse_hashicorp_index(body: &str, _product: &str) -> Option<(String, String, 
         if !url.starts_with("https://") {
             continue;
         }
-        let parsed = version::parse_version(version).unwrap_or_default();
-        if best
-            .as_ref()
-            .is_none_or(|(best_parsed, _, _, _)| version::compare(&parsed, best_parsed) == std::cmp::Ordering::Greater)
-        {
-            best = Some((parsed, version.to_string(), url.to_string(), filename.to_string()));
-        }
+        candidates.push((
+            version::parse_version(version).unwrap_or_default(),
+            version.to_string(),
+            url.to_string(),
+            filename.to_string(),
+        ));
     }
-    best.map(|(_, version, url, filename)| (version, url, filename))
+    candidates.sort_by(|a, b| version::compare(&b.0, &a.0));
+    candidates
+        .into_iter()
+        .map(|(_, version, url, filename)| (version, url, filename))
+        .collect()
+}
+
+/// Совместимая обёртка для тестов: самый свежий стабильный
+/// windows/amd64 релиз.
+#[cfg(test)]
+fn parse_hashicorp_index(body: &str, _product: &str) -> Option<(String, String, String)> {
+    parse_hashicorp_candidates(body).into_iter().next()
+}
+
+/// HEAD-проверка доступности URL: HashiCorp удаляет артефакты старых
+/// релизов, и index.json может перечислять версию, чьи бинари уже
+/// отдаются 404 (или релиз был отозван). Возвращает true только на 2xx.
+async fn http_head_ok(url: &str) -> bool {
+    use tokio::process::Command as TokioCommand;
+    use tokio::time::timeout;
+
+    let null_device = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+    let mut cmd = TokioCommand::new("curl");
+    cmd.args(["-fsSIL", "--max-time", "20", "-o", null_device, "--", url]);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console_async(&mut cmd);
+    matches!(
+        timeout(HTTP_TIMEOUT + Duration::from_secs(5), cmd.status()).await,
+        Ok(Ok(st)) if st.success()
+    )
 }
 
 /// SHA-256 из отдельного файла SHA256SUMS релиза HashiCorp
@@ -444,17 +478,40 @@ async fn hashicorp_sha256(product: &str, version: &str, filename: &str) -> Optio
     line.split_whitespace().next().map(str::to_string)
 }
 
+/// Резолвер HashiCorp: берёт список стабильных windows/amd64 релизов по
+/// убыванию и выбирает ПЕРВЫЙ, чей артефакт реально доступен (HEAD 2xx).
+/// Защита от «фантомных» версий в index.json: HashiCorp удаляет бинари
+/// отозванных/старых релизов, и новейшая версия может отдаваться 404
+/// (именно так выглядел сбой terraform 1.16.2: версия в индексе была,
+/// файла на CDN — нет).
 async fn resolve_hashicorp(product: &str) -> Result<ResolvedVersion, String> {
     let url = format!("https://releases.hashicorp.com/{product}/index.json");
     let body = http_get(&url).await?;
-    let (version, url, filename) = parse_hashicorp_index(&body, product)
-        .ok_or_else(|| format!("index.json {product}: стабильный windows/amd64 релиз не найден"))?;
-    let sha256 = hashicorp_sha256(product, &version, &filename).await;
-    Ok(ResolvedVersion {
-        version,
-        url: Some(url),
-        sha256,
-    })
+    let candidates = parse_hashicorp_candidates(&body);
+    if candidates.is_empty() {
+        return Err(format!(
+            "index.json {product}: стабильный windows/amd64 релиз не найден"
+        ));
+    }
+    for (version, candidate_url, filename) in candidates.iter().take(8) {
+        if http_head_ok(candidate_url).await {
+            let sha256 = hashicorp_sha256(product, version, filename).await;
+            return Ok(ResolvedVersion {
+                version: version.clone(),
+                url: Some(candidate_url.clone()),
+                sha256,
+            });
+        }
+        log::debug!(
+            "[toolchain] hashicorp {product} {version}: артефакт недоступен (HEAD не 2xx) — пробую предыдущий"
+        );
+    }
+    // Все проверенные версии недоступны: честная ошибка, caller откатится
+    // на статичный URL каталога (тоже может быть 404 — но хотя бы понятно,
+    // что проблема у апстрима, а не в установщике).
+    Err(format!(
+        "index.json {product}: ни один из последних стабильных релизов не доступен на CDN (404)"
+    ))
 }
 
 // --- GitHub: api.github.com/repos/<repo>/releases/latest -------------
@@ -979,6 +1036,38 @@ mod tests {
         assert_eq!(version, "1.16.0");
         assert_eq!(url, "https://win-url");
         assert_eq!(filename, "w.zip");
+    }
+
+    #[test]
+    fn hashicorp_candidates_are_sorted_descending() {
+        // Индекс не отсортирован (порядок вставки 0.1.0 → 1.16.2):
+        // кандидаты обязаны идти по убыванию числовой версии — резолвер
+        // выбирает первого «живого», т.е. САМЫЙ свежий доступный релиз.
+        let body = r#"{
+            "versions": {
+                "1.9.9": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://x/1.9.9", "filename": "a.zip"}]},
+                "1.16.2": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://x/1.16.2", "filename": "b.zip"}]},
+                "1.10.1": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://x/1.10.1", "filename": "c.zip"}]},
+                "1.16.1": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://x/1.16.1", "filename": "d.zip"}]}
+            }
+        }"#;
+        let candidates = parse_hashicorp_candidates(body);
+        let versions: Vec<&str> = candidates.iter().map(|(v, _, _)| v.as_str()).collect();
+        assert_eq!(versions, vec!["1.16.2", "1.16.1", "1.10.1", "1.9.9"]);
+    }
+
+    #[test]
+    fn hashicorp_candidates_skip_prereleases_and_non_windows() {
+        let body = r#"{
+            "versions": {
+                "1.17.0-rc1": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://rc", "filename": "rc.zip"}]},
+                "1.16.3": {"builds": [{"os": "linux", "arch": "amd64", "url": "https://linux", "filename": "l.zip"}]},
+                "1.16.2": {"builds": [{"os": "windows", "arch": "amd64", "url": "https://win", "filename": "w.zip"}]}
+            }
+        }"#;
+        let candidates = parse_hashicorp_candidates(body);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "1.16.2");
     }
 
     #[test]

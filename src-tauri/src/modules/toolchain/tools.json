@@ -1315,7 +1315,7 @@
       "windows": [
         {
           "kind": "PkgManager",
-          "id": "Microsoft.DotNet.SDK.8",
+          "id": "Microsoft.DotNet.SDK.10",
           "args": [
             "--silent",
             "--accept-package-agreements",
@@ -1342,7 +1342,7 @@
       "linux": [
         {
           "kind": "PkgManager",
-          "id": "dotnet-sdk-8.0",
+          "id": "dotnet-sdk-10.0",
           "args": [],
           "extra_args": [],
           "dynamic_args": false
@@ -1410,6 +1410,21 @@
           ],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dotnet-global-8",
+          "url": "dotnet",
+          "args": [
+            "tool",
+            "install",
+            "-g",
+            "csharprepl",
+            "--version",
+            "0.6.7"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
         }
       ],
       "linux": [
@@ -1425,6 +1440,21 @@
           ],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dotnet-global-8",
+          "url": "dotnet",
+          "args": [
+            "tool",
+            "install",
+            "-g",
+            "csharprepl",
+            "--version",
+            "0.6.7"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
         }
       ],
       "macos": [
@@ -1437,6 +1467,21 @@
             "install",
             "-g",
             "CSharpRepl"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dotnet-global-8",
+          "url": "dotnet",
+          "args": [
+            "tool",
+            "install",
+            "-g",
+            "csharprepl",
+            "--version",
+            "0.6.7"
           ],
           "extra_args": [],
           "dynamic_args": false
@@ -1571,18 +1616,6 @@
     "sources": {
       "windows": [
         {
-          "kind": "PkgManager",
-          "id": "Zig.Zig",
-          "args": [
-            "--silent",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-            "--disable-interactivity"
-          ],
-          "extra_args": [],
-          "dynamic_args": false
-        },
-        {
           "kind": "Official",
           "id": "zig-zip",
           "url": "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip",
@@ -1594,6 +1627,18 @@
           "extra_args": [],
           "dynamic_args": false,
           "install_dir": "%USERPROFILE%/zig"
+        },
+        {
+          "kind": "PkgManager",
+          "id": "Zig.Zig",
+          "args": [
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
         }
       ],
       "linux": [
@@ -1615,7 +1660,7 @@
         }
       ]
     },
-    "size_mb": 741,
+    "size_mb": 100,
     "needs_admin": false,
     "path_entries": [
       "%USERPROFILE%\\zig\\*"
@@ -1779,7 +1824,7 @@
         }
       ]
     },
-    "size_mb": 741,
+    "size_mb": 40,
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\php",
@@ -1822,20 +1867,6 @@
     "sources": {
       "windows": [
         {
-          "kind": "Official",
-          "id": "composer-setup-exe",
-          "url": "https://getcomposer.org/Composer-Setup.exe",
-          "file_name": "Composer-Setup.exe",
-          "args": [
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART"
-          ],
-          "extra_args": [],
-          "dynamic_args": false,
-          "needs_admin": false
-        },
-        {
           "kind": "Script",
           "id": "composer-installer",
           "url": "https://getcomposer.org/installer",
@@ -1844,6 +1875,20 @@
           "args": [
             "--install-dir=%APPDATA%/Composer",
             "--filename=composer.phar"
+          ],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false
+        },
+        {
+          "kind": "Official",
+          "id": "composer-setup-exe",
+          "url": "https://getcomposer.org/Composer-Setup.exe",
+          "file_name": "Composer-Setup.exe",
+          "args": [
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
           ],
           "extra_args": [],
           "dynamic_args": false,
@@ -2524,6 +2569,11 @@
           "kind": "Official",
           "id": "postgres-edb",
           "url": "https://get.enterprisedb.com/postgresql/postgresql-17.5-1-windows-x64.exe",
+          "url_template": "https://get.enterprisedb.com/postgresql/postgresql-{version}-windows-x64.exe",
+          "version_resolver": {
+            "kind": "winget",
+            "id": "PostgreSQL.PostgreSQL.17"
+          },
           "args": [
             "--mode",
             "unattended",

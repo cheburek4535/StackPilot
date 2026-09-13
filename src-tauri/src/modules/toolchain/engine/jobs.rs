@@ -420,6 +420,17 @@ impl JobEngine {
         self.write_record(&handle.snapshot());
     }
 
+    /// Индекс задачи в плане задания по её task_id (для мостов событий:
+    /// фазы реальной задачи обязаны быть подписаны ЕЁ идентичностью,
+    /// а не нулевой задачи).
+    pub fn task_index(&self, handle: &JobHandle, task_id: &str) -> Option<usize> {
+        let rec = handle.record.lock().expect("job record poisoned");
+        rec.plan
+            .tasks
+            .iter()
+            .position(|t| t.task_id == task_id)
+    }
+
     /// Emits a progress line event for a running task.
     pub fn emit_progress(&self, handle: &JobHandle, task_index: usize, line: String) {
         let (task_id, tool_id) = {

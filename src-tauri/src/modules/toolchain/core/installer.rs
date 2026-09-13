@@ -312,7 +312,14 @@ fn build_install_command(
                             ));
                         };
                         args.push("--override".to_string());
-                        args.push(format!("--superpassword {pw} --password {pw}"));
+                        // winget разбирает значение --override на отдельные
+                        // аргументы (CommandLineToArgvW) и передаёт их
+                        // установщику поодиночке — форма "--superpassword pw"
+                        // доезжает до BitRock-установщика корректно.
+                        // ОПЦИИ --password в современных EDB-инсталляторах
+                        // НЕТ: только --superpassword (раньше её наличие
+                        // валило установку: «Unknown option: --password»).
+                        args.push(format!("--superpassword {pw}"));
                     }
 
                     args.extend(source.extra_args.iter().cloned());
@@ -389,8 +396,13 @@ fn build_install_command(
             let mut dynamic = Vec::new();
             if source.dynamic_args {
                 if let Some(pw) = password {
-                    dynamic.push(format!("--superpassword {pw}"));
-                    dynamic.push(format!("--password {pw}"));
+                    // Прямой запуск установщика: аргументы — отдельные элементы
+                    // argv. Склейка "--superpassword pw" в ОДНУ строку с пробелом
+                    // ломает BitRock-установщик EDB («Unknown option:
+                    // --superpassword <pw>»). Опция --password в современных
+                    // EDB-инсталляторах не существует — только --superpassword.
+                    dynamic.push("--superpassword".to_string());
+                    dynamic.push(pw.to_string());
                 }
             }
 
@@ -404,7 +416,7 @@ fn build_install_command(
                     let mut php_args = vec![path.to_string_lossy().into_owned()];
                     php_args.extend(source.args.iter().map(|a| path_service::expand_env_vars(a)));
                     Ok(InstallCommand {
-                        program: "php".to_string(),
+                        program: php_program(),
                         args: php_args,
                     })
                 }
@@ -698,6 +710,13 @@ pub async fn execute_plan(
     let total = plan.tasks.len();
     let mut secrets = HashMap::new();
 
+    // Снимок реестра временных файлов ДО собственного окна исполнения:
+    // уборка в конце затронет только файлы, созданные ЭТИМ вызовом
+    // (движок запускает execute_plan на каждую задачу, и глобальный
+    // drain после одной задачи не должен задевать файлы других задач
+    // или перекрывающихся выполнений).
+    let temp_snapshot = console::temp_registry_len();
+
     for (i, task) in plan.tasks.iter_mut().enumerate() {
         let tool_id = task.tool_id.clone();
         let task_id = task.task_id.clone();
@@ -766,8 +785,9 @@ pub async fn execute_plan(
         session_id,
     ));
 
-    // Уборка временных артефактов задания — на любом исходе.
-    console::cleanup_tracked_temp_files();
+    // Уборка временных артефактов задания — на любом исходе. Только
+    // файлы собственного окна исполнения (см. temp_snapshot выше).
+    console::cleanup_tracked_temp_files_since(temp_snapshot);
 
     secrets
 }
@@ -1066,6 +1086,24 @@ fn php_dir_for_composer() -> Option<PathBuf> {
         return path.parent().map(Path::to_path_buf);
     }
     None
+}
+
+/// Исполняемый файл PHP для phar-источников: полный путь к реальному
+/// php.exe из известных каталогов установки или из PATH. Голое имя
+/// «php» остаётся только когда PHP вообще не найден — тогда команда
+/// упадёт с понятной ошибкой запуска, а не молчаливым os error 2.
+fn php_program() -> String {
+    if let Some(dir) = php_dir_for_composer() {
+        let exe = dir.join(if cfg!(target_os = "windows") {
+            "php.exe"
+        } else {
+            "php"
+        });
+        if exe.is_file() {
+            return exe.to_string_lossy().into_owned();
+        }
+    }
+    "php".to_string()
 }
 
 /// Приводит строку php.ini к каноническому виду обязательной директивы.
@@ -1526,6 +1564,15 @@ async fn try_install_source(
                 {
                     let _ = std::fs::remove_file(&dest);
                     return Err(e);
+                }
+                // Граница доверия: скрипт скачивания завершился успешно, но
+                // файл мог исчезнуть или оказаться пустым (антивирус с
+                // real-time-сканированием, внешняя очистка %TEMP%). Без этой
+                // проверки запуск установщика дал бы поздний «os error 2»
+                // / «Could not open input file» без честной причины.
+                if let Err(e) = console::verify_downloaded_file(&dest) {
+                    let _ = std::fs::remove_file(&dest);
+                    return Err(format!("Скачивание {url}: {e}"));
                 }
                 offline_path = Some(dest.clone());
                 // У URL без расширения (API-редиректы: Adoptium и т.п.) и без
@@ -2181,10 +2228,18 @@ mod tests {
         assert!(source.dynamic_args, "каталог починили?");
         let cmd = build_install_command(&pg, source, None, Some("0123456789abcdef")).unwrap();
         assert!(cmd.args.iter().any(|a| a == "--override"));
+        // winget разбирает значение --override на отдельные аргументы;
+        // пароль без пробелов (алфавит CSPRNG) — форма безопасна.
         assert!(cmd
             .args
             .iter()
-            .any(|a| a.contains("--superpassword 0123456789abcdef")));
+            .any(|a| a == "--superpassword 0123456789abcdef"));
+        // --password в современных EDB-инсталляторах не существует.
+        assert!(
+            !cmd.args.iter().any(|a| a.contains("--password")),
+            "опция --password не должна уезжать в команду: {:?}",
+            cmd.args
+        );
     }
 
     #[test]
@@ -2307,7 +2362,18 @@ mod tests {
         };
         let phar = std::env::temp_dir().join("tc-tool-composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
-        assert_eq!(cmd.program, "php", "phar обязан идти через php");
+        // php_program(): полный путь к реальному php.exe (если найден)
+        // или голое «php» — в обоих случаях это php.
+        let base = Path::new(&cmd.program)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&cmd.program)
+            .to_ascii_lowercase();
+        assert!(
+            base == "php" || base == "php.exe",
+            "phar обязан идти через php: {}",
+            cmd.program
+        );
         assert_eq!(cmd.args[0], phar.to_string_lossy());
         assert!(cmd.args.iter().any(|a| a == "--quiet"));
     }
@@ -2336,7 +2402,16 @@ mod tests {
         };
         let phar = std::env::temp_dir().join("composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
-        assert_eq!(cmd.program, "php");
+        let base = Path::new(&cmd.program)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&cmd.program)
+            .to_ascii_lowercase();
+        assert!(
+            base == "php" || base == "php.exe",
+            "phar обязан идти через php: {}",
+            cmd.program
+        );
         assert!(
             !cmd.args.iter().any(|a| a.contains("%APPDATA%")),
             "%APPDATA% должен быть раскрыт: {:?}",

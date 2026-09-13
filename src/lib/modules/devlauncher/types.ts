@@ -183,6 +183,21 @@ export function profileHasDockerSteps(profile: LaunchProfileV2 | null | undefine
 }
 
 // ---------------------------------------------------------------------------
+// WSL readiness state (backend `devl_get_wsl_state`)
+// ---------------------------------------------------------------------------
+
+/** Session-cached WSL state used to decide whether Docker needs an install
+ *  dialog (Docker on Windows requires WSL2). */
+export type WslState = {
+  /** `wsl.exe` resolves and responds — WSL is available on this machine. */
+  present: boolean;
+  /** The default WSL version is 2 (Docker requires WSL2). */
+  wsl2Default: boolean;
+  /** Human-readable probe summary. */
+  message: string;
+};
+
+// ---------------------------------------------------------------------------
 // Analysis draft types (backend `analyze_project_v2` output)
 // ---------------------------------------------------------------------------
 

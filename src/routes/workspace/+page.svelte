@@ -38,6 +38,8 @@
     startFileWatcher,
     stopFileWatcher,
     getDockerAuthState,
+    getWslState,
+    installWsl,
   } from "$lib/modules/devlauncher/api";
   import type {
     LaunchProfile,
@@ -45,6 +47,7 @@
     LaunchRun,
     ActionStatus,
     DockerAuthState,
+    WslState,
   } from "$lib/modules/devlauncher/types";
   import {
     isV2Profile,
@@ -53,6 +56,7 @@
     stepStatusClass,
     profileHasDockerSteps,
   } from "$lib/modules/devlauncher/types";
+  import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
@@ -98,6 +102,16 @@
   /** Whether the most recent launch was a V2 profile with docker steps. */
   let launchedHasDocker = $state(false);
 
+  // ---- WSL readiness (Docker on Windows requires WSL2) ----
+  let wslState = $state<WslState | null>(null);
+  let showWslModal = $state(false);
+  /** Modal phase: "confirm" → install warning; "installing" → spinner;
+   *  "failed" → error; "reboot" → "готово — перезагрузите ПК". */
+  let wslPhase = $state<"confirm" | "installing" | "failed" | "reboot">("confirm");
+  let wslStage = $state("");
+  let wslError = $state("");
+  let wslUnlisten: (() => void) | null = null;
+
   /** Load the persistent docker authorization state once per relevant event. */
   async function refreshDockerAuth() {
     try {
@@ -107,6 +121,64 @@
     }
   }
 
+  /** Load the session-cached WSL state (cheap after the first call). */
+  async function refreshWsl() {
+    try {
+      wslState = await getWslState();
+    } catch {
+      wslState = null;
+    }
+  }
+
+  /** Run the WSL install with live stage display; on success the modal
+   *  morphs into the "ready — reboot your PC" dialog. */
+  async function runWslInstall() {
+    wslPhase = "installing";
+    wslStage = "";
+    wslError = "";
+    wslUnlisten?.();
+    wslUnlisten = null;
+    try {
+      wslUnlisten = await subscribeWslInstallProgress((stage) => {
+        wslStage = stage;
+      });
+    } catch {
+      wslUnlisten = null;
+    }
+    try {
+      await installWsl();
+      wslUnlisten?.();
+      wslUnlisten = null;
+      await refreshWsl();
+      wslPhase = "reboot";
+    } catch (e) {
+      wslUnlisten?.();
+      wslUnlisten = null;
+      wslError = String(e);
+      wslPhase = "failed";
+    }
+  }
+
+  /** Open the WSL install dialog (used by the pre-flight gate and by the
+   *  always-available "Download WSL" button). */
+  function openWslInstall() {
+    wslPhase = "confirm";
+    wslStage = "";
+    wslError = "";
+    showWslModal = true;
+  }
+
+  /** Close the WSL dialog, keeping the state for later installs. */
+  function closeWslInstall() {
+    showWslModal = false;
+    wslUnlisten?.();
+    wslUnlisten = null;
+  }
+
+  /** Docker steps exist but WSL (their Windows backend) is not installed.
+   *  When true the launch is blocked behind the WSL install dialog instead. */
+  const wslMissing = $derived(!!launchedHasDocker && !!wslState && !wslState.present);
+
   /** Watch the active run: on failure of a docker profile while auth is
    *  unconfirmed, surface the "authorize in Docker Desktop and try again"
    *  callout; refresh auth after every terminal docker run (a successful
@@ -114,7 +186,9 @@
   $effect(() => {
     const status = activeRun?.status;
     if (launchedHasDocker && !!status && isRunTerminal(status)) {
-      if (status === "failed" && dockerAuth?.confirmed === false) {
+      // WSL missing gets its own install dialog; the auth callout would only
+      // confuse the user before WSL is installed.
+      if (status === "failed" && dockerAuth?.confirmed === false && !wslMissing) {
         if (!dockerAuthCalloutDismissed) dockerAuthCallout = true;
       } else {
         dockerAuthCallout = false;
@@ -159,12 +233,15 @@
       }
     }
     void refreshDockerAuth();
+    void refreshWsl();
   });
 
   onDestroy(() => {
     stopPolling();
     unsubscribeStore?.();
     unsubscribeStore = null;
+    wslUnlisten?.();
+    wslUnlisten = null;
     runStore.destroy();
     if (watching) {
       stopFileWatcher().catch(() => {});
@@ -234,14 +311,25 @@
     if (launching) return;
     launchedHasDocker = false;
 
-    // Docker first-run pre-flight: before the FIRST docker launch (auth still
-    // unconfirmed and Docker installed by StackPilot), warn the user to
-    // authorize in Docker Desktop. "Continue" bypasses the warning only for
-    // that launch — the backend confirms the flag when a docker step succeeds.
-    if (!force && isV2Profile(profile) && profile.id && profile.schema_version) {
+    if (isV2Profile(profile) && profile.id && profile.schema_version) {
       const v2Profile = profile as unknown as LaunchProfileV2;
       launchedHasDocker = profileHasDockerSteps(v2Profile);
+
+      // WSL pre-flight: Docker on Windows needs WSL2, and when WSL is not
+      // installed the launch can't proceed (Docker Desktop would hang on its
+      // own interactive install prompt). Block behind the install dialog;
+      // only a real install + reboot makes WSL present.
+      if (!force && launchedHasDocker && wslMissing) {
+        openWslInstall();
+        return;
+      }
+
+      // Docker first-run pre-flight: before the FIRST docker launch (auth
+      // still unconfirmed and Docker installed by StackPilot), warn the user
+      // to authorize in Docker Desktop. "Continue" bypasses the warning only
+      // for that launch — the backend confirms the flag on docker success.
       if (
+        !force &&
         launchedHasDocker &&
         dockerAuth &&
         !dockerAuth.confirmed &&
@@ -999,6 +1087,86 @@
   </div>
 {/if}
 
+{#if showWslModal}
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div class="docker-auth-modal-overlay" onclick={closeWslInstall} role="presentation">
+    <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
+    <div
+      class="docker-auth-modal-content"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="WSL install"
+    >
+      <div class="docker-auth-modal-header">
+        {#if wslPhase === "reboot"}
+          <span>{i18n.t("devl.wsl_reboot_title") as TranslationKey}</span>
+        {:else if wslPhase === "installing"}
+          <span>{i18n.t("devl.wsl_installing_title") as TranslationKey}</span>
+        {:else if wslPhase === "failed"}
+          <span>{i18n.t("devl.wsl_install_failed") as TranslationKey}</span>
+        {:else}
+          <span>{i18n.t("devl.wsl_missing_title") as TranslationKey}</span>
+        {/if}
+        {#if wslPhase !== "installing"}
+          <button class="docker-auth-modal-close" onclick={closeWslInstall}>✕</button>
+        {/if}
+      </div>
+      <div class="docker-auth-modal-body">
+        {#if wslPhase === "confirm"}
+          <p>{i18n.t("devl.wsl_missing_why") as TranslationKey}</p>
+          <p>{i18n.t("devl.wsl_not_installed") as TranslationKey}</p>
+          <div class="docker-auth-modal-actions">
+            <Button variant="ghost" size="sm" onclick={closeWslInstall}>
+              {i18n.t("devl.wsl_install_skip") as TranslationKey}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onclick={() => {
+                void runWslInstall();
+              }}
+            >
+              {i18n.t("devl.wsl_install_action") as TranslationKey}
+            </Button>
+          </div>
+        {:else if wslPhase === "installing"}
+          <div class="wsl-installing">
+            <span class="wsl-spinner" aria-hidden="true"></span>
+            <p>{wslStage || (i18n.t("devl.wsl_installing_stage") as TranslationKey)}</p>
+          </div>
+        {:else if wslPhase === "failed"}
+          <p class="wsl-error">{wslError}</p>
+          <div class="docker-auth-modal-actions">
+            <Button variant="ghost" size="sm" onclick={closeWslInstall}>
+              {i18n.t("devl.docker_auth_cancel") as TranslationKey}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onclick={() => {
+                void runWslInstall();
+              }}
+            >
+              {i18n.t("devl.docker_auth_try_again") as TranslationKey}
+            </Button>
+          </div>
+        {:else}
+          <p>{i18n.t("devl.wsl_reboot_body") as TranslationKey}</p>
+          <div class="docker-auth-modal-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              onclick={closeWslInstall}
+            >
+              {i18n.t("devl.wsl_reboot_ok") as TranslationKey}
+            </Button>
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .sp-empty-wrap {
     margin: var(--sp-4) 0;
@@ -1661,4 +1829,22 @@
   .docker-auth-modal-actions {
     display: flex; justify-content: flex-end; gap: var(--sp-2);
   }
+
+  /* WSL install modal */
+  .wsl-installing {
+    display: flex; align-items: center; gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .wsl-installing p { margin: 0; }
+  .wsl-spinner {
+    width: 1rem; height: 1rem; flex: none;
+    border: 2px solid var(--sp-border);
+    border-top-color: var(--sp-primary);
+    border-radius: 50%;
+    animation: wsl-spin 0.8s linear infinite;
+  }
+  @keyframes wsl-spin {
+    to { transform: rotate(360deg); }
+  }
+  .wsl-error { color: var(--sp-danger); }
 </style>

@@ -10,6 +10,7 @@ import type {
   StepLogs,
   DraftProfile,
   DockerAuthState,
+  WslState,
 } from "./types";
 import type { WizardContext } from "$lib/modules/project_creator/types";
 
@@ -197,4 +198,21 @@ export async function getDockerAuthState(): Promise<DockerAuthState> {
 /** Explicitly set the Docker authorization flag (advanced/reset use). */
 export async function setDockerAuthConfirmed(confirmed: boolean): Promise<void> {
   return invoke("devl_set_docker_auth_confirmed", { confirmed });
+}
+
+// ---------------------------------------------------------------------------
+// WSL readiness state + install (backend `devl_get_wsl_state` / `devl_wsl_install`)
+// ---------------------------------------------------------------------------
+
+/** Session-cached WSL state. `present=false` means Docker (WSL2 backend)
+ *  cannot run until WSL is installed and the PC rebooted. */
+export async function getWslState(): Promise<WslState> {
+  return invoke("devl_get_wsl_state");
+}
+
+/** Install WSL from scratch + pin default version to 2. Long-running; the
+ *  backend streams stages on `devlauncher:wsl-install-progress` (see the
+ *  `subscribeWslInstallProgress` helper). Resolves to the reboot message. */
+export async function installWsl(): Promise<string> {
+  return invoke("devl_wsl_install");
 }

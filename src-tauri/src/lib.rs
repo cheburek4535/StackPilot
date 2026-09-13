@@ -198,6 +198,9 @@ pub fn run() {
             // V2 Docker first-run authorization state
             modules::devlauncher::commands::devl_get_docker_auth_state,
             modules::devlauncher::commands::devl_set_docker_auth_confirmed,
+            // V2 WSL readiness (docker backend) state + install
+            modules::devlauncher::commands::devl_get_wsl_state,
+            modules::devlauncher::commands::devl_wsl_install,
             // Platform integration commands
             modules::devlauncher::commands::detect_project_profile,
             modules::devlauncher::commands::get_platform_capabilities,

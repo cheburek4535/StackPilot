@@ -9,6 +9,7 @@ use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::WorkspaceState;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tauri::Emitter;
 use tauri::State;
 
 #[tauri::command]
@@ -1016,4 +1017,29 @@ pub fn devl_set_docker_auth_confirmed(
 ) -> Result<(), String> {
     state.docker_auth.set_confirmed(confirmed);
     Ok(())
+}
+
+/// Pre-launch WSL state (present / default version 2). Session-cached on the
+/// backend, so repeat UI polls stay cheap. Used to decide whether the docker
+/// pre-flight shows the "install WSL" dialog instead of launching.
+#[tauri::command]
+pub fn devl_get_wsl_state() -> Result<crate::platform::wsl::WslStateView, String> {
+    Ok(crate::platform::wsl::health())
+}
+
+/// Install WSL from scratch (`wsl --install --no-distribution`) and pin the
+/// default version to 2. Long-running: while it works, stage strings are
+/// emitted on `devlauncher:wsl-install-progress` for the install dialog.
+/// Returns a message for the follow-up "reboot your PC" dialog on success.
+#[tauri::command]
+pub async fn devl_wsl_install(app: tauri::AppHandle) -> Result<String, String> {
+    let emit = {
+        let app = app.clone();
+        move |stage: &str| {
+            let _ = app.emit("devlauncher:wsl-install-progress", stage.to_string());
+        }
+    };
+    tokio::task::spawn_blocking(move || crate::platform::wsl::install(emit))
+        .await
+        .map_err(|e| format!("WSL install task failed: {e}"))?
 }

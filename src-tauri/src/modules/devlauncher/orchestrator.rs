@@ -2253,31 +2253,47 @@ impl RunOrchestrator {
     // Wait for Docker daemon
     // -----------------------------------------------------------------------
 
-    /// Surface the WSL readiness outcome as a run diagnostic. Stays quiet
-    /// when nothing happened (up to date, not on Windows) and only speaks
-    /// up when Docker's start could actually be affected.
-    fn emit_wsl_ensure_diag(
+    /// Surface the WSL readiness outcome as a run diagnostic and decide
+    /// whether the docker wait must fail. WSL missing is a hard stop: the
+    /// approach is *interactive* (install + reboot), so auto-launching Docker
+    /// Desktop would just hang on WSL's own install prompt. Returns
+    /// `Some(StepCompletion)` (already failed) when the step must not start.
+    fn wsl_ensure_step_failure(
         run_id: &str,
         step_id: &str,
         outcome: Result<crate::platform::wsl::WslEnsureOutcome, tokio::task::JoinError>,
         app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
-    ) {
-        let (severity, message) = match outcome {
+    ) -> Option<StepCompletion> {
+        let (failure, severity, message): (
+            Option<String>,
+            DiagnosticSeverity,
+            String,
+        ) = match outcome {
             Ok(
                 crate::platform::wsl::WslEnsureOutcome::NotApplicable
                 | crate::platform::wsl::WslEnsureOutcome::AlreadyCurrent,
-            ) => return,
+            ) => return None,
             Ok(crate::platform::wsl::WslEnsureOutcome::Missing) => (
-                DiagnosticSeverity::Info,
-                "wsl.exe is not available; Docker Desktop will install \
-                 Windows Subsystem for Linux on first start"
+                Some(
+                    "Для этого проекта нужен Docker, а Docker на Windows \
+                     использует WSL 2, который на этом ПК не установлен. \
+                     Нажмите «Скачать WSL» и перезагрузите компьютер, \
+                     затем запустите профиль заново."
+                        .to_string(),
+                ),
+                DiagnosticSeverity::Error,
+                "wsl.exe is not available; Windows Subsystem for Linux must \
+                 be installed before Docker can start"
                     .to_string(),
             ),
             Ok(crate::platform::wsl::WslEnsureOutcome::Updated) => (
+                None,
                 DiagnosticSeverity::Info,
-                "WSL2 updated to the latest version before starting Docker".to_string(),
+                "WSL2 updated to the latest version before starting Docker"
+                    .to_string(),
             ),
             Ok(crate::platform::wsl::WslEnsureOutcome::Failed(detail)) => (
+                None,
                 DiagnosticSeverity::Warning,
                 format!(
                     "WSL update failed; Docker Desktop may show its own \
@@ -2285,6 +2301,7 @@ impl RunOrchestrator {
                 ),
             ),
             Err(join) => (
+                None,
                 DiagnosticSeverity::Warning,
                 format!("WSL readiness check did not complete: {join}"),
             ),
@@ -2297,6 +2314,13 @@ impl RunOrchestrator {
             message,
             app_handle,
         );
+        failure.map(|error| StepCompletion {
+            step_id: step_id.to_string(),
+            success: false,
+            error: Some(error),
+            process_id: None,
+            attempt_number: 0,
+        })
     }
 
     async fn wait_for_docker_daemon(
@@ -2330,13 +2354,19 @@ impl RunOrchestrator {
             // interactive console gate ("wsl.exe --update / press any key /
             // 60s timeout"). Without human intervention the daemon never comes
             // up inside the step timeout. We run the same update proactively
-            // so the blocker never appears. `wsl.exe --update` is idempotent.
-            Self::emit_wsl_ensure_diag(
+// so the blocker never appears. `wsl.exe --update` is idempotent.
+            // When WSL is entirely missing, the wait must not auto-launch
+            // Docker (it would just hang on the interactive install prompt):
+            // fail now so the UI can offer the WSL install dialog.
+            if let Some(failure) = Self::wsl_ensure_step_failure(
                 run_id,
                 step_id,
-                tokio::task::spawn_blocking(crate::platform::wsl::ensure_ready_before_docker).await,
+                tokio::task::spawn_blocking(crate::platform::wsl::ensure_ready_before_docker)
+                    .await,
                 app_handle,
-            );
+            ) {
+                return failure;
+            }
         }
 
         let check = crate::platform::docker_service::DockerReadinessCheck {

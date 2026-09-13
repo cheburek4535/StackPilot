@@ -112,6 +112,31 @@ pub fn cleanup_tracked_temp_files() {
     }
 }
 
+/// Снимок длины реестра временных файлов. Используется вместе с
+/// cleanup_tracked_temp_files_since для уборки ТОЛЬКО файлов,
+/// зарегистрированных в собственном окне исполнения: движок вызывает
+/// execute_plan на каждую задачу, и глобальный drain после одной задачи
+/// не должен задевать файлы другой (перекрывающиеся окна/будущие
+/// параллельные задания).
+pub fn temp_registry_len() -> usize {
+    TEMP_REGISTRY
+        .lock()
+        .map(|reg| reg.len())
+        .unwrap_or(0)
+}
+
+/// Убирает только временные файлы, зарегистрированные ПОСЛЕ снимка
+/// (см. temp_registry_len). Файлы, созданные до снимка, не трогаются.
+pub fn cleanup_tracked_temp_files_since(snapshot: usize) {
+    if let Ok(mut reg) = TEMP_REGISTRY.lock() {
+        while reg.len() > snapshot {
+            if let Some(path) = reg.pop() {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 /// Возраст, после которого осиротевшие временные файлы считаются мусором.
 /// Крэш/убийство процесса посреди установки не может вызвать
 /// cleanup_tracked_temp_files — зачистка переживает перезапуск здесь.
@@ -413,9 +438,17 @@ pub fn ps_quote(value: &str) -> String {
 // Скачивание с прогрессом
 // ------------------------------------------------------------
 
-/// Лимит на скачивание одного установщика (30 минут) — защита от
-/// зависшего сервера; большие инсталляторы (MSVC) в него укладываются.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Лимит на скачивание одного установщика (2 часа) — защита от
+/// зависшего сервера. Большие инсталляторы на медленных каналах
+/// (97 МБ zig на 50 КБ/с ≈ 33 мин) в него укладываются; настоящие
+/// зависания отсекает stall-guard в PS-скрипте (нет данных N секунд).
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120 * 60);
+
+/// Максимальная пауза без единого байта данных при скачивании:
+/// «живой», но медленный канал продолжает получать куски, а зависший
+/// сервер (нет данных минутами) обрывается быстро, не дожидаясь
+/// общего таймаута в 2 часа.
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Жёсткий лимит размера одного скачиваемого установщика (4 ГБ):
 /// самый крупный официальный инсталлятор каталога (MSVC Build Tools,
@@ -468,16 +501,23 @@ pub fn validate_download_url(url: &str) -> Result<(), String> {
 /// редиректы (ограничены), таймаут, прогресс tc:dl и ЖЁСТКИЙ лимит
 /// размера. Вынесен отдельно, чтобы тесты могли проверить инварианты
 /// без сети.
+///
+/// Сталл-гард: чтение идёт через ReadAsync с ожиданием не более
+/// DOWNLOAD_STALL_TIMEOUT — сервер, замолчавший посреди потока, не
+/// держит задание часами (общий таймаут — только страховка сверху).
 fn download_script(url: &str, dest: &Path) -> String {
+    let stall_ms = DOWNLOAD_STALL_TIMEOUT.as_millis() as u64;
+    let timeout_min = DOWNLOAD_TIMEOUT.as_secs() / 60;
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
 $handler = New-Object System.Net.Http.HttpClientHandler
 $handler.MaxAutomaticRedirections = {2}
 $client = New-Object System.Net.Http.HttpClient($handler)
-$client.Timeout = [TimeSpan]::FromMinutes(30)
+$client.Timeout = [TimeSpan]::FromMinutes({5})
 $client.DefaultRequestHeaders.Add('User-Agent', 'StackPilot/0.1 (toolchain installer)')
 $maxBytes = [long]{3}
+$stallMs = [int]{4}
 try {{
     $resp = $client.GetAsync({0}, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
     if (-not $resp.IsSuccessStatusCode) {{
@@ -501,7 +541,14 @@ try {{
     }}
     $lastPct = -1
     try {{
-        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
+        while ($true) {{
+            $task = $stream.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $task.Wait($stallMs)) {{
+                Write-Output "tc:error нет данных от {0} более $stallMs мс — скачивание прервано"
+                exit 1
+            }}
+            $read = $task.Result
+            if ($read -le 0) {{ break }}
             $received += $read
             if ($received -gt $maxBytes) {{
                 Write-Output "tc:error скачивание {0} превысило лимит $maxBytes байт — прервано"
@@ -535,8 +582,35 @@ try {{
         ps_quote(url),
         ps_quote(&dest.to_string_lossy()),
         MAX_REDIRECTS,
-        MAX_DOWNLOAD_BYTES
+        MAX_DOWNLOAD_BYTES,
+        stall_ms,
+        timeout_min
     )
+}
+
+/// Проверяет, что скачанный файл реально существует и не пустой.
+///
+/// Защита от «молчаливого исчезновения»: внешние факторы (антивирус
+/// с real-time-сканированием, очистка %TEMP%) могут удалить файл между
+/// успешным завершением скрипта скачивания и запуском установщика —
+/// без этой проверки пользователь получал бы позднее «os error 2»
+/// / «Could not open input file» вместо честной причины сбоя источника.
+pub fn verify_downloaded_file(path: &Path) -> Result<u64, String> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("Скачанный файл отсутствует ({}): {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "Скачанный путь {} — не файл",
+            path.display()
+        ));
+    }
+    if meta.len() == 0 {
+        return Err(format!(
+            "Скачанный файл {} пустой — источник не отдал данные",
+            path.display()
+        ));
+    }
+    Ok(meta.len())
 }
 
 pub async fn download(
@@ -1180,6 +1254,52 @@ mod tests {
         cleanup_tracked_temp_files();
     }
 
+    /// Снапшот-уборка обязана удалять ТОЛЬКО файлы, зарегистрированные
+    /// после снимка: файлы других задач/перекрывающихся выполнений не
+    /// задеваются (иначе параллельный драйн реестра ломает чужую
+    /// установку — «файл исчез между скачиванием и запуском»).
+    #[test]
+    fn scoped_cleanup_removes_only_files_after_snapshot() {
+        let base = temp_registry_len();
+        let before_file = tracked_temp_file("scoped-before", ".tmp");
+        std::fs::write(&before_file, "x").unwrap();
+        let snap = temp_registry_len();
+        let after_file = tracked_temp_file("scoped-after", ".tmp");
+        std::fs::write(&after_file, "x").unwrap();
+
+        cleanup_tracked_temp_files_since(snap);
+        assert!(
+            !after_file.exists(),
+            "файл, зарегистрированный после снимка, обязан быть убран"
+        );
+        assert!(
+            before_file.exists(),
+            "файл, зарегистрированный до снимка, не трогается"
+        );
+
+        cleanup_tracked_temp_files_since(base);
+        assert!(!before_file.exists());
+        // Реестр после точечной уборки не содержит «хвостов».
+        assert_eq!(temp_registry_len(), base);
+    }
+
+    #[test]
+    fn verify_downloaded_file_checks_existence_and_size() {
+        let p = std::env::temp_dir().join(format!("tc-verify-{}", std::process::id()));
+        assert!(
+            verify_downloaded_file(&p).is_err(),
+            "несуществующий файл — ошибка"
+        );
+        std::fs::write(&p, "").unwrap();
+        assert!(
+            verify_downloaded_file(&p).is_err(),
+            "пустой файл — ошибка (источник не отдал данные)"
+        );
+        std::fs::write(&p, "data").unwrap();
+        assert_eq!(verify_downloaded_file(&p).unwrap(), 4);
+        let _ = std::fs::remove_file(&p);
+    }
+
     /// Крэш посреди установки не может вызвать cleanup_tracked_temp_files:
     /// зачистка осиротевших файлов обязана переживать перезапуск приложения.
     #[test]
@@ -1209,6 +1329,8 @@ mod tests {
     /// Регрессия безопасности: скрипт скачивания обязан нести ЖЁСТКИЙ
     /// лимит размера (бесконечный поток не растёт на диске) и ЯВНЫЙ
     /// предел редиректов (HttpClient по умолчанию разрешает 50).
+    /// Плюс stall-guard: зависший посреди потока сервер не держит
+    /// задание часами — чтение идёт через ReadAsync с лимитом ожидания.
     #[test]
     fn download_script_carries_size_and_redirect_bounds() {
         let script = download_script(
@@ -1230,6 +1352,21 @@ mod tests {
         assert!(
             script.contains(&format!("MaxAutomaticRedirections = {MAX_REDIRECTS}")),
             "явный предел редиректов"
+        );
+        assert!(
+            script.contains("ReadAsync"),
+            "чтение через ReadAsync (stall-guard)"
+        );
+        assert!(
+            script.contains(&format!("$stallMs = [int]{}", DOWNLOAD_STALL_TIMEOUT.as_millis())),
+            "лимит ожидания данных в скрипте"
+        );
+        assert!(
+            script.contains(&format!(
+                "[TimeSpan]::FromMinutes({})",
+                DOWNLOAD_TIMEOUT.as_secs() / 60
+            )),
+            "общий таймаут HTTP-клиента в скрипте"
         );
     }
 }

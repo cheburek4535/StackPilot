@@ -198,10 +198,18 @@ impl RealRunner {
             session_id: ctx.job_id.to_string(),
         };
 
+        // Фазы/прогресс легаси-конвейера подписываются идентичностью
+        // РЕАЛЬНОЙ задачи движка, а не индексом 0: иначе события фазы
+        // (downloading/installing/verifying) задачи N показывались бы
+        // как фазы первой задачи плана.
+        let task_index = self
+            .engine
+            .task_index(&self.handle, &ctx.task.task_id)
+            .unwrap_or(0);
         let bridge: Arc<dyn EventSink> = Arc::new(BridgeSink {
             engine: Arc::clone(&self.engine),
             handle: Arc::clone(&self.handle),
-            index: 0,
+            index: task_index,
         });
 
         let before_user_path = tc_core::path_service::process_path_entries();

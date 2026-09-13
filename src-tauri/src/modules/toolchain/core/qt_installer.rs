@@ -141,10 +141,30 @@ fn version_from_suffix(suffix: &str) -> Option<String> {
     Some(format!("{major}.{minor}.{patch}"))
 }
 
+/// Ветка Qt из tools.json (recommended, например "6.8") в префикс
+/// каталога репозитория (qt6_683 → "68"). recommended может быть
+/// полной версией ("6.8.3") — берутся major+minor. Страховка: "68".
+fn qt_branch_prefix(def: &ToolDefinition) -> String {
+    let recommended = def
+        .versions
+        .recommended
+        .as_deref()
+        .unwrap_or("6.8")
+        .trim()
+        .trim_start_matches('v');
+    let mut parts = recommended.split('.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) if !major.is_empty() && !minor.is_empty() => {
+            format!("{major}{minor}")
+        }
+        _ => "68".to_string(),
+    }
+}
+
 /// Из HTML-листинга каталога desktop/ вытаскивает ссылки вида
 /// qt6_68x/ и возвращает самую свежую: (суффикс, версия).
 /// Возвращает None, если подходящих каталогов нет.
-fn pick_latest_version_dir(listing: &str) -> Option<(String, String)> {
+fn pick_latest_version_dir(listing: &str, branch_prefix: &str) -> Option<(String, String)> {
     let mut best: Option<(u64, String, String)> = None;
     let mut rest = listing;
     while let Some(href_pos) = rest.find("href=\"") {
@@ -161,8 +181,8 @@ fn pick_latest_version_dir(listing: &str) -> Option<(String, String)> {
         let Some(suffix) = dir.strip_prefix("qt6_") else {
             continue;
         };
-        // Берём только ветку 6.8.x (recommended в tools.json).
-        if !suffix.starts_with("68") {
+        // Только нужная ветка (recommended из tools.json, например 6.8.x).
+        if !suffix.starts_with(branch_prefix) {
             continue;
         }
         let Ok(key) = suffix.parse::<u64>() else {
@@ -214,6 +234,86 @@ fn resolve_target(
 // ------------------------------------------------------------
 // Сеть и распаковка
 // ------------------------------------------------------------
+
+/// Официальные зеркала репозитория Qt: download.qt.io отвечает
+/// редиректом на ближайшее зеркало, но в ряде регионов/сетей
+/// недоступен вовсе (долгий connect-timeout). Перебираются в порядке
+/// приоритета после основного URL из tools.json.
+const QT_REPO_MIRRORS: [&str; 4] = [
+    "https://mirrors.ocf.berkeley.edu/qt/online/qtsdkrepository/windows_x86",
+    "https://ftp.fau.de/qtproject/online/qtsdkrepository/windows_x86",
+    "https://mirrors.ustc.edu.cn/qtproject/online/qtsdkrepository/windows_x86",
+    "https://mirrors.tuna.tsinghua.edu.cn/qt/online/qtsdkrepository/windows_x86",
+];
+
+/// Выбирает рабочий репозиторий: основной URL, затем зеркала. Рабочим
+/// считается тот, на котором удалось определить версию ветки. Возвращает
+/// (репозиторий, суффикс каталога, человекочитаемая версия).
+async fn resolve_working_repo(
+    primary: &str,
+    branch_prefix: &str,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: Arc<AtomicBool>,
+) -> Result<(String, String, String), String> {
+    let mut last_err: Option<String> = None;
+    for repo in std::iter::once(primary.to_string()).chain(
+        QT_REPO_MIRRORS
+            .iter()
+            .map(|m| m.to_string()),
+    ) {
+        match resolve_latest_version(
+            &repo,
+            branch_prefix,
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+            sink,
+            Arc::clone(&abort),
+        )
+        .await
+        {
+            Ok((version_dir, qt_version)) => {
+                if repo != primary {
+                    sink.emit(console::event(
+                        ToolchainEventType::TaskProgress {
+                            line: format!("tc:info Репозиторий {repo} доступен — устанавливаю из него"),
+                        },
+                        index,
+                        total,
+                        task_id,
+                        tool_id,
+                        session_id,
+                    ));
+                }
+                return Ok((repo, version_dir, qt_version));
+            }
+            Err(e) => {
+                last_err = Some(e.clone());
+                sink.emit(console::event(
+                    ToolchainEventType::TaskProgress {
+                        line: format!("tc:info Репозиторий Qt {repo} недоступен ({e}) — пробую следующий"),
+                    },
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "Не удалось определить доступную версию Qt {branch_prefix} ни в одном репозитории (включая зеркала): {}",
+        last_err.unwrap_or_default()
+    ))
+}
 
 /// Скачивает небольшой текст (листинг каталога, Updates.xml) во
 /// временный файл и возвращает его содержимое. PowerShell-слой —
@@ -290,7 +390,7 @@ async fn updates_exist(
     let url = format!("{repo}/desktop/{version_dir}/{version_dir}/Updates.xml");
     let dest = console::tracked_temp_file("qt-head", ".txt");
     let script = format!(
-        r#"$code = & curl.exe -s -L -o NUL -w '%{{http_code}}' -I {0}
+        r#"$code = & curl.exe -s -L -m 30 -o NUL -w '%{{http_code}}' -I {0}
 if ($code -eq '200') {{
     [System.IO.File]::WriteAllText({1}, 'ok', [System.Text.Encoding]::UTF8)
     exit 0
@@ -316,10 +416,11 @@ exit 1
     ok
 }
 
-/// Определяет самую свежую версию Qt 6.8 в репозитории.
-/// Возвращает (суффикс каталога, человекочитаемая версия).
+/// Определяет самую свежую версию Qt ветки (branch_prefix: "68" = 6.8.x)
+/// в репозитории. Возвращает (суффикс каталога, человекочитаемая версия).
 async fn resolve_latest_version(
     repo: &str,
+    branch_prefix: &str,
     index: usize,
     total: usize,
     task_id: &str,
@@ -330,6 +431,7 @@ async fn resolve_latest_version(
 ) -> Result<(String, String), String> {
     // Живой листинг каталога desktop/ — надёжнее всего.
     let listing_url = format!("{repo}/desktop/");
+    let mut listing_reached = false;
     match fetch_text(
         &listing_url,
         index,
@@ -343,7 +445,8 @@ async fn resolve_latest_version(
     .await
     {
         Ok(listing) => {
-            if let Some(found) = pick_latest_version_dir(&listing) {
+            listing_reached = true;
+            if let Some(found) = pick_latest_version_dir(&listing, branch_prefix) {
                 return Ok(found);
             }
         }
@@ -363,11 +466,27 @@ async fn resolve_latest_version(
         }
     }
 
-    // Fallback: известные каталоги 6.8.x по убыванию.
-    for suffix in ["683", "682", "681", "680"] {
+    // Листинг недоступен (хост не отвечает) — HEAD-пробы не имеют
+    // смысла: они упадут так же, а задача зависнет на десятках проб.
+    // Репозиторий признаётся недоступным целиком, его заменит зеркало.
+    if !listing_reached {
+        return Err(format!(
+            "Репозиторий не отвечает (листинг {listing_url} недоступен)"
+        ));
+    }
+
+    // Fallback: известные каталоги ветки по убыванию патча (680..689
+    // для 6.8.x). Список НЕ фиксирован: пока репозиторий отвечает,
+    // перебираются все патчи 0..9 — свежий 6.8.4/6.8.5 найдётся
+    // автоматически, без правки каталога.
+    for patch in (0..=9).rev() {
+        let suffix = format!("{branch_prefix}{patch}");
+        if version_from_suffix(&suffix).is_none() {
+            continue;
+        }
         if updates_exist(
             repo,
-            suffix,
+            &suffix,
             index,
             total,
             task_id,
@@ -379,11 +498,14 @@ async fn resolve_latest_version(
         .await
         {
             let version_dir = format!("qt6_{suffix}");
-            return Ok((version_dir, version_from_suffix(suffix).unwrap_or_default()));
+            return Ok((version_dir, version_from_suffix(&suffix).unwrap_or_default()));
         }
     }
 
-    Err("Не удалось определить доступную версию Qt 6.8 в репозитории".to_string())
+    Err(format!(
+        "Не удалось определить доступную версию Qt {} в репозитории",
+        branch_prefix
+    ))
 }
 
 /// Распаковка архива Qt (7z-контейнеры читает встроенный tar Windows 10+)
@@ -458,9 +580,12 @@ pub async fn install_qt_online(
         session_id,
     ));
 
-    // 1. Самая свежая версия 6.8.x
-    let (version_dir, qt_version) = resolve_latest_version(
+    // 1. Самая свежая версия ветки recommended (branch из tools.json)
+    //    на рабочем репозитории: официальный URL, затем зеркала.
+    let branch_prefix = qt_branch_prefix(def);
+    let (repo, version_dir, qt_version) = resolve_working_repo(
         repo,
+        &branch_prefix,
         index,
         total,
         task_id,
@@ -805,7 +930,7 @@ mod tests {
 <a href="/online/qtsdkrepository/windows_x86/desktop/dev/">dev/</a>
 </body></html>"#;
         assert_eq!(
-            pick_latest_version_dir(listing),
+            pick_latest_version_dir(listing, "68"),
             Some(("qt6_683".to_string(), "6.8.3".to_string()))
         );
     }
@@ -813,7 +938,47 @@ mod tests {
     #[test]
     fn listing_without_68x_is_none() {
         let listing = r#"<a href="/x/qt6_6103/">qt6_6103/</a><a href="/x/dev/">dev/</a>"#;
-        assert_eq!(pick_latest_version_dir(listing), None);
+        assert_eq!(pick_latest_version_dir(listing, "68"), None);
+    }
+
+    #[test]
+    fn listing_filters_by_requested_branch() {
+        // Запрошена ветка 6.10 (recommended из tools.json) — каталоги
+        // 6.8.x и 6.11.x не смешиваются, выбирается свежайший 6.10.x.
+        let listing = r#"<a href="/x/qt6_683/">qt6_683/</a>
+<a href="/x/qt6_6103/">qt6_6103/</a>
+<a href="/x/qt6_6112/">qt6_6112/</a>
+<a href="/x/qt6_6102/">qt6_6102/</a>"#;
+        assert_eq!(
+            pick_latest_version_dir(listing, "610"),
+            Some(("qt6_6103".to_string(), "6.10.3".to_string()))
+        );
+        // Ветка 6.11 отбирается своим префиксом.
+        assert_eq!(
+            pick_latest_version_dir(listing, "611"),
+            Some(("qt6_6112".to_string(), "6.11.2".to_string()))
+        );
+    }
+
+    #[test]
+    fn branch_prefix_from_recommended() {
+        use crate::modules::toolchain::defs;
+        let qt = defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == "qt")
+            .expect("qt в каталоге");
+        let mut def = |rec: Option<&str>| {
+            let mut d = qt.clone();
+            d.versions.recommended = rec.map(str::to_string);
+            d
+        };
+        assert_eq!(qt_branch_prefix(&def(Some("6.8"))), "68");
+        assert_eq!(qt_branch_prefix(&def(Some("6.8.3"))), "68");
+        assert_eq!(qt_branch_prefix(&def(Some("6.10"))), "610");
+        assert_eq!(qt_branch_prefix(&def(Some("6.12.0"))), "612");
+        // Страховка без recommended — 6.8 (историческое поведение).
+        assert_eq!(qt_branch_prefix(&def(None)), "68");
+        assert_eq!(qt_branch_prefix(&def(Some("мусор"))), "68");
     }
 
     #[test]
@@ -890,7 +1055,7 @@ mod tests {
         let abort = Arc::new(AtomicBool::new(false));
 
         let (version_dir, qt_version) =
-            resolve_latest_version(repo, 0, 1, "qt", "qt", "s-live", &sink, abort.clone())
+            resolve_latest_version(repo, "68", 0, 1, "qt", "qt", "s-live", &sink, abort.clone())
                 .await
                 .expect("resolve_latest_version");
         log::debug!("live: version_dir={version_dir}, version={qt_version}");
