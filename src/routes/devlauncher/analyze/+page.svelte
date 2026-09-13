@@ -22,6 +22,7 @@
     type AddTemplate,
     type AddTemplateDraft,
   } from "$lib/modules/devlauncher/stepBuilder";
+  import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
 
   let projectPath = $state("");
   let draft = $state<DraftProfile | null>(null);
@@ -112,6 +113,7 @@
     savedOk = false;
     try {
       await saveProfileV2(draft.profile);
+      markProfileCreated();
       savedOk = true;
     } catch (e) {
       error = `Ошибка сохранения: ${e}`;

@@ -7332,15 +7332,132 @@ fn js_manifest_dir(context: &WizardContext) -> Option<String> {
     None
 }
 
-/// Интерпретатор Python: `python` на Windows (в PATH у установщиков и
-/// StackPilot Toolchain), `python3` на unix (дистрибутивный). ВСЕ
-/// python-шаги пайплайна используют ровно этот выбор — никаких жёстко
+/// Стандартные каталоги установки Python на Windows (шаблон с `*`
+/// раскрывается в конкретный каталог, например `Python313`).
+const PYTHON_WINDOWS_DIR_PATTERNS: [&str; 2] = [
+    "C:/Program Files/Python3*",
+    "%LOCALAPPDATA%/Programs/Python/Python3*",
+];
+
+/// Раскрывает %VAR% в известных шаблонах каталогов Python.
+fn expand_python_dir_pattern(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for (pattern, var) in [
+        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
+        ("%ProgramFiles%", "ProgramFiles"),
+    ] {
+        if out.contains(pattern) {
+            if let Ok(value) = std::env::var(var) {
+                out = out.replace(pattern, &value);
+            }
+        }
+    }
+    out
+}
+
+/// «Естественно-числовой» ключ имени версионного каталога Python:
+/// `Python313` → [3, 313], `Python3.11` → [3, 11] — сравнение числовое,
+/// `Python313` старше `Python311`, а не лексикографически меньше.
+fn python_dir_natural_key(name: &str) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut num = String::new();
+    for c in name.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else if !num.is_empty() {
+            out.push(num.parse().unwrap_or(0));
+            num.clear();
+        }
+    }
+    if !num.is_empty() {
+        out.push(num.parse().unwrap_or(0));
+    }
+    out
+}
+
+/// Первая реальная `python.exe`/`python3.exe` из переданного PATH —
+/// Microsoft Store-заглушки (WindowsApps) пропускаются: они «отвечают»
+/// кодом 9009, а не версией интерпретатора.
+fn python_from_path(path_str: &str) -> Option<String> {
+    for entry in path_str.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let dir = std::path::Path::new(entry);
+        for name in ["python.exe", "python3.exe"] {
+            let candidate = dir.join(name);
+            if !candidate.is_file() {
+                continue;
+            }
+            if crate::platform::paths::is_windows_store_alias(&candidate) {
+                continue;
+            }
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Реальный интерпретатор Python на Windows (абсолютный путь), НЕ
+/// Store-заглушка. Поиск:
+///   1. известные каталоги установки (python.org, StackPilot Toolchain)
+///      — самый новый `Python3x` из `C:/Program Files/` и
+///      `%LOCALAPPDATA%/Programs/Python/`;
+///   2. PATH — первая `python.exe`/`python3.exe`, КРОМЕ каталогов
+///      WindowsApps (Microsoft Store aliases — заглушки, а не Python).
+/// `None` — интерпретатор не найден: шаг пайплайна упадёт с понятной
+/// ошибкой «python не найден» (а не с кодом 9009 Store-заглушки).
+fn resolve_windows_python() -> Option<String> {
+    let mut best: Option<(Vec<u64>, String)> = None;
+    for pattern in PYTHON_WINDOWS_DIR_PATTERNS {
+        let expanded = expand_python_dir_pattern(pattern);
+        let Some((star_idx, _)) = expanded.char_indices().find(|(_, c)| *c == '*') else {
+            continue;
+        };
+        let prefix: String = expanded[..star_idx].to_string();
+        let parent = std::path::Path::new(&expanded[..star_idx]);
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+                continue;
+            }
+            let exe = path.join("python.exe");
+            if !exe.is_file() {
+                continue;
+            }
+            let key = python_dir_natural_key(&name);
+            if best.as_ref().map_or(true, |(bk, _)| bk < &key) {
+                best = Some((key, exe.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    if let Some((_, exe)) = best {
+        return Some(exe);
+    }
+
+    python_from_path(&std::env::var("PATH").unwrap_or_default())
+}
+
+/// Интерпретатор Python: на Windows — РЕАЛЬНЫЙ интерпретатор (абсолютный
+/// путь, если найден; иначе `python`), на unix — `python3` (дистрибутивный).
+/// ВСЕ python-шаги пайплайна используют ровно этот выбор — никаких жёстко
 /// зашитых "python" там, где возможен unix.
-fn python_command() -> &'static str {
+fn python_command() -> String {
     if cfg!(target_os = "windows") {
-        "python"
+        resolve_windows_python().unwrap_or_else(|| "python".to_string())
     } else {
-        "python3"
+        "python3".to_string()
     }
 }
 
@@ -11244,6 +11361,56 @@ mod tests {
     }
 
     #[test]
+    fn python_dir_natural_key_orders_numerically() {
+        // Python313 > Python311 > Python310 (числовое, а не лексикографическое).
+        assert!(python_dir_natural_key("Python313") > python_dir_natural_key("Python311"));
+        assert!(python_dir_natural_key("Python311") > python_dir_natural_key("Python310"));
+        assert_eq!(python_dir_natural_key("Python313"), python_dir_natural_key("Python313"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn python_from_path_skips_windows_store_aliases() {
+        // PATH, состоящий ТОЛЬКО из каталога Store-заглушек, не считается
+        // установкой Python: python.exe там — заглушка (код 9009), а не
+        // интерпретатор. Резолвер обязан вернуть None, а не путь к заглушке.
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let apps = std::path::Path::new(&local).join("Microsoft").join("WindowsApps");
+            if apps.is_dir() {
+                let path = format!("{};C:\\Windows\\System32", apps.to_string_lossy());
+                assert!(
+                    python_from_path(&path).is_none(),
+                    "Store-заглушка не может быть интерпретатором: {path}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn python_from_path_prefers_real_interpreter_over_earlier_alias() {
+        // Реальный python.exe в PATH ПОСЛЕ каталога WindowsApps обязан
+        // выигрывать: заглушка пропускается, поиск продолжается.
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_py_resolve_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("python.exe"), b"stub").unwrap();
+        let path = format!("{};C:\\Windows\\System32", dir.to_string_lossy());
+        let found = python_from_path(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            found.as_deref() == Some(&format!("{}\\python.exe", dir.to_string_lossy())),
+            "реальный python из PATH: {found:?}"
+        );
+    }
+
+    #[test]
     fn venv_steps_are_only_created_for_python_with_alembic() {
         // Каждый Python-проект получает изолированное окружение (venv
         // создаётся даже без alembic — иначе fastapi-проекты ставили
@@ -13917,9 +14084,10 @@ mod tests {
             Step::Command {
                 command, on_error, ..
             } => {
-                assert!(
-                    command == "python" || command == "python3",
-                    "интерпретатор через python_command(): {command}"
+                assert_eq!(
+                    command,
+                    &python_command(),
+                    "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка): {command}"
                 );
                 assert_eq!(on_error, &ErrorMode::Abort);
             }
@@ -13953,7 +14121,11 @@ mod tests {
                     }
                     other => panic!("ожидали FileNotExists: {other:?}"),
                 }
-                assert!(command == "python" || command == "python3");
+                assert_eq!(
+                    command,
+                    &python_command(),
+                    "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка): {command}"
+                );
             }
             _ => panic!("py_venv_create — Command"),
         }

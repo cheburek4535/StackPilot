@@ -3,6 +3,7 @@
   import Icon from "$lib/components/ui/Icon.svelte";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { tStepLabel } from "$lib/modules/project_creator/stepI18n";
 
   let {
     steps,
@@ -69,7 +70,7 @@
           <Icon name={stepIcon(step)} size={14} />
         </div>
         <div class="gs-step-info">
-          <span class="gs-step-label">{step.label}</span>
+          <span class="gs-step-label">{tStepLabel(step.label)}</span>
           <span class="gs-step-action">{step.action}</span>
           {#if step.skip_reason}
             <span class="gs-step-skip-reason">{step.skip_reason}</span>

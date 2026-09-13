@@ -30,7 +30,7 @@
   let draft = $state<AppSettings | null>(null);
   let loading = $state(true);
   let saving = $state(false);
-  let activeTab = $state<TabId>("general");
+  let activeTab = $state<TabId>("display");
   let keyVisible = $state(false);
   let customHex = $state("#8b5cf6");
   let dataDir = $state("");
@@ -63,9 +63,9 @@
   );
 
   const tabs: { id: TabId; label: string; icon: IconName; badge?: boolean }[] = [
+    { id: "display", label: i18n.t("settings.tabs.display"), icon: "palette" },
     { id: "general", label: i18n.t("settings.tabs.general"), icon: "user" },
     { id: "system", label: i18n.t("settings.tabs.system"), icon: "terminal" },
-    { id: "display", label: i18n.t("settings.tabs.display"), icon: "palette" },
     { id: "behavior", label: i18n.t("settings.tabs.behavior"), icon: "sliders" },
     { id: "ai", label: i18n.t("settings.tabs.ai"), icon: "bot", badge: true },
     { id: "about", label: i18n.t("settings.tabs.about"), icon: "info" },

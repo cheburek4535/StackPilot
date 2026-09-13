@@ -63,7 +63,9 @@ import type { TranslationKey, Locale } from "$lib/core/i18n.svelte";
 import { confirmProjectCreatedWithProfile } from "$lib/core/integration";
 import { goto } from "$app/navigation";
 import { deleteProfile } from "$lib/modules/devlauncher/api";
+import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
 import { notifyError } from "$lib/core/toasts";
+import { userExperienced, markExperienced } from "$lib/core/novice";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -72,6 +74,8 @@ let hostOs = $state<string>("windows");
 let dropNotice = $state<string | null>(null);
 /** Показывать ли отдельные карточки заблокированных фреймворков внутри уровня. */
 let showUnavailable = $state<Record<string, boolean>>({});
+/** То же сворачивание недоступных для «чистых» языков (стороны backend/frontend) */
+let showUnavailableLangs = $state<Record<string, boolean>>({});
 
 // ---- Ленивые секции страницы: вынесены из монолита и подгружаются
 // сразу после первого кадра (см. onMount) — первая загрузка не ждёт их. ----
@@ -111,6 +115,46 @@ let stackIssues = $derived<StackIssue[]>(
     : [],
 );
 let stackError = $derived(firstError(stackIssues));
+
+/** Для новичков блокируем переход к сверке («Просмотр и создание»), пока
+ *  конструктор не досмотрен до низа хотя бы раз. Флаг «опытный» глобальный
+ *  (novice.ts) — после первого полного просмотра блокировка исчезает навсегда. */
+let userSeenConstructor = $state(false);
+let reviewLocked = $derived(phase === 1 && !$userExperienced && !userSeenConstructor);
+let scrollEl = $state<HTMLElement | null>(null);
+
+/** Проверка «долистали ли почти до самого низа». Срабатывает на прокрутку
+ *  внутреннего скролл-контейнера приложения (.sp-content). Если страница не
+ *  прокручивается вовсе — смысла показывать ничего нет, считаем просмотренной. */
+function checkConstructorScroll() {
+  if ($userExperienced || userSeenConstructor) return;
+  if (phase !== 1) return;
+  const el = scrollEl ?? document.querySelector<HTMLElement>(".sp-content");
+  if (!el) return;
+  if (el.scrollHeight <= el.clientHeight + 8) {
+    markConstructorSeen();
+    return;
+  }
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) {
+    markConstructorSeen();
+  }
+}
+
+/** Первое полное долистывание: разблокируем CTA в этой сессии и глобально
+ *  помечаем пользователя «опытным» (переживает перезапуск, виден в модулях). */
+function markConstructorSeen() {
+  if (userSeenConstructor) return;
+  userSeenConstructor = true;
+  markExperienced();
+}
+
+/** Плавный переход к последней секции стека по клику на подсказку. */
+function scrollToStackBottom() {
+  const target =
+    document.querySelector<HTMLElement>(".territory-tools") ??
+    document.querySelector<HTMLElement>(".mega-footer");
+  target?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
 /** Тип проекта, у которого есть серверная сторона (browser-extension — нет):
  *  шаги «Backend Language» и «Backend Framework» для него скрываются. */
@@ -279,6 +323,14 @@ let envInstallDone = $state(false);
 let envDownload = $state<Map<string, { received: number; total: number }>>(new Map());
 let envErrors = $state<string[]>([]);
 let envPhaseStart = $state<Map<string, number>>(new Map());
+/** Мгновенная скорость скачивания каждой задачи (байт/с), вычисляется
+ *  из дельты событий tc:dl — панель показывает её рядом с прогрессом. */
+let envSpeed = $state<Map<string, number>>(new Map());
+/** Последний (received, ts) на задачу: сырьё для расчёта envSpeed. */
+let envDlPrev = $state<Map<string, { received: number; ts: number }>>(new Map());
+/** Фоновая перепроверка окружения после установки (см. autoRecheckAfterInstall):
+ *  экран «установка завершена» остаётся, пока проверка не подтвердит тулы. */
+let envRechecking = $state(false);
 let newSecrets = $state<Record<string, string> | null>(null);
 let secretCopied = $state<string | null>(null);
 let unlistenTc: (() => void) | null = null;
@@ -313,10 +365,25 @@ let devlConfirmCancel = $state(false);
  *  (переключение маршрутов → реплей событий) невозможен. */
 let devlAutoPopupShown = $state(false);
 
-// Тикер-заглушка: envTick раньше перерисовывал страницу каждую секунду,
-// но нигде не читался — оставлены no-op, чтобы не трогать точки вызова.
-function startTick() {}
-function stopTick() {}
+// Тикер установки/проверки: раз в секунду обновляет envNow, чтобы панель
+// окружения перерисовывалась «вживую» — таймеры фаз и скорость
+// скачивания не застывают на последнем событии, а идут в реальном
+// времени до завершения операции.
+let envNow = $state(Date.now());
+let envTicker: ReturnType<typeof setInterval> | null = null;
+function startTick() {
+  if (envTicker) return;
+  envNow = Date.now();
+  envTicker = setInterval(() => {
+    envNow = Date.now();
+  }, 1000);
+}
+function stopTick() {
+  if (envTicker) {
+    clearInterval(envTicker);
+    envTicker = null;
+  }
+}
 
 let tooltipData = $state<{ x: number; y: number; tool: ToolDef } | null>(null);
 let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
@@ -522,6 +589,10 @@ async function reSyncLiveSessions() {
           stopTick();
           // Секреты сессией больше не отдаются вовсе (serde skip на
           // бэкенде): единственный канал — одноразовый getNewSecrets().
+          // Установка завершилась, пока вкладка была неактивна, — свежая
+          // проверка в фоне переведёт поставленные тулы в «готово» без
+          // ручного «Перепроверить окружение».
+          void autoRecheckAfterInstall();
         }
       } else if (envInstalling) {
         envInstalling = false;
@@ -578,6 +649,11 @@ onMount(async () => {
   // тяжёлые вычисления — пользователь сразу видит анимацию загрузки
   // вместо замёрзшего экрана.
   await tick();
+
+  // Блокировка CTA для новичков: следим за прокруткой конструктора.
+  scrollEl = document.querySelector<HTMLElement>(".sp-content");
+  window.addEventListener("scroll", checkConstructorScroll, { capture: true, passive: true });
+  checkConstructorScroll();
 
   // Вынесенные секции подгружаем сразу после первого кадра: они не входят
   // в бандл первой загрузки, но успевают загрузиться, пока пользователь
@@ -643,6 +719,7 @@ onMount(async () => {
 });
 
 onDestroy(() => {
+  window.removeEventListener("scroll", checkConstructorScroll, { capture: true });
   persistNow();
   if (unlisten) unlisten();
   if (unlistenTc) unlistenTc();
@@ -1128,6 +1205,29 @@ function languageBlockReason(lang: LanguageDef): string | null {
 /** Развёрнутое объяснение блокировки чистого языка (подпись под бейджем) */
 function languageBlockDetail(lang: LanguageDef): string | null {
   return null;
+}
+
+/** Кандидаты стороны для «чистых» языков (backend/frontend). */
+function langSideCandidates(side: "backend" | "frontend"): LanguageDef[] {
+  return side === "backend" ? backendCandidates() : frontendCandidates();
+}
+
+/** Недоступные в данный момент чистые языки стороны (blocked-карточки). */
+function blockedLanguages(side: "backend" | "frontend"): LanguageDef[] {
+  return langSideCandidates(side).filter((l) => languageBlockReason(l) !== null);
+}
+
+/** Видимые чистые языки стороны: пока не развёрнуто — только доступные.
+ *  Недоступные прячем за компактной карточкой-сводкой, как у фреймворков. */
+function visibleLanguages(side: "backend" | "frontend"): LanguageDef[] {
+  const items = langSideCandidates(side);
+  return showUnavailableLangs[side]
+    ? items
+    : items.filter((l) => languageBlockReason(l) === null);
+}
+
+function toggleUnavailableLangs(side: "backend" | "frontend") {
+  showUnavailableLangs = { ...showUnavailableLangs, [side]: !showUnavailableLangs[side] };
 }
 
 /** Список языков фреймворка одной строкой ("TypeScript, JavaScript") */
@@ -1679,6 +1779,9 @@ async function goToEnvironment() {
   envErrors = [];
   envRestartHint = false;
   envDownload = new Map();
+  envSpeed = new Map();
+  envDlPrev = new Map();
+  envRechecking = false;
   envPhaseStart = new Map();
   stopTick();
   envCheckProgress = [];
@@ -1756,7 +1859,12 @@ async function startInstall() {
   envInstallDone = false;
   envError = null;
   envLogs = [];
+  envErrors = [];
   envTaskStates = new Map();
+  envDownload = new Map();
+  envSpeed = new Map();
+  envDlPrev = new Map();
+  envPhaseStart = new Map();
   startTick();
   try {
     envPlan = await tcBuildPlan(envCheck, [...envSelectedIds]);
@@ -1812,8 +1920,21 @@ function handleToolchainEvent(event: ToolchainEvent) {
     const line = t.TaskProgress.line;
     const dl = line.match(/^tc:dl (\d+) (-?\d+)$/);
     if (dl) {
-      envDownload.set(event.task_id, { received: Number(dl[1]), total: Number(dl[2]) });
+      const received = Number(dl[1]);
+      const total = Number(dl[2]);
+      // Скорость = дельта байтов между событиями tc:dl (приходят часто).
+      const prev = envDlPrev.get(event.task_id);
+      const ts = Date.now();
+      let speed = 0;
+      if (prev && ts > prev.ts && received >= prev.received) {
+        speed = (received - prev.received) / ((ts - prev.ts) / 1000);
+      }
+      envSpeed.set(event.task_id, speed);
+      envDlPrev.set(event.task_id, { received, ts });
+      envDownload.set(event.task_id, { received, total });
       envDownload = new Map(envDownload);
+      envSpeed = new Map(envSpeed);
+      envDlPrev = new Map(envDlPrev);
     } else if (line.startsWith("tc:error ")) {
       envErrors = [...envErrors.slice(-199), `${event.tool_id}: ${line.slice("tc:error ".length)}`];
       envLogs = [...envLogs.slice(-2999), line];
@@ -1824,6 +1945,8 @@ function handleToolchainEvent(event: ToolchainEvent) {
   if ("TaskCompleted" in t) {
     envTaskStates.set(event.task_id, t.TaskCompleted.state);
     envTaskStates = new Map(envTaskStates);
+    envSpeed.delete(event.task_id);
+    envSpeed = new Map(envSpeed);
   }
 }
 
@@ -1846,6 +1969,40 @@ function handleInstallDone(plan: InstallPlan) {
   refreshInstalledTools();
   persistNow();
   fetchNewSecrets();
+  // Свежая проверка окружения в фоне: только что поставленные тулы
+  // переходят в «готово» без ручного «Перепроверить окружение».
+  // Провал проверки не ломает итог установки — остаётся экран
+  // завершения с кнопкой перепроверки.
+  void autoRecheckAfterInstall();
+}
+
+/** Фоновая перепроверка окружения после установки: экран «установка
+ *  завершена» остаётся видимым, пока проверка не подтвердит свежие
+ *  тулы (спиннер «Проверяю окружение…»), затем мастер переключается
+ *  на обновлённый список с готовыми статусами. */
+async function autoRecheckAfterInstall() {
+  envRechecking = true;
+  envError = null;
+  envCheckProgress = [];
+  envCheckScanId = null;
+  try {
+    const fresh = await tcCheckEnvironment(buildRequirements());
+    if (!fresh) return;
+    envCheck = fresh;
+    envSelectedIds = new Set(
+      (fresh.requirements ?? [])
+        .filter((r) => statusKind(r.status) !== "ok" && statusKind(r.status) !== "manual")
+        .map((r) => r.tool_id),
+    );
+    // Свежая проверка прошла — экран «завершено» сменяется списком,
+    // где поставленные тулы уже «готовы».
+    envInstallDone = false;
+  } catch (e) {
+    console.error("[env] авто-перепроверка после установки:", e);
+  } finally {
+    envRechecking = false;
+    persistNow();
+  }
 }
 
 async function recheckEnvironment() {
@@ -1882,6 +2039,9 @@ async function cancelInstall() {
   }
   envInstalling = false;
   stopTick();
+  // Свежая проверка в фоне: тулы, успевшие установиться до отмены,
+  // сразу помечаются «готово» — список не врёт после прерывания.
+  await runEnvironmentCheck(true);
 }
 
 // ----------------------------------------------------------
@@ -2091,6 +2251,7 @@ async function handleExecEvent(event: ExecutionEvent) {
           devlProfileName = profile.name;
           devlProfilePath = profile.project_path;
           devlProfileExists = true;
+          markProfileCreated();
         } catch {
           // Non-critical: profile creation failed, user can still use VS Code
           devlProfileCreated = false;
@@ -2151,6 +2312,7 @@ async function reopenDevlDialog() {
       devlProfileName = profile.name;
       devlProfilePath = profile.project_path;
       devlProfileExists = true;
+      markProfileCreated();
     } catch {
       return;
     }
@@ -2314,7 +2476,10 @@ function resetAll() {
               {envTaskStates}
               {envRestartHint}
               {envDownload}
+              {envSpeed}
               {envPhaseStart}
+              {envNow}
+              {envRechecking}
               {envError}
               {newSecrets}
               {secretCopied}
@@ -2745,11 +2910,27 @@ function resetAll() {
               <div class="territory-body">
                 <div class="lang-sides">
                   {#if hasBackend && backendCandidates().length > 0}
+                    {@const beBlocked = blockedLanguages("backend")}
                     <div class="lang-side">
-                      <p class="lang-side-title">{i18n.t("create.backend_language") as TranslationKey}</p>
-                      <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
+                      <div class="lang-side-head">
+                        <div>
+                          <p class="lang-side-title">{i18n.t("create.backend_language") as TranslationKey}</p>
+                          <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
+                        </div>
+                        {#if beBlocked.length > 0}
+                          <button
+                            type="button"
+                            class="fw-level-action"
+                            onclick={() => toggleUnavailableLangs("backend")}
+                          >
+                            {showUnavailableLangs["backend"]
+                              ? (i18n.t("create.hide_unavailable") as TranslationKey)
+                              : (i18n.t("create.show_unavailable") as TranslationKey)}
+                          </button>
+                        {/if}
+                      </div>
                       <div class="card-grid lang-grid">
-                        {#each backendCandidates() as lang}
+                        {#each visibleLanguages("backend") as lang}
                           {@const blockedReason = languageBlockReason(lang)}
                           {@const blockedDetail = languageBlockDetail(lang)}
                           <button
@@ -2776,15 +2957,41 @@ function resetAll() {
                             {/if}
                           </button>
                         {/each}
+                        {#if beBlocked.length > 0 && !showUnavailableLangs["backend"]}
+                          <button
+                            type="button"
+                            class="unavailable-summary"
+                            onclick={() => toggleUnavailableLangs("backend")}
+                          >
+                            <strong>{i18n.t("create.unavailable_count", { n: beBlocked.length }) as TranslationKey}</strong>
+                            <span>{i18n.t("create.unavailable_desc") as TranslationKey}</span>
+                          </button>
+                        {/if}
                       </div>
                     </div>
                   {/if}
                   {#if frontendCandidates().length > 0}
+                    {@const feBlocked = blockedLanguages("frontend")}
                     <div class="lang-side">
-                      <p class="lang-side-title">{i18n.t("create.frontend_language2") as TranslationKey}</p>
-                      <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
+                      <div class="lang-side-head">
+                        <div>
+                          <p class="lang-side-title">{i18n.t("create.frontend_language2") as TranslationKey}</p>
+                          <p class="hint-sm">{i18n.t("create.one_per_side") as TranslationKey}</p>
+                        </div>
+                        {#if feBlocked.length > 0}
+                          <button
+                            type="button"
+                            class="fw-level-action"
+                            onclick={() => toggleUnavailableLangs("frontend")}
+                          >
+                            {showUnavailableLangs["frontend"]
+                              ? (i18n.t("create.hide_unavailable") as TranslationKey)
+                              : (i18n.t("create.show_unavailable") as TranslationKey)}
+                          </button>
+                        {/if}
+                      </div>
                       <div class="card-grid lang-grid">
-                        {#each frontendCandidates() as lang}
+                        {#each visibleLanguages("frontend") as lang}
                           {@const blockedReason = languageBlockReason(lang)}
                           <button
                             class="card"
@@ -2809,6 +3016,16 @@ function resetAll() {
                             {/if}
                           </button>
                         {/each}
+                        {#if feBlocked.length > 0 && !showUnavailableLangs["frontend"]}
+                          <button
+                            type="button"
+                            class="unavailable-summary"
+                            onclick={() => toggleUnavailableLangs("frontend")}
+                          >
+                            <strong>{i18n.t("create.unavailable_count", { n: feBlocked.length }) as TranslationKey}</strong>
+                            <span>{i18n.t("create.unavailable_desc") as TranslationKey}</span>
+                          </button>
+                        {/if}
                       </div>
                     </div>
                   {/if}
@@ -2929,10 +3146,26 @@ function resetAll() {
                   <span class="mega-error">⚠ {stackError}</span>
                 {/if}
               </span>
-              <button class="btn-primary" onclick={() => (phase = 2)} disabled={!!stackError}>
+              <button
+                class="btn-primary"
+                onclick={() => (phase = 2)}
+                disabled={!!stackError || reviewLocked}
+                title={reviewLocked ? (i18n.t("create.scroll_lock_hint") as TranslationKey) : undefined}
+              >
                 {i18n.t("create.review_create") as TranslationKey}
               </button>
             </div>
+
+            {#if reviewLocked}
+              <button
+                type="button"
+                class="scroll-hint"
+                onclick={scrollToStackBottom}
+              >
+                <span class="scroll-hint-arrow" aria-hidden="true">↓</span>
+                <span>{i18n.t("create.scroll_lock_hint") as TranslationKey}</span>
+              </button>
+            {/if}
 
             <p class="grow-note">
               {i18n.t("create.catalog_grows_note") as TranslationKey}
@@ -3198,12 +3431,13 @@ function resetAll() {
             </div>
           </div>
 
-          {#if phase !== 2}
+          {#if phase === 1}
             <button
               class="ctx-cta"
+              class:ctx-cta-locked={reviewLocked}
               onclick={() => goPhase(2)}
-              disabled={!!stackError}
-              title={stackError ?? undefined}
+              disabled={!!stackError || reviewLocked}
+              title={reviewLocked ? (i18n.t("create.scroll_lock_hint") as TranslationKey) : (stackError ?? undefined)}
             >
               {i18n.t("create.review_create") as TranslationKey}
             </button>
@@ -3322,6 +3556,7 @@ function resetAll() {
   box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-accent);
 }
 .ctx-cta:disabled { opacity: 0.5; cursor: not-allowed; }
+.ctx-cta-locked { border-style: dashed; }
 
 /* ---- Фазы (slim stepper) ---- */
 .phase-nav { display: flex; align-items: center; gap: 0; margin-bottom: 1.75rem; flex-wrap: wrap; }
@@ -3638,7 +3873,9 @@ function resetAll() {
 .lang-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
 @media (max-width: 900px) { .lang-sides { grid-template-columns: 1fr; } }
 .lang-side-title { margin: 0 0 0.15rem; font-size: 0.85rem; font-weight: 700; color: var(--sp-text-1); }
+.lang-side-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
 .lang-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 0; }
+.lang-side .unavailable-summary { min-height: 110px; }
 
 /* ---- Инструменты ---- */
 .tool-group {
@@ -3857,6 +4094,35 @@ function resetAll() {
   font-size: 0.8rem;
   color: var(--sp-text-3);
   opacity: 0.55;
+}
+
+/* ---- Подсказка «листайте дальше» для новичков (блокировка CTA) ---- */
+.scroll-hint {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 60;
+  max-width: min(560px, calc(100vw - 2rem));
+  padding: 0.55rem 1rem;
+  background: var(--sp-glass-strong);
+  border: 1px solid var(--sp-accent-strong);
+  border-radius: var(--sp-radius-full);
+  color: var(--sp-text-1);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-2), 0 4px 24px rgba(228, 87, 10, 0.28);
+  animation: scroll-hint-in 0.35s ease-out;
+}
+.scroll-hint:hover { background: var(--sp-bg-2); }
+.scroll-hint-arrow { color: var(--sp-accent-strong); font-weight: 700; }
+@keyframes scroll-hint-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 

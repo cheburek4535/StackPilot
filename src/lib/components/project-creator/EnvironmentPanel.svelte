@@ -27,7 +27,10 @@
     envTaskStates,
     envRestartHint,
     envDownload,
+    envSpeed,
     envPhaseStart,
+    envNow,
+    envRechecking,
     envError,
     newSecrets,
     secretCopied,
@@ -60,7 +63,10 @@
     envTaskStates: Map<string, TaskState>;
     envRestartHint: boolean;
     envDownload: Map<string, { received: number; total: number }>;
+    envSpeed: Map<string, number>;
     envPhaseStart: Map<string, number>;
+    envNow: number;
+    envRechecking: boolean;
     envError: string | null;
     newSecrets: Record<string, string> | null;
     secretCopied: string | null;
@@ -126,13 +132,35 @@
     return Math.min(100, Math.round((dl.received / dl.total) * 100));
   }
 
+  /** Мгновенная скорость скачивания (байт/с → МБ/с или КБ/с). */
+  function speedLabel(taskId: string): string {
+    const s = envSpeed.get(taskId);
+    if (!s || s <= 0) return "";
+    if (s >= 1024 * 1024) {
+      return i18n.t("create.speed_mb", { speed: (s / 1024 / 1024).toFixed(1) });
+    }
+    return i18n.t("create.speed_kb", { speed: Math.max(1, Math.round(s / 1024)) });
+  }
+
+  /** Таймеры фаз живут на envNow (тикер страницы, раз в секунду) — время
+   *  течёт, даже когда от установщика не приходит ни одного события. */
   function phaseElapsed(taskId: string): string {
     const started = envPhaseStart.get(taskId);
     if (!started) return "…";
-    const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    const secs = Math.max(0, Math.floor((envNow - started) / 1000));
     if (secs < 60) return i18n.t("create.phase_elapsed_secs", { secs });
     return i18n.t("create.phase_elapsed_min", { m: Math.floor(secs / 60), s: secs % 60 });
   }
+
+  // Живой журнал установки: открыт по умолчанию, автоскролл к последней
+  // строке на каждом обновлении envLogs.
+  let logBox: HTMLDivElement | null = null;
+  let logOpen = $state(true);
+  $effect(() => {
+    void envLogs.length;
+    if (!logOpen || !logBox) return;
+    logBox.scrollTop = logBox.scrollHeight;
+  });
 
   function secretToolName(toolId: string): string {
     const req = envCheck?.requirements.find((r) => r.tool_id === toolId);
@@ -165,6 +193,9 @@
   {@const missingAll = allMissingTools()}
   {@const missingSelected = selectedMissingTools()}
   {#if envInstallDone && envPlan}
+    {#if envRechecking}
+      <p class="env-rechecking"><span class="spin" aria-hidden="true"></span> {i18n.t("create.env_rechecking") as TranslationKey}</p>
+    {/if}
     <div class="env-summary">
       <span>{i18n.t("create.installed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "success").length, y: envPlan.tasks.length }) as TranslationKey}</span>
       <span>{i18n.t("create.failed_count", { x: envPlan.tasks.filter((t) => taskStateKind(t.state) === "failed").length }) as TranslationKey}</span>
@@ -336,8 +367,19 @@
   {/if}
 
   {#if envPlan && envInstalling}
+    {@const totalN = envPlan.tasks.length}
+    {@const doneN = envPlan.tasks.filter((task) => taskStateKind(envTaskStates.get(task.task_id) ?? task.state) === "success").length}
+    {@const failN = envPlan.tasks.filter((task) => taskStateKind(envTaskStates.get(task.task_id) ?? task.state) === "failed").length}
     <div class="env-install">
-      <p class="group-label">{i18n.t("create.installing") as TranslationKey}</p>
+      <div class="env-install-head">
+        <p class="group-label">{i18n.t("create.installing") as TranslationKey}</p>
+        <span class="env-chips">
+          <span class="chip">{i18n.t("create.install_progress", { done: doneN, total: totalN }) as TranslationKey}</span>
+          {#if failN > 0}
+            <span class="chip chip-danger">{i18n.t("create.failed_count", { x: failN }) as TranslationKey}</span>
+          {/if}
+        </span>
+      </div>
       {#each envPlan.tasks as task}
         {@const st = envTaskStates.get(task.task_id) ?? task.state}
         {@const kind = taskStateKind(st)}
@@ -361,6 +403,7 @@
               {#if running}
                 {#if downloading && pct !== null && dl}
                   {i18n.t("create.downloading", { pct, received: formatMb(Math.floor(dl.received / 1024 / 1024)), total: formatMb(Math.floor(dl.total / 1024 / 1024)) }) as TranslationKey}
+                  {#if speedLabel(task.task_id)} <span class="env-speed">· {speedLabel(task.task_id)}</span>{/if}
                 {:else}
                   <span class="spin" aria-hidden="true"></span> {taskStateLabel(st)} · {phaseElapsed(task.task_id)}
                 {/if}
@@ -369,24 +412,48 @@
               {/if}
             </span>
           </div>
-          {#if downloading && pct !== null}
-            <div class="dl-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-              <div class="dl-fill" style="width: {pct}%"></div>
-            </div>
+          {#if running}
+            {#if downloading && pct !== null}
+              <div class="dl-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                <div class="dl-fill" style="width: {pct}%"></div>
+              </div>
+            {:else}
+              <!-- Фаза без своего прогресса (установка/проверка): индетерминантная
+                   полоса показывает, что задача жива, а не зависла. -->
+              <div class="dl-bar indeterminate" aria-hidden="true"><div class="dl-fill"></div></div>
+            {/if}
           {/if}
         </div>
       {/each}
       {#if envLogs.length > 0}
-        <details class="exec-full-log">
-          <summary>{i18n.t("create.log_lines", { n: envLogs.length }) as TranslationKey}</summary>
-          <pre>{envLogs.join("\n")}</pre>
-        </details>
+        <div class="live-log">
+          <button class="live-log-toggle" onclick={() => (logOpen = !logOpen)} aria-expanded={logOpen}>
+            <span class="chevron" class:open={logOpen}>▸</span>
+            {i18n.t("create.live_log", { n: envLogs.length }) as TranslationKey}
+          </button>
+          {#if logOpen}
+            <div class="live-log-body" bind:this={logBox}>
+              {#each envLogs as line, i (i)}
+                <div
+                  class:log-error={line.startsWith("tc:error")}
+                  class:log-warn={line.startsWith("tc:warn")}
+                  class:log-info={line.startsWith("tc:info")}
+                  class:log-ok={line.startsWith("tc:ok")}
+                >{line}</div>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   {/if}
 
   {#if envError}
     <p class="error">{envError}</p>
+  {/if}
+
+  {#if envInstalling && !envPlan}
+    <p class="env-rechecking"><span class="spin" aria-hidden="true"></span> {i18n.t("create.building_plan") as TranslationKey}</p>
   {/if}
 
   <div class="btn-row">
@@ -508,8 +575,54 @@
   .env-progress-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
   .env-progress-row .env-status { margin-left: auto; }
   .env-task { display: flex; flex-direction: column; gap: 0.2rem; }
-  .dl-bar { height: 6px; border-radius: 3px; background: var(--sp-bg-3); overflow: hidden; margin-left: 1.9rem; margin-right: 0.4rem; }
+  .dl-bar { height: 6px; border-radius: 3px; background: var(--sp-bg-3); overflow: hidden; margin-left: 1.9rem; margin-right: 0.4rem; position: relative; }
   .dl-fill { height: 100%; background: var(--sp-accent-strong); border-radius: 3px; transition: width 0.3s ease; }
+  .dl-bar.indeterminate .dl-fill { width: 35%; transition: none; animation: tc-indeterminate 1.4s ease-in-out infinite; }
+  @keyframes tc-indeterminate {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  .env-speed { color: var(--sp-text-3); font-weight: 400; }
+  .env-install-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+  .env-install-head .group-label { margin: 0; }
+  .env-chips { display: flex; gap: 0.4rem; margin-left: auto; }
+  .chip { font-size: 0.75rem; font-weight: 600; color: var(--sp-text-2); background: var(--sp-bg-3); border: 1px solid var(--sp-border); padding: 0.25rem 0.65rem; border-radius: 999px; white-space: nowrap; }
+  .chip-danger { color: var(--sp-danger); border-color: color-mix(in srgb, var(--sp-danger) 40%, transparent); }
+  .live-log { margin-top: 0.75rem; border: 1px solid var(--sp-border); border-radius: 8px; overflow: hidden; background: var(--sp-bg-1); }
+  .live-log-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--sp-text-2);
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    font-family: inherit;
+  }
+  .live-log-toggle:hover { color: var(--sp-text-1); background: var(--sp-bg-2); }
+  .chevron { display: inline-block; transition: transform 0.15s; color: var(--sp-text-3); font-size: 0.7rem; }
+  .chevron.open { transform: rotate(90deg); }
+  .live-log-body {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 0.5rem 0.75rem;
+    font-family: Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.55;
+    background: var(--sp-bg-2);
+    border-top: 1px solid var(--sp-border);
+  }
+  .live-log-body > div { white-space: pre-wrap; word-break: break-all; color: var(--sp-text-2); }
+  .live-log-body .log-error { color: var(--sp-danger); }
+  .live-log-body .log-warn { color: var(--sp-warning); }
+  .live-log-body .log-info { color: var(--sp-text-3); }
+  .live-log-body .log-ok { color: var(--sp-success); }
+  .env-rechecking { display: flex; align-items: center; gap: 0.5rem; color: var(--sp-text-3); font-size: 0.85rem; margin: 0 0 0.75rem; }
   .spin { display: inline-block; width: 0.8rem; height: 0.8rem; border: 2px solid var(--sp-border-strong); border-top-color: var(--sp-blue); border-radius: 50%; animation: tc-spin 0.8s linear infinite; vertical-align: -2px; margin-right: 0.3rem; }
   @keyframes tc-spin { to { transform: rotate(360deg); } }
   .group-label { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; color: var(--sp-text-2); text-transform: capitalize; }

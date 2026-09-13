@@ -989,6 +989,18 @@ fn parse_python_project(dir: &Path, kind: PythonKind) -> PythonProject {
                 break;
             }
         }
+        // Project Creator scaffolds FastAPI/Flask apps under `backend/src/`
+        // (src/main.py, src/app.py). The uvicorn import path must then be
+        // `src.main:app` — without this, the generated projects die with
+        // "Could not import module main" on every backend start.
+        if p.entry.is_none() {
+            for entry in ["src/main.py", "src/app.py", "src/asgi.py", "src/wsgi.py"] {
+                if dir.join(entry).is_file() {
+                    p.entry = Some(entry.to_string());
+                    break;
+                }
+            }
+        }
     }
     p
 }
@@ -1684,24 +1696,6 @@ impl PendingStep {
         }
     }
 
-    fn open_terminal() -> Self {
-        PendingStep {
-            label: "Open a terminal".to_string(),
-            enabled: true,
-            kind: StepKind::OpenTerminal {
-                command: String::new(),
-            },
-            depends_on: Vec::new(),
-            working_directory: None,
-            visibility: Some(Visibility::VisibleTerminal),
-            execution_mode: Some(ExecutionMode::LongRunning),
-            completion: Some(CompletionPolicy::ProcessStarted),
-            timeout: None,
-            retry_policy: None,
-            metadata: None,
-        }
-    }
-
     fn with_metadata(mut self, key: &str, value: &str) -> Self {
         let meta = self.metadata.get_or_insert_with(HashMap::new);
         meta.insert(key.to_string(), value.to_string());
@@ -2190,9 +2184,9 @@ fn generate_steps(
 
         if py.has_fastapi || py.has_flask {
             let is_fastapi = py.has_fastapi;
-            let entry = py.entry.as_deref().unwrap_or("main:app");
+            let entry = py.entry.as_deref().unwrap_or(if is_fastapi { "main" } else { "app" });
+            let module = entry.strip_suffix(".py").unwrap_or(entry).replace('/', ".");
             let cmd = if is_fastapi {
-                let module = entry.strip_suffix(".py").unwrap_or(entry).replace('/', ".");
                 let target = if module.contains(':') {
                     module
                 } else {
@@ -2200,7 +2194,9 @@ fn generate_steps(
                 };
                 format!("uvicorn {} --reload", target)
             } else {
-                "flask run --debug".to_string()
+                // flask run's auto-discovery only scans the backend root;
+                // the generated `src/` layout needs the module explicitly.
+                format!("flask --app {} run --debug", module)
             };
             let port = if is_fastapi { 8000 } else { 5000 };
             let framework = if is_fastapi { "FastAPI" } else { "Flask" };
@@ -2515,8 +2511,23 @@ fn generate_steps(
         } else {
             pkg.port.unwrap_or(3000)
         };
-        let run_command = if frontend_port_override {
+        // Vite-based frontends bind 'localhost', which on modern Node
+        // (17+) resolves to ::1 FIRST — the dev server then listens on the
+        // IPv6 loopback ONLY, and Windows often refuses inbound ::1
+        // connections (WSAEACCES), so the port wait never sees it. Pinning
+        // the IPv4 loopback makes the server reachable and the wait
+        // deterministic. Only npm-run vite-family scripts are pinned (the
+        // `--` separator is npm's argument forwarding; bare `vite` would
+        // break on it). Next/Nuxt bind all interfaces and use different
+        // CLI flags — they stay unpinned.
+        let vite_like = pkg.features.vite || pkg.features.svelte || pkg.features.vue;
+        let npm_run = run.starts_with("npm run ");
+        let run_command = if frontend_port_override && vite_like && npm_run {
+            format!("{} -- --port {} --host 127.0.0.1", run, override_port)
+        } else if frontend_port_override {
             format!("{} -- --port {}", run, override_port)
+        } else if vite_like && npm_run {
+            format!("{} -- --host 127.0.0.1", run)
         } else {
             run.clone()
         };
@@ -2597,16 +2608,7 @@ fn generate_steps(
         ));
     }
 
-    // --- 8. Open a plain terminal at the end (tool step) ---
-    if options.include_tool_steps {
-        // Anchor the terminal to the project root: a bare terminal must
-        // never open in the app's own working directory.
-        let mut term = PendingStep::open_terminal();
-        term.working_directory = Some(root.to_string_lossy().into_owned());
-        steps.push(term);
-    }
-
-    // --- 9. Docker compose governance post-pass ---
+    // --- 8. Docker compose governance post-pass ---
     // When a compose service builds from a local project directory, the
     // container IS that service: the generated local run step is disabled
     // (the user can still enable it to develop locally) and its readiness
@@ -3590,6 +3592,39 @@ mod tests {
         match &docs.kind {
             StepKind::OpenUrl { url } => assert_eq!(url, "http://localhost:8000/docs"),
             other => panic!("expected OpenUrl, got {:?}", other),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// FastAPI/Flask apps scaffolded by Project Creator live under
+    /// `backend/src/`. The uvicorn command must reference the src subpackage
+    /// (`src.main:app`) — otherwise every generated project dies with
+    /// "Could not import module main" on start.
+    #[test]
+    fn fastapi_in_src_layout_uses_src_module_path() {
+        let dir = temp_dir("fastapi_src");
+        write_tree(
+            &dir,
+            &[
+                ("requirements.txt", "fastapi\nuvicorn\n"),
+                ("src/main.py", "from fastapi import FastAPI\napp = FastAPI()\n"),
+            ],
+        );
+        let draft = analyze(&dir);
+        let profile = &draft.profile;
+        let backend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("FastAPI") && s.label.contains("backend"))
+            .expect("fastapi backend step");
+        match &backend.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(
+                    command.contains("uvicorn src.main:app"),
+                    "src layout must produce src.main:app, got: {command}"
+                );
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
         }
         let _ = fs::remove_dir_all(&dir);
     }

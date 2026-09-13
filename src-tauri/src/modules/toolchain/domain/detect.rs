@@ -306,6 +306,12 @@ pub async fn detect_detailed(
                 continue;
             }
             if let Ok(path) = which::which(&probe_cmd[0]) {
+                // Microsoft Store app-execution alias (python.exe в WindowsApps) —
+                // заглушка, а не установка: проба молчит (Store/код 9009),
+                // но PathBroken был бы ложью — тул честно отсутствует (Missing).
+                if crate::platform::paths::is_windows_store_alias(&path) {
+                    continue;
+                }
                 let probe_log = failed_logs
                     .iter()
                     .find(|(program, _)| program == &probe_cmd[0])

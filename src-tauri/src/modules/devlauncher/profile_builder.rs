@@ -274,24 +274,6 @@ fn wait_docker_step(g: &mut GraphBuilder) -> String {
     )
 }
 
-fn open_terminal_step(g: &mut GraphBuilder) -> String {
-    g.push(
-        "Open a terminal",
-        StepKind::OpenTerminal {
-            command: String::new(),
-        },
-        Vec::new(),
-        None,
-        Some(Visibility::VisibleTerminal),
-        Some(ExecutionMode::LongRunning),
-        Some(CompletionPolicy::ProcessStarted),
-        None,
-        true,
-        meta(&[("kind", "plain_terminal")]),
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Framework knowledge
 // ---------------------------------------------------------------------------
 
@@ -421,6 +403,17 @@ fn is_frontend_framework(fw: &str) -> bool {
             | "flutter"
             | "maui"
             | "swiftui"
+    )
+}
+
+/// Whether a frontend framework runs on Vite (which binds 'localhost' and,
+/// on modern Node, the IPv6 loopback only). The wizard's react/vue/svelte/
+/// solid scaffolds all use Vite; Next/Nuxt own their own dev servers.
+fn is_vite_family(fw: &str) -> bool {
+    !matches!(
+        fw,
+        "nextjs" | "next" | "nuxt" | "nuxtjs" | "angular" | "expo" | "electron" | "react-native"
+            | "flutter" | "maui" | "swiftui" | "android"
     )
 }
 
@@ -634,6 +627,47 @@ fn java_wrapper_command(ctx: &WizardContext, task: &str) -> String {
 /// missing.
 fn python_command(_dir: Option<&str>, args: &str) -> String {
     python_venv_run(args)
+}
+
+/// Resolve the ASGI module path for a Python web framework backend.
+///
+/// Project Creator scaffolds FastAPI into `backend/src/main.py` and Flask
+/// into `backend/src/app.py`, while hand-made projects keep the module at
+/// the backend root (`main.py` / `app.py`). A framework launched from the
+/// backend directory must reference the module that actually exists:
+/// `uvicorn main:app` dies with "Could not import module main" when the
+/// file lives in the `src` subpackage — the import path must be
+/// `src.main:app` instead. The module is detected on disk so generated and
+/// existing projects both start; unknown layouts fall back to the classic
+/// root module.
+///
+/// `dir` is the framework's working directory as stored in the profile
+/// (often a RELATIVE path like `./backend` — it resolves against the
+/// project root, exactly like the run-time working-directory resolution).
+fn python_framework_module(root: Option<&Path>, dir: Option<&str>) -> String {
+    const CANDIDATES: [&str; 4] = ["src/main.py", "main.py", "src/app.py", "app.py"];
+    let Some(root) = root else {
+        return "main".to_string();
+    };
+    // `dir` is the framework's working directory as stored in the profile.
+    // When it is None the backend IS the project root.
+    let base = match dir {
+        Some(rel) => {
+            let p = Path::new(rel);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(rel)
+            }
+        }
+        None => root.to_path_buf(),
+    };
+    for rel_file in CANDIDATES {
+        if base.join(rel_file).is_file() {
+            return rel_file.trim_end_matches(".py").replace('/', ".");
+        }
+    }
+    "main".to_string()
 }
 
 fn python_install_command() -> String {
@@ -1196,9 +1230,11 @@ vec![docker_wait
                     true,
                 );
                 let cmd = if fw == "fastapi" {
-                    python_command(dir.as_deref(), "-m uvicorn main:app --reload")
+                    let module = python_framework_module(ctx.project_path.as_deref(), dir.as_deref());
+                    python_command(dir.as_deref(), &format!("-m uvicorn {}:app --reload", module))
                 } else if fw == "flask" {
-                    python_command(dir.as_deref(), "-m flask run --debug")
+                    let module = python_framework_module(ctx.project_path.as_deref(), dir.as_deref());
+                    python_command(dir.as_deref(), &format!("-m flask --app {} run --debug", module))
                 } else {
                     python_command(dir.as_deref(), "-m litestar run --reload")
                 };
@@ -1519,7 +1555,26 @@ vec![docker_wait
                     let start = if has_backend { base_port + 1 } else { base_port };
                     crate::ports::local_dev_port(start, &reserved)
                 };
-                let frontend_cmd = if has_backend && !has_tauri {
+                let frontend_cmd = if is_vite_family(fw) {
+                    // Vite (and the wizard's react/vue/svelte/solid scaffolds
+                    // which all run on Vite) binds 'localhost'. On modern
+                    // Node (17+) 'localhost' resolves to ::1 FIRST, so the
+                    // dev server listens on the IPv6 loopback ONLY — while
+                    // Windows often refuses inbound ::1 connections
+                    // (WSAEACCES, firewall/profile dependent), so the
+                    // readiness wait never sees the port. Pinning the IPv4
+                    // loopback makes the server reachable and the wait
+                    // deterministic. Next/Nuxt bind 0.0.0.0 (all interfaces)
+                    // and use different CLI flags — they stay unpinned.
+                    if has_backend && !has_tauri {
+                        format!(
+                            "npm run dev -- --port {} --host 127.0.0.1",
+                            frontend_port
+                        )
+                    } else {
+                        "npm run dev -- --host 127.0.0.1".to_string()
+                    }
+                } else if has_backend && !has_tauri {
                     format!("npm run dev -- --port {}", frontend_port)
                 } else {
                     "npm run dev".to_string()
@@ -1635,9 +1690,6 @@ vec![docker_wait
         let infra: Vec<String> = compose.clone().into_iter().collect();
         build_language_steps(ctx, &mut g, &infra);
     }
-
-    // --- 6. Open a plain terminal for ad-hoc commands ---
-    open_terminal_step(&mut g);
 
     g.resolve_failure_policies();
 
@@ -1907,7 +1959,9 @@ mod tests {
         assert!(has("Swagger docs"), "{:?}", labels);
         assert!(has("Start Expo"), "{:?}", labels);
         assert!(has("Metro bundler"), "{:?}", labels);
-        assert!(has("Open a terminal"), "{:?}", labels);
+        // The auto-generated plain-terminal tool step was removed: profiles
+        // are launch recipes, not suggestion lists.
+        assert!(!has("Open a terminal"), "{:?}", labels);
 
         // Dependency graph invariants.
         let compose = profile
@@ -2272,6 +2326,67 @@ mod tests {
                 }
                 other => panic!("expected RunCommand, got {:?}", other),
             }
+        }
+    }
+
+    /// FastAPI/Flask backends scaffolded by Project Creator live under
+    /// `backend/src/` (src/main.py, src/app.py). The server command must
+    /// reference the actual module: `uvicorn main:app` dies with "Could not
+    /// import module main" when the file is inside the `src` subpackage.
+    #[test]
+    fn python_backends_in_src_layout_use_module_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_dl_pb_src_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("backend/src")).unwrap();
+        std::fs::write(
+            dir.join("backend/src/main.py"),
+            "from fastapi import FastAPI\napp = FastAPI()\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("backend/requirements.txt"), "fastapi\nuvicorn\n").unwrap();
+
+        let mut c = ctx(&["python"], &["fastapi"], &[], false);
+        c.project_path = Some(dir);
+        let (profile, _) = build(&c);
+        let start = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Python backend"))
+            .expect("start step");
+        match &start.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(
+                    command.contains("-m uvicorn src.main:app --reload"),
+                    "command must target the src subpackage: {command}"
+                );
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
+        }
+    }
+
+    /// Vite dev servers must be pinned to the IPv4 loopback: on modern Node
+    /// they bind ::1 only, and Windows often refuses inbound ::1
+    /// connections — the port wait then never sees the server.
+    #[test]
+    fn vite_frontend_is_pinned_to_ipv4_loopback() {
+        let c = ctx(&["typescript"], &["vite"], &[], false);
+        let (profile, _) = build(&c);
+        let start = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("start step");
+        match &start.kind {
+            StepKind::RunCommand { command, .. } => {
+                assert!(command.contains("--host 127.0.0.1"), "{command}");
+            }
+            other => panic!("expected RunCommand, got {:?}", other),
         }
     }
 

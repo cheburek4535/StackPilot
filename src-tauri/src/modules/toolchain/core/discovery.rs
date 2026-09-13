@@ -585,7 +585,15 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
         if probe.is_empty() || is_shell_probe(&probe[0]) {
             continue;
         }
-        if which::which(&probe[0]).is_ok() {
+        if let Ok(path) = which::which(&probe[0]) {
+            // Microsoft Store app-execution alias (python.exe в WindowsApps) —
+            // НЕ установка: это заглушка, открывающая Store (или код 9009
+            // без консоли). Считать её «сломанной установкой» — ложь: на
+            // чистой машине python честно отсутствует (Missing), и маcтер
+            // обязан предложить установку, а не писать «установлен, PATH сломан».
+            if crate::platform::paths::is_windows_store_alias(&path) {
+                continue;
+            }
             return ToolStatus::PathBroken {
                 reason: format!(
                     "{} найден в PATH, но не отвечает на `{}`",

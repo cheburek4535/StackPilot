@@ -765,6 +765,21 @@ pub async fn execute_plan(
     secrets
 }
 
+/// Расширение файла из URL (последний сегмент пути без query/fragment),
+/// если у источника нет file_name в tools.json: winget-бандл
+/// Microsoft.DesktopAppInstaller_*.msixbundle и т.п. иначе качается
+/// как .bin и «запускается» напрямую (os error 193). Принимает только
+/// короткие буквенно-цифровые расширения — мусор из URL отсекается.
+fn url_file_extension(url: &str) -> Option<&str> {
+    let tail = url.split(['?', '#']).next()?.trim_end_matches('/');
+    let name = tail.rsplit('/').next()?;
+    let (_, ext) = name.rsplit_once('.')?;
+    if ext.is_empty() || ext.len() > 10 || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(ext)
+}
+
 /// Магические байты установщиков, по которым определяется реальный тип
 /// скачанного файла, когда у URL нет расширения (API-редиректы вроде
 /// Adoptium) и file_name в tools.json не задан:
@@ -1399,10 +1414,18 @@ async fn try_install_source(
                 ));
                 // Уникальное имя файла на каждое задание: предсказуемый
                 // общий путь вида tc-{tool}-{name} можно было бы перехватить.
-                let ext = Path::new(source.file_name.as_deref().unwrap_or("installer.bin"))
-                    .extension()
+                // Расширение берём из file_name в tools.json, а если его
+                // нет — из URL (winget-бандл .msixbundle и т.п.). Иначе
+                // файл упал бы в .bin и build_install_command «запустил»
+                // его напрямую (os error 193, «%1 не является приложением
+                // Win32»).
+                let ext = source
+                    .file_name
+                    .as_deref()
+                    .and_then(|n| Path::new(n).extension())
                     .and_then(|e| e.to_str())
                     .map(|e| format!(".{e}"))
+                    .or_else(|| url_file_extension(url).map(|e| format!(".{e}")))
                     .unwrap_or_else(|| ".bin".to_string());
                 let dest = console::tracked_temp_file(tool_id, &ext);
                 if let Err(e) = console::download(
@@ -1429,8 +1452,14 @@ async fn try_install_source(
                 // вызывается, .bin падает с кодом 1). Определяем реальный
                 // тип по магическим байтам и переименовываем, чтобы
                 // build_install_command построил правильную команду
-                // (msi → msiexec /i, exe → запуск).
-                if source.file_name.is_none() {
+                // (msi → msiexec /i, exe → запуск). Файлы с явным
+                // расширением (msixbundle/msi/exe/zip) не трогаем.
+                if source.file_name.is_none()
+                    && dest
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("bin"))
+                {
                     if let Some(sniffed) = sniff_installer_extension(&dest) {
                         let mut typed = dest.clone();
                         typed.set_extension(sniffed);
@@ -2553,6 +2582,70 @@ mod tests {
         assert_eq!(sniff_installer_extension(&dir.join("missing.bin")), None);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Регрессия «winget-msix: Не удалось запустить ...tc-winget-*.bin:
+    /// %1 не является приложением Win32 (os error 193)»: у URL с явным
+    /// расширением (.msixbundle) расширение обязано браться из URL,
+    /// когда file_name в tools.json не задан.
+    #[test]
+    fn url_extension_is_derived_from_url_path() {
+        assert_eq!(
+            url_file_extension(
+                "https://github.com/microsoft/winget-cli/releases/download/v1.29.280/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+            ),
+            Some("msixbundle")
+        );
+        assert_eq!(
+            url_file_extension("https://example.com/download/file.msi?token=abc&x=1"),
+            Some("msi")
+        );
+        assert_eq!(url_file_extension("https://example.com/api/v3/binary/"), None);
+        assert_eq!(url_file_extension("https://example.com/releases/latest"), None);
+        assert_eq!(url_file_extension("https://example.com/archive.tar.gz"), Some("gz"));
+        assert_eq!(
+            url_file_extension("https://example.com/file.with.dots.bundle"),
+            Some("bundle")
+        );
+        // Мусорные «расширения» из URL не пропускаются: файл уйдёт в .bin
+        // и попадёт в sniff-слой (msi/exe по магическим байтам).
+        assert_eq!(url_file_extension("https://example.com/file.asdf_12345678901"), None);
+        assert_eq!(url_file_extension("https://example.com/file."), None);
+        assert_eq!(url_file_extension("https://example.com/file"), None);
+    }
+
+    /// Скачанный бандл winget (URL без file_name в tools.json) обязан
+    /// получить расширение .msixbundle и уйти в Add-AppxPackage, а не
+    /// «запускаться» как .bin.
+    #[test]
+    fn winget_msixbundle_url_keeps_extension_and_installs_via_appx() {
+        let def = defs::load_definitions()
+            .into_iter()
+            .find(|d| d.id == "winget")
+            .expect("winget в tools.json");
+        let msix = def
+            .sources
+            .windows
+            .iter()
+            .find(|s| s.id == "winget-msix")
+            .expect("winget-msix источник");
+        assert!(
+            msix.file_name.is_none(),
+            "расширение должно браться из URL, file_name не нужен"
+        );
+
+        let url = msix.url.as_deref().expect("url у winget-msix");
+        let ext = url_file_extension(url).expect("у URL msixbundle-бандла есть расширение");
+        assert_eq!(ext, "msixbundle");
+
+        // Команда для скачанного файла с правильным расширением —
+        // PowerShell с Add-AppxPackage, не прямой запуск.
+        let bundle = std::env::temp_dir().join(format!("tc-winget-0-{}.msixbundle", std::process::id()));
+        let cmd = build_install_command(&def, msix, Some(&bundle), None).unwrap();
+        assert_eq!(cmd.program, "powershell");
+        let script = cmd.args.last().unwrap();
+        assert!(script.contains("Add-AppxPackage"));
+        assert!(script.contains(&bundle.to_string_lossy().into_owned()));
     }
 
     /// Скачанный .bin с MSI-содержимым обязан переименовываться в .msi,

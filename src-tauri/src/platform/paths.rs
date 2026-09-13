@@ -67,6 +67,43 @@ pub fn is_batch_file(path: &str) -> bool {
     lower.ends_with(".cmd") || lower.ends_with(".bat")
 }
 
+/// Windows app-execution-alias directories (Microsoft Store stubs).
+///
+/// The Store aliases (`%LOCALAPPDATA%\Microsoft\WindowsApps` and
+/// `%ProgramFiles%\WindowsApps`) contain reparse-point `.exe` stubs
+/// (`python.exe`, `python3.exe`, ...) that are *not* real executables:
+/// when launched they open the Microsoft Store (or fail with exit code
+/// 9009 and "Python was not found" in non-interactive sessions).
+///
+/// A binary that resolves into one of these directories must NOT be
+/// treated as an installation of the tool — detection code uses this to
+/// distinguish a genuine broken install (PathBroken) from a fake stub
+/// that merely shadows the tool name in PATH (Missing).
+pub fn is_windows_store_alias(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(std::path::PathBuf::from(local).join("Microsoft").join("WindowsApps"));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            dirs.push(std::path::PathBuf::from(program_files).join("WindowsApps"));
+        }
+        let norm = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+        let target = norm(path);
+        dirs.iter().any(|dir| {
+            let ancestor = norm(dir);
+            target.starts_with(&ancestor)
+                && (target.len() == ancestor.len() || target[ancestor.len()..].starts_with('\\'))
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +229,33 @@ mod tests {
         assert!(!is_batch_file("node"));
         assert!(!is_batch_file("node.exe"));
         assert!(!is_batch_file(""));
+    }
+
+    #[test]
+    fn store_alias_detection_windows_paths() {
+        // Реальные файлы не трогаем: проверяем чистое сравнение путей.
+        #[cfg(target_os = "windows")]
+        {
+            let stub = PathBuf::from(format!(
+                "{}\\Microsoft\\WindowsApps\\python.exe",
+                std::env::var("LOCALAPPDATA").unwrap_or_default()
+            ));
+            assert!(
+                is_windows_store_alias(&stub),
+                "LOCALAPPDATA\\Microsoft\\WindowsApps\\python.exe — Store alias"
+            );
+            let prog = PathBuf::from(format!(
+                "{}\\WindowsApps\\python3.exe",
+                std::env::var("ProgramFiles").unwrap_or_default()
+            ));
+            assert!(
+                is_windows_store_alias(&prog),
+                "ProgramFiles\\WindowsApps\\python3.exe — Store alias"
+            );
+        }
+        // Не-Windows пути и поддельные префиксы не распознаются.
+        assert!(!is_windows_store_alias(Path::new(r"C:\Windows\System32\python.exe")));
+        assert!(!is_windows_store_alias(Path::new(r"C:\WindowsApps\python.exe")));
+        assert!(!is_windows_store_alias(Path::new(r"C:\Users\WindowsAppsX\python.exe")));
     }
 }

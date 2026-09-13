@@ -296,10 +296,19 @@ impl OsProcessManager {
     ///   terminated as a unit via `taskkill /F /T /PID`.
     /// - Unix: `setsid()` in `pre_exec` so the child becomes a session
     ///   leader with its own process group, killable via `kill(-pgid, sig)`.
-    fn build_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
+    ///
+    /// Visible-terminal spawns (the user watches the child in its own
+    /// console window) must NOT be captured: piping stdout/stderr and
+    /// hiding the console would make `cmd` render invisibly AND exit
+    /// instantly (stdin hits EOF on the inherited NUL handle), so the
+    /// "terminal" would never open. They get `CREATE_NEW_CONSOLE` with the
+    /// console's own stdio instead. Hidden spawns keep the capture setup.
+    fn build_command(command: &str, args: &[&str], working_dir: Option<&str>, visible: bool) -> Command {
         let mut cmd = Command::new(command);
         cmd.args(args);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        if !visible {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -310,10 +319,16 @@ impl OsProcessManager {
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            const CREATE_NEW_CONSOLE: u32 = 0x00000010;
             // CREATE_NO_WINDOW: these are captured (hidden) processes —
             // without it every one would flash a console window in
             // release builds, which have no console to inherit.
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | crate::platform::CREATE_NO_WINDOW);
+            let flags = if visible {
+                CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE
+            } else {
+                CREATE_NEW_PROCESS_GROUP | crate::platform::CREATE_NO_WINDOW
+            };
+            cmd.creation_flags(flags);
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1089,7 +1104,7 @@ impl OsProcessManager {
         let mut raw_last = raw_last;
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
 
-        let mut cmd = Self::build_command(&spawn_program, &spawn_args_refs, working_dir);
+        let mut cmd = Self::build_command(&spawn_program, &spawn_args_refs, working_dir, visible);
 
         if let Some(raw) = raw_last.take() {
             #[cfg(target_os = "windows")]
@@ -1347,7 +1362,7 @@ mod tests {
         let (cmd_name, cmd_args): (&str, &[&str]) = ("cmd", &["/C", "echo hello"]);
         #[cfg(not(target_os = "windows"))]
         let (cmd_name, cmd_args): (&str, &[&str]) = ("echo", &["hello"]);
-        let mut cmd = OsProcessManager::build_command(cmd_name, cmd_args, Some(wd));
+        let mut cmd = OsProcessManager::build_command(cmd_name, cmd_args, Some(wd), false);
         let child = cmd.spawn();
         assert!(child.is_ok(), "command with working_dir should spawn");
         let mut child = child.unwrap();
@@ -1357,7 +1372,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn build_command_creates_process_group_on_unix() {
-        let mut cmd = OsProcessManager::build_command("echo", &["pgid_test"], None);
+        let mut cmd = OsProcessManager::build_command("echo", &["pgid_test"], None, false);
         let child = cmd.spawn().expect("should spawn");
         let mut child = child;
         let status = child.wait().expect("should wait");
@@ -1367,7 +1382,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn build_command_creates_process_group_on_windows() {
-        let mut cmd = OsProcessManager::build_command("cmd", &["/C", "echo pgid_test"], None);
+        let mut cmd = OsProcessManager::build_command("cmd", &["/C", "echo pgid_test"], None, false);
         let child = cmd
             .spawn()
             .expect("should spawn with CREATE_NEW_PROCESS_GROUP");

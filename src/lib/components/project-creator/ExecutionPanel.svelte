@@ -3,6 +3,7 @@
   import type { TranslationKey } from "$lib/core/i18n.svelte";
   import type { ExecutionPlan, StepStatus, ProjectFileCount } from "$lib/modules/project_creator/types";
   import { countProjectFiles } from "$lib/modules/project_creator/api";
+  import { tStepLabel } from "$lib/modules/project_creator/stepI18n";
 
   let {
     execPlan,
@@ -213,7 +214,7 @@
         {/if}
       </div>
       <div class="exec-detail">
-        <p class="exec-name">{entry.name}</p>
+        <p class="exec-name">{tStepLabel(entry.name)}</p>
         {#if entry.logs.length > 0}
           <pre class="exec-log">{entry.logs.join("\n")}</pre>
         {/if}

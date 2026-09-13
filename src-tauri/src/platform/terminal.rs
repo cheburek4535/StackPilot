@@ -1,9 +1,15 @@
 use std::fmt;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use super::host::{current_os, HostOs};
 use crate::modules::devlauncher::models::ProcessTrackingQuality;
+
+/// Whether Windows Terminal is usable on this machine, cached for the
+/// process lifetime (availability cannot change while the app runs).
+#[cfg(target_os = "windows")]
+static WINDOWS_TERMINAL_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // TerminalBackend вЂ” platform abstraction for native terminal execution
@@ -182,7 +188,7 @@ pub fn default_terminal_for_platform() -> TerminalBackend {
     match current_os() {
         HostOs::Windows => {
             // Try Windows Terminal first, fall back to cmd
-            if which_exists("wt") {
+            if windows_terminal_available() {
                 TerminalBackend::WindowsTerminal
             } else {
                 TerminalBackend::Cmd
@@ -704,6 +710,66 @@ fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
+/// Whether Windows Terminal can actually be launched on this machine.
+///
+/// A PATH check alone is NOT enough: on Windows `wt.exe` is an App
+/// Execution Alias — a reparse point in
+/// `%LOCALAPPDATA%\Microsoft\WindowsApps` whose presence says nothing about
+/// whether the Windows Terminal package is installed. Stale aliases (the
+/// app was uninstalled, the alias was disabled, or the machine never had
+/// the package) survive on disk and, when spawned, create a process that
+/// exits immediately with a non-zero code — the startup probe then reports
+/// "Process ... exited immediately after start" for every terminal step on
+/// such machines. The verdict therefore comes from the AppX package
+/// repository (the same registry store `Get-AppxPackage` reads): the
+/// `Microsoft.WindowsTerminal_*` package is only registered there when the
+/// terminal is actually installed. This is a pure registry read — spawning
+/// `wt` for verification is NOT an option: `wt --version` makes Windows
+/// Terminal pop its version-title Help window. The verdict is cached for
+/// the process lifetime.
+#[cfg(target_os = "windows")]
+fn windows_terminal_available() -> bool {
+    *WINDOWS_TERMINAL_AVAILABLE.get_or_init(windows_terminal_registered)
+}
+
+/// Query the AppX package repository for the Windows Terminal package.
+///
+/// Packages registered for the current user live under
+/// `HKCU\Software\Classes\Local Settings\...\AppModel\Repository\Packages`;
+/// provisioned-for-all-users packages are additionally listed under
+/// `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages`.
+/// Either hit means Windows Terminal is installed.
+#[cfg(target_os = "windows")]
+fn windows_terminal_registered() -> bool {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    const PER_USER_REPO: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+    const MACHINE_REPO: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+
+    // `HKEY` is a `*mut c_void` alias; the predef constants (HKEY_CURRENT_USER,
+    // HKEY_LOCAL_MACHINE) are its values.
+    let has_windows_terminal = |hive: *mut std::ffi::c_void, path: &str| -> bool {
+        match RegKey::predef(hive).open_subkey_with_flags(path, KEY_READ) {
+            Ok(key) => key.enum_keys().any(|name| {
+                name.map(|n| n.starts_with("Microsoft.WindowsTerminal_"))
+                    .unwrap_or(false)
+            }),
+            Err(_) => false,
+        }
+    };
+
+    has_windows_terminal(HKEY_CURRENT_USER, PER_USER_REPO)
+        || has_windows_terminal(HKEY_LOCAL_MACHINE, MACHINE_REPO)
+}
+
+/// Non-Windows stub: the WindowsTerminal backend is never available there.
+#[cfg(not(target_os = "windows"))]
+fn windows_terminal_available() -> bool {
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -737,6 +803,22 @@ mod tests {
                         | TerminalBackend::Custom(_)
                 ));
             }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_terminal_availability_is_bool_and_stable() {
+        // Never panics and returns a consistent verdict for the process
+        // lifetime (the availability cache is process-scoped).
+        let a = windows_terminal_available();
+        let b = windows_terminal_available();
+        assert_eq!(a, b);
+        let backend = default_terminal_for_platform();
+        if a {
+            assert_eq!(backend, TerminalBackend::WindowsTerminal);
+        } else {
+            assert_eq!(backend, TerminalBackend::Cmd);
         }
     }
 

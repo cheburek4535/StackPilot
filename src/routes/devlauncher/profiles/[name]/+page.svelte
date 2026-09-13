@@ -7,6 +7,7 @@
   import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun } from "$lib/modules/devlauncher/types";
   import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel } from "$lib/modules/devlauncher/types";
   import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
+  import { markProfileOpened, shouldShowTerminalHint, markHintShown } from "$lib/modules/devlauncher/onboarding";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -59,6 +60,11 @@
   let showAddPanel = $state(false);
   let addTpl = $state<AddTemplateDraft>(emptyAddTemplateDraft());
   let savingActions = $state(false);
+
+  /** First-run mini-guide: a highlighted example step the user can add
+   *  with one click. Only appears on the first profile page visit after a
+   *  profile was actually created (see modules/devlauncher/onboarding.ts). */
+  let terminalHintVisible = $state(false);
 
   /** Run id whose processes are being stopped (drives button feedback). */
   let stoppingRunId = $state<string | null>(null);
@@ -145,8 +151,14 @@
       const demo = await withTimeout(getDemoProfile(), 10000);
       if (demo.name === name) {
         profile = demo;
+        // Demo profiles never count as "the user created a profile" —
+        // the first-run guide stays hidden for them.
+        terminalHintVisible = false;
       } else {
         profile = await withTimeout(getProfile(name), 10000);
+        // A real profile was opened: this is the first-run guide's trigger.
+        markProfileOpened();
+        terminalHintVisible = shouldShowTerminalHint();
       }
     } catch (e) {
       // Only surface load errors on the initial load — a failed silent
@@ -388,6 +400,19 @@
     } else {
       void saveEditedProfile([...profile.actions, stepToAction(step)], null);
     }
+  }
+
+  /** Add the guide's example step ("Open a terminal") and retire the guide. */
+  function addHintTerminal() {
+    addActionStep({ kind: "terminal_plain" });
+    markHintShown();
+    terminalHintVisible = false;
+  }
+
+  /** Dismiss the guide without adding anything (one-time). */
+  function dismissTerminalHint() {
+    markHintShown();
+    terminalHintVisible = false;
   }
 
   // ---- Application selection (browser / database viewer) ----
@@ -904,6 +929,35 @@
       </div>
     </section>
 
+    {#if terminalHintVisible}
+      <section class="hint-section">
+        <div class="hint-header">
+          <p class="hint-text">{i18n.t("devl.hint.intro") as TranslationKey}</p>
+          <button
+            class="hint-dismiss"
+            onclick={dismissTerminalHint}
+            title={i18n.t("devl.close") as TranslationKey}
+            aria-label={i18n.t("devl.close") as TranslationKey}
+          >
+            ✕
+          </button>
+        </div>
+        <div class="hint-example">
+          <span class="action-icon">▣</span>
+          <div class="action-info">
+            <span class="action-label">{i18n.t("devl.hint.example_label") as TranslationKey}</span>
+            <span class="action-type">{i18n.t("devl.tpl.terminal_plain") as TranslationKey}</span>
+            <span class="action-detail">{i18n.t("devl.hint.example_detail") as TranslationKey}</span>
+          </div>
+          <div class="action-controls">
+            <button class="small-btn" onclick={addHintTerminal} title={i18n.t("devl.add_action") as TranslationKey}>
+              +
+            </button>
+          </div>
+        </div>
+      </section>
+    {/if}
+
     <!-- Application selection -->
     <section>
       <div class="actions-head">
@@ -1197,6 +1251,53 @@
   .result-row.ok { color: var(--sp-success); }
   .result-row.err { color: var(--sp-danger); }
   .result-row.skip { color: var(--sp-warning); }
+
+  /* First-run mini-guide (example step the user can add with one click) */
+  .hint-section {
+    margin-top: 1.25rem;
+    padding: 0.75rem;
+    border: 1px dashed var(--sp-accent-border);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-accent-soft);
+  }
+  .hint-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+  }
+  .hint-text {
+    margin: 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-2);
+    line-height: 1.45;
+  }
+  .hint-dismiss {
+    flex-shrink: 0;
+    padding: 0.1rem 0.4rem;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-3);
+    cursor: pointer;
+    font-size: var(--sp-fs-sm);
+    line-height: 1;
+  }
+  .hint-dismiss:hover { color: var(--sp-text-1); }
+  .hint-example {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-accent-border);
+    border-radius: var(--sp-radius-md);
+    animation: hint-glow 2.6s ease-in-out infinite;
+  }
+  @keyframes hint-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(98, 182, 98, 0); }
+    50% { box-shadow: 0 0 14px 1px rgba(98, 182, 98, 0.35); }
+  }
 
   /* Action set editing */
   .actions-head {

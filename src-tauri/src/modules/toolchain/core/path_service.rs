@@ -18,9 +18,10 @@
 //
 // Windows-деталь: реестр хранит PATH с %VAR%-ссылками, а процесс
 // при старте получает уже раскрытую копию. Поэтому sync_process_path
-// берёт за базу раскрытый PATH процесса и ДОБАВЛЯЕТ к нему свежие
-// записи (раскрывая их сам), а не заменяет целиком — иначе
-// %VAR%-записи сломали бы запуск дочерних процессов.
+// берёт за основу СВЕЖИЕ записи системы (раскрывая %VAR% сам) и
+// дополняет их недостающими записями текущего процесса — иначе
+// только что установленный инструмент остался бы за Store-заглушкой
+// (WindowsApps\python.exe), которая в PATH процесса стоит раньше.
 
 use crate::modules::toolchain::platforms;
 
@@ -292,13 +293,25 @@ pub fn process_path_entries() -> Vec<String> {
 /// следующая проверка версии («инструмент не найден») была бы
 /// ложной. Ошибки чтения системы не фатальны: используем то,
 /// что удалось получить.
+///
+/// Порядок записей: СВЕЖИЕ записи (система+пользователь) идут ПЕРВЫМИ,
+/// затем — записи процесса, которых в свежем списке нет. Это критично
+/// для Windows: установщики (Python с PrependPath=1) добавляют свои
+/// каталоги В НАЧАЛО пользовательского PATH, а запущенное приложение
+/// держит PATH со времён старта. Дописывание свежих каталогов в КОНЕЦ
+/// оставляло Microsoft Store-заглушку (WindowsApps\python.exe) ПЕРВОЙ —
+/// `python` продолжал открывать Store/падать с кодом 9009 вместо
+/// только что установленного интерпретатора.
 pub async fn sync_process_path() -> Result<(), String> {
     let platform = platforms::current_platform();
     let base = process_path_entries();
     let mut fresh = platform.read_system_path().await.unwrap_or_default();
     fresh.extend(platform.read_user_path().await.unwrap_or_default());
     let expanded: Vec<String> = fresh.iter().map(|d| expand_env_vars(d)).collect();
-    let merged = merge_dirs(&base, &expanded);
+    // Свежие записи впереди: они отражают текущую правду реестра
+    // (порядок, установленный инсталлятором), процесс-записи, которых
+    // в свежем списке нет, сохраняются в конце.
+    let merged = merge_dirs(&expanded, &base);
 
     std::env::set_var("PATH", merged.join(&platform.path_separator()));
     Ok(())
@@ -323,6 +336,60 @@ mod tests {
                 "C:\\b".to_string(),
                 "C:\\c".to_string()
             ]
+        );
+    }
+
+    /// Регрессия sync_process_path: свежие записи реестра (система +
+    /// пользователь, после установки Python с PrependPath=1 Python313 стоит
+    /// ПЕРВЫМ) обязаны опередить «застаревший» PATH процесса, где раньше
+    /// сидит Store-заглушка WindowsApps\python.exe. Дописывание свежих
+    /// каталогов в конец оставляло заглушку первой — `python` находил
+    /// Store-заглушку (код 9009), а не реальный интерпретатор.
+    #[test]
+    fn fresh_entries_precede_stale_process_entries() {
+        // PATH процесса: заглушка WindowsApps в середине, реального python нет.
+        let base = vec![
+            "C:\\Windows\\System32".to_string(),
+            "C:\\Users\\And\\AppData\\Local\\Microsoft\\WindowsApps".to_string(),
+            "C:\\tools\\git\\cmd".to_string(),
+        ];
+        // Свежий пользовательский PATH после установки Python: Python313
+        // ДО WindowsApps (PrependPath=1), затем обычные каталоги.
+        let fresh = vec![
+            "%LOCALAPPDATA%\\Programs\\Python\\Python313".to_string(),
+            "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts".to_string(),
+            "%SystemRoot%\\System32".to_string(),
+            "%LOCALAPPDATA%\\Microsoft\\WindowsApps".to_string(),
+            "C:\\tools\\git\\cmd".to_string(),
+        ];
+        let expanded: Vec<String> = fresh.iter().map(|d| expand_env_vars(d)).collect();
+        let merged = merge_dirs(&expanded, &base);
+        let windows_apps_pos = merged
+            .iter()
+            .position(|d| same_dir(d, "%LOCALAPPDATA%\\Microsoft\\WindowsApps"));
+        let python_pos = merged.iter().position(|d| {
+            let expanded = expand_env_vars("%LOCALAPPDATA%\\Programs\\Python\\Python313");
+            same_dir(d, &expanded)
+        });
+        assert!(python_pos.is_some(), "Python313 обязан быть в PATH: {merged:?}");
+        assert!(
+            windows_apps_pos.is_none() || python_pos < windows_apps_pos,
+            "Python обязан опережать Store-заглушку WindowsApps: {merged:?}"
+        );
+        // Процесс-записи, которых нет в свежем списке, сохраняются в конце.
+        let system32_expanded = expand_env_vars("%SystemRoot%\\System32");
+        assert!(
+            merged.iter().any(|d| same_dir(d, &system32_expanded)),
+            "свежие System32 раскрыты и на месте: {merged:?}"
+        );
+        // Застаревшая запись процесса, которой нет в свежем списке
+        // (чужая WindowsApps «C:\Users\And\...»), сохраняется в конце.
+        let stale_pos = merged
+            .iter()
+            .position(|d| same_dir(d, "C:\\Users\\And\\AppData\\Local\\Microsoft\\WindowsApps"));
+        assert!(
+            stale_pos.is_some() && python_pos < stale_pos,
+            "застаревшая запись остаётся ПОСЛЕ свежего Python: {merged:?}"
         );
     }
 

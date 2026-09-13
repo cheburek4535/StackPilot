@@ -97,6 +97,16 @@
       titleKey: "onboarding.step7_title",
       bodyKeys: ["onboarding.step7_body1", "onboarding.step7_body2"],
     },
+    {
+      icon: "palette",
+      titleKey: "onboarding.step8_title",
+      bodyKeys: ["onboarding.step8_body1", "onboarding.step8_body2", "onboarding.step8_body3"],
+    },
+    {
+      icon: "help",
+      titleKey: "onboarding.step9_title",
+      bodyKeys: ["onboarding.step9_body1", "onboarding.step9_body2"],
+    },
   ];
 
   let stepIndex = $state(0);

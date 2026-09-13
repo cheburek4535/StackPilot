@@ -165,7 +165,7 @@ pub fn python_preflight_step(project_path: &str) -> Step {
         label: "Check Python interpreter".into(),
         description:
             "Verify the Python interpreter and print its executable path and version".into(),
-        command: python_command().to_string(),
+        command: python_command(),
         args: vec![
             "-c".into(),
             "import sys; print('interpreter: ' + sys.executable); print('python version: ' + sys.version.split()[0])"
@@ -232,7 +232,7 @@ pub fn python_environment_steps(project_path: &str, python_dir: &str) -> Vec<Ste
                 python_command(),
                 venv_str
             ),
-            command: python_command().to_string(),
+            command: python_command(),
             args: vec!["-m".into(), "venv".into(), venv_str],
             working_dir: Some(wd.clone()),
             env: None,
@@ -768,7 +768,10 @@ mod tests {
             Step::Command { command, args, .. } => (command, args),
             _ => unreachable!(),
         };
-        assert!(cmd == "python" || cmd == "python3", "{cmd}");
+        assert_eq!(
+            cmd, &python_command(),
+            "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка)"
+        );
         assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
         assert!(args[2].ends_with("venv"), "{args:?}");
         assert!(matches!(
