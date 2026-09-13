@@ -13,6 +13,8 @@
   import { statusLabel, formatStarted, isProcessFailed } from "$lib/modules/workspace/status";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { HINT_WORKSPACE_PROBLEMS } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let dataLoaded = $state(false);
@@ -70,6 +72,15 @@
     title={i18n.t("ws.problems") as TranslationKey}
     description={i18n.t("ws.problems_desc") as TranslationKey}
     icon="alert"
+  />
+
+  <HelpHint
+    id={HINT_WORKSPACE_PROBLEMS.id}
+    resolvedBy={HINT_WORKSPACE_PROBLEMS.resolvedBy}
+    variant="info"
+    icon="alert"
+    title={i18n.t("help.ws_problems.title") as TranslationKey}
+    text={i18n.t("help.ws_problems.body") as TranslationKey}
   />
 
   {#if wsLoading}

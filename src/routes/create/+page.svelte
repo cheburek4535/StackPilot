@@ -66,6 +66,19 @@ import { deleteProfile } from "$lib/modules/devlauncher/api";
 import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
 import { notifyError } from "$lib/core/toasts";
 import { userExperienced, markExperienced } from "$lib/core/novice";
+import {
+  markHelpDid,
+  markHelpGraduated,
+  helpMode,
+  helpProgress,
+  isHintVisible,
+  HELP,
+  HINT_CREATE_TYPE,
+  HINT_CREATE_STACK,
+  HINT_CREATE_TOOLS,
+  HINT_CREATE_PREVIEW,
+} from "$lib/core/help";
+import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
 let tree = $state<WizardTreeData | null>(null);
 let status = $state<string>("loading");
@@ -115,6 +128,17 @@ let stackIssues = $derived<StackIssue[]>(
     : [],
 );
 let stackError = $derived(firstError(stackIssues));
+
+/** Anchor highlights for beginner mode: the control the hint points at. */
+const stackHintVisible = $derived(
+  isHintVisible($helpProgress, $helpMode, HINT_CREATE_STACK),
+);
+const toolsHintVisible = $derived(
+  isHintVisible($helpProgress, $helpMode, HINT_CREATE_TOOLS),
+);
+const previewHintVisible = $derived(
+  isHintVisible($helpProgress, $helpMode, HINT_CREATE_PREVIEW),
+);
 
 /** Для новичков блокируем переход к сверке («Просмотр и создание»), пока
  *  конструктор не досмотрен до низа хотя бы раз. Флаг «опытный» глобальный
@@ -1655,6 +1679,7 @@ function back() {
 }
 
 function selectType(t: ProjectTypeDef) {
+  markHelpDid(HELP.createTypeSelected);
   selectedType = t;
   backendLangs = [];
   frontendLangs = [];
@@ -1861,6 +1886,7 @@ async function revertLocalInfra(toolId: string) {
 
 async function startInstall() {
   if (!envCheck) return;
+  markHelpDid(HELP.envInstallStarted);
   envInstalling = true;
   envInstallDone = false;
   envError = null;
@@ -2103,6 +2129,7 @@ async function confirmAll() {
   if (seq !== folderCheckSeq) return;
   folderCheckPending = false;
 
+  markHelpDid(HELP.createStackConfirmed);
   await goToEnvironment();
 }
 
@@ -2152,6 +2179,7 @@ async function doCreateProject() {
   const path = effectiveProjectPath();
   if (!path || !selectedFolder || !selectedType) return;
 
+  markHelpDid(HELP.envContinued);
   const ctx: WizardContext = {
     project_path: null,
     project_name: conflictResolvedFolder ?? projectName,
@@ -2248,6 +2276,7 @@ async function handleExecEvent(event: ExecutionEvent) {
       // выполнение — реплей событий при возврате на вкладку не открывает
       // уже показанное/закрытое окно заново.
       const createdSuccessfully = a?.result?.overall === "Success";
+      if (createdSuccessfully) markHelpGraduated();
       if (createdSuccessfully && !devlAutoPopupShown && execPlan?.context) {
         const ctx = { ...execPlan.context, project_path: execPlan.project_path };
         try {
@@ -2595,6 +2624,14 @@ function resetAll() {
               {i18n.t("create.fw_hint") as TranslationKey}
             </p>
 
+            <HelpHint
+              id={HINT_CREATE_STACK.id}
+              resolvedBy={HINT_CREATE_STACK.resolvedBy}
+              icon="layers"
+              title={i18n.t("help.create_stack.title") as TranslationKey}
+              text={i18n.t("help.create_stack.body") as TranslationKey}
+            />
+
             {#if confirmClearStack}
               <div class="clear-overlay" onclick={() => (confirmClearStack = false)}>
                 <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
@@ -2619,6 +2656,13 @@ function resetAll() {
         <div class="builder-left">
           <!-- Phase 0: Project Type -->
           {#if phase === 0}
+            <HelpHint
+              id={HINT_CREATE_TYPE.id}
+              resolvedBy={HINT_CREATE_TYPE.resolvedBy}
+              icon="layers"
+              title={i18n.t("help.create_type.title") as TranslationKey}
+              text={i18n.t("help.create_type.body") as TranslationKey}
+            />
             <div class="card-grid type-grid">
               {#each tree!.project_types as pt}
                 <button class="card" onclick={() => selectType(pt)}>
@@ -3056,7 +3100,14 @@ function resetAll() {
             </details>
 
             <!-- Инструменты и фичи -->
-            <section class="territory territory-tools">
+            <HelpHint
+              id={HINT_CREATE_TOOLS.id}
+              resolvedBy={HINT_CREATE_TOOLS.resolvedBy}
+              icon="wrench"
+              title={i18n.t("help.create_tools.title") as TranslationKey}
+              text={i18n.t("help.create_tools.body") as TranslationKey}
+            />
+            <section class="territory territory-tools" class:sp-help-anchor={toolsHintVisible}>
               <header class="territory-head">
                 <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
@@ -3165,6 +3216,7 @@ function resetAll() {
               </span>
               <button
                 class="btn-primary"
+                class:sp-help-anchor={stackHintVisible && !stackError && !reviewLocked}
                 onclick={() => (phase = 2)}
                 disabled={!!stackError || reviewLocked}
                 title={reviewLocked ? (i18n.t("create.scroll_lock_hint") as TranslationKey) : undefined}
@@ -3290,6 +3342,17 @@ function resetAll() {
               </span>
             </div>
 
+            <HelpHint
+              id={HINT_CREATE_PREVIEW.id}
+              resolvedBy={HINT_CREATE_PREVIEW.resolvedBy}
+              variant="info"
+              icon="search"
+              title={i18n.t("help.create_preview.title") as TranslationKey}
+            >
+              <p>{i18n.t("help.create_preview.body") as TranslationKey}</p>
+              <p>{i18n.t("help.create_preview.next") as TranslationKey}</p>
+            </HelpHint>
+
             <div class="preview-section">
               {#if PreviewPanel}
                 <PreviewPanel
@@ -3343,6 +3406,7 @@ function resetAll() {
               <button class="btn-back" onclick={back}>{i18n.t("create.back") as TranslationKey}</button>
               <button
                 class="btn-primary create-btn"
+                class:sp-help-anchor={previewHintVisible && !!projectName && !!selectedFolder && !stackError && !projectNameError}
                 disabled={!projectName || !selectedFolder || stackError !== null || projectNameError !== null}
                 title={stackError ?? projectNameError ?? undefined}
                 onclick={confirmAll}

@@ -13,6 +13,11 @@
   import type { Locale } from "$lib/core/i18n.svelte";
   import { applyTheme, applyUiPrefs, ACCENT_PRESETS } from "$lib/core/theme";
   import { notifySuccess, notifyError, notifyWarning } from "$lib/core/toasts";
+  import {
+    helpMode,
+    setHelpMode,
+    resetHelpProgress,
+  } from "$lib/core/help";
   import { APP_NAME, APP_VERSION } from "$lib/core/app";
   import PageContainer from "$lib/components/ui/PageContainer.svelte";
   import PageHeader from "$lib/components/ui/PageHeader.svelte";
@@ -310,6 +315,16 @@
     }
   }
 
+  function toggleBeginnerMode(): void {
+    setHelpMode(!$helpMode);
+    if ($helpMode) notifySuccess(i18n.t("settings.help_mode.enabled_toast"));
+  }
+
+  function handleResetHelpProgress(): void {
+    resetHelpProgress();
+    notifySuccess(i18n.t("settings.help_mode.reset_toast"));
+  }
+
   function initials(): string {
     const name = draft?.personal.name.trim() || draft?.personal.username.trim() || "?";
     return name
@@ -592,6 +607,42 @@
       </div>
     {:else if activeTab === "display"}
       <div class="sp-tab-panel">
+        <div class="help-mode-card" class:help-mode-card-on={$helpMode}>
+          <span class="help-mode-icon" aria-hidden="true">
+            <Icon name="help" size={26} />
+          </span>
+          <div class="help-mode-text">
+            <strong class="help-mode-heading">{i18n.t("settings.help_mode.heading")}</strong>
+            <p class="help-mode-desc">{i18n.t("settings.help_mode.desc")}</p>
+            <ul class="help-mode-list">
+              <li>{i18n.t("settings.help_mode.item_create")}</li>
+              <li>{i18n.t("settings.help_mode.item_stack")}</li>
+              <li>{i18n.t("settings.help_mode.item_env")}</li>
+              <li>{i18n.t("settings.help_mode.item_workspace")}</li>
+            </ul>
+          </div>
+          <div class="help-mode-actions">
+            <button
+              type="button"
+              class="help-mode-btn"
+              class:help-mode-btn-on={$helpMode}
+              role="switch"
+              aria-checked={$helpMode}
+              onclick={toggleBeginnerMode}
+            >
+              <span class="help-mode-knob"></span>
+              <span>{i18n.t($helpMode ? "settings.help_mode.on" : "settings.help_mode.off")}</span>
+            </button>
+            <button
+              type="button"
+              class="help-mode-reset"
+              onclick={handleResetHelpProgress}
+            >
+              {i18n.t("settings.help_mode.reset")}
+            </button>
+          </div>
+        </div>
+
         <Card title={i18n.t("settings.section.appearance")}>
           <div class="field">
             <div class="field-text">
@@ -1163,6 +1214,154 @@
     flex-direction: column;
     gap: var(--sp-5);
     animation: sp-rise-in 0.18s ease;
+  }
+
+  /* ---- Beginner mode card (first thing on the first tab) ---- */
+
+  .help-mode-card {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-4);
+    padding: var(--sp-5) var(--sp-6);
+    border-radius: var(--sp-radius-lg);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-bg-1);
+    box-shadow: var(--sp-shadow-1);
+    transition: border-color 0.2s ease, background 0.2s ease;
+  }
+
+  .help-mode-card-on {
+    border-color: var(--sp-accent-border);
+    background: linear-gradient(135deg, var(--sp-accent-soft), var(--sp-bg-1) 55%);
+    box-shadow: var(--sp-shadow-2);
+  }
+
+  .help-mode-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    flex: 0 0 auto;
+    border-radius: var(--sp-radius-lg);
+    color: var(--sp-accent);
+    background: linear-gradient(135deg, var(--sp-accent-soft), var(--sp-info-soft));
+    border: 1px solid var(--sp-accent-border);
+  }
+
+  .help-mode-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
+
+  .help-mode-heading {
+    font-size: var(--sp-fs-md);
+    color: var(--sp-text-1);
+  }
+
+  .help-mode-desc {
+    margin: 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-2);
+    line-height: var(--sp-lh-normal);
+    max-width: 46rem;
+  }
+
+  .help-mode-list {
+    margin: var(--sp-1) 0 0;
+    padding-left: var(--sp-5);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0.125rem var(--sp-4);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .help-mode-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--sp-2);
+    flex: 0 0 auto;
+  }
+
+  .help-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-width: 9.5rem;
+    justify-content: space-between;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-full);
+    border: 1px solid var(--sp-border-strong);
+    background: var(--sp-bg-3);
+    color: var(--sp-text-2);
+    font-family: var(--sp-font-sans);
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    cursor: pointer;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  }
+
+  .help-mode-btn:hover {
+    color: var(--sp-text-1);
+    border-color: var(--sp-border-strong);
+  }
+
+  .help-mode-btn-on {
+    background: var(--sp-accent-strong);
+    border-color: var(--sp-accent-border);
+    color: #fff;
+  }
+
+  .help-mode-btn-on:hover {
+    color: #fff;
+    filter: brightness(1.06);
+  }
+
+  .help-mode-knob {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    border-radius: var(--sp-radius-full);
+    background: var(--sp-text-3);
+    transition: background-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .help-mode-btn-on .help-mode-knob {
+    background: #fff;
+  }
+
+  .help-mode-reset {
+    border: none;
+    background: transparent;
+    color: var(--sp-text-3);
+    font-family: var(--sp-font-sans);
+    font-size: var(--sp-fs-xs);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+
+  .help-mode-reset:hover {
+    color: var(--sp-text-1);
+  }
+
+  @media (max-width: 720px) {
+    .help-mode-card {
+      flex-direction: column;
+    }
+
+    .help-mode-actions {
+      align-items: stretch;
+      align-self: stretch;
+    }
+
+    .help-mode-btn {
+      width: 100%;
+    }
   }
 
   .field {

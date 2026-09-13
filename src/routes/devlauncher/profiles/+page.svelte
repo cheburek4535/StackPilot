@@ -19,6 +19,8 @@
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { markHelpDid, HELP, HINT_PROFILES_HOWTO } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
   import { notifySuccess, notifyError } from "$lib/core/toasts";
 
   let profiles = $state<LaunchProfile[]>([]);
@@ -86,6 +88,7 @@
    *  на /workspace — оттуда сразу видны процессы, логи и запуск. */
   async function openWorkspace(profile: LaunchProfile) {
     if (openingName) return;
+    markHelpDid(HELP.devlProfileOpened);
     openingName = profile.name;
     try {
       await setCurrentProject(
@@ -109,6 +112,7 @@
   /** Запуск профиля: V2 — event-driven оркестратор, legacy — executeAction. */
   async function launchProfile(profile: LaunchProfile) {
     if (launchingName) return;
+    markHelpDid(HELP.devlProfileRan);
     launchingName = profile.name;
     launchCurrent = null;
     actionResults = new Map();
@@ -183,6 +187,14 @@
       </Button>
     {/snippet}
   </PageHeader>
+
+  <HelpHint
+    id={HINT_PROFILES_HOWTO.id}
+    resolvedBy={HINT_PROFILES_HOWTO.resolvedBy}
+    icon="play"
+    title={i18n.t("help.profiles.title") as TranslationKey}
+    text={i18n.t("help.profiles.body") as TranslationKey}
+  />
 
   {#if loading}
     <LoadingState label={i18n.t("devl.profile_loading") as TranslationKey} />

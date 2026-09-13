@@ -406,3 +406,49 @@ kbd {
     transform: translateX(250%);
   }
 }
+
+/* ---- Beginner-help anchors -------------------------------------------
+   Applied conditionally (see help.ts) to the control a hint is pointing at.
+   A soft pulsing ring draws the eye without hiding the underlying UI. */
+
+.sp-help-anchor {
+  position: relative;
+  z-index: 1;
+  border-radius: var(--sp-radius-md);
+  outline: 3px solid var(--sp-accent-glow);
+  outline-offset: 3px;
+  animation: sp-help-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes sp-help-pulse {
+  0%,
+  100% {
+    outline-color: var(--sp-accent-glow);
+  }
+  50% {
+    outline-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-help-anchor {
+    animation: none;
+    outline-color: var(--sp-accent-glow);
+  }
+}
+
+.sp-reduced-motion .sp-help-anchor {
+  animation: none;
+  outline-color: var(--sp-accent-glow);
+}
+
+/* The dedicated beginner-help toggle in the top bar. */
+.sp-help-mode-btn {
+  position: relative;
+}
+
+.sp-help-mode-btn-on {
+  color: var(--sp-accent);
+  background: var(--sp-accent-soft);
+  border-color: var(--sp-accent-border);
+}

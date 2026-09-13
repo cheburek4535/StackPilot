@@ -20,6 +20,8 @@
   } from "$lib/modules/workspace/status";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { markHelpDid, HELP, HINT_WORKSPACE_LOGS } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   let processes = $state<TrackedProcess[]>([]);
   let dataLoaded = $state(false);
@@ -105,6 +107,7 @@
   }
 
   async function selectProcess(id: string) {
+    markHelpDid(HELP.workspaceLogsViewed);
     selectedId = id;
     logs = null;
     logsError = "";
@@ -123,6 +126,14 @@
     title={i18n.t("ws.logs") as TranslationKey}
     description={i18n.t("ws.logs_desc") as TranslationKey}
     icon="terminal"
+  />
+
+  <HelpHint
+    id={HINT_WORKSPACE_LOGS.id}
+    resolvedBy={HINT_WORKSPACE_LOGS.resolvedBy}
+    icon="terminal"
+    title={i18n.t("help.ws_logs.title") as TranslationKey}
+    text={i18n.t("help.ws_logs.body") as TranslationKey}
   />
 
   {#if wsLoading}

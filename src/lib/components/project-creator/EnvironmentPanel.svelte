@@ -1,7 +1,14 @@
 <script lang="ts">
   import TechIcon from "$lib/components/TechIcon.svelte";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import {
+    helpMode,
+    helpProgress,
+    isHintVisible,
+    HINT_ENV_AUTO_INSTALL,
+  } from "$lib/core/help";
   import { statusKind, statusLabel, taskStateKind, taskStateLabel } from "$lib/modules/toolchain/compat";
   import type {
     EnvironmentCheck,
@@ -86,6 +93,11 @@
     ondismissSecrets: () => void;
   } = $props();
 
+  /** Highlight the install CTA while the beginner hint is active. */
+  const envHintVisible = $derived(
+    isHintVisible($helpProgress, $helpMode, HINT_ENV_AUTO_INSTALL),
+  );
+
   /** Иконка тула из wizard_tree по tool_id (для requirements/tasks окружения) */
   function toolIcon(toolId: string): string | null {
     return tree?.tools.find((t) => t.id === toolId)?.icon ?? null;
@@ -169,6 +181,13 @@
 </script>
 
 <p class="prompt">{i18n.t("create.env_check") as TranslationKey}</p>
+<HelpHint
+  id={HINT_ENV_AUTO_INSTALL.id}
+  resolvedBy={HINT_ENV_AUTO_INSTALL.resolvedBy}
+  icon="sparkles"
+  title={i18n.t("help.env_auto_install.title") as TranslationKey}
+  text={i18n.t("help.env_auto_install.body") as TranslationKey}
+/>
 <p class="hint">{i18n.t("create.env_check_desc") as TranslationKey}</p>
 
 {#if envChecking}
@@ -461,7 +480,7 @@
     {#if envInstalling}
       <button class="btn-secondary" onclick={oncancelInstall}>{i18n.t("create.abort") as TranslationKey}</button>
     {:else if missingAll.length > 0}
-      <button class="btn-primary" onclick={onstartInstall} disabled={missingSelected.length === 0}>
+      <button class="btn-primary" class:sp-help-anchor={envHintVisible} onclick={onstartInstall} disabled={missingSelected.length === 0}>
         {i18n.t("create.install_selected", { n: missingSelected.length }) as TranslationKey}
       </button>
       {#if missingSelected.length < missingAll.length}

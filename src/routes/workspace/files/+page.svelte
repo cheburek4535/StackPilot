@@ -26,6 +26,8 @@
   import { notifySuccess, notifyError } from "$lib/core/toasts";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { markHelpDid, HELP, HINT_WORKSPACE_FILES } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   let currentDir = $state<string | null>(null);
   let entries = $state<FileEntry[]>([]);
@@ -94,6 +96,7 @@
   }
 
   async function openFile(path: string) {
+    markHelpDid(HELP.workspaceFileOpened);
     selectedFile = path;
     fileLoading = true;
     fileError = "";
@@ -186,6 +189,14 @@
     title={i18n.t("ws.files_title") as TranslationKey}
     description={i18n.t("ws.files_desc") as TranslationKey}
     icon="folder"
+  />
+
+  <HelpHint
+    id={HINT_WORKSPACE_FILES.id}
+    resolvedBy={HINT_WORKSPACE_FILES.resolvedBy}
+    icon="folder"
+    title={i18n.t("help.ws_files.title") as TranslationKey}
+    text={i18n.t("help.ws_files.body") as TranslationKey}
   />
 
   {#if wsLoading}

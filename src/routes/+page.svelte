@@ -22,6 +22,8 @@
   import { notifySuccess, notifyError } from "$lib/core/toasts";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
+  import { HINT_HOME_START } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   let project = $state<ProjectContext | null>(null);
   let loading = $state(true);
@@ -201,6 +203,14 @@
       <Button variant="secondary" icon="sparkles" href="/create">{i18n.t("nav.project_creator") as TranslationKey}</Button>
     {/snippet}
   </PageHeader>
+
+  <HelpHint
+    id={HINT_HOME_START.id}
+    resolvedBy={HINT_HOME_START.resolvedBy}
+    icon="rocket"
+    title={i18n.t("help.home.title") as TranslationKey}
+    text={i18n.t("help.home.body") as TranslationKey}
+  />
 
   {#if loading}
     <LoadingState label={i18n.t("home.loading") as TranslationKey} />

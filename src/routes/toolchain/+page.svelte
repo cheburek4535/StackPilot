@@ -34,6 +34,8 @@
     platformName,
   } from "$lib/modules/toolchain/format";
   import { defaultCatalogFilters } from "$lib/modules/toolchain/filters";
+  import { markHelpDid, HELP, HINT_TOOLCHAIN_WELCOME, HINT_TOOLCHAIN_MODES } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let ManageEverythingMode = $state<Component<any>>(null as any);
@@ -130,12 +132,14 @@
   });
 
   function switchMode(id: string): void {
+    markHelpDid(HELP.toolchainExplored);
     if (id === "build_environment") toolchain.setMode("build_environment");
     else if (id === "tool_marketplace") toolchain.setMode("tool_marketplace");
     else toolchain.setMode("manage_everything");
   }
 
   function reviewUpdates(): void {
+    markHelpDid(HELP.toolchainExplored);
     toolchain.setMode("manage_everything");
     // Обзор обновлений = только фильтр update_only; все прочие группы
     // сбрасываются (иначе «обзор» молча скрывал бы инструменты).
@@ -143,6 +147,7 @@
   }
 
   async function recheck(toolId: string): Promise<void> {
+    markHelpDid(HELP.toolchainExplored);
     busyRecheck = true;
     try {
       await toolchain.runHealthChecks([toolId]);
@@ -152,6 +157,7 @@
   }
 
   function openPlan(operation: CardPlanOp, toolIds: string[]): void {
+    markHelpDid(HELP.toolchainExplored);
     planRequest = { operation, toolIds };
   }
 
@@ -171,6 +177,12 @@
   const issues = $derived(
     snapshot ? [...(snapshot.errors || []), ...(snapshot.warnings || [])].slice(0, 3) : [],
   );
+
+  /** Open a tool's details and remember the toolchain was explored. */
+  function openTool(id: string): void {
+    markHelpDid(HELP.toolchainExplored);
+    toolchain.selectTool(id);
+  }
 </script>
 
 <PageContainer width="wide">
@@ -223,6 +235,14 @@
     {/snippet}
   </PageHeader>
 
+  <HelpHint
+    id={HINT_TOOLCHAIN_WELCOME.id}
+    resolvedBy={HINT_TOOLCHAIN_WELCOME.resolvedBy}
+    icon="wrench"
+    title={i18n.t("help.toolchain.title") as TranslationKey}
+    text={i18n.t("help.toolchain.body") as TranslationKey}
+  />
+
   <ActivityStrip />
 
   <!-- ===== Герой состояния окружения ===== -->
@@ -268,6 +288,17 @@
     </span>
   </div>
 
+  <HelpHint
+    id={HINT_TOOLCHAIN_MODES.id}
+    resolvedBy={HINT_TOOLCHAIN_MODES.resolvedBy}
+    variant="info"
+    icon="layers"
+    title={i18n.t("help.toolchain_modes.title") as TranslationKey}
+  >
+    <p>{i18n.t("help.toolchain_modes.body") as TranslationKey}</p>
+    <p>{i18n.t("help.toolchain_modes.next") as TranslationKey}</p>
+  </HelpHint>
+
   <!-- ===== Содержимое режима (ленивый монтаж через dynamic import) ===== -->
   <div class="mode-pane" hidden={toolchain.mode !== "build_environment"}>
     {#if BuildEnvironmentMode}
@@ -288,7 +319,7 @@
     {#if MarketplaceMode}
       <MarketplaceMode
         onplan={(op: string, id: string) => openPlan(op as CardPlanOp, [id])}
-        ondetails={(id: string) => toolchain.selectTool(id)}
+        ondetails={(id: string) => openTool(id)}
       />
     {/if}
   </div>

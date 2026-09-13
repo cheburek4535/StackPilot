@@ -23,6 +23,8 @@
     type AddTemplateDraft,
   } from "$lib/modules/devlauncher/stepBuilder";
   import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
+  import { markHelpDid, HELP, HINT_ANALYZE } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
   let projectPath = $state("");
   let draft = $state<DraftProfile | null>(null);
@@ -100,6 +102,7 @@
     expanded = new Set();
     try {
       draft = await analyzeProjectV2(projectPath);
+      markHelpDid(HELP.devlAnalyzeDone);
     } catch (e) {
       error = `Ошибка анализа: ${e}`;
     }
@@ -114,6 +117,7 @@
     try {
       await saveProfileV2(draft.profile);
       markProfileCreated();
+      markHelpDid(HELP.devlAnalyzeDone);
       savedOk = true;
     } catch (e) {
       error = `Ошибка сохранения: ${e}`;
@@ -165,6 +169,14 @@
 <main>
   <h1>{i18n.t("analyze.title" as TranslationKey)}</h1>
   <p class="subtitle">{i18n.t("analyze.subtitle" as TranslationKey)}</p>
+
+  <HelpHint
+    id={HINT_ANALYZE.id}
+    resolvedBy={HINT_ANALYZE.resolvedBy}
+    icon="search"
+    title={i18n.t("help.analyze.title") as TranslationKey}
+    text={i18n.t("help.analyze.body") as TranslationKey}
+  />
 
   <div class="picker-card">
     <div class="picker-row">

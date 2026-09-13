@@ -9,6 +9,8 @@
   import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
   import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
   import { markProfileOpened, shouldShowTerminalHint, markHintShown } from "$lib/modules/devlauncher/onboarding";
+  import { markHelpDid, HELP, HINT_PROFILE_RUN } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -245,6 +247,7 @@
         profile = await withTimeout(getProfile(name), 10000);
         // A real profile was opened: this is the first-run guide's trigger.
         markProfileOpened();
+        markHelpDid(HELP.devlProfileOpened);
         terminalHintVisible = shouldShowTerminalHint();
       }
     } catch (e) {
@@ -396,6 +399,7 @@
     if (!profile) return;
     const action = profile.actions.find((a) => a.id === actionId);
     if (!action) return;
+    markHelpDid(HELP.devlProfileRan);
 
     try {
       const result = await executeAction(action);
@@ -538,6 +542,7 @@
 
   async function runAll(force = false) {
     if (!profile || runningAll) return;
+    markHelpDid(HELP.devlProfileRan);
 
     // WSL pre-flight: Docker on Windows needs WSL2, and when WSL is not
     // installed the launch can't proceed (Docker Desktop would hang on its
@@ -821,6 +826,14 @@
         {/if}
       </div>
     </div>
+
+    <HelpHint
+      id={HINT_PROFILE_RUN.id}
+      resolvedBy={HINT_PROFILE_RUN.resolvedBy}
+      icon="play"
+      title={i18n.t("help.profile_run.title") as TranslationKey}
+      text={i18n.t("help.profile_run.body") as TranslationKey}
+    />
 
     {#if currentAction}
       <p class="running-hint">▶ {currentAction}…</p>

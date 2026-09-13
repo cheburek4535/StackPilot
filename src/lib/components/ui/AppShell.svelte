@@ -9,6 +9,7 @@
   import { getSettings } from "$lib/core/api";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
+  import { helpMode, toggleHelpMode } from "$lib/core/help";
   import { workspaceContext } from "$lib/modules/workspace/context";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { Locale, TranslationKey } from "$lib/core/i18n.svelte";
@@ -71,6 +72,17 @@
       <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
     </a>
     <div class="sp-topbar-actions">
+      <button
+        type="button"
+        class="sp-topbar-icon sp-help-mode-btn"
+        class:sp-help-mode-btn-on={$helpMode}
+        aria-pressed={$helpMode}
+        aria-label={i18n.t("nav.beginner_mode") as TranslationKey}
+        title={i18n.t("nav.beginner_mode") as TranslationKey}
+        onclick={() => toggleHelpMode()}
+      >
+        <Icon name="sparkles" size={17} />
+      </button>
       <IconButton
         icon="help"
         label={i18n.t("nav.getting_started") as TranslationKey}
@@ -228,6 +240,28 @@
     display: flex;
     align-items: center;
     gap: var(--sp-1);
+  }
+
+  .sp-topbar-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--sp-radius-md);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--sp-text-2);
+    cursor: pointer;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .sp-topbar-icon:hover {
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
   }
 
   /* ---- body ---- */

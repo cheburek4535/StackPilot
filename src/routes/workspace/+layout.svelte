@@ -15,6 +15,8 @@
     clearWorkspaceProject,
   } from "$lib/modules/workspace/context";
   import { notifyInfo } from "$lib/core/toasts";
+  import { markHelpDid, HELP, HINT_WORKSPACE_WELCOME, helpMode, helpProgress, isHintVisible } from "$lib/core/help";
+  import HelpHint from "$lib/components/ui/HelpHint.svelte";
   import type { WorkspaceAssistantContext } from "$lib/modules/assistant/types";
   import { i18n } from "$lib/core/i18n.svelte";
   import type { TranslationKey } from "$lib/core/i18n.svelte";
@@ -50,6 +52,10 @@
 
   const project = $derived($workspaceContext.project);
 
+  const workspaceHintVisible = $derived(
+    isHintVisible($helpProgress, $helpMode, HINT_WORKSPACE_WELCOME),
+  );
+
   const assistantContext = $derived<WorkspaceAssistantContext>({
     projectName: project?.profile_name ?? null,
     projectPath: project?.project_path ?? null,
@@ -57,6 +63,7 @@
   });
 
   function onTab(id: string) {
+    markHelpDid(HELP.workspaceExplored);
     goto(id === "dashboard" ? "/workspace" : `/workspace/${id}`);
   }
 
@@ -125,6 +132,17 @@
   </nav>
 
   <div class="sp-ws-content">
+    {#if workspaceHintVisible}
+      <div class="sp-ws-help">
+        <HelpHint
+          id={HINT_WORKSPACE_WELCOME.id}
+          resolvedBy={HINT_WORKSPACE_WELCOME.resolvedBy}
+          icon="layers"
+          title={i18n.t("help.workspace.title") as TranslationKey}
+          text={i18n.t("help.workspace.body") as TranslationKey}
+        />
+      </div>
+    {/if}
     {@render children()}
   </div>
 
@@ -256,5 +274,15 @@
   .sp-ws-content {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  .sp-ws-help {
+    max-width: 84rem;
+    margin: 0 auto;
+    padding: var(--sp-4) var(--sp-8) 0;
+  }
+
+  .sp-ws-help:empty {
+    display: none;
   }
 </style>

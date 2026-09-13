@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [sveltekit()],
   test: {
     include: [
+      "src/lib/core/*.test.ts",
       "src/lib/modules/toolchain/*.test.ts",
       "src/lib/modules/devlauncher/*.test.ts",
       "src/lib/modules/project_creator/*.test.ts",
