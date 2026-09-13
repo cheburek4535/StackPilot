@@ -373,6 +373,28 @@ impl ScanEngine {
         let job_id = job_id.to_string();
         let scan_id = scan_id.to_string();
 
+        // Свежие рекомендуемые версии: для инструментов с резолвером
+        // (terraform, php, zig, ...) recommended резолвится у апстрима
+        // (кэш с TTL), статичное значение — страховка. Дедлайн жёсткий:
+        // скан не обязан ждать сеть, незавершённые остаются статичными.
+        let fresh_recommended =
+            crate::modules::toolchain::core::upstream::resolve_recommended_batch(
+                &definitions,
+                std::time::Duration::from_secs(15),
+            )
+            .await;
+        let definitions: Vec<ToolDefinition> = definitions
+            .into_iter()
+            .map(|mut def| {
+                if let Some(rec) = fresh_recommended.get(&def.id) {
+                    if !rec.is_empty() {
+                        def.versions.recommended = Some(rec.clone());
+                    }
+                }
+                def
+            })
+            .collect();
+
         // --- Фаза Environment: окружение и PATH (только чтение) ---
         self.set_phase(&job_snapshot, ScanPhase::Environment);
         let platform = crate::modules::toolchain::platforms::current_platform();
@@ -666,6 +688,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],

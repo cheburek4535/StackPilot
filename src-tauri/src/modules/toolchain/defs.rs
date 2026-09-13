@@ -160,6 +160,25 @@ pub fn validate(definitions: &[ToolDefinition]) -> Vec<String> {
                     def.id, def.display, src.id
                 ));
             }
+
+            // Динамические версии: шаблон без резолвера не наполнится,
+            // резолвер без шаблона обязан отдавать готовый URL.
+            if src.url_template.is_some() && src.version_resolver.is_none() {
+                warnings.push(format!(
+                    "{} ({}): источник «{}» имеет url_template, но не имеет version_resolver — шаблон не наполнится",
+                    def.id, def.display, src.id
+                ));
+            }
+        }
+
+        // Рекомендуемая версия с резолвером: статичное значение остаётся
+        // страховкой — без него «рекомендуемой» становится только резолв,
+        // и при недоступности апстрима вердикт UpdateAvailable пропадёт.
+        if def.versions.resolver.is_some() && def.versions.recommended.is_none() {
+            warnings.push(format!(
+                "{} ({}): versions.resolver задан, но recommended отсутствует — статичной страховки нет",
+                def.id, def.display
+            ));
         }
     }
     warnings
@@ -329,6 +348,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -388,6 +409,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
             },
             size_mb: 1,
@@ -528,6 +551,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -578,6 +603,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],

@@ -247,6 +247,12 @@ pub struct VersionRules {
     pub min: Option<String>,
     #[serde(default)]
     pub recommended: Option<String>,
+    /// Динамическое разрешение рекомендуемой версии (против устаревания
+    /// каталога): при сканировании recommended берётся у резолвера
+    /// (кэш с TTL), статичное значение — страховка, если резолвер
+    /// недоступен. None = чисто статичная политика (как раньше).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolver: Option<VersionResolver>,
 }
 
 /// Наборы источников установки по ОС.
@@ -317,6 +323,18 @@ pub struct InstallSource {
     /// но не притворяется проверенным.
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Шаблон URL с плейсхолдером `{version}`: источник не привязан
+    /// к конкретной версии — самая свежая резолвится на лету
+    /// (version_resolver), версия подставляется в шаблон при
+    /// установке. Статичное поле url остаётся страховкой на случай
+    /// недоступности резолвера (устаревшее лучше сломанного).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_template: Option<String>,
+    /// Чем резолвится актуальная версия источника (см. VersionResolver).
+    /// Обязателен при url_template; без шаблона используется, если
+    /// резолвер сам возвращает готовый URL (hashicorp, apache и т.п.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_resolver: Option<VersionResolver>,
 }
 
 /// Способ исполнения скачанного источника: чем движок «запускает» файл.
@@ -356,6 +374,88 @@ pub enum InstallSourceKind {
     /// %LOCALAPPDATA%/Programs/Qt). Пакеты, версии и каталоги
     /// извлечения разбираются из Updates.xml репозитория.
     QtOnline,
+}
+
+/// Динамический резолвер актуальной версии инструмента (против
+/// устаревания каталога: версии в tools.json больше не зашиваются
+/// намертво, а запрашиваются у официальных источников на лету).
+///
+/// Используется в двух местах:
+///   - `InstallSource.version_resolver` (+ `url_template`) — какая
+///     версия скачивается при установке;
+///   - `VersionRules.resolver` — какая версия считается рекомендуемой
+///     в сканах/UI.
+///
+/// Все резолверы работают по HTTPS-запросам (curl) и поддерживают
+/// кэш с TTL; при недоступности источника используется статичное
+/// значение из tools.json (устаревшее лучше сломанного).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VersionResolver {
+    /// ziglang.org/download/index.json — стабильный релиз с билдом
+    /// для нужной платформы; отдаёт версию и SHA-256.
+    Ziglang,
+    /// releases.hashicorp.com/<product>/index.json (terraform и т.п.):
+    /// последний стабильный релиз с билдом windows/amd64.
+    Hashicorp {
+        /// Имя продукта в каталоге релизов (например "terraform").
+        product: String,
+    },
+    /// api.github.com/repos/<repo>/releases/latest: последний релиз
+    /// (тег без ведущей "v") и URL ассета по шаблону.
+    Github {
+        /// "JetBrains/kotlin"
+        repo: String,
+        /// Шаблон имени ассета с плейсхолдером {version}
+        /// (например "kotlin-compiler-{version}.zip").
+        asset: String,
+    },
+    /// windows.php.net/downloads/releases/ — свежий билд ветки
+    /// (например "8.4") nts vs17 x64, имя из каталога релизов
+    /// (windows.php.net хранит только актуальный билд ветки).
+    PhpWindows {
+        /// Ветка PHP, например "8.4".
+        branch: String,
+    },
+    /// services.gradle.org/versions/current: актуальный стабильный
+    /// Gradle; URL и SHA-256 берутся из API.
+    Gradle,
+    /// repo.maven.apache.org maven-metadata.xml: актуальный Maven.
+    MavenApache,
+    /// downloads.apache.org/kafka/: последняя стабильная Kafka
+    /// (имя архива разбирается из каталога версии — scala-суффикс
+    /// не зашит).
+    ApacheKafka,
+    /// dl.grafana.com/oss/release/ не отдаёт листинг (404) — Grafana
+    /// резолвится через GitHub releases (grafana/grafana).
+    Grafana,
+    /// www.swift.org/api/v1/install/releases.json: свежий стабильный
+    /// релиз Swift (Windows-сборка собирается шаблоном каталога).
+    Swift,
+    /// downloads.mongodb.org/current.json: свежий production-релиз
+    /// MongoDB Community с windows/x86_64 base-сборкой (URL и SHA-256
+    /// берутся из ответа).
+    MongoDb,
+    /// winget show --id <id>: актуальная версия пакета менеджера
+    /// (используется для recommended-политики; установка winget
+    /// и так всегда берёт свежайшую версию по умолчанию).
+    Winget {
+        /// id пакета (например "PostgreSQL.PostgreSQL.17").
+        id: String,
+    },
+    /// dotnetcli.blob.core.windows.net releases-index.json: свежайший
+    /// SDK канала (например "10.0") — для recommended .NET.
+    DotnetChannel {
+        /// Канал: "8.0", "10.0", ...
+        channel: String,
+    },
+}
+
+impl VersionResolver {
+    /// Стабильный идентификатор для кэша (сериализованная форма).
+    pub fn cache_key(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "resolver".to_string())
+    }
 }
 
 /// Дополнительная health-проверка: команда должна выполниться успешно.

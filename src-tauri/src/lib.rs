@@ -245,6 +245,7 @@ pub fn run() {
             modules::toolchain::commands::tc_get_health_report,
             // ToolchainManager: read-only scan/diagnostics engine (tcx_*)
             modules::toolchain::commands::tcx_get_catalog,
+            modules::toolchain::commands::tcx_get_latest_versions,
             modules::toolchain::commands::tcx_get_environment_snapshot,
             modules::toolchain::commands::tcx_start_scan,
             modules::toolchain::commands::tcx_get_scan_job,

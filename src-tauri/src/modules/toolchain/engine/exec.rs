@@ -206,12 +206,14 @@ impl RealRunner {
 
         let before_user_path = tc_core::path_service::process_path_entries();
 
+        let is_update = matches!(ctx.task.action, TaskAction::Update { .. });
         let secrets = tc_core::installer::execute_plan(
             ctx.definitions,
             &mut legacy_plan,
             bridge,
             Arc::clone(&ctx.cancel),
             ctx.job_id,
+            is_update,
         )
         .await;
 

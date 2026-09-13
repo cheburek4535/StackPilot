@@ -1076,6 +1076,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         }];
         let pending_installable = ToolScanResult::pending(&installable, "windows", false, true);
         assert!(pending_installable.capabilities.installable);
@@ -1116,6 +1118,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         }];
         full.extended.declared_capabilities = DeclaredCapabilities {
             removable: Some(true),

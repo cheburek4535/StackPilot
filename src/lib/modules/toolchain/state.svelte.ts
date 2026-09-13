@@ -237,6 +237,31 @@ class ToolchainController {
       const map: Record<string, ToolDefinition> = {};
       for (const d of defs) map[d.id] = d;
       this.definitions = map;
+      // Свежие версии — фоном и без блокировок: каталог показывается
+      // сразу со статичными recommended, а когда резолверы апстримов
+      // ответят (на бэкенде кэш с TTL), recommended обновляются.
+      // Провал не роняет каталог — статичные версии остаются.
+      void api
+        .getLatestVersions()
+        .then((latest) => {
+          if (!latest || Object.keys(latest).length === 0) return;
+          let next = this.definitions;
+          let changed = false;
+          for (const [id, rec] of Object.entries(latest)) {
+            const def = next[id];
+            if (!def || !rec) continue;
+            if (def.versions?.recommended === rec) continue;
+            next = {
+              ...next,
+              [id]: { ...def, versions: { ...def.versions, recommended: rec } },
+            };
+            changed = true;
+          }
+          if (changed) this.definitions = next;
+        })
+        .catch(() => {
+          /* статичные версии остаются — это страховка, а не ошибка */
+        });
     },
     {
       onStart: () => {

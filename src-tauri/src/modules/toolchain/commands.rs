@@ -963,6 +963,21 @@ pub fn tcx_get_catalog(state: State<'_, ToolchainState>) -> Vec<ToolDefinition> 
     state.definitions().to_vec()
 }
 
+/// Свежие версии каталога: tool_id → актуальная версия (результат
+/// резолвера апстрима с кэшем, при недоступности — статичная
+/// recommended из tools.json). UI страницы Toolchain показывает
+/// актуальные версии, а не зашитые в каталог полгода назад.
+#[tauri::command]
+pub async fn tcx_get_latest_versions(
+    state: State<'_, ToolchainState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(core::upstream::resolve_recommended_batch(
+        state.definitions(),
+        std::time::Duration::from_secs(20),
+    )
+    .await)
+}
+
 /// Контекст скана из живого состояния приложения (PATH процесса +
 /// постоянный PATH отдельно + происхождение из state.json).
 async fn domain_scan_context(state: &ToolchainState) -> super::domain::detect::ScanContext {

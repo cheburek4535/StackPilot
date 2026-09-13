@@ -34,6 +34,7 @@ use super::console::{self, ps_quote, EventSink};
 use super::crypto;
 use super::discovery;
 use super::path_service;
+use super::upstream;
 
 // ------------------------------------------------------------
 // Команды установки
@@ -134,7 +135,10 @@ fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> Exe
         }
     }
 
-    if let Some(url) = source.url.as_ref() {
+    // Шаблонный URL (url_template) участвует в определении типа наравне
+    // со статичным: расширение .zip/.tgz в шаблоне — признак архива.
+    let url_candidate = source.url.as_deref().or(source.url_template.as_deref());
+    if let Some(url) = url_candidate {
         let tail = url
             .split(['?', '#'])
             .next()
@@ -145,7 +149,7 @@ fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> Exe
         }
     }
 
-    let path = offline_path.or_else(|| source.url.as_deref().map(Path::new));
+    let path = offline_path.or_else(|| url_candidate.map(Path::new));
     let Some(path) = path else {
         return ExecutionKind::Exe;
     };
@@ -687,6 +691,7 @@ pub async fn execute_plan(
     sink: Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
     session_id: &str,
+    is_update: bool,
 ) -> HashMap<String, String> {
     // Редакция секретов на всём пути событий задания.
     let redactor = Arc::new(RedactingSink::new(sink));
@@ -716,12 +721,14 @@ pub async fn execute_plan(
         let state = run_task(
             def,
             task,
+            definitions,
             i,
             total,
             &redactor,
             &mut secrets,
             &abort,
             session_id,
+            is_update,
         )
         .await;
         task.state = state.clone();
@@ -815,12 +822,14 @@ fn sniff_installer_extension(path: &Path) -> Option<&'static str> {
 async fn run_task(
     def: &ToolDefinition,
     task: &InstallTask,
+    definitions: &[ToolDefinition],
     index: usize,
     total: usize,
     sink: &Arc<RedactingSink>,
     secrets: &mut HashMap<String, String>,
     abort: &Arc<AtomicBool>,
     session_id: &str,
+    is_update: bool,
 ) -> TaskState {
     let tool_id = def.id.clone();
     let task_id = task.task_id.clone();
@@ -839,6 +848,17 @@ async fn run_task(
         };
     }
 
+    // Объявленные зависимости (tools.json extended.dependencies и
+    // bundled_with): установка зависимого инструмента без них либо
+    // невозможна (composer без php — «Не удалось запустить php»),
+    // либо остаётся сломанной. Планировщик добавляет зависимости
+    // задачами ПЕРЕД зависимыми; здесь — защита от краевых случаев
+    // (зависимость не установилась, пришла чужим планом): падаем
+    // сразу с понятной причиной, а не после бесполезного скачивания.
+    if let Err(reason) = check_declared_dependencies(def, definitions).await {
+        return TaskState::Failed { error: reason };
+    }
+
     let os_sources: &[InstallSource] = match platforms::current_platform().os_name().as_str() {
         "windows" => &def.sources.windows,
         "linux" => &def.sources.linux,
@@ -854,7 +874,7 @@ async fn run_task(
     let mut failures: Vec<String> = Vec::new();
     for source in os_sources.iter() {
         match try_install_source(
-            def, source, task, index, total, &task_id, &tool_id, session_id, sink, abort,
+            def, source, task, index, total, &task_id, &tool_id, session_id, sink, abort, is_update,
         )
         .await
         {
@@ -1283,6 +1303,38 @@ async fn ensure_composer_bat_shim(
     }
 }
 
+/// Проверяет объявленные зависимости инструмента (extended.dependencies
+/// и bundled_with из tools.json) ПЕРЕД установкой. Если зависимость не
+/// установлена и не работоспособна — Err с понятной причиной: зависимый
+/// инструмент всё равно не заработает, скачивать его источники бессмысленно
+/// (composer без php: оба источника падают кодом 1/«program not found»).
+async fn check_declared_dependencies(
+    def: &ToolDefinition,
+    definitions: &[ToolDefinition],
+) -> Result<(), String> {
+    let mut deps: Vec<&str> = Vec::new();
+    if let Some(host) = def.bundled_with.as_deref() {
+        deps.push(host);
+    }
+    deps.extend(def.extended.dependencies.iter().map(String::as_str));
+
+    for dep_id in deps {
+        let Some(dep_def) = definitions.iter().find(|d| d.id == dep_id) else {
+            continue;
+        };
+        match discovery::detect_tool(dep_def).await {
+            ToolStatus::Installed { .. } | ToolStatus::UpdateAvailable { .. } => {}
+            _ => {
+                return Err(format!(
+                    "«{}» требует «{}», которого нет на этой машине — установите сначала «{}»",
+                    def.display, dep_def.display, dep_def.display
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Пытается установить инструмент ОДНИМ источником.
 /// Возвращает Ok((версия, пароль)) при подтверждённой установке
 /// или Err(описание) — источник не сработал, пробуем следующий.
@@ -1297,6 +1349,7 @@ async fn try_install_source(
     session_id: &str,
     sink: &Arc<RedactingSink>,
     abort: &Arc<AtomicBool>,
+    is_update: bool,
 ) -> Result<(String, Option<String>), String> {
     // QtOnline (Qt из официального репозитория) — свой конвейер:
     // пакетов несколько, каждый качается и распаковывается отдельно.
@@ -1400,7 +1453,36 @@ async fn try_install_source(
         // Источники с http-URL качаем заранее (фаза Downloading, с прогрессом).
         // console::download проверяет схему (https) и целостность (sha256
         // из tools.json; без суммы — честный unverified-warning).
-        if let Some(url) = source.url.as_ref() {
+        //
+        // Динамические версии: url_template + version_resolver резолвят
+        // АКТУАЛЬНУЮ версию у официального апстрима при каждой установке
+        // (обход кэша) — каталог не устаревает, ссылки не гниют. Статичный
+        // url остаётся страховкой, если апстрим недоступен.
+        let (effective_url, effective_sha256, effective_version) = {
+            let eff = upstream::effective_source_url(
+                source.version_resolver.as_ref(),
+                source.url_template.as_deref(),
+                source.url.as_deref(),
+                source.sha256.as_deref(),
+            )
+            .await?;
+            (eff.url, eff.sha256, eff.version)
+        };
+        if let Some(display_version) = &effective_version {
+            sink.emit(console::event(
+                ToolchainEventType::TaskProgress {
+                    line: format!(
+                        "tc:info Актуальная версия {tool_id}: {display_version} — скачивается свежий релиз",
+                    ),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+            ));
+        }
+        if let Some(url) = effective_url.as_ref() {
             if url.starts_with("http://") || url.starts_with("https://") {
                 sink.emit(console::event(
                     ToolchainEventType::TaskPhaseChanged {
@@ -1431,7 +1513,7 @@ async fn try_install_source(
                 if let Err(e) = console::download(
                     url,
                     &dest,
-                    source.sha256.as_deref(),
+                    effective_sha256.as_deref(),
                     index,
                     total,
                     task_id,
@@ -1555,90 +1637,28 @@ async fn try_install_source(
         }
     }
 
-    let cmd = build_install_command(def, source, offline_path.as_deref(), password.as_deref())?;
+    // Команда исполнения. Archive-источник команды НЕ имеет: распаковка
+    // уже выполнена безопасным слоем archive.rs выше (skip_run=true),
+    // а build_install_command для архивов сознательно не строит «запуск»
+    // (запускать распакованный архив нельзя). Вызов её здесь — ошибка
+    // «команда не строится» ПРИ УСПЕШНОЙ распаковке, что и было корнем
+    // сбоя zip/tgz-инструментов (kafka, maven, gradle, kotlin, zig, dart).
+    let cmd = if matches!(exec, ExecutionKind::Archive) {
+        None
+    } else {
+        Some(build_install_command(
+            def,
+            source,
+            offline_path.as_deref(),
+            password.as_deref(),
+        )?)
+    };
 
-    if !skip_run {
-        sink.emit(console::event(
-            ToolchainEventType::TaskPhaseChanged {
-                phase: TaskPhase::Installing,
-            },
-            index,
-            total,
-            task_id,
-            tool_id,
-            session_id,
-        ));
-
-        // needs_admin → UAC-элевация; остальные запускаются как есть.
-        // У источника может быть своё значение (zip-распаковка не требует UAC,
-        // даже если у инструмента в целом needs_admin=true).
-        // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
-        let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
-        let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
-        let run = if needs_admin {
-            console::run_elevated(
-                &program,
-                &args,
-                index,
-                total,
-                task_id,
-                tool_id,
-                session_id,
-                &sink_dyn,
-                Arc::clone(abort),
-            )
-            .await
-        } else {
-            console::piped_run(
-                &program,
-                &args,
-                index,
-                total,
-                task_id,
-                tool_id,
-                session_id,
-                &sink_dyn,
-                Arc::clone(abort),
-            )
-            .await
-        };
-
-        let res = match run {
-            Ok(r) => r,
-            Err(e) => return Err(e),
-        };
-        if res.aborted {
-            return Err("Отменено пользователем".to_string());
-        }
-        if !res.success {
-            // winget: пакет уже установлен, доступных обновлений нет —
-            // НЕ сбой установки, а подтверждение, что цель достигнута
-            // (0x8A150011 = -1978335189 «уже установлен», 0x8A150015 =
-            // -1978335193 «обновление недоступно»). Текста «Найден
-            // существующий установленный пакет...» достаточно, чтобы
-            // не тратить время на fallback-источники (dart, firebase).
-            // Итоговый вердикт выносит verify ниже.
-            const WINGET_ALREADY_INSTALLED: i32 = -1978335189;
-            const WINGET_UPGRADE_NOT_AVAILABLE: i32 = -1978335193;
-            let winget_already_installed = matches!(source.kind, InstallSourceKind::PkgManager)
-                && matches!(
-                    res.code,
-                    WINGET_ALREADY_INSTALLED | WINGET_UPGRADE_NOT_AVAILABLE
-                );
-            if !winget_already_installed {
-                // tc:error-строка из скрипта (download/run_elevated) — настоящая
-                // причина сбоя; код процесса — лишь дополнение к ней.
-                return match res.error_line {
-                    Some(line) => Err(format!("{} (код {})", sink.redact(&line), res.code)),
-                    None => Err(format!("Установщик завершился с кодом {}", res.code)),
-                };
-            }
+    if let Some(cmd) = cmd {
+        if !skip_run {
             sink.emit(console::event(
-                ToolchainEventType::TaskProgress {
-                    line: format!(
-                        "tc:info Источник «{}»: пакет уже установлен, обновлений нет — проверяю",
-                        source.id
-                    ),
+                ToolchainEventType::TaskPhaseChanged {
+                    phase: TaskPhase::Installing,
                 },
                 index,
                 total,
@@ -1646,6 +1666,85 @@ async fn try_install_source(
                 tool_id,
                 session_id,
             ));
+
+            // needs_admin → UAC-элевация; остальные запускаются как есть.
+            // У источника может быть своё значение (zip-распаковка не требует UAC,
+            // даже если у инструмента в целом needs_admin=true).
+            // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
+            let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
+            let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
+            let run = if needs_admin {
+                console::run_elevated(
+                    &program,
+                    &args,
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                    &sink_dyn,
+                    Arc::clone(abort),
+                )
+                .await
+            } else {
+                console::piped_run(
+                    &program,
+                    &args,
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                    &sink_dyn,
+                    Arc::clone(abort),
+                )
+                .await
+            };
+
+            let res = match run {
+                Ok(r) => r,
+                Err(e) => return Err(e),
+            };
+            if res.aborted {
+                return Err("Отменено пользователем".to_string());
+            }
+            if !res.success {
+                // winget: пакет уже установлен, доступных обновлений нет —
+                // НЕ сбой установки, а подтверждение, что цель достигнута
+                // (0x8A150011 = -1978335189 «уже установлен», 0x8A150015 =
+                // -1978335193 «обновление недоступно»). Текста «Найден
+                // существующий установленный пакет...» достаточно, чтобы
+                // не тратить время на fallback-источники (dart, firebase).
+                // Итоговый вердикт выносит verify ниже.
+                const WINGET_ALREADY_INSTALLED: i32 = -1978335189;
+                const WINGET_UPGRADE_NOT_AVAILABLE: i32 = -1978335193;
+                let winget_already_installed = matches!(source.kind, InstallSourceKind::PkgManager)
+                    && matches!(
+                        res.code,
+                        WINGET_ALREADY_INSTALLED | WINGET_UPGRADE_NOT_AVAILABLE
+                    );
+                if !winget_already_installed {
+                    // tc:error-строка из скрипта (download/run_elevated) — настоящая
+                    // причина сбоя; код процесса — лишь дополнение к ней.
+                    return match res.error_line {
+                        Some(line) => Err(format!("{} (код {})", sink.redact(&line), res.code)),
+                        None => Err(format!("Установщик завершился с кодом {}", res.code)),
+                    };
+                }
+                sink.emit(console::event(
+                    ToolchainEventType::TaskProgress {
+                        line: format!(
+                            "tc:info Источник «{}»: пакет уже установлен, обновлений нет — проверяю",
+                            source.id
+                        ),
+                    },
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                ));
+            }
         }
     }
 
@@ -1843,6 +1942,28 @@ async fn try_install_source(
             }
             Ok((version, password))
         }
+        // Инструмент установлен и работает, но версия ниже рекомендуемой
+        // (например winget поставил .NET SDK 8, а recommended — 10).
+        // Для установки это УСПЕХ: цель «инструмент есть» достигнута,
+        // совет обновить версию даст скан окружения. Для ОБНОВЛЕНИЯ это
+        // провал источника: цель «достичь рекомендуемой версии» не
+        // достигнута — следующий источник (dotnet-install с каналом 10.0)
+        // получает шанс довести версию до рекомендуемой.
+        ToolStatus::UpdateAvailable { installed, .. } => {
+            if is_update {
+                Err(format!(
+                    "Установлена версия {installed}, рекомендуемая {} не достигнута",
+                    def.versions.recommended.as_deref().unwrap_or("—")
+                ))
+            } else {
+                Ok((installed, password))
+            }
+        }
+        // Установка найдена, но бинарь не отвечает: честная причина
+        // вместо обобщённого «инструмент не найден».
+        ToolStatus::PathBroken { reason } => {
+            Err(format!("Установка не подтвердилась: {reason}"))
+        }
         _ => Err("Установка не подтвердилась (инструмент не найден)".to_string()),
     }
 }
@@ -1914,6 +2035,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],
@@ -2079,6 +2202,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "C:/Tools/setup.exe");
@@ -2107,6 +2232,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.args[0], "/S", "/S должен идти первым: {:?}", cmd.args);
@@ -2145,6 +2272,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.args.iter().filter(|a| *a == "/S").count(), 1);
@@ -2173,6 +2302,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let phar = std::env::temp_dir().join("tc-tool-composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
@@ -2200,6 +2331,8 @@ mod tests {
             execution: Some(ExecutionKind::Phar),
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let phar = std::env::temp_dir().join("composer.phar");
         let cmd = build_install_command(&bare_def(), &source, Some(&phar), None).unwrap();
@@ -2318,6 +2451,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let script = std::env::temp_dir().join("tc-tool-dotnet-install.ps1");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -2351,6 +2486,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -2376,6 +2513,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
@@ -2479,6 +2618,8 @@ mod tests {
             execution: Some(ExecutionKind::GitClone),
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/flutter");
@@ -2502,6 +2643,8 @@ mod tests {
             execution: Some(ExecutionKind::GitClone),
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%USERPROFILE%/flutter");
@@ -2692,6 +2835,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let cmd = build_install_command(&def, &source, Some(&msi_path), None).unwrap();
         assert_eq!(cmd.program.to_ascii_lowercase(), "msiexec");
@@ -2723,6 +2868,8 @@ mod tests {
             execution: Some(ExecutionKind::GitClone),
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
         let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/sdk");
@@ -2776,12 +2923,76 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let zip = std::env::temp_dir().join("tc-tool-gradle.zip");
         let err = build_install_command(&bare_def(), &source, Some(&zip), None).unwrap_err();
         assert!(
             err.contains("archive.rs"),
             "архив обязан указывать на безопасный распаковщик: {err}"
+        );
+    }
+
+    /// Зависимость (extended.dependencies: composer→php), которой нет на
+    /// машине, блокирует задачу ПЕРЕД скачиванием: установка зависимого
+    /// инструмента без неё невозможна (composer без php — «program not
+    /// found»), и пользователь получает понятную причину, а не каскад
+    /// ошибок установщика.
+    #[tokio::test]
+    async fn declared_dependency_missing_blocks_task() {
+        let mut php = bare_def();
+        php.id = "php".to_string();
+        php.display = "PHP".to_string();
+        let mut composer = bare_def();
+        composer.id = "composer".to_string();
+        composer.display = "Composer".to_string();
+        composer.extended.dependencies = vec!["php".to_string()];
+
+        let err = check_declared_dependencies(&composer, &[php, composer.clone()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("PHP") && err.contains("Composer"),
+            "причина должна называть зависимого и зависимость: {err}"
+        );
+    }
+
+    /// Установленная зависимость (Installed) проверку проходит.
+    #[tokio::test]
+    async fn declared_dependency_present_passes() {
+        let mut php = echo_def("php");
+        php.display = "PHP".to_string();
+        let mut composer = bare_def();
+        composer.id = "composer".to_string();
+        composer.display = "Composer".to_string();
+        composer.extended.dependencies = vec!["php".to_string()];
+
+        check_declared_dependencies(&composer, &[php, composer.clone()])
+            .await
+            .unwrap();
+    }
+
+    /// Неработоспособная зависимость (PathBroken) блокирует задачу:
+    /// php в PATH, но молчит — composer всё равно не запустится.
+    #[tokio::test]
+    async fn declared_dependency_broken_blocks_task() {
+        let mut php = echo_def("php");
+        php.display = "PHP".to_string();
+        // reg.exe существует в PATH, но с --version молчит (код 1):
+        // «бинарь есть, установка сломана» → PathBroken.
+        php.detection.version_probes = vec![vec!["reg".to_string(), "--version".to_string()]];
+        let mut composer = bare_def();
+        composer.id = "composer".to_string();
+        composer.display = "Composer".to_string();
+        composer.extended.dependencies = vec!["php".to_string()];
+
+        let err = check_declared_dependencies(&composer, &[php, composer.clone()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("PHP"),
+            "сломанная зависимость обязана блокировать: {err}"
         );
     }
 
@@ -2801,6 +3012,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let cmd = build_install_command(&bare_def(), &source, None, None).unwrap();
         assert_eq!(cmd.program, "msiexec");
@@ -2838,6 +3051,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let bundle = std::env::temp_dir().join("tc-tool-app.msixbundle");
         let cmd = build_install_command(&bare_def(), &source, Some(&bundle), None).unwrap();
@@ -2860,7 +3075,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        let secrets = execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-e2e").await;
+        let secrets = execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-e2e", false).await;
 
         assert!(secrets.is_empty());
         match &plan.tasks[0].state {
@@ -2904,7 +3119,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fail").await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fail", false).await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
     }
@@ -2928,6 +3143,8 @@ mod tests {
                 execution: None,
                 bootstrap: None,
                 sha256: None,
+                url_template: None,
+                version_resolver: None,
             },
             def.sources.windows[0].clone(),
         ];
@@ -2936,7 +3153,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fb").await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-fb", false).await;
 
         match &plan.tasks[0].state {
             TaskState::Success { version } => assert_eq!(version, "1.2.3"),
@@ -2988,6 +3205,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let bad2 = InstallSource {
             kind: InstallSourceKind::Official,
@@ -3002,6 +3221,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         def.sources.windows = vec![bad, bad2];
 
@@ -3009,7 +3230,7 @@ mod tests {
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
 
-        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-allfail").await;
+        execute_plan(&[def], &mut plan, trait_sink, no_abort(), "s-allfail", false).await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Failed { .. }));
 
@@ -3038,7 +3259,7 @@ mod tests {
         let trait_sink: Arc<dyn EventSink> = sink.clone();
         let abort = Arc::new(AtomicBool::new(true));
 
-        execute_plan(&[], &mut plan, trait_sink, abort, "s-abort").await;
+        execute_plan(&[], &mut plan, trait_sink, abort, "s-abort", false).await;
 
         assert!(matches!(plan.tasks[0].state, TaskState::Skipped { .. }));
     }
@@ -3048,7 +3269,7 @@ mod tests {
         let mut plan = one_task_plan("no-such-tool");
         let sink = Arc::new(TestSink::default());
         let trait_sink: Arc<dyn EventSink> = sink.clone();
-        execute_plan(&[], &mut plan, trait_sink, no_abort(), "s-unknown").await;
+        execute_plan(&[], &mut plan, trait_sink, no_abort(), "s-unknown", false).await;
         assert!(matches!(plan.tasks[0].state, TaskState::Skipped { .. }));
     }
 
@@ -3113,6 +3334,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let def = bare_def();
         let result = build_install_command(&def, &source, None, None);
@@ -3148,6 +3371,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let def = bare_def();
         let os = platforms::current_platform().os_name();
@@ -3176,6 +3401,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         };
         let result = build_linux_pkg_command(&source, None);
         if result.is_err() {

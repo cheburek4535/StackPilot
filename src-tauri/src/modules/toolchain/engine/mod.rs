@@ -136,6 +136,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: Some("aa".into()),
+            url_template: None,
+            version_resolver: None,
         };
         crate::modules::toolchain::models::ToolDefinition {
             id: id.to_string(),

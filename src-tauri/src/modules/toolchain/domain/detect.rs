@@ -1547,6 +1547,8 @@ mod tests {
                     execution: None,
                     bootstrap: None,
                     sha256: None,
+                    url_template: None,
+                    version_resolver: None,
                 }],
                 linux: vec![],
                 macos: vec![],

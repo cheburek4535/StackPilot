@@ -87,12 +87,124 @@ pub fn canonicalize_plan(
         }
     }
 
+    // Замыкание зависимостей (bundled_with + extended.dependencies):
+    // composer без php невозможен («Не удалось запустить php») — недостающие
+    // зависимости добавляются задачами и упорядочиваются ПЕРЕД зависимыми.
+    add_missing_dependencies(&mut tasks, definitions, &os, &mut total_size_mb);
+
     Ok(InstallPlan {
         tasks,
         total_size_mb,
         os,
         session_id: String::new(),
     })
+}
+
+/// Добавляет недостающие зависимости (bundled_with / extended.dependencies)
+/// в конец плана и стабильно упорядочивает задачи: зависимые всегда после
+/// своих зависимостей (порядок остальных задач сохраняется).
+fn add_missing_dependencies(
+    tasks: &mut Vec<InstallTask>,
+    definitions: &[ToolDefinition],
+    os: &str,
+    total_size_mb: &mut u64,
+) {
+    // 1. Недостающие зависимости — задачами (по одному проходу; цикл
+    //    повторяется, пока замыкание не сойдётся: у php может быть
+    //    своя зависимость и т.п.).
+    loop {
+        let mut added = false;
+        let mut extra: Vec<InstallTask> = Vec::new();
+        for task in tasks.iter() {
+            let Some(def) = definitions.iter().find(|d| d.id == task.tool_id) else {
+                continue;
+            };
+            for dep in declared_dependency_ids(def) {
+                if tasks.iter().any(|t| t.tool_id == dep)
+                    || extra.iter().any(|t| t.tool_id == dep)
+                {
+                    continue;
+                }
+                let Some(dep_def) = definitions.iter().find(|d| d.id == dep) else {
+                    continue;
+                };
+                if dep_def.manual_install.is_some() {
+                    continue;
+                }
+                let os_sources: &[InstallSource] = match os {
+                    "windows" => dep_def.sources.windows.as_slice(),
+                    "linux" => dep_def.sources.linux.as_slice(),
+                    "macos" => dep_def.sources.macos.as_slice(),
+                    _ => &[],
+                };
+                if os_sources.is_empty() {
+                    continue;
+                }
+                *total_size_mb += dep_def.size_mb as u64;
+                extra.push(InstallTask {
+                    task_id: dep_def.id.clone(),
+                    tool_id: dep_def.id.clone(),
+                    display: dep_def.display.clone(),
+                    icon: dep_def.icon.clone(),
+                    size_mb: dep_def.size_mb,
+                    needs_admin: dep_def.needs_admin,
+                    source_description: source_description_for(dep_def, os),
+                    install_options: Vec::new(),
+                    state: TaskState::Pending,
+                });
+                added = true;
+            }
+        }
+        if extra.is_empty() {
+            break;
+        }
+        tasks.extend(extra);
+        if !added {
+            break;
+        }
+    }
+
+    // 2. Стабильная топологическая сортировка: задача не встаёт раньше
+    //    своей (всё ещё не размещённой) зависимости. Циклы невозможны
+    //    (планировщик не создаёт обратных рёбер), но страховка есть:
+    //    остаток дописывается в исходном порядке, без потери задач.
+    let mut placed: HashSet<String> = HashSet::new();
+    let mut ordered: Vec<InstallTask> = Vec::with_capacity(tasks.len());
+    let mut remaining = std::mem::take(tasks);
+    while !remaining.is_empty() {
+        let idx = remaining.iter().position(|t| {
+            let Some(def) = definitions.iter().find(|d| d.id == t.tool_id) else {
+                return true;
+            };
+            declared_dependency_ids(def).iter().all(|dep| {
+                !remaining.iter().any(|o| &o.tool_id == dep) || placed.contains(dep)
+            })
+        });
+        let Some(idx) = idx else {
+            ordered.extend(remaining);
+            *tasks = ordered;
+            return;
+        };
+        let task = remaining.remove(idx);
+        placed.insert(task.tool_id.clone());
+        ordered.push(task);
+    }
+    *tasks = ordered;
+}
+
+/// Все объявленные зависимости инструмента: bundled-хост (npm→node)
+/// и явный список extended.dependencies (composer→php).
+fn declared_dependency_ids(def: &ToolDefinition) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(host) = def.bundled_with.as_deref() {
+        ids.push(host.to_string());
+    }
+    for dep in def.extended.dependencies.iter() {
+        if !ids.contains(dep) {
+            ids.push(dep.clone());
+        }
+    }
+    ids
 }
 
 /// Человекочитаемое описание первого источника на указанной ОС
@@ -154,6 +266,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         }
     }
 
@@ -261,5 +375,41 @@ mod tests {
         let node = plan.tasks.iter().find(|t| t.tool_id == "node").unwrap();
         assert_eq!(qt.install_options, vec!["qt-webengine".to_string()]);
         assert!(node.install_options.is_empty());
+    }
+
+    /// Объявленная зависимость (extended.dependencies: composer→php)
+    /// добавляется в план ПЕРЕД зависимым, даже если пользователь выбрал
+    /// только composer. Регрессия: composer без php падает на обоих
+    /// источниках («Не удалось запустить php»).
+    #[test]
+    fn canonical_plan_adds_declared_dependency_first() {
+        let mut composer = catalog_def("composer");
+        composer.extended.dependencies = vec!["php".to_string()];
+        let defs = vec![catalog_def("php"), composer];
+
+        let plan = canonicalize_plan(&defs, &["composer".to_string()], &HashMap::new()).unwrap();
+        let ids: Vec<&str> = plan.tasks.iter().map(|t| t.tool_id.as_str()).collect();
+        assert_eq!(ids, vec!["php", "composer"], "php обязан идти раньше");
+        assert_eq!(plan.total_size_mb, 84, "размер зависимости учтён");
+    }
+
+    /// Зависимость уже в списке запрошенных — дубликата нет, порядок
+    /// зависимость-первой сохраняется.
+    #[test]
+    fn canonical_plan_does_not_duplicate_requested_dependency() {
+        let mut composer = catalog_def("composer");
+        composer.extended.dependencies = vec!["php".to_string()];
+        let defs = vec![catalog_def("php"), composer];
+
+        let plan = canonicalize_plan(
+            &defs,
+            &["composer".to_string(), "php".to_string()],
+            &HashMap::new(),
+        )
+        .unwrap();
+        let php_count = plan.tasks.iter().filter(|t| t.tool_id == "php").count();
+        assert_eq!(php_count, 1, "дубликат зависимости: {:?}", plan.tasks);
+        assert_eq!(plan.tasks[0].tool_id, "php");
+        assert_eq!(plan.tasks[1].tool_id, "composer");
     }
 }

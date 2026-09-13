@@ -692,10 +692,205 @@ fn quote_windows_arg(arg: &str) -> String {
     out
 }
 
+/// C#-раннер: запускает установщик В УЖЕ ПОВЫШЕННОМ процессе (wrapper
+/// исполняется после UAC-подтверждения), перенаправляя stdout/stderr
+/// в файлы построчно. В отличие от Start-Process -Verb RunAs, здесь
+/// вывод реально перехватывается (RunAs не умеет -RedirectStandardOutput),
+/// а файлы параллельно стримятся в UI (tail_elevated_logs) — долгие
+/// установки (MSVC, .NET SDK) видят живой прогресс, а не «висит».
+const ELEVATED_RUNNER_CS: &str = r#"
+using System;
+using System.IO;
+using System.Diagnostics;
+using System.Threading.Tasks;
+public static class TcElevatedRunner {
+    public static int Run(string program, string args, string outFile, string errFile) {
+        var psi = new ProcessStartInfo(program, args) {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        using (var p = Process.Start(psi)) {
+            if (p == null) return -1;
+            Task o = null;
+            Task e = null;
+            if (!string.IsNullOrEmpty(outFile)) o = Task.Run(() => CopyStream(p.StandardOutput, outFile));
+            if (!string.IsNullOrEmpty(errFile)) e = Task.Run(() => CopyStream(p.StandardError, errFile));
+            p.WaitForExit();
+            try { if (o != null) o.Wait(); } catch { }
+            try { if (e != null) e.Wait(); } catch { }
+            return p.ExitCode;
+        }
+    }
+    private static void CopyStream(StreamReader reader, string file) {
+        using (var w = new StreamWriter(file, true, new System.Text.UTF8Encoding(false)) { AutoFlush = true }) {
+            string line;
+            while ((line = reader.ReadLine()) != null) w.WriteLine(line);
+        }
+    }
+}
+"#;
+
+/// Собирает PS-скрипт-обёртку, который выполняется ПОВЫШЕННЫМ процессом:
+/// компилирует C#-раннер (Add-Type), запускает установщик с перенаправлением
+/// вывода в файлы и возвращает его код завершения.
+fn elevated_wrapper_script(program: &str, arg_shell: &str, out: &Path, err: &Path) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+{cs}
+'@
+$code = [TcElevatedRunner]::Run({program}, {args}, {out}, {err})
+exit $code
+"#,
+        cs = ELEVATED_RUNNER_CS.trim(),
+        program = ps_quote(program),
+        args = ps_quote(arg_shell),
+        out = ps_quote(&out.to_string_lossy()),
+        err = ps_quote(&err.to_string_lossy()),
+    )
+}
+
+/// Состояние тайлера: последняя строка tc:error и позиции дочитывания файлов.
+#[derive(Default)]
+struct TailState {
+    error_line: Option<String>,
+    positions: (u64, u64),
+}
+
+/// Живой стриминг лог-файлов повышённого установщика (tail): файлы
+/// опрашиваются каждые 250 мс, новые строки уходят в EventSink как
+/// TaskProgress. Возвращает состояние тайлера для финального дочёта.
+async fn tail_elevated_logs(
+    out: PathBuf,
+    err: PathBuf,
+    sink: Arc<dyn EventSink>,
+    index: usize,
+    total: usize,
+    task_id: String,
+    tool_id: String,
+    session_id: String,
+    abort: Arc<AtomicBool>,
+) -> TailState {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut state = TailState::default();
+    let mut positions: (u64, u64) = (0, 0);
+    loop {
+        if abort.load(Ordering::SeqCst) {
+            state.positions = positions;
+            return state;
+        }
+        for (path, pos) in [(&out, &mut positions.0), (&err, &mut positions.1)] {
+            let Ok(mut file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let Ok(len) = file.metadata().map(|m| m.len()) else {
+                continue;
+            };
+            if len < *pos {
+                *pos = 0; // файл пересоздан — читаем заново
+            }
+            if len == *pos {
+                continue;
+            }
+            if file.seek(SeekFrom::Start(*pos)).is_err() {
+                continue;
+            }
+            let mut buf = Vec::new();
+            if file.read_to_end(&mut buf).is_err() {
+                continue;
+            }
+            // Позиция — по ФАКТИЧЕСКИ прочитанным байтам, а не по метаданным
+            // до чтения: между metadata() и read_to_end файл мог вырасти,
+            // и иначе байты между старым и новым концом были бы потеряны.
+            *pos += buf.len() as u64;
+            let text = String::from_utf8_lossy(&buf);
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(msg) = line.strip_prefix("tc:error ") {
+                    state.error_line = Some(msg.to_string());
+                }
+                sink.emit(event(
+                    ToolchainEventType::TaskProgress {
+                        line: line.to_string(),
+                    },
+                    index,
+                    total,
+                    &task_id,
+                    &tool_id,
+                    &session_id,
+                ));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Дочитывает хвост лог-файла с заданной позиции (гонка между последним
+/// тиком тайлера и завершением установщика). Строки уходят в EventSink,
+/// tc:error перехватывается.
+fn drain_elevated_log(
+    path: &Path,
+    from: u64,
+    sink: &Arc<dyn EventSink>,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    error_line: &mut Option<String>,
+) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return;
+    };
+    if len <= from {
+        return;
+    }
+    if file.seek(SeekFrom::Start(from)).is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(msg) = line.strip_prefix("tc:error ") {
+            *error_line = Some(msg.to_string());
+        }
+        sink.emit(event(
+            ToolchainEventType::TaskProgress {
+                line: line.to_string(),
+            },
+            index,
+            total,
+            task_id,
+            tool_id,
+            session_id,
+        ));
+    }
+}
+
 /// Запускает установщик С ПРАВАМИ АДМИНИСТРАТОРА: PowerShell
 /// выводит UAC-промпт (пользователь подтверждает — это не тихая
-/// установка), процесс ждётся (-Wait). Его stdout/stderr уходят
-/// в файлы, которые стримим после завершения.
+/// установка), процесс ждётся (-Wait). stdout/stderr установщика
+/// перехватываются в файлы и СТРИМЯТСЯ В ЖИВУЮ в UI (долгие установки
+/// — MSVC Build Tools, .NET SDK — показывают прогресс, а не «висит»).
+///
+/// Вывод идёт в скрытое окно (CreateNoWindow): консоль установщика
+/// больше не отвлекает, прогресс виден в приложении.
 ///
 /// Применимо только на Windows; на других ОС возвращает Err.
 pub async fn run_elevated(
@@ -719,33 +914,44 @@ pub async fn run_elevated(
     let _ = std::fs::remove_file(&err);
 
     // Каждый аргумент — самостоятельная кавычка по правилам
-    // CommandLineToArgvW; склеенная строка отдаётся Start-Process.
+    // CommandLineToArgvW; склеенная строка отдаётся установщику.
     let arg_shell: Vec<String> = args.iter().map(|a| quote_windows_arg(a)).collect();
     let arg_shell = arg_shell.join(" ");
 
+    // Обёртка, исполняемая повышено: компилирует C#-раннер и запускает
+    // установщик с перенаправлением вывода в файлы.
+    let wrapper = write_script(tool_id, &elevated_wrapper_script(&program, &arg_shell, &out, &err))?;
+
+    // Живой стриминг: пока UAC-процесс работает, файлы выводятся в UI.
+    let tail = tokio::spawn(tail_elevated_logs(
+        out.clone(),
+        err.clone(),
+        Arc::clone(sink),
+        index,
+        total,
+        task_id.to_string(),
+        tool_id.to_string(),
+        session_id.to_string(),
+        Arc::clone(&abort),
+    ));
+
     let script = format!(
-        r#"$out = {}
-$err = {}
-$args_str = {}
+        r#"$ErrorActionPreference = 'Stop'
+$wrapper = {}
 if (-not (Test-Path -LiteralPath {})) {{
   Write-Output "tc:error не найден: {}"
   Exit 2
 }}
 try {{
-  # Start-Process with -Verb RunAs does not support stream redirection.
-  $p = Start-Process -FilePath {} -ArgumentList $args_str -Verb RunAs -Wait -PassThru
-  New-Item -ItemType File -Path $out -Force | Out-Null
-  New-Item -ItemType File -Path $err -Force | Out-Null
+  $p = Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$wrapper) -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+  Write-Output "tc:uac exit $($p.ExitCode)"
+  exit $p.ExitCode
 }} catch {{
   Write-Output "tc:error $($_.Exception.Message)"
   Exit 1
 }}
-Write-Output "tc:uac exit $($p.ExitCode)"
 "#,
-        ps_quote(&out.to_string_lossy()),
-        ps_quote(&err.to_string_lossy()),
-        ps_quote(&arg_shell),
-        ps_quote(&program),
+        ps_quote(&wrapper.to_string_lossy()),
         ps_quote(&program),
         ps_quote(&program),
     );
@@ -762,31 +968,34 @@ Write-Output "tc:uac exit $($p.ExitCode)"
     )
     .await?;
 
-    // Стримим перехваченный вывод установщика; заодно ловим tc:error.
-    let mut error_line: Option<String> = None;
-    for (path, label) in [(out, "stdout"), (err, "stderr")] {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if !line.is_empty() {
-                    if let Some(msg) = line.strip_prefix("tc:error ") {
-                        error_line = Some(msg.to_string());
-                    }
-                    sink.emit(event(
-                        ToolchainEventType::TaskProgress {
-                            line: format!("[{label}] {line}"),
-                        },
-                        index,
-                        total,
-                        task_id,
-                        tool_id,
-                        session_id,
-                    ));
-                }
-            }
-        }
-        let _ = std::fs::remove_file(&path);
-    }
+    // Стоп тайлеру и финальный дочёт хвоста (гонка с последним тиком).
+    tail.abort();
+    let tail_state = tail.await.ok().unwrap_or_default();
+    let mut error_line: Option<String> = tail_state.error_line;
+    drain_elevated_log(
+        &out,
+        tail_state.positions.0,
+        sink,
+        index,
+        total,
+        task_id,
+        tool_id,
+        session_id,
+        &mut error_line,
+    );
+    drain_elevated_log(
+        &err,
+        tail_state.positions.1,
+        sink,
+        index,
+        total,
+        task_id,
+        tool_id,
+        session_id,
+        &mut error_line,
+    );
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&err);
 
     let mut res = res;
     if res.error_line.is_none() {

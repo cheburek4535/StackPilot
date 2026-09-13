@@ -77,12 +77,33 @@ pub async fn run_check(
     let mut total_size_mb: u64 = 0;
     let mut needs_admin_any = false;
 
+    // Свежие рекомендуемые версии: для инструментов с резолвером
+    // (terraform, php, zig, ...) recommended резолвится у апстрима
+    // (кэш с TTL), статичное значение — страховка. Дедлайн жёсткий:
+    // проверка окружения не обязана ждать сеть.
+    let requested_defs: Vec<ToolDefinition> = requested
+        .iter()
+        .filter_map(|id| definitions.iter().find(|d| &d.id == id).cloned())
+        .collect();
+    let fresh_recommended = super::upstream::resolve_recommended_batch(
+        &requested_defs,
+        Duration::from_secs(15),
+    )
+    .await;
+
     for (index, id) in requested.iter().enumerate() {
         let Some(def) = definitions.iter().find(|d| &d.id == id) else {
             log::warn!("[toolchain] неизвестный инструмент: {id}");
             continue;
         };
-        let def_clone = def.clone();
+        // Обогащённое определение: recommended из резолвера — отчёт и
+        // вердикт UpdateAvailable отражают СВЕЖУЮ версию апстрима.
+        let mut def_clone = def.clone();
+        if let Some(rec) = fresh_recommended.get(id) {
+            if !rec.is_empty() {
+                def_clone.versions.recommended = Some(rec.clone());
+            }
+        }
 
         set.spawn(async move {
             let status = discovery::detect_tool(&def_clone).await;
@@ -313,6 +334,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: None,
+            url_template: None,
+            version_resolver: None,
         }
     }
 

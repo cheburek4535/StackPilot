@@ -32,4 +32,5 @@ pub mod planner;
 pub mod qt_installer;
 pub mod requirements;
 pub mod secrets;
+pub mod upstream;
 pub mod version;

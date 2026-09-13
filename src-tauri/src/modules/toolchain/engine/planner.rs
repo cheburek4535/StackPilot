@@ -667,7 +667,8 @@ fn validate_requested_source(
 }
 
 /// Dependency closure:
-///   1. bundled-with parents (npm -> node) are added when missing;
+///   1. bundled-with parents (npm -> node) and declared dependencies
+///      (composer -> php, extended.dependencies) are added when missing;
 ///   2. PkgManager sources on Windows depend on winget (bootstrapped too).
 async fn resolve_dependency_closure(
     request: &EngineRequest,
@@ -678,34 +679,47 @@ async fn resolve_dependency_closure(
     let present: HashSet<String> = drafts.iter().map(|d| d.tool_id.clone()).collect();
 
     for req in tools {
-        let mut chain = Vec::new();
-        let mut parent = inputs
-            .def(&req.tool_id)
-            .and_then(|d| d.bundled_with.clone());
-        while let Some(pid) = parent {
-            if chain.len() > 8 || pid == req.tool_id || chain.contains(&pid) {
-                break;
-            }
-            chain.push(pid.clone());
-            parent = inputs.def(&pid).and_then(|d| d.bundled_with.clone());
-        }
+        let root = req.tool_id.clone();
+        let Some(def) = inputs.def(&root) else {
+            continue;
+        };
 
-        for pid in chain.into_iter().rev() {
-            if drafts.iter().any(|d| d.tool_id == pid) || present.contains(&pid) {
-                link(drafts, &req.tool_id, &pid);
+        // BFS по замыканию зависимостей (bundled_with + dependencies):
+        // каждую недостающую зависимость добавляем задачей ПЕРЕД
+        // зависимым, а её собственные зависимости — рекурсивно.
+        let mut queue: Vec<String> = declared_dependency_ids(def);
+        let mut seen: HashSet<String> = HashSet::new();
+
+        while !queue.is_empty() {
+            let dep = queue.remove(0);
+            if dep == root || !seen.insert(dep.clone()) {
                 continue;
             }
-            let Some(pdef) = inputs.def(&pid) else { break };
-            if pdef.manual_install.is_some() {
+            if seen.len() > 16 {
                 break;
             }
-            let pstatus = inputs.detector.detect(pdef).await;
-            let preq = ToolRequest::id(&pid);
-            match draft_for(request, &preq, &pstatus, pdef, inputs) {
-                Ok(Some(pdraft)) => drafts.push(pdraft),
+            if drafts.iter().any(|d| d.tool_id == dep) || present.contains(&dep) {
+                link(drafts, &root, &dep);
+                continue;
+            }
+            let Some(ddef) = inputs.def(&dep) else {
+                break;
+            };
+            if ddef.manual_install.is_some() {
+                break;
+            }
+            let dstatus = inputs.detector.detect(ddef).await;
+            let dreq = ToolRequest::id(&dep);
+            // Зависимость создаётся задачей ВСЕГДА — даже когда она уже
+            // установлена (NoOp AlreadyInstalled): ребро depends_on обязано
+            // ссылаться на существующую задачу, иначе топологическая
+            // сортировка падает («циклическая зависимость в плане»).
+            match draft_for(request, &dreq, &dstatus, ddef, inputs) {
+                Ok(Some(ddraft)) => drafts.push(ddraft),
                 _ => break,
             }
-            link(drafts, &req.tool_id, &pid);
+            link(drafts, &root, &dep);
+            queue.extend(declared_dependency_ids(ddef));
         }
     }
 
@@ -742,6 +756,21 @@ async fn resolve_dependency_closure(
     }
 
     Ok(())
+}
+
+/// Все объявленные зависимости инструмента: bundled-хост (npm→node)
+/// и явный список extended.dependencies (composer→php).
+fn declared_dependency_ids(def: &ToolDefinition) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(host) = def.bundled_with.as_deref() {
+        ids.push(host.to_string());
+    }
+    for dep in def.extended.dependencies.iter() {
+        if !ids.contains(dep) {
+            ids.push(dep.clone());
+        }
+    }
+    ids
 }
 
 fn link(drafts: &mut [Draft], from: &str, to: &str) {
@@ -962,6 +991,8 @@ mod tests {
             execution: None,
             bootstrap: None,
             sha256: sha256.map(str::to_string),
+            url_template: None,
+            version_resolver: None,
         }
     }
 
@@ -1146,6 +1177,67 @@ mod tests {
             PlanError::Conflicts { pairs } => assert_eq!(pairs, vec!["aaa × bbb"]),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Явно объявленная зависимость (extended.dependencies: composer→php)
+    /// добавляется задачей ПЕРЕД зависимым, с ребром depends_on. Регрессия
+    /// «composer без php»: оба источника composer падают кодом 1, если php
+    /// не установлен — планировщик обязан ставить php первым.
+    #[tokio::test]
+    async fn declared_dependency_is_added_before_dependent() {
+        let mut composer = win_def("composer");
+        composer.extended.dependencies = vec!["php".to_string()];
+        let defs = vec![composer, win_def("php")];
+        let det = FakeDetector::default(); // оба Missing → обе задачи реальные
+        let plan = build_plan(&install_request(&["composer"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+
+        let php_idx = plan
+            .tasks
+            .iter()
+            .position(|t| t.tool_id == "php")
+            .expect("php auto-added");
+        let composer_idx = plan
+            .tasks
+            .iter()
+            .position(|t| t.tool_id == "composer")
+            .expect("composer present");
+        assert!(php_idx < composer_idx, "dependency precedes dependent");
+        let composer = &plan.tasks[composer_idx];
+        let php_task_id = plan.tasks[php_idx].task_id.clone();
+        assert!(
+            composer.depends_on.contains(&php_task_id),
+            "dependency edge resolved to task id"
+        );
+        assert!(!matches!(plan.tasks[php_idx].action, TaskAction::NoOp(_)));
+    }
+
+    /// Уже установленная зависимость (php Installed) не дублируется
+    /// задачей установки: появляется только честная NoOp-задача
+    /// «AlreadyInstalled» (ребро обязано ссылаться на существующую задачу).
+    #[tokio::test]
+    async fn declared_dependency_already_installed_is_reused() {
+        let mut composer = win_def("composer");
+        composer.extended.dependencies = vec!["php".to_string()];
+        let defs = vec![composer, win_def("php")];
+        let det = FakeDetector::with("php", installed("8.4.25"));
+        let plan = build_plan(&install_request(&["composer"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+
+        let php_count = plan.tasks.iter().filter(|t| t.tool_id == "php").count();
+        assert_eq!(php_count, 1, "no duplicate dependency task");
+        let php = plan.tasks.iter().find(|t| t.tool_id == "php").unwrap();
+        assert!(matches!(
+            php.action,
+            TaskAction::NoOp(NoopReason::AlreadyInstalled { .. })
+        ));
+        let composer = plan.tasks.iter().find(|t| t.tool_id == "composer").unwrap();
+        assert!(
+            composer.depends_on.contains(&php.task_id),
+            "edge to no-op dependency task"
+        );
     }
 
     #[tokio::test]

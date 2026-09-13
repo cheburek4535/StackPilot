@@ -677,6 +677,12 @@ export function initTauriMock() {
       return catalog;
     }
 
+    // Свежие версии в моке отсутствуют: UI остаётся на статичных
+    // recommended (та же страховка, что при недоступном апстриме).
+    if (cmd === "tcx_get_latest_versions") {
+      return {};
+    }
+
     if (cmd === "tcx_get_environment_snapshot" || cmd === "tc_get_environment_info") {
       const tools: Record<string, any> = {};
       catalog.forEach((t) => {

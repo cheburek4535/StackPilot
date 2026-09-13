@@ -131,6 +131,14 @@ export function getCatalog(): Promise<ToolDefinition[]> {
   return invoke("tcx_get_catalog");
 }
 
+/** Свежие версии каталога (tcx_get_latest_versions): tool_id → актуальная
+ *  версия от резолвера апстрима (кэш с TTL). Недоступный апстрим даёт
+ *  статичную recommended из tools.json — UI показывает свежее,
+ *  но никогда не «ломается». */
+export function getLatestVersions(): Promise<Record<string, string>> {
+  return invoke("tcx_get_latest_versions");
+}
+
 /** Последний валидный снапшот (мгновенно из кэша; stale-пометка честная). */
 export function getEnvironmentSnapshot(): Promise<EnvironmentSnapshot | null> {
   return invoke("tcx_get_environment_snapshot");
