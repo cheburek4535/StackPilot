@@ -4013,29 +4013,37 @@
     ],
     "desktop-app": [
       "rust",
+      "go",
       "typescript",
       "javascript",
       "csharp",
       "cpp",
       "dart",
-      "java"
+      "java",
+      "swift"
     ],
     "web-app": [
       "typescript",
       "javascript",
       "python",
+      "rust",
+      "go",
       "java",
       "csharp",
       "php",
       "dart",
       "kotlin",
+      "swift",
       "elixir",
+      "zig",
       "html"
     ],
     "cli-tool": [
       "rust",
       "go",
       "python",
+      "typescript",
+      "javascript",
       "cpp",
       "java",
       "csharp",
@@ -4046,12 +4054,17 @@
     ],
     "telegram-bot": [
       "python",
+      "typescript",
+      "javascript",
       "java",
       "kotlin"
     ],
     "library": [
       "rust",
+      "go",
       "python",
+      "typescript",
+      "javascript",
       "java",
       "csharp",
       "cpp",
@@ -4084,6 +4097,7 @@
       "kotlin",
       "swift",
       "java",
+      "go",
       "csharp",
       "typescript",
       "javascript"

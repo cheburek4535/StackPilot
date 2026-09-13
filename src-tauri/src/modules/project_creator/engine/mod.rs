@@ -1891,7 +1891,7 @@ fn compose_recipe(
         // dotnet new console, nextjs вместо js-скаффолда, tauri вместо
         // cargo init) — generic-шаги языка не нужны и конфликтуют с
         // файлами фреймворка.
-        if language_scaffold_suppressed(lang, context) {
+        if language_scaffold_suppressed(lang, layout, context) {
             continue;
         }
         let lang_seg = layout.language_dir(lang);
@@ -3638,7 +3638,15 @@ impl ProjectLayout {
 /// создаёт каркас проекта для этого языка (aspnetcore вместо `dotnet new
 /// console`, nextjs вместо js-скаффолда, spring-boot вместо maven archetype
 /// и т.п.). Флаг suppresses_language_scaffold живёт в wizard_tree.json.
-fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
+///
+/// ЕДИНСТВЕННОЕ исключение из «глушим всегда» — язык стоит на ФРОНТЕНДЕ, а
+/// фреймворк-подавитель (aspnetcore, express, vapor...) — на БЭКЕНДЕ: это
+/// разные сегменты (frontend/ и backend/), и generic-каркас языка нужен
+/// фронтенду. Иначе python-бэкенд + plain TypeScript-фронтенд / aspnetcore +
+/// C#-фронтенд оставляли бы фронтенд без каркаса. Остальные комбинации
+/// (в т.ч. бэкенд-язык + фронтенд-фреймворк, как TS-бэкенд + react) глушатся
+/// как раньше.
+fn language_scaffold_suppressed(lang: &str, layout: &ProjectLayout, context: &WizardContext) -> bool {
     // tauri: фронтенд (JS/TS) живёт в frontend/ и создаётся сам —
     // компаньоном react/vue/svelte или vite-vanilla. Generic-скаффолд
     // JS/TS (package.json, src/, tsc --init) в корне не нужен: он либо
@@ -3648,9 +3656,12 @@ fn language_scaffold_suppressed(lang: &str, context: &WizardContext) -> bool {
     {
         return true;
     }
+    let lang_on_frontend = layout.side_for_language(lang) == Some("frontend");
     context.frameworks.iter().any(|fw| {
         framework_def(fw).is_some_and(|def| {
-            def.suppresses_language_scaffold && def.languages.iter().any(|l| l == lang)
+            def.suppresses_language_scaffold
+                && def.languages.iter().any(|l| l == lang)
+                && !(lang_on_frontend && def.side == "backend")
         })
     })
 }
@@ -10894,6 +10905,52 @@ mod tests {
                     _ => panic!("{fw}: {id} — WriteFile"),
                 }
             }
+        }
+    }
+
+    #[test]
+    fn plain_frontend_language_keeps_scaffold_next_to_backend_framework() {
+        // python-бэкенд (fastapi) + plain TypeScript-фронтенд (без фронтенд-
+        // фреймворка): generic-каркас TS должен остаться и попасть в frontend/,
+        // иначе фронтенд-сегмент остаётся пустым.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let ts_index = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "ts_src_index")
+            .expect("generic TS-скаффолд фронтенда должен быть в плане");
+        match ts_index {
+            Step::WriteFile { path, .. } => assert_eq!(path, "frontend/src/index.ts"),
+            other => panic!("ts_src_index — WriteFile, получили {:?}", other.id()),
+        }
+    }
+
+    #[test]
+    fn backend_js_framework_does_not_suppress_frontend_plain_ts() {
+        // express (JS-бэкенд-фреймворк, подавляет JS/TS-скаффолд) НЕ должен
+        // глушить generic-каркас TypeScript, назначенного на ФРОНТЕНД:
+        // это другой сегмент (frontend/), express строит только backend/.
+        let mut ctx = context();
+        ctx.languages = vec!["javascript".into(), "typescript".into()];
+        ctx.backend_languages = vec!["javascript".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["express".into()];
+
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let ts_index = recipe
+            .steps
+            .iter()
+            .find(|s| s.id() == "ts_src_index")
+            .expect("frontend TS-скаффолд не должен подавляться backend-express");
+        match ts_index {
+            Step::WriteFile { path, .. } => assert_eq!(path, "frontend/src/index.ts"),
+            other => panic!("ts_src_index — WriteFile, получили {:?}", other.id()),
         }
     }
 

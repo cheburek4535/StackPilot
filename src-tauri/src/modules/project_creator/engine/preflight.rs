@@ -23,7 +23,9 @@
 
 use std::path::PathBuf;
 
-use super::{framework_def, language_scaffold_suppressed, python_command, python_venv_bin};
+use super::{
+    framework_def, language_scaffold_suppressed, python_command, python_venv_bin, ProjectLayout,
+};
 use crate::modules::project_creator::models::*;
 
 /// Каталоги, в которых ищется composer.phar (единый список с composer_launch
@@ -399,9 +401,11 @@ fn host_tool_covered_by_dedicated_preflight(tool: &str) -> bool {
 pub fn host_tool_preflight_steps(context: &WizardContext) -> Vec<Step> {
     let mut all_tools: Vec<String> = Vec::new();
     let mut any_groups: Vec<Vec<String>> = Vec::new();
+    // Стороно-зависимое подавление каркаса языка: тот же layout, что в движке.
+    let layout = ProjectLayout::compute(context);
 
     for lang in &context.languages {
-        if language_scaffold_suppressed(lang, context) {
+        if language_scaffold_suppressed(lang, &layout, context) {
             continue;
         }
         if let Some(tool) = language_host_tool(lang) {

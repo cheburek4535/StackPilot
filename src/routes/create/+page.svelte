@@ -1184,18 +1184,24 @@ function backendCandidates(): LanguageDef[] {
 }
 
 /** Языки для «чистого» frontend-выбора (включая чистый HTML/CSS/JS).
- *  Ограничены project_language_map выбранного типа проекта. */
+ *  «both»-языки (TypeScript, JavaScript, Dart, Kotlin, Swift, C#) тоже
+ *  доступны фронтенду: один и тот же язык может стоять и на бэкенде, и на
+ *  фронтенде (полноценный full-stack). Ограничены project_language_map
+ *  выбранного типа проекта. */
 function frontendCandidates(): LanguageDef[] {
   if (!tree) return [];
   const allowed = selectedType ? tree.project_language_map[selectedType.id] : null;
-  let langs = tree.languages.filter((l) => l.category === "frontend" || l.category === "static");
+  let langs = tree.languages.filter(
+    (l) => l.category === "frontend" || l.category === "static" || l.category === "both",
+  );
   if (allowed) langs = langs.filter((l) => allowed.includes(l.id));
   return langs;
 }
 
-/** Причина, по которой чистый язык нельзя выбрать (сторона уже занята). */
-function languageBlockReason(lang: LanguageDef): string | null {
-  const side = lang.category === "static" ? "frontend" : lang.category;
+/** Причина, по которой чистый язык нельзя выбрать (сторона уже занята).
+ *  Сторона передаётся явно: «both»-язык присутствует в обеих колонках, и
+ *  блокировка должна считаться по колонке, а не по category языка. */
+function languageBlockReason(lang: LanguageDef, side: "backend" | "frontend"): string | null {
   const active = side === "frontend" ? frontendLangs : backendLangs;
   if (active.includes(lang.id)) return null;
   if (active.length > 0) return i18n.t("create.already_on_side", { list: active.map((l) => langLabel(l)).join(", ") });
@@ -1214,7 +1220,7 @@ function langSideCandidates(side: "backend" | "frontend"): LanguageDef[] {
 
 /** Недоступные в данный момент чистые языки стороны (blocked-карточки). */
 function blockedLanguages(side: "backend" | "frontend"): LanguageDef[] {
-  return langSideCandidates(side).filter((l) => languageBlockReason(l) !== null);
+  return langSideCandidates(side).filter((l) => languageBlockReason(l, side) !== null);
 }
 
 /** Видимые чистые языки стороны: пока не развёрнуто — только доступные.
@@ -1223,7 +1229,7 @@ function visibleLanguages(side: "backend" | "frontend"): LanguageDef[] {
   const items = langSideCandidates(side);
   return showUnavailableLangs[side]
     ? items
-    : items.filter((l) => languageBlockReason(l) === null);
+    : items.filter((l) => languageBlockReason(l, side) === null);
 }
 
 function toggleUnavailableLangs(side: "backend" | "frontend") {
@@ -2528,7 +2534,7 @@ function resetAll() {
            Конструктор: слева фазы + содержимое, справа панель контекста
            ================================================================ -->
       <div class="builder">
-        <div class="builder-left">
+        <div class="builder-head">
           <div class="phase-nav">
             {#each PHASES as name, i}
               <button
@@ -2567,9 +2573,52 @@ function resetAll() {
             {/if}
           {/snippet}
 
-          <!-- Phase 0: Project Type -->
           {#if phase === 0}
             <p class="prompt">{i18n.t("create.what_building") as TranslationKey}</p>
+          {/if}
+          {#if phase === 1}
+            <p class="prompt">{i18n.t("create.stack_tools") as TranslationKey}</p>
+            {@render archBanner()}
+            {#if selectedFrameworks.length > 0 || selectedTools.length > 0}
+              <button
+                class="btn-clear-stack"
+                title={i18n.t("create.clear_stack_title") as TranslationKey}
+                onclick={() => (confirmClearStack = true)}
+              >
+                {i18n.t("create.clear_stack") as TranslationKey}
+              </button>
+            {/if}
+            {#if dropNotice}
+              <p class="notice-bar" role="status">{dropNotice}</p>
+            {/if}
+            <p class="hint">
+              {i18n.t("create.fw_hint") as TranslationKey}
+            </p>
+
+            {#if confirmClearStack}
+              <div class="clear-overlay" onclick={() => (confirmClearStack = false)}>
+                <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+                  <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
+                  <p>
+                    {i18n.t("create.clear_confirm_body") as TranslationKey}
+                  </p>
+                  <div class="clear-actions">
+                    <button class="btn-primary" onclick={() => clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
+                    <button class="btn-back" onclick={() => (confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          {/if}
+          {#if phase === 2}
+            <p class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</p>
+            {@render archBanner()}
+          {/if}
+        </div>
+
+        <div class="builder-left">
+          <!-- Phase 0: Project Type -->
+          {#if phase === 0}
             <div class="card-grid type-grid">
               {#each tree!.project_types as pt}
                 <button class="card" onclick={() => selectType(pt)}>
@@ -2579,6 +2628,7 @@ function resetAll() {
                 </button>
               {/each}
             </div>
+            <p class="creator-footer">{i18n.t("create.custom_stack_footer") as TranslationKey}</p>
           {/if}
 
           <!-- Phase 1: Stack & Tools — одна скролл-страница -->
@@ -2762,39 +2812,6 @@ function resetAll() {
               </div>
             {/snippet}
 
-            <p class="prompt">{i18n.t("create.stack_tools") as TranslationKey}</p>
-            {@render archBanner()}
-            {#if selectedFrameworks.length > 0 || selectedTools.length > 0}
-              <button
-                class="btn-clear-stack"
-                title={i18n.t("create.clear_stack_title") as TranslationKey}
-                onclick={() => (confirmClearStack = true)}
-              >
-                {i18n.t("create.clear_stack") as TranslationKey}
-              </button>
-            {/if}
-            {#if dropNotice}
-              <p class="notice-bar" role="status">{dropNotice}</p>
-            {/if}
-            <p class="hint">
-              {i18n.t("create.fw_hint") as TranslationKey}
-            </p>
-
-            {#if confirmClearStack}
-              <div class="clear-overlay" onclick={() => (confirmClearStack = false)}>
-                <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-                  <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
-                  <p>
-                    {i18n.t("create.clear_confirm_body") as TranslationKey}
-                  </p>
-                  <div class="clear-actions">
-                    <button class="btn-primary" onclick={() => clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
-                    <button class="btn-back" onclick={() => (confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
-                  </div>
-                </div>
-              </div>
-            {/if}
-
             {#snippet fwLevel(title: string, items: FrameworkDef[], note: string, levelKey: string)}
               {@const unavailable = unavailableFrameworks(items)}
               {@const visibleItems = availableFrameworksForDisplay(items, levelKey)}
@@ -2897,8 +2914,8 @@ function resetAll() {
             {/if}
 
             <!-- Языки без фреймворков (необязательно): чистый стек или поддержка -->
-            <section class="territory territory-langs">
-              <header class="territory-head">
+            <details class="territory territory-langs" open>
+              <summary class="territory-head">
                 <TechIcon alt="" size="md" />
                 <div class="territory-title-wrap">
                   <h3 class="territory-title">{i18n.t("create.plain_languages") as TranslationKey}</h3>
@@ -2906,7 +2923,7 @@ function resetAll() {
                     {i18n.t("create.plain_languages_desc") as TranslationKey}
                   </p>
                 </div>
-              </header>
+              </summary>
               <div class="territory-body">
                 <div class="lang-sides">
                   {#if hasBackend && backendCandidates().length > 0}
@@ -2931,7 +2948,7 @@ function resetAll() {
                       </div>
                       <div class="card-grid lang-grid">
                         {#each visibleLanguages("backend") as lang}
-                          {@const blockedReason = languageBlockReason(lang)}
+                          {@const blockedReason = languageBlockReason(lang, "backend")}
                           {@const blockedDetail = languageBlockDetail(lang)}
                           <button
                             class="card"
@@ -2992,7 +3009,7 @@ function resetAll() {
                       </div>
                       <div class="card-grid lang-grid">
                         {#each visibleLanguages("frontend") as lang}
-                          {@const blockedReason = languageBlockReason(lang)}
+                          {@const blockedReason = languageBlockReason(lang, "frontend")}
                           <button
                             class="card"
                             class:selected={frontendLangs.includes(lang.id)}
@@ -3036,7 +3053,7 @@ function resetAll() {
                   {/if}
                 </div>
               </div>
-            </section>
+            </details>
 
             <!-- Инструменты и фичи -->
             <section class="territory territory-tools">
@@ -3174,9 +3191,6 @@ function resetAll() {
 
           <!-- Phase 2: Review -->
           {#if phase === 2}
-            <p class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</p>
-            {@render archBanner()}
-
             <div class="dest-card" class:dest-card-attention={!selectedFolder}>
               <div class="dest-head">
                 <span class="dest-icon" aria-hidden="true">📁</span>
@@ -3348,6 +3362,7 @@ function resetAll() {
         </div>
 
         <!-- ============ Панель контекста (правая колонка) ============ -->
+        <div class="builder-side">
         <aside class="builder-context">
           <p class="ctx-title">{i18n.t("create.your_stack") as TranslationKey}</p>
 
@@ -3432,6 +3447,19 @@ function resetAll() {
           </div>
 
           </aside>
+
+          {#if phase !== 0 && selectedType && selectedType.id !== "custom"}
+            <button
+              type="button"
+              class="custom-stack-hint"
+              title={i18n.t("create.custom_hint_body") as TranslationKey}
+              onclick={() => goPhase(0)}
+            >
+              <span class="csh-title">{i18n.t("create.custom_hint_title") as TranslationKey}</span>
+              <span class="csh-body">{i18n.t("create.custom_hint_body") as TranslationKey}</span>
+            </button>
+          {/if}
+        </div>
       </div>
       {/if}
     {/if}
@@ -3462,14 +3490,24 @@ function resetAll() {
 .mode-btn.active { background: var(--sp-surface-grad), var(--sp-bg-2); color: var(--sp-accent); font-weight: 600; box-shadow: var(--sp-gloss-top-strong), inset 0 0 0 1px var(--sp-border); }
 .prompt { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.4rem; letter-spacing: -0.02em; }
 .hint { color: var(--sp-text-3); margin-bottom: 1.5rem; font-size: 0.95rem; }
+.creator-footer { margin: 0.9rem 0 0; font-size: 0.8rem; color: var(--sp-text-3); opacity: 0.7; }
 .backendless-note { border-left: 3px solid var(--sp-accent-strong); padding: 0.35rem 0.75rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top); margin: 0.75rem 0; }
 
 /* ---- Конструктор: две колонки ---- */
 .builder { display: grid; grid-template-columns: 1fr 320px; gap: 1.5rem; align-items: start; }
+/* Шапка фазы (шаги + заголовок/подсказки) — во всю ширину над обеими
+   колонками: правая панель «Ваш стэк» стартует ровно на линии верха
+   контента (карточек типа / первой территории) и не «прыгает» между фазами. */
+.builder-head { grid-column: 1 / -1; min-width: 0; }
 .builder-left { min-width: 0; }
-.builder-context {
+.builder-side {
   position: sticky;
   top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.builder-context {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--sp-border);
@@ -3477,6 +3515,38 @@ function resetAll() {
   background: var(--sp-surface-grad), var(--sp-bg-1);
   box-shadow: var(--sp-gloss-top), var(--sp-shadow-2);
   padding: 0.85rem;
+}
+
+/* Подсказка «Попробуйте тип Кастомный стэк» под панелью контекста */
+.custom-stack-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.75rem;
+  border: 1px dashed var(--sp-border-strong);
+  border-radius: var(--sp-radius-lg);
+  background: transparent;
+  color: var(--sp-text-3);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.custom-stack-hint:hover {
+  border-color: var(--sp-accent-border);
+  background: var(--sp-bg-1);
+  color: var(--sp-text-2);
+}
+.custom-stack-hint .csh-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--sp-text-2);
+}
+.custom-stack-hint:hover .csh-title { color: var(--sp-accent); }
+.custom-stack-hint .csh-body {
+  font-size: 0.7rem;
+  color: var(--sp-text-3);
 }
 .ctx-title {
   font-weight: 700;
@@ -3825,6 +3895,27 @@ function resetAll() {
 .territory-body .fw-level:last-child { margin-bottom: 0; }
 .territory-body .card-grid { margin-bottom: 0.25rem; }
 
+/* Секция «чистых языков» сворачивается как fw-level (native <details>). */
+details.territory > summary.territory-head {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+details.territory > summary.territory-head::-webkit-details-marker { display: none; }
+details.territory > summary.territory-head::before {
+  content: "▸";
+  color: var(--sp-accent-strong);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+details.territory[open] > summary.territory-head::before { transform: rotate(90deg); }
+details.territory:not([open]) > summary.territory-head {
+  border-radius: var(--sp-radius-xl);
+  border-bottom-color: transparent;
+}
+details.territory > summary.territory-head:hover { filter: brightness(1.08); }
+
 /* ---- Чистые языки (plain language picker) ---- */
 .lang-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
 @media (max-width: 900px) { .lang-sides { grid-template-columns: 1fr; } }
@@ -4134,6 +4225,7 @@ function resetAll() {
 }
 @media (max-width: 900px) {
   .builder { grid-template-columns: 1fr; }
+  .builder-side { position: static; }
   .builder-context { position: static; }
   .skeleton-builder { grid-template-columns: 1fr; }
   .skeleton-sidebar { display: none; }
