@@ -156,6 +156,33 @@ export type LaunchProfileV2 = {
 };
 
 // ---------------------------------------------------------------------------
+// Docker first-run authorization state (backend `devl_get_docker_auth_state`)
+// ---------------------------------------------------------------------------
+
+export type DockerAuthState = {
+  /** A docker step reached Succeeded at least once — Docker Desktop's
+   *  first-run authorization was completed. */
+  confirmed: boolean;
+  /** Docker was installed by StackPilot's toolchain installer. */
+  installed_via_stackpilot: boolean;
+};
+
+/** True when a step touches the Docker stack (wait_for_docker gadget or a
+ *  docker_compose_up bootstrap). Mirrors the backend `step_is_docker`. */
+export function isDockerStep(step: LaunchStep): boolean {
+  return (
+    step.kind.type === "wait_for_docker" ||
+    step.completion?.type === "docker_compose_up"
+  );
+}
+
+/** True when any enabled step of a V2 profile is docker-involved. */
+export function profileHasDockerSteps(profile: LaunchProfileV2 | null | undefined): boolean {
+  if (!profile) return false;
+  return profile.steps.some((s) => s.enabled && isDockerStep(s));
+}
+
+// ---------------------------------------------------------------------------
 // Analysis draft types (backend `analyze_project_v2` output)
 // ---------------------------------------------------------------------------
 

@@ -3,6 +3,7 @@ use crate::modules::devlauncher::models::*;
 use crate::modules::devlauncher::profile_manager::{ProfileManager, ProfileManagerV2};
 use crate::modules::devlauncher::DevLauncherState;
 use crate::modules::project_creator::models::WizardContext;
+use crate::modules::toolchain::ToolchainState;
 use crate::modules::workspace::project::ProjectService;
 use crate::modules::workspace::session::SessionService;
 use crate::modules::workspace::WorkspaceState;
@@ -988,4 +989,31 @@ pub async fn resolve_terminal(
     })
     .await
     .map_err(|e| format!("Terminal resolve task failed: {e}"))?
+}
+
+/// Persistent Docker authorization state: `confirmed` (at least one docker
+/// step has ever reached Succeeded — proves Docker Desktop's first-run
+/// sign-in/service-agreement was completed) and `installed_via_stackpilot`
+/// (Docker was installed by the toolchain installer, not adopted externally).
+///
+/// The frontend uses this to decide when to show the "authorize in Docker
+/// Desktop" warning/callouts around profile runs with docker steps.
+#[tauri::command]
+pub fn devl_get_docker_auth_state(
+    state: State<'_, DevLauncherState>,
+    toolchain: State<'_, ToolchainState>,
+) -> Result<super::docker_auth::DockerAuthStateView, String> {
+    Ok(state.docker_auth.view(&toolchain))
+}
+
+/// Mark Docker authorization as confirmed on demand. The orchestrator is the
+/// primary writer (flips it on any successful docker step); this exists for
+/// completeness/advanced reset and is not part of the normal happy path.
+#[tauri::command]
+pub fn devl_set_docker_auth_confirmed(
+    state: State<'_, DevLauncherState>,
+    confirmed: bool,
+) -> Result<(), String> {
+    state.docker_auth.set_confirmed(confirmed);
+    Ok(())
 }

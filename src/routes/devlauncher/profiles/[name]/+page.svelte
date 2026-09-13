@@ -2,10 +2,10 @@
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2 } from "$lib/modules/devlauncher/api";
+  import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2, getDockerAuthState } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
-  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun } from "$lib/modules/devlauncher/types";
-  import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel } from "$lib/modules/devlauncher/types";
+  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun, DockerAuthState } from "$lib/modules/devlauncher/types";
+  import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel, profileHasDockerSteps } from "$lib/modules/devlauncher/types";
   import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
   import { markProfileOpened, shouldShowTerminalHint, markHintShown } from "$lib/modules/devlauncher/onboarding";
   import * as runStore from "$lib/modules/devlauncher/runStore";
@@ -80,6 +80,56 @@
   /** Status of this profile's latest run seen by the last sync. */
   let lastSyncedStatus: import("$lib/modules/devlauncher/types").RunStatus | null = null;
 
+  // ---- Docker first-run authorization ----
+  /** Persistent docker auth state (confirmed + installed_via_stackpilot). */
+  let dockerAuth = $state<DockerAuthState | null>(null);
+  /** True while the pre-flight "authorize in Docker Desktop" warning is open. */
+  let showDockerAuthModal = $state(false);
+  /** True while the post-failure "authorize in Docker Desktop" callout is shown. */
+  let dockerAuthCallout = $state(false);
+  /** User dismissed the failure callout — don't auto-reappear until a new run. */
+  let dockerAuthCalloutDismissed = $state(false);
+
+  /** V2 profile view (present only when the loaded profile is V2). */
+  const v2Profile = $derived<LaunchProfileV2 | null>(
+    isV2 && profile ? (profile as unknown as LaunchProfileV2) : null,
+  );
+  /** The profile includes docker steps that need an authorized Docker Desktop. */
+  const hasDockerSteps = $derived(profileHasDockerSteps(v2Profile));
+  /** Docker first-run is still unresolved (never succeeded + StackPilot-installed). */
+  const dockerAuthPending = $derived(
+    !!hasDockerSteps &&
+      !!dockerAuth &&
+      !dockerAuth.confirmed &&
+      dockerAuth.installed_via_stackpilot,
+  );
+
+  /** Load the persistent docker authorization state once per relevant event. */
+  async function refreshDockerAuth() {
+    try {
+      dockerAuth = await getDockerAuthState();
+    } catch {
+      dockerAuth = null;
+    }
+  }
+
+  /** Watch the run lifecycle: on failure with docker steps while auth is
+   *  unconfirmed, surface the "authorize in Docker Desktop and try again"
+   *  callout; refresh auth after every terminal run (a successful docker
+   *  step flips `confirmed` on the backend). */
+  $effect(() => {
+    const status = activeRun?.status;
+    if (status && isRunTerminal(status)) stopPolling();
+    if (hasDockerSteps && !!status && isRunTerminal(status)) {
+      if (status === "failed" && dockerAuth?.confirmed === false) {
+        if (!dockerAuthCalloutDismissed) dockerAuthCallout = true;
+      } else {
+        dockerAuthCallout = false;
+      }
+      void refreshDockerAuth();
+    }
+  });
+
   // ---- Application selection (browser / database viewer) ----
   let detectedApps = $state<DetectedApplications | null>(null);
   let appBrowser = $state("");
@@ -123,6 +173,7 @@
       startPolling(activeRun.run_id);
     }
     void refreshDetectedApps();
+    void refreshDockerAuth();
   });
 
   onDestroy(() => {
@@ -449,11 +500,23 @@
     }
   }
 
-  async function runAll() {
+  async function runAll(force = false) {
     if (!profile || runningAll) return;
+
+    // Docker first-run pre-flight: before the FIRST launch (auth still
+    // unconfirmed and Docker installed by StackPilot), warn the user to
+    // authorize in Docker Desktop. "Continue" bypasses the warning for this
+    // launch (force=true) — the backend only confirms the flag once a docker
+    // step actually succeeds.
+    if (!force && dockerAuthPending) {
+      showDockerAuthModal = true;
+      return;
+    }
+
     runningAll = true;
     activeRun = null;
     launched = true;
+    dockerAuthCallout = false;
 
     // Bind the profile to the workspace project so the Workspace module
     // (Overview/Runtime/Logs) shows the processes after the launch.
@@ -693,7 +756,7 @@
         <button class="secondary" onclick={openInWorkspace}>
           {i18n.t("devl.open_in_workspace") as TranslationKey}
         </button>
-        <button class="primary" onclick={runAll} disabled={runningAll}>
+        <button class="primary" onclick={() => runAll()} disabled={runningAll}>
           {runningAll ? (i18n.t("devl.running") as TranslationKey) : (i18n.t("devl.run_all") as TranslationKey)}
         </button>
         {#if activeRun && !isRunTerminal(activeRun.status)}
@@ -774,6 +837,30 @@
           </div>
         {/if}
       </section>
+    {/if}
+
+    <!-- Docker first-run failure callout -->
+    {#if dockerAuthCallout}
+      <div class="docker-auth-callout" role="alert">
+        <div>
+          <strong>{i18n.t("devl.docker_auth_failure_title") as TranslationKey}</strong>
+          <p>{i18n.t("devl.docker_auth_failure_body") as TranslationKey}</p>
+        </div>
+        <div class="callout-actions">
+          <button
+            class="primary"
+            onclick={() => {
+              dockerAuthCallout = false;
+              void runAll(true);
+            }}
+          >
+            {i18n.t("devl.docker_auth_try_again") as TranslationKey}
+          </button>
+          <button class="secondary" onclick={() => (dockerAuthCallout = false)}>
+            {i18n.t("devl.docker_auth_hide") as TranslationKey}
+          </button>
+        </div>
+      </div>
     {/if}
 
     <!-- Run history -->
@@ -1015,6 +1102,42 @@
             <div class="log-line">{line}</div>
           {/each}
         {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Docker first-run pre-flight warning modal -->
+{#if showDockerAuthModal}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="modal-overlay" onclick={() => (showDockerAuthModal = false)} role="presentation">
+    <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
+    <div
+      class="modal-content docker-auth-modal"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Docker authorization"
+    >
+      <div class="modal-header">
+        <span>{i18n.t("devl.docker_auth_pre_warning_title") as TranslationKey}</span>
+        <button class="modal-close" onclick={() => (showDockerAuthModal = false)}>✕</button>
+      </div>
+      <div class="docker-auth-modal-body">
+        <p>{i18n.t("devl.docker_auth_pre_warning_body") as TranslationKey}</p>
+        <div class="modal-actions">
+          <button class="secondary" onclick={() => (showDockerAuthModal = false)}>
+            {i18n.t("devl.docker_auth_cancel") as TranslationKey}
+          </button>
+          <button
+            class="primary"
+            onclick={() => {
+              showDockerAuthModal = false;
+              void runAll(true);
+            }}
+          >
+            {i18n.t("devl.docker_auth_launch") as TranslationKey}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -1474,6 +1597,38 @@
     flex: 1; overflow-y: auto; padding: 0.75rem 1rem;
     font-family: var(--sp-font-mono); font-size: var(--sp-fs-xs);
     background: var(--sp-code-bg);
+  }
+
+  /* Docker auth pre-flight modal (text UI, not log viewer) */
+  .docker-auth-modal .modal-header {
+    color: var(--sp-warning);
+  }
+  .docker-auth-modal-body {
+    padding: 1.25rem 1.5rem;
+    font-family: var(--sp-font-sans);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+    line-height: 1.55;
+  }
+  .docker-auth-modal-body p { margin: 0 0 1.25rem; }
+  .modal-actions {
+    display: flex; justify-content: flex-end; gap: 0.5rem;
+  }
+
+  /* Docker first-run failure callout */
+  .docker-auth-callout {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem;
+    margin: 1rem 0;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--sp-warning);
+    background: color-mix(in srgb, var(--sp-warning) 12%, var(--sp-bg-0));
+    border-radius: var(--sp-radius-md);
+    font-size: var(--sp-fs-sm);
+  }
+  .docker-auth-callout p { margin: 0.25rem 0 0; color: var(--sp-text-2); }
+  .callout-actions {
+    display: flex; gap: 0.5rem; flex-shrink: 0;
   }
   .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
 </style>

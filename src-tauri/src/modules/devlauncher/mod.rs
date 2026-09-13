@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod commands;
+pub mod docker_auth;
 pub mod file_watcher;
 pub mod launch_engine;
 pub mod models;
@@ -35,6 +36,10 @@ pub struct DevLauncherState {
     pub file_watcher: Arc<FileWatcher>,
     /// V2 run orchestrator — DAG-based, async, dependency-aware.
     pub orchestrator: Arc<RunOrchestrator>,
+    /// Persistent Docker authorization state (`confirmed` once any docker
+    /// step has succeeded). Shared with the orchestrator so failed docker
+    /// steps get an auth hint and successful docker runs flip the flag.
+    pub docker_auth: Arc<docker_auth::DockerAuthStore>,
 }
 
 impl DevLauncherState {
@@ -43,6 +48,7 @@ impl DevLauncherState {
         launch_engine: Arc<dyn LaunchEngine>,
         analyzer: Arc<dyn ProjectAnalyzer>,
         process_manager: Arc<dyn ProcessManager>,
+        docker_auth: Arc<docker_auth::DockerAuthStore>,
     ) -> Self {
         let analyzer_v2: Arc<dyn ProjectAnalyzerV2> = Arc::new(analyzer::FsProjectAnalyzer);
         Self {
@@ -52,7 +58,8 @@ impl DevLauncherState {
             analyzer_v2,
             binding_service: None,
             file_watcher: Arc::new(FileWatcher::new()),
-            orchestrator: Arc::new(RunOrchestrator::new(process_manager)),
+            orchestrator: Arc::new(RunOrchestrator::new(process_manager, docker_auth.clone())),
+            docker_auth,
         }
     }
 

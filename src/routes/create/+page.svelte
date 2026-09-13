@@ -3431,18 +3431,7 @@ function resetAll() {
             </div>
           </div>
 
-          {#if phase === 1}
-            <button
-              class="ctx-cta"
-              class:ctx-cta-locked={reviewLocked}
-              onclick={() => goPhase(2)}
-              disabled={!!stackError || reviewLocked}
-              title={reviewLocked ? (i18n.t("create.scroll_lock_hint") as TranslationKey) : (stackError ?? undefined)}
-            >
-              {i18n.t("create.review_create") as TranslationKey}
-            </button>
-          {/if}
-        </aside>
+          </aside>
       </div>
       {/if}
     {/if}
@@ -3524,39 +3513,6 @@ function resetAll() {
   opacity: 0.75;
 }
 .btn-change:hover { color: var(--sp-accent-strong); text-decoration: underline; opacity: 1; }
-.ctx-cta {
-  margin-top: 0.85rem;
-  width: 100%;
-  background: var(--sp-accent-strong);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
-    var(--sp-accent-strong) 45%,
-    var(--sp-accent) 100%
-  );
-  color: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.35);
-  border-radius: var(--sp-radius-lg);
-  padding: 0.6rem 1rem;
-  font-weight: 600;
-  font-size: 0.88rem;
-  cursor: pointer;
-  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-  transition: background 0.15s, box-shadow 0.15s;
-}
-.ctx-cta:hover:not(:disabled) {
-  background: var(--sp-accent-strong);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sp-accent-strong) 62%, black) 0%,
-    var(--sp-accent-strong) 40%,
-    color-mix(in srgb, var(--sp-accent) 88%, var(--sp-accent-strong)) 100%
-  );
-  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-accent);
-}
-.ctx-cta:disabled { opacity: 0.5; cursor: not-allowed; }
-.ctx-cta-locked { border-style: dashed; }
 
 /* ---- Фазы (slim stepper) ---- */
 .phase-nav { display: flex; align-items: center; gap: 0; margin-bottom: 1.75rem; flex-wrap: wrap; }

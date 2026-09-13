@@ -27,6 +27,8 @@
 //! - [`terminal`] — Terminal backend abstraction and launch plan resolution.
 //! - [`docker_service`] — Docker CLI/daemon preflight, readiness checks,
 //!   service status, and structured diagnostics.
+//! - [`wsl`] — Windows Subsystem for Linux update automation so an outdated
+//!   WSL2 never blocks Docker Desktop with an interactive prompt.
 //! - [`readiness`] — TCP port and HTTP/HTTPS URL readiness checking with
 //!   proper URL parsing, cancellation, and failure diagnostics.
 
@@ -42,6 +44,7 @@ pub mod readiness;
 pub mod shell;
 pub mod shell_service;
 pub mod terminal;
+pub mod wsl;
 
 /// `CREATE_NO_WINDOW` (0x08000000): the child must not create a new
 /// console window.

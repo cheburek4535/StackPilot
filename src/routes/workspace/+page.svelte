@@ -37,18 +37,21 @@
     executeAction,
     startFileWatcher,
     stopFileWatcher,
+    getDockerAuthState,
   } from "$lib/modules/devlauncher/api";
   import type {
     LaunchProfile,
     LaunchProfileV2,
     LaunchRun,
     ActionStatus,
+    DockerAuthState,
   } from "$lib/modules/devlauncher/types";
   import {
     isV2Profile,
     isRunTerminal,
     runStatusLabel,
     stepStatusClass,
+    profileHasDockerSteps,
   } from "$lib/modules/devlauncher/types";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { openProject } from "$lib/core/integration";
@@ -80,6 +83,45 @@
   /** The profile launcher widget starts collapsed — it lives at the bottom of
    *  the dashboard and expands only on demand or when a launch begins. */
   let profilesExpanded = $state(false);
+
+  // ---- Docker first-run authorization ----
+  /** Persistent docker auth state (confirmed + installed_via_stackpilot). */
+  let dockerAuth = $state<DockerAuthState | null>(null);
+  /** True while the pre-flight "authorize in Docker Desktop" warning is open. */
+  let showDockerAuthModal = $state(false);
+  /** Profile awaiting the user's "continue" from that modal. */
+  let pendingLaunch = $state<LaunchProfile | null>(null);
+  /** True while the post-failure "authorize in Docker Desktop" callout is shown. */
+  let dockerAuthCallout = $state(false);
+  /** User dismissed the failure callout — don't auto-reappear until a new run. */
+  let dockerAuthCalloutDismissed = $state(false);
+  /** Whether the most recent launch was a V2 profile with docker steps. */
+  let launchedHasDocker = $state(false);
+
+  /** Load the persistent docker authorization state once per relevant event. */
+  async function refreshDockerAuth() {
+    try {
+      dockerAuth = await getDockerAuthState();
+    } catch {
+      dockerAuth = null;
+    }
+  }
+
+  /** Watch the active run: on failure of a docker profile while auth is
+   *  unconfirmed, surface the "authorize in Docker Desktop and try again"
+   *  callout; refresh auth after every terminal docker run (a successful
+   *  docker step flips `confirmed` on the backend). */
+  $effect(() => {
+    const status = activeRun?.status;
+    if (launchedHasDocker && !!status && isRunTerminal(status)) {
+      if (status === "failed" && dockerAuth?.confirmed === false) {
+        if (!dockerAuthCalloutDismissed) dockerAuthCallout = true;
+      } else {
+        dockerAuthCallout = false;
+      }
+      void refreshDockerAuth();
+    }
+  });
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -116,6 +158,7 @@
         await launchProfile(found);
       }
     }
+    void refreshDockerAuth();
   });
 
   onDestroy(() => {
@@ -185,14 +228,37 @@
   }
 
   /** Запуск профиля: V2 использует event-driven оркестратор,
-   *  legacy — пошаговый executeAction. */
-  async function launchProfile(profile: LaunchProfile) {
+   *  legacy — пошаговый executeAction. `force` bypasses the docker
+   *  first-run pre-flight for this launch (user clicked "continue"). */
+  async function launchProfile(profile: LaunchProfile, force = false) {
     if (launching) return;
+    launchedHasDocker = false;
+
+    // Docker first-run pre-flight: before the FIRST docker launch (auth still
+    // unconfirmed and Docker installed by StackPilot), warn the user to
+    // authorize in Docker Desktop. "Continue" bypasses the warning only for
+    // that launch — the backend confirms the flag when a docker step succeeds.
+    if (!force && isV2Profile(profile) && profile.id && profile.schema_version) {
+      const v2Profile = profile as unknown as LaunchProfileV2;
+      launchedHasDocker = profileHasDockerSteps(v2Profile);
+      if (
+        launchedHasDocker &&
+        dockerAuth &&
+        !dockerAuth.confirmed &&
+        dockerAuth.installed_via_stackpilot
+      ) {
+        pendingLaunch = profile;
+        showDockerAuthModal = true;
+        return;
+      }
+    }
+
     launching = true;
     launchingName = profile.name;
     launchCurrent = null;
     actionResults = new Map();
     activeRun = null;
+    dockerAuthCallout = false;
     // The run state is rendered inside the launcher widget — open it so the
     // user sees the run progress without extra clicks.
     profilesExpanded = true;
@@ -867,11 +933,71 @@
               {/if}
             </div>
           {/if}
+
+          {#if dockerAuthCallout && pendingLaunch}
+            <div class="docker-auth-callout" role="alert">
+              <div>
+                <strong>{i18n.t("devl.docker_auth_failure_title") as TranslationKey}</strong>
+                <p>{i18n.t("devl.docker_auth_failure_body") as TranslationKey}</p>
+              </div>
+              <div class="callout-actions">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onclick={() => {
+                    dockerAuthCallout = false;
+                    void launchProfile(pendingLaunch!, true);
+                  }}
+                >
+                  {i18n.t("devl.docker_auth_try_again") as TranslationKey}
+                </Button>
+                <Button variant="ghost" size="sm" onclick={() => (dockerAuthCallout = false)}>
+                  {i18n.t("devl.docker_auth_hide") as TranslationKey}
+                </Button>
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </section>
   {/if}
 </PageContainer>
+
+{#if showDockerAuthModal && pendingLaunch}
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div class="docker-auth-modal-overlay" onclick={() => (showDockerAuthModal = false)} role="presentation">
+    <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
+    <div
+      class="docker-auth-modal-content"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Docker authorization"
+    >
+      <div class="docker-auth-modal-header">
+        <span>{i18n.t("devl.docker_auth_pre_warning_title") as TranslationKey}</span>
+        <button class="docker-auth-modal-close" onclick={() => (showDockerAuthModal = false)}>✕</button>
+      </div>
+      <div class="docker-auth-modal-body">
+        <p>{i18n.t("devl.docker_auth_pre_warning_body") as TranslationKey}</p>
+        <div class="docker-auth-modal-actions">
+          <Button variant="ghost" size="sm" onclick={() => (showDockerAuthModal = false)}>
+            {i18n.t("devl.docker_auth_cancel") as TranslationKey}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onclick={() => {
+              showDockerAuthModal = false;
+              void launchProfile(pendingLaunch!, true);
+            }}
+          >
+            {i18n.t("devl.docker_auth_launch") as TranslationKey}
+          </Button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .sp-empty-wrap {
@@ -1471,5 +1597,68 @@
   @keyframes sp-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
+  }
+
+  /* Docker first-run failure callout */
+  .docker-auth-callout {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-3);
+    border: 1px solid var(--sp-warning);
+    background: color-mix(in srgb, var(--sp-warning) 12%, var(--sp-bg-1));
+    border-radius: var(--sp-radius-md);
+    font-size: var(--sp-fs-sm);
+  }
+  .docker-auth-callout p { margin: var(--sp-1) 0 0; color: var(--sp-text-2); }
+  .callout-actions {
+    display: flex;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+  }
+
+  /* Docker first-run pre-flight modal */
+  .docker-auth-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(2px);
+  }
+  .docker-auth-modal-content {
+    background: var(--sp-bg-0);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    width: 90vw; max-width: 520px;
+    box-shadow: var(--sp-shadow-3);
+    overflow: hidden;
+  }
+  .docker-auth-modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--sp-border);
+    font-weight: var(--sp-fw-semibold);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-warning);
+  }
+  .docker-auth-modal-close {
+    background: none; border: none; color: var(--sp-text-3);
+    font-size: 1.2rem; cursor: pointer;
+    padding: 0.2rem 0.4rem; border-radius: var(--sp-radius-xs);
+  }
+  .docker-auth-modal-close:hover {
+    background: var(--sp-bg-2); color: var(--sp-text-1);
+  }
+  .docker-auth-modal-body {
+    padding: var(--sp-4);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+    line-height: 1.55;
+  }
+  .docker-auth-modal-body p { margin: 0 0 var(--sp-4); }
+  .docker-auth-modal-actions {
+    display: flex; justify-content: flex-end; gap: var(--sp-2);
   }
 </style>
