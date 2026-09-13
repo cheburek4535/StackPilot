@@ -2044,6 +2044,20 @@ mod tests {
 
     /// Определение-«заглушка»: установка — локальный cmd.exe (без сети),
     /// проверка — тоже cmd.exe, отвечающий версией.
+    /// Кроссплатформенная echo-проба: cmd /c echo на Windows, sh -c на Unix.
+    fn echo_probe_args(text: &str) -> Vec<String> {
+        if cfg!(target_os = "windows") {
+            vec![
+                "cmd".to_string(),
+                "/c".to_string(),
+                "echo".to_string(),
+                text.to_string(),
+            ]
+        } else {
+            vec!["sh".to_string(), "-c".to_string(), format!("echo {text}")]
+        }
+    }
+
     fn echo_def(tool_id: &str) -> ToolDefinition {
         ToolDefinition {
             id: tool_id.to_string(),
@@ -2052,12 +2066,7 @@ mod tests {
             description: "тестовый инструмент".to_string(),
             icon: None,
             detection: DetectionRules {
-                version_probes: vec![vec![
-                    "cmd".to_string(),
-                    "/c".to_string(),
-                    "echo".to_string(),
-                    "1.2.3".to_string(),
-                ]],
+                version_probes: vec![echo_probe_args("1.2.3")],
                 known_paths: vec![],
                 registry_keys: vec![],
                 ..Default::default()
