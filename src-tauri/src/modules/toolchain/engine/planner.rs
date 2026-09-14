@@ -1381,22 +1381,17 @@ mod tests {
         let defs = vec![d];
         let det = FakeDetector::default();
 
+        // Elevation поддерживается на всех ОС (Windows UAC / Unix sudo):
+        // без явного подтверждения план не строится.
         let err = build_plan(&install_request(&["sdk"]), &inputs_for(&defs, &det))
             .await
             .unwrap_err();
-        if cfg!(target_os = "windows") {
-            // Elevation поддерживается: без подтверждения план не строится.
-            assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
+        assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
 
-            let mut req = install_request(&["sdk"]);
-            req.confirm_admin_elevation = true;
-            let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
-            assert!(plan.needs_admin_any);
-        } else {
-            // Elevation не поддерживается (Linux/macOS): отказ до всяких
-            // подтверждений — это задокументированное поведение платформы.
-            assert!(matches!(err, PlanError::ElevationUnsupported { .. }));
-        }
+        let mut req = install_request(&["sdk"]);
+        req.confirm_admin_elevation = true;
+        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+        assert!(plan.needs_admin_any);
     }
 
     #[tokio::test]
