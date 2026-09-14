@@ -1,0 +1,34 @@
+pkgname=stackpilot
+pkgver=1.2.3
+pkgrel=1
+pkgdesc="Developer toolchain management and project workspace dashboard (Tauri desktop app)"
+arch=('x86_64')
+url="https://github.com/cheburek4535/StackPilot"
+license=('AGPL3')
+depends=('webkit2gtk-4.1' 'gtk3')
+makedepends=('nodejs' 'npm' 'rust' 'cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/cheburek4535/StackPilot/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "StackPilot-$pkgver"
+
+  npm ci
+
+  # Обязательно через Tauri CLI, а не голый `cargo build`: CLI выставляет
+  # build-time переменные окружения, по которым tauri-build решает, грузить
+  # ли вебвью встроенные production-ассеты или `build.devUrl` (127.0.0.1:1420)
+  # из tauri.conf.json. Простой `cargo build --release` это пропускает, и
+  # бинарник при запуске лезет на несуществующий Vite dev-сервер, показывая
+  # страницу «connection refused» вместо интерфейса.
+  npm run tauri -- build --no-bundle
+}
+
+package() {
+  cd "StackPilot-$pkgver"
+
+  install -Dm755 "src-tauri/target/release/stackpilot" "$pkgdir/usr/bin/stackpilot"
+  install -Dm644 "packaging/archlinux/stackpilot.desktop" "$pkgdir/usr/share/applications/stackpilot.desktop"
+  install -Dm644 "src-tauri/icons/icon.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/stackpilot.png"
+  install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

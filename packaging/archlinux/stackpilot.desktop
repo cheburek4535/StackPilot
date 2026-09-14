@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=StackPilot
+Comment=Developer toolchain management and project workspace dashboard
+Exec=stackpilot
+Icon=stackpilot
+Terminal=false
+StartupWMClass=stackpilot
+Categories=Development;

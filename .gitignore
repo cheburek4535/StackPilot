@@ -10,3 +10,10 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # Repomix-дамп модуля project_creator (генерируется compresser.bat для LLM-контекста)
 src-tauri/src/modules/project_creator/repomix-output*.xml
+
+# makepkg build artifacts (packaging/archlinux/install.sh)
+packaging/archlinux/src/
+packaging/archlinux/pkg/
+packaging/archlinux/*.tar.gz
+packaging/archlinux/*.pkg.tar.*
+packaging/archlinux/*.log
