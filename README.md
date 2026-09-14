@@ -123,6 +123,8 @@
 
 Выход сборок для новых платформ анонсируется в разделе Releases.
 
+Для Arch Linux и производных (Manjaro, EndeavourOS и т. п.) есть нативная установка через pacman — см. [Arch Linux](#arch-linux) в разделе «Сборка из исходников».
+
 ---
 
 ## Как это работает
@@ -399,6 +401,22 @@ npm run tauri build
 ```
 
 Результаты появятся в `src-tauri/target/release/bundle/` (`.msi`/`.exe`, `.dmg`, `.deb`, `.AppImage` и т. п. в зависимости от ОС). Перед публикацией проверьте подпись, installer и чистую установку на целевой ОС.
+
+> **Важно:** production-бинарник нужно собирать именно через `npm run tauri build` (CLI), а не голым `cargo build --manifest-path src-tauri/Cargo.toml`. CLI добавляет cargo-флаг `--features tauri/custom-protocol`, который переключает вебвью со встроенных ассетов на dev-сервер (`devUrl`, `http://127.0.0.1:1420`). Без него релизный бинарник при запуске покажет окно с ошибкой `Could not connect to 127.0.0.1: Connection refused` вместо интерфейса. Если такой бинарник уже успели собрать напрямую через cargo, удалите `src-tauri/target` перед пересборкой через CLI — иначе в кэше могут остаться вперемешку артефакты обоих вариантов сборки, и поведение станет непредсказуемым от запуска к запуску.
+
+### Arch Linux
+
+`.deb`/`.rpm`/`.AppImage` из Releases на Arch напрямую не ставятся. Вместо этого в репозитории есть `PKGBUILD` для нативной установки через pacman:
+
+```bash
+git clone https://github.com/cheburek4535/StackPilot.git
+cd StackPilot
+./packaging/archlinux/install.sh
+```
+
+Скрипт упаковывает текущий checkout и собирает/устанавливает пакет через `makepkg -si` (спросит sudo для зависимостей и установки) — после этого `stackpilot` доступен как обычная pacman-пакетная программа, а `sudo pacman -R stackpilot` удаляет её без следов. Зависимости уровня сборки — `nodejs`, `npm`, `rust`, `cargo`; во время выполнения нужны `webkit2gtk-4.1` и `gtk3`, `makepkg` поставит их автоматически при необходимости.
+
+На связке NVIDIA (проприетарный драйвер) + AMD iGPU вебвью WebKitGTK может падать при старте с `Failed to create GBM buffer` или Wayland `Error 71` — DMA-BUF рендерер несовместим с драйвером NVIDIA. С версии, включающей этот фикс, StackPilot сам отключает DMA-BUF рендерер на Linux (`WEBKIT_DISABLE_DMABUF_RENDERER=1`), если переменная не задана явно, так что дополнительных действий обычно не требуется.
 
 ### Только frontend (разработка UI)
 
