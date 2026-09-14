@@ -1174,7 +1174,7 @@ pub async fn tcx_profile_resolve(
     let request =
         super::domain::profile::EnvironmentProfileRequest::from_project_requirements(&requirements);
     let platform = crate::modules::toolchain::platforms::current_platform();
-    let elevation_supported = std::env::consts::OS == "windows";
+    let elevation_supported = cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos"));
     let mut profile = super::domain::profile::build_profile(
         &request,
         state.definitions(),

@@ -633,10 +633,9 @@ try {{
 /// Priority: apt-get (Debian/Ubuntu) > dnf (Fedora/RHEL) > pacman (Arch) > zypper (openSUSE).
 /// Returns an error if no supported manager is found.
 ///
-/// Design rules:
-/// - Uses direct executable invocation, not shell string concatenation.
-/// - Does not use sudo invisibly; returns a clear error if elevation is needed.
-/// - Supports user-local installations (e.g., `pip install --user`).
+/// Does NOT add sudo — elevation is handled by the caller through
+/// `run_elevated` when `needs_admin` is true. This avoids double-sudo
+/// when the command reaches the Linux sudo wrapper.
 fn build_linux_pkg_command(
     source: &InstallSource,
     _password: Option<&str>,
@@ -669,6 +668,37 @@ fn build_linux_pkg_command(
 /// Check if an executable exists in PATH (non-blocking, no timeout).
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
+}
+
+/// Текущий процесс работает от root (Linux/macOS). Root-у sudo не нужен
+/// (а самого sudo в контейнере может и не быть).
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
+}
+
+/// Требуется ли повышение прав для запуска конкретного источника.
+///
+/// Windows: `needs_admin` из каталога (UAC). Linux: к флагу каталога
+/// добавляется системный пакетный менеджер — apt-get/dnf/pacman/zypper
+/// ставят пакеты в системные каталоги и без root НЕ работают, каталог же
+/// (tools.json) для Linux-источников часто не выставляет needs_admin.
+/// Если процесс уже root — элевация не нужна.
+fn source_needs_admin(source: &InstallSource, def: &ToolDefinition) -> bool {
+    let catalog_flag = source.needs_admin.unwrap_or(def.needs_admin);
+    let os = platforms::current_platform().os_name();
+    if os == "linux"
+        && matches!(source.kind, InstallSourceKind::PkgManager)
+        && !running_as_root()
+    {
+        return true;
+    }
+    catalog_flag
 }
 
 // ------------------------------------------------------------
@@ -1718,7 +1748,7 @@ async fn try_install_source(
             // У источника может быть своё значение (zip-распаковка не требует UAC,
             // даже если у инструмента в целом needs_admin=true).
             // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
-            let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
+            let needs_admin = source_needs_admin(source, def);
             let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
             let run = if needs_admin {
                 console::run_elevated(

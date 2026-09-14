@@ -306,7 +306,7 @@ pub async fn build_plan(
     // --- platform capability gate ----------------------------------------
     let capabilities = PlatformCapabilities {
         install_execution_supported: tc_core::installer::install_execution_supported(),
-        elevation_supported: std::env::consts::OS == "windows",
+        elevation_supported: cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos")),
     };
     if matches!(
         request.operation,

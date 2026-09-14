@@ -250,7 +250,7 @@ impl ToolchainState {
             tool_count: visible_count,
             capabilities: PlatformCapabilities {
                 install_execution_supported: core::installer::install_execution_supported(),
-                elevation_supported: std::env::consts::OS == "windows",
+                elevation_supported: cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos")),
             },
         }
     }

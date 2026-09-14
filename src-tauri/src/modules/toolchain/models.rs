@@ -523,10 +523,10 @@ pub struct EnvironmentInfo {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformCapabilities {
     /// Автоматическая установка реализована для этой ОС.
-    /// Windows: да. Linux/macOS: пока нет (источники есть в каталоге,
-    /// исполнитель — нет) — UI не должен предлагать кнопку установки.
+    /// Windows: да. Linux: apt-get/dnf/pacman/zypper. macOS: brew.
     pub install_execution_supported: bool,
-    /// Запуск с повышением прав (UAC) поддерживается.
+    /// Запуск с повышением прав поддерживается.
+    /// Windows: UAC. Linux/macOS: sudo.
     pub elevation_supported: bool,
 }
 

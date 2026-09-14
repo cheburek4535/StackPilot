@@ -957,16 +957,16 @@ fn drain_elevated_log(
     }
 }
 
-/// Запускает установщик С ПРАВАМИ АДМИНИСТРАТОРА: PowerShell
-/// выводит UAC-промпт (пользователь подтверждает — это не тихая
-/// установка), процесс ждётся (-Wait). stdout/stderr установщика
-/// перехватываются в файлы и СТРИМЯТСЯ В ЖИВУЮ в UI (долгие установки
-/// — MSVC Build Tools, .NET SDK — показывают прогресс, а не «висит»).
+/// Запускает установщик С ПРАВАМИ АДМИНИСТРАТОРА.
 ///
-/// Вывод идёт в скрытое окно (CreateNoWindow): консоль установщика
-/// больше не отвлекает, прогресс виден в приложении.
+/// **Windows:** PowerShell выводит UAC-промпт (пользователь подтверждает
+/// — это не тихая установка), процесс ждётся (-Wait). stdout/stderr
+/// установщика перехватываются в файлы и СТРИМЯТСЯ В ЖИВУЮ в UI.
 ///
-/// Применимо только на Windows; на других ОС возвращает Err.
+/// **Linux/macOS:** команда оборачивается в `sudo` (пароль запрашивается
+/// в терминале, если он есть). При запуске с рабочего стола Linux без
+/// терминала используется `pkexec` — графический диалог PolicyKit.
+/// Вывод дочернего процесса стримится напрямую (pipe).
 pub async fn run_elevated(
     program: &str,
     args: &[String],
@@ -978,9 +978,103 @@ pub async fn run_elevated(
     sink: &Arc<dyn EventSink>,
     abort: Arc<AtomicBool>,
 ) -> Result<PipedResult, String> {
-    if std::env::consts::OS != "windows" {
-        return Err("Запуск с правами администратора поддерживается только на Windows".to_string());
+    if cfg!(target_os = "windows") {
+        return run_elevated_windows(
+            program, args, index, total, task_id, tool_id, session_id, sink, abort,
+        )
+        .await;
     }
+
+    #[cfg(unix)]
+    {
+        return run_elevated_unix(
+            program, args, index, total, task_id, tool_id, session_id, sink, abort,
+        )
+        .await;
+    }
+
+    Err("Повышение прав не поддерживается на этой ОС".to_string())
+}
+
+/// Unix-элевация (Linux/macOS).
+///
+/// sudo читает пароль с контролирующего терминала (/dev/tty). Когда
+/// приложение запущено из терминала — sudo работает «как есть».
+/// Когда у процесса нет терминала (GUI-запуск с рабочего стола) sudo
+/// падает с «a password is required»; на Linux для этого случая есть
+/// pkexec (PolicyKit) — он показывает графический диалог аутентификации
+/// через агента рабочего стола. Если pkexec нет — остаёмся на sudo.
+#[cfg(unix)]
+async fn run_elevated_unix(
+    program: &str,
+    args: &[String],
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: Arc<AtomicBool>,
+) -> Result<PipedResult, String> {
+    let mut full_args: Vec<String> = Vec::new();
+    full_args.push(program.to_string());
+    full_args.extend(args.iter().cloned());
+
+    let has_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+
+    #[cfg(target_os = "linux")]
+    {
+        if !has_tty && which::which("pkexec").is_ok() {
+            // pkexec требует абсолютный путь к исполняемому файлу
+            // (политика PolicyKit это проверяет). Резолвим через which;
+            // если не нашёлся — падаем на sudo ниже.
+            let mut pkexec_args: Vec<String> = Vec::new();
+            if let Ok(abs) = which::which(program) {
+                pkexec_args.push(abs.to_string_lossy().into_owned());
+                pkexec_args.extend(args.iter().cloned());
+                return piped_run(
+                    "pkexec",
+                    &pkexec_args,
+                    index,
+                    total,
+                    task_id,
+                    tool_id,
+                    session_id,
+                    sink,
+                    abort,
+                )
+                .await;
+            }
+        }
+    }
+
+    piped_run(
+        "sudo",
+        &full_args,
+        index,
+        total,
+        task_id,
+        tool_id,
+        session_id,
+        sink,
+        abort,
+    )
+    .await
+}
+
+/// Windows-only UAC elevation: PowerShell Start-Process -Verb RunAs.
+/// Вынесен отдельно, чтобы общий `run_elevated` оставался компактным.
+async fn run_elevated_windows(
+    program: &str,
+    args: &[String],
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: Arc<AtomicBool>,
+) -> Result<PipedResult, String> {
 
     let (program, args) = platforms::resolve_command(program, args);
     let (out, err) = elevated_logs(tool_id);
