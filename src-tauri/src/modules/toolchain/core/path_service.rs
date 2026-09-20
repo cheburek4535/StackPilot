@@ -197,6 +197,27 @@ fn resolve_path_entry(raw: &str) -> String {
     expanded
 }
 
+/// Относится ли запись каталога к текущей ОС. Каталог tools.json общий
+/// для всех ОС, поэтому в path_entries лежат и Windows-, и Unix-записи:
+/// при добавлении PATH на Windows записи вида `/usr/lib/dotnet` или
+/// `$HOME/.dotnet` пропускаются (а не роняют добавление ВСЕГО набора
+/// ошибкой «не абсолютный каталог»), и наоборот.
+fn entry_applies_to_platform(entry: &str) -> bool {
+    let trimmed = entry.trim();
+    #[cfg(target_os = "windows")]
+    {
+        // Unix-стиль: /path, ~/path, $VAR/path — к Windows не относится.
+        !(trimmed.starts_with('/') || trimmed.starts_with('~') || trimmed.starts_with('$'))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Windows-стиль: %VAR%\path, C:\path, C:/path, \\server\share.
+        let bytes = trimmed.as_bytes();
+        let drive = bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic();
+        !(trimmed.starts_with('%') || trimmed.starts_with("\\\\") || drive)
+    }
+}
+
 /// Добавляет каталоги в пользовательский PATH (постоянно).
 /// Идемпотентно: уже присутствующие записи не дублируются
 /// (нормализованное сравнение). glob-записи (`PostgreSQL/*/bin`)
@@ -215,6 +236,11 @@ pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
     let existing = platform.read_user_path().await.unwrap_or_default();
     let mut resolved: Vec<String> = Vec::new();
     for raw in dirs {
+        if !entry_applies_to_platform(raw) {
+            // Запись другой ОС — не наш PATH, пропускаем без ошибки.
+            log::debug!("[toolchain] пропуск записи PATH другой ОС: {raw}");
+            continue;
+        }
         let entry = resolve_path_entry(raw);
         if entry.trim().is_empty() {
             continue;
@@ -229,6 +255,19 @@ pub async fn add_to_user_path(dirs: &[String]) -> Result<(), String> {
             return Err(format!(
                 "Запись PATH «{raw}» не является абсолютным каталогом — PATH не изменён"
             ));
+        }
+        // На Unix несуществующие каталоги в rc-файл не пишем: PATH
+        // засорялся бы «мёртвыми» записями (каталог другой ОС,
+        // необязательный путь dotnet и т.п.), а диагностика PATH
+        // справедливо ругалась бы на них. На Windows поведение прежнее.
+        #[cfg(not(target_os = "windows"))]
+        {
+            if !std::path::Path::new(&entry).is_dir() {
+                log::debug!(
+                    "[toolchain] пропуск несуществующего каталога PATH: {raw} → {entry}"
+                );
+                continue;
+            }
         }
         resolved.push(entry);
     }
@@ -580,6 +619,32 @@ mod tests {
         assert_eq!(merged[0], "/a");
         assert_eq!(merged[1], "/b");
         assert_eq!(merged[2], "/c");
+    }
+
+    /// Записи PATH другой ОС не должны ронять добавление всего набора:
+    /// каталог tools.json общий, и в path_entries лежат и Windows-, и
+    /// Unix-записи одновременно.
+    #[test]
+    fn platform_entry_filter_matches_current_os() {
+        #[cfg(target_os = "windows")]
+        {
+            assert!(entry_applies_to_platform("%APPDATA%\\npm"));
+            assert!(entry_applies_to_platform("C:\\Program Files\\dotnet"));
+            assert!(entry_applies_to_platform("bin")); // относительная — отклонит is_absolute_entry
+            assert!(!entry_applies_to_platform("/usr/lib/dotnet"));
+            assert!(!entry_applies_to_platform("$HOME/.dotnet"));
+            assert!(!entry_applies_to_platform("~/.cargo/bin"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(entry_applies_to_platform("/usr/lib/dotnet"));
+            assert!(entry_applies_to_platform("$HOME/.dotnet"));
+            assert!(entry_applies_to_platform("~/.cargo/bin"));
+            assert!(entry_applies_to_platform("bin")); // относительная — отклонит is_absolute_entry
+            assert!(!entry_applies_to_platform("%APPDATA%\\npm"));
+            assert!(!entry_applies_to_platform("C:\\Program Files\\dotnet"));
+            assert!(!entry_applies_to_platform("\\\\server\\share\\bin"));
+        }
     }
 
     #[test]

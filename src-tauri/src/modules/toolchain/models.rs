@@ -449,6 +449,11 @@ pub enum VersionResolver {
         /// Канал: "8.0", "10.0", ...
         channel: String,
     },
+    /// storage.googleapis.com/dart-archive: свежий стабильный Dart SDK.
+    /// Резолвер возвращает версию и URL архива под ТЕКУЩУЮ ОС и
+    /// архитектуру (linux x64/arm64, macOS x64/arm64, windows x64) —
+    /// статичный URL каталога не может покрыть все платформы сразу.
+    DartSdk,
 }
 
 impl VersionResolver {

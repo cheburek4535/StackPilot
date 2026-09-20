@@ -93,6 +93,23 @@ pub fn resolve_command(program: &str, args: &[String]) -> (String, Vec<String>) 
     (program.to_string(), args.to_vec())
 }
 
+/// Имя пакета каталога в конкретном Linux-менеджере пакетов.
+/// Каталог tools.json написан под Debian/Ubuntu; dnf (Fedora),
+/// pacman (Arch) и zypper (openSUSE) знают часть пакетов под другими
+/// именами. Таблица — best-effort: неизвестный пакет возвращается
+/// без изменений. На не-Linux ОС функция не применяется (identity).
+pub fn linux_package_alias(manager: &str, package: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        linux::package_alias(manager, package)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = manager;
+        package.to_string()
+    }
+}
+
 /// Адаптер для неподдерживаемых ОС — ничего не умеет, но не падает.
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub struct UnsupportedAdapter;

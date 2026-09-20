@@ -24,7 +24,9 @@
 
 use std::path::Path;
 
-use super::console::{self, ps_quote};
+use super::console;
+#[cfg(target_os = "windows")]
+use super::console::ps_quote;
 
 /// Проверяет имя записи архива на все известные классы path-traversal.
 ///
@@ -83,8 +85,15 @@ pub struct ArchiveListing {
 impl ArchiveListing {
     /// Прогоняет каждое имя через validate_entry_name.
     /// Fail-closed: одна опасная запись бракует весь архив.
+    /// Записи-симлинки (маркер SYMLINK_MARK) не являются именами и
+    /// проверяются отдельной политикой (contains_symlinks) — иначе
+    /// управляющий символ маркера отвергал бы архив с невнятной
+    /// причиной раньше понятного «симлинки запрещены».
     pub fn validate(&self) -> Result<(), String> {
         for name in &self.entries {
+            if name.starts_with(SYMLINK_MARK) {
+                continue;
+            }
             validate_entry_name(name)
                 .map_err(|why| format!("опасная запись архива {name:?}: {why}"))?;
         }
@@ -127,7 +136,13 @@ async fn capture_output(program: &str, args: &[String]) -> Result<String, String
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Список записей zip: PowerShell + .NET ZipFile, stdout захватывается.
+/// Список записей zip. Windows: PowerShell + .NET ZipFile.
+/// Unix: python3 (zipfile из стандартной библиотеки) — единственный
+/// способ достоверно увидеть и имена, и Unix-атрибуты (симлинки), не
+/// добавляя новых зависимостей. Python3 есть на всех целевых
+/// дистрибутивах (Ubuntu/Fedora/Arch/openSUSE/macOS); без него
+/// распаковка zip честно отказывает, а не притворяется безопасной.
+#[cfg(target_os = "windows")]
 async fn capture_zip_listing(archive: &Path) -> Result<ArchiveListing, String> {
     let script = format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -153,6 +168,41 @@ try {{
             "-NonInteractive".to_string(),
             "-Command".to_string(),
             script,
+        ],
+    )
+    .await?;
+    let entries = out
+        .lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(ArchiveListing { entries })
+}
+
+/// Unix-листинг zip: python3/zipfile. Внешние атрибуты записи дают
+/// Unix-режим: S_ISLNK → запись-симлинк (политика запрещает).
+#[cfg(not(target_os = "windows"))]
+async fn capture_zip_listing(archive: &Path) -> Result<ArchiveListing, String> {
+    if which::which("python3").is_err() {
+        return Err(
+            "для проверки и распаковки zip-архивов нужен python3 (не найден в PATH)".to_string(),
+        );
+    }
+    let script = r#"import stat, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for info in z.infolist():
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            print("\x01symlink:" + info.filename)
+        else:
+            print(info.filename)
+"#;
+    let out = capture_output(
+        "python3",
+        &[
+            "-c".to_string(),
+            script.to_string(),
+            archive.to_string_lossy().into_owned(),
         ],
     )
     .await?;
@@ -215,9 +265,8 @@ pub async fn prevalidate_archive(archive: &Path, is_zip: bool) -> Result<Archive
 
 /// Безопасно распаковывает zip: prevalidation → Expand-Archive →
 /// fallback на tar (как раньше), но только если список записей чист.
-/// Эталонный traversal-safe распаковщик слоя; производственный путь
-/// installer.rs пока вызывает prevalidate_archive + свои скрипты —
-/// миграция распаковки сюда остаётся задокументированным cleanup'ом.
+/// Windows-ветка (PowerShell). Unix-ветка — extract_zip_safe_unix.
+#[cfg(target_os = "windows")]
 #[allow(dead_code)]
 pub async fn extract_zip_safe(
     archive: &Path,
@@ -272,7 +321,87 @@ Get-ChildItem -Path $dir -Recurse -Include *.bat -File | ForEach-Object {{
     finish_extract(res, archive)
 }
 
+/// Unix-распаковка zip: python3/zipfile, каждая запись пишется вручную.
+/// Traversal проверяется ПОВТОРНО на стороне распаковщика (защита в
+/// глубину: prevalidation — не единственная линия), симлинки не
+/// создаются вовсе. Исполняемые биты сохраняются.
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_zip_safe(
+    archive: &Path,
+    dest: &Path,
+    tool_id: &str,
+    task_id: &str,
+    index: usize,
+    total: usize,
+    session_id: &str,
+    sink: &std::sync::Arc<dyn console::EventSink>,
+    abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    prevalidate_archive(archive, true)
+        .await
+        .map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
+    if which::which("python3").is_err() {
+        return Err(
+            "для распаковки zip-архивов нужен python3 (не найден в PATH)".to_string(),
+        );
+    }
+
+    let script = r#"import os, stat, sys, zipfile
+
+archive, dest = sys.argv[1], sys.argv[2]
+os.makedirs(dest, exist_ok=True)
+dest_abs = os.path.realpath(dest)
+
+def fail(msg):
+    print("tc:error " + msg)
+    sys.exit(1)
+
+with zipfile.ZipFile(archive) as z:
+    for info in z.infolist():
+        name = info.filename
+        parts = name.replace("\\", "/").split("/")
+        if name.startswith("/") or ".." in parts or (parts and ":" in parts[0]):
+            fail("опасная запись архива: " + name)
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            fail("симлинк в архиве запрещён: " + name)
+        target = os.path.realpath(os.path.join(dest_abs, name))
+        if target != dest_abs and not target.startswith(dest_abs + os.sep):
+            fail("запись вне каталога распаковки: " + name)
+        if name.endswith("/"):
+            os.makedirs(target, exist_ok=True)
+            continue
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with z.open(info) as src, open(target, "wb") as out:
+            while True:
+                chunk = src.read(262144)
+                if not chunk:
+                    break
+                out.write(chunk)
+        perm = mode & 0o777
+        if perm:
+            os.chmod(target, perm)
+print("tc:ok архив распакован: " + os.path.basename(archive))
+"#;
+    let args = vec![
+        "-c".to_string(),
+        script.to_string(),
+        archive.to_string_lossy().into_owned(),
+        dest.to_string_lossy().into_owned(),
+    ];
+    let res = console::piped_run(
+        "python3", &args, index, total, task_id, tool_id, session_id, sink, abort,
+    )
+    .await?;
+    finish_extract(res, archive)
+}
+
 /// Безопасно распаковывает tgz/tar: prevalidation → tar -xf.
+/// Windows-ветка (PowerShell-обёртка для скрипта).
+#[cfg(target_os = "windows")]
 pub async fn extract_tar_safe(
     archive: &Path,
     dest: &Path,
@@ -314,6 +443,41 @@ Get-ChildItem -Path {1} -Recurse -Include *.bat -File | ForEach-Object {{
         session_id,
         sink,
         abort,
+    )
+    .await?;
+    finish_extract(res, archive)
+}
+
+/// Unix-распаковка tar/tgz/tar.xz: системный tar (есть на всех
+/// Linux/macOS, умеет gzip/xz/bzip2 автоматически). Симлинки и
+/// traversal отсечены prevalidation ДО запуска.
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_tar_safe(
+    archive: &Path,
+    dest: &Path,
+    tool_id: &str,
+    task_id: &str,
+    index: usize,
+    total: usize,
+    session_id: &str,
+    sink: &std::sync::Arc<dyn console::EventSink>,
+    abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    prevalidate_archive(archive, false)
+        .await
+        .map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
+    std::fs::create_dir_all(dest)
+        .map_err(|e| format!("Не удалось создать каталог распаковки {}: {e}", dest.display()))?;
+
+    let args = vec![
+        "-xf".to_string(),
+        archive.to_string_lossy().into_owned(),
+        "-C".to_string(),
+        dest.to_string_lossy().into_owned(),
+    ];
+    let res = console::piped_run(
+        "tar", &args, index, total, task_id, tool_id, session_id, sink, abort,
     )
     .await?;
     finish_extract(res, archive)
@@ -408,5 +572,128 @@ mod tests {
             entries: vec!["plain.txt".to_string()],
         };
         assert!(!clean.contains_symlinks());
+    }
+
+    // ------------------------------------------------------------
+    // Unix-путь распаковки (python3): реальный zip, реальная проверка
+    // ------------------------------------------------------------
+
+    #[cfg(not(target_os = "windows"))]
+    mod unix_zip {
+        use super::*;
+        use crate::modules::toolchain::models::{ToolchainEvent, ToolchainEventType};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Sink {
+            lines: Mutex<Vec<String>>,
+        }
+
+        impl console::EventSink for Sink {
+            fn emit(&self, event: ToolchainEvent) {
+                if let ToolchainEventType::TaskProgress { line } = event.event_type {
+                    self.lines.lock().unwrap().push(line);
+                }
+            }
+        }
+
+        fn temp(tag: &str) -> std::path::PathBuf {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("tc-zip-{tag}-{nanos}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn python_zip(archive: &Path, script: &str) {
+            let status = std::process::Command::new("python3")
+                .args(["-c", script, archive.to_string_lossy().as_ref()])
+                .status()
+                .expect("python3 для теста");
+            assert!(status.success(), "создание zip не удалось");
+        }
+
+        fn no_abort() -> Arc<std::sync::atomic::AtomicBool> {
+            Arc::new(std::sync::atomic::AtomicBool::new(false))
+        }
+
+        #[tokio::test]
+        async fn prevalidation_rejects_traversal_and_symlinks() {
+            if which::which("python3").is_err() {
+                return;
+            }
+            // Архив с «../evil.txt» обязан быть отклонён ДО извлечения.
+            let root = temp("evil");
+            let archive = root.join("evil.zip");
+            python_zip(
+                &archive,
+                "import sys, zipfile\n\
+                 with zipfile.ZipFile(sys.argv[1], 'w') as z:\n    \
+                 z.writestr('../evil.txt', 'pwn')\n",
+            );
+            let err = prevalidate_archive(&archive, true).await.unwrap_err();
+            assert!(err.contains("опасная запись"), "причина: {err}");
+            assert!(!root.join("evil.txt").exists(), "запись не должна создаваться");
+
+            // Симлинк-запись отклоняется отдельной политикой.
+            let link_archive = root.join("link.zip");
+            python_zip(
+                &link_archive,
+                "import sys, zipfile, stat\n\
+                 zi = zipfile.ZipInfo('link')\n\
+                 zi.external_attr = (stat.S_IFLNK | 0o777) << 16\n\
+                 with zipfile.ZipFile(sys.argv[1], 'w') as z:\n    \
+                 z.writestr(zi, '/etc/passwd')\n",
+            );
+            let err = prevalidate_archive(&link_archive, true).await.unwrap_err();
+            assert!(err.contains("симлинк"), "причина: {err}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        #[tokio::test]
+        async fn extraction_writes_nested_files_and_keeps_exec_bit() {
+            if which::which("python3").is_err() {
+                return;
+            }
+            let root = temp("good");
+            let archive = root.join("good.zip");
+            python_zip(
+                &archive,
+                "import sys, zipfile, stat\n\
+                 zi = zipfile.ZipInfo('sdk/bin/tool')\n\
+                 zi.external_attr = (stat.S_IFREG | 0o755) << 16\n\
+                 with zipfile.ZipFile(sys.argv[1], 'w') as z:\n    \
+                 z.writestr(zi, '#!/bin/sh\\necho 1\\n')\n    \
+                 z.writestr('sdk/README.txt', 'ok')\n",
+            );
+            let dest = root.join("out");
+            let sink = Arc::new(Sink::default());
+            let trait_sink: Arc<dyn console::EventSink> = sink.clone();
+            extract_zip_safe(
+                &archive,
+                &dest,
+                "tool",
+                "task",
+                0,
+                1,
+                "s",
+                &trait_sink,
+                no_abort(),
+            )
+            .await
+            .unwrap();
+
+            let bin = dest.join("sdk/bin/tool");
+            assert!(bin.is_file(), "вложенный файл распакован: {bin:?}");
+            assert!(dest.join("sdk/README.txt").is_file());
+            // Исполняемый бит из архива сохранён (python zipfile по
+            // умолчанию ставит 0o600 — важно, что код не теряет режим).
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&bin).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "исполняемый бит сохранён: {mode:o}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

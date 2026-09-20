@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
+#[cfg(target_os = "windows")]
 use tokio::time::timeout;
 
 use crate::modules::toolchain::models::*;
@@ -206,10 +207,32 @@ impl PipedResult {
 // Стриминг вывода
 // ------------------------------------------------------------
 
+/// Итог стриминга одного потока процесса.
+struct StreamOutcome {
+    /// true — стриминг прерван флагом отмены.
+    aborted: bool,
+    /// Последняя строка с префиксом `tc:error ` — причина сбоя,
+    /// написанная самим скриптом.
+    error_line: Option<String>,
+    /// Последняя непустая строка потока (для curl/dpkg-ошибок,
+    /// которые не помечены tc:error).
+    last_line: Option<String>,
+}
+
+/// Похожа ли строка на ошибку системного менеджера пакетов. Нужно для
+/// честной причины сбоя: apt пишет «E: ...», dnf — «Error: ...»,
+/// pacman — «error: ...», zypper — «Problem: ...»; без распознавания
+/// пользователь видел бы только «Установщик завершился с кодом 100».
+fn looks_like_pkg_manager_error(line: &str) -> bool {
+    line.starts_with("E: ")
+        || line.starts_with("error: ")
+        || line.starts_with("Error: ")
+        || line.starts_with("Problem: ")
+}
+
 /// Читает поток построчно и шлёт каждую непустую строку как
 /// TaskProgress. Прерывается по флагу отмены (aborted = true).
-/// Возвращает (aborted, последняя строка с префиксом `tc:error`).
-async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
+async fn stream_lines_capture<R: tokio::io::AsyncRead + Unpin>(
     reader: BufReader<R>,
     sink: Arc<dyn EventSink>,
     index: usize,
@@ -218,9 +241,10 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
     tool_id: String,
     session_id: String,
     abort: Arc<AtomicBool>,
-) -> (bool, Option<String>) {
+) -> StreamOutcome {
     let mut aborted = false;
     let mut error_line: Option<String> = None;
+    let mut last_line: Option<String> = None;
     let mut lines = reader.lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim().to_string();
@@ -229,7 +253,12 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
         }
         if let Some(msg) = line.strip_prefix("tc:error ") {
             error_line = Some(msg.to_string());
+        } else if error_line.is_none() && looks_like_pkg_manager_error(&line) {
+            // Первая ошибка менеджера пакетов — причина сбоя (apt может
+            // печатать их несколько; первая информативнее прочих).
+            error_line = Some(line.clone());
         }
+        last_line = Some(line.clone());
         sink.emit(event(
             ToolchainEventType::TaskProgress { line },
             index,
@@ -243,7 +272,29 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
             break;
         }
     }
-    (aborted, error_line)
+    StreamOutcome {
+        aborted,
+        error_line,
+        last_line,
+    }
+}
+
+/// Совместимая обёртка (паритет прежнего API): (aborted, error_line).
+async fn stream_lines<R: tokio::io::AsyncRead + Unpin>(
+    reader: BufReader<R>,
+    sink: Arc<dyn EventSink>,
+    index: usize,
+    total: usize,
+    task_id: String,
+    tool_id: String,
+    session_id: String,
+    abort: Arc<AtomicBool>,
+) -> (bool, Option<String>) {
+    let outcome = stream_lines_capture(
+        reader, sink, index, total, task_id, tool_id, session_id, abort,
+    )
+    .await;
+    (outcome.aborted, outcome.error_line)
 }
 
 // ------------------------------------------------------------
@@ -505,6 +556,8 @@ pub fn validate_download_url(url: &str) -> Result<(), String> {
 /// Сталл-гард: чтение идёт через ReadAsync с ожиданием не более
 /// DOWNLOAD_STALL_TIMEOUT — сервер, замолчавший посреди потока, не
 /// держит задание часами (общий таймаут — только страховка сверху).
+/// Используется только на Windows (на Unix — download_unix).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn download_script(url: &str, dest: &Path) -> String {
     let stall_ms = DOWNLOAD_STALL_TIMEOUT.as_millis() as u64;
     let timeout_min = DOWNLOAD_TIMEOUT.as_secs() / 60;
@@ -627,23 +680,37 @@ pub async fn download(
 ) -> Result<(), String> {
     validate_download_url(url)?;
 
-    let script = download_script(url, dest);
-
-    let result = timeout(
-        DOWNLOAD_TIMEOUT,
-        run_tool_script(
-            tool_id,
-            &script,
-            Some(task_id),
-            index,
-            total,
-            session_id,
-            sink,
-            abort,
-        ),
+    // Windows: скачивание идёт PowerShell-скриптом (стриминг прогресса
+    // tc:dl, stall-guard, лимит размера — всё в download_script).
+    // Unix (Linux/macOS): PowerShell не существует — скачиваем системным
+    // curl с теми же инвариантами (см. download_unix).
+    #[cfg(target_os = "windows")]
+    let result = {
+        let script = download_script(url, dest);
+        match timeout(
+            DOWNLOAD_TIMEOUT,
+            run_tool_script(
+                tool_id,
+                &script,
+                Some(task_id),
+                index,
+                total,
+                session_id,
+                sink,
+                abort,
+            ),
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_) => Err(format!("Скачивание {url} превысило лимит времени")),
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let result = download_unix(
+        url, dest, index, total, task_id, tool_id, session_id, sink, abort,
     )
-    .await
-    .map_err(|_| format!("Скачивание {url} превысило лимит времени"))?;
+    .await;
 
     let res = result?;
     if !res.success {
@@ -706,6 +773,234 @@ pub async fn download(
             Ok(())
         }
     }
+}
+
+/// Экранирование одного аргумента для POSIX sh (`sh -c`).
+/// Безопасный алфавит оставляем как есть, остальное оборачиваем в
+/// одинарные кавычки (внутренняя кавычка → `'\''`).
+pub(crate) fn posix_shell_quote(arg: &str) -> String {
+    let safe = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=+@,".contains(c));
+    if safe {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+// ------------------------------------------------------------
+// Скачивание на Unix (curl)
+// ------------------------------------------------------------
+
+/// Скачивание через системный curl (Linux/macOS): PowerShell на этих ОС
+/// нет, а curl есть практически везде (и уже используется резолверами
+/// версий). Инварианты те же, что у Windows-скрипта:
+///   - только https (проверено validate_download_url до вызова);
+///   - лимит редиректов, connect-таймаут, общий --max-time;
+///   - stall-guard: --speed-limit 1КБ/с в течение DOWNLOAD_STALL_TIMEOUT;
+///   - жёсткий лимит размера (--max-filesize + проверка после);
+///   - прогресс `tc:dl <получено> -1` (общий размер curl не сообщает
+///     в потоке; -1 = неизвестен — фронтенд это понимает);
+///   - отмена убивает процесс.
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::too_many_arguments)]
+async fn download_unix(
+    url: &str,
+    dest: &Path,
+    index: usize,
+    total: usize,
+    task_id: &str,
+    tool_id: &str,
+    session_id: &str,
+    sink: &Arc<dyn EventSink>,
+    abort: Arc<AtomicBool>,
+) -> Result<PipedResult, String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Не удалось создать каталог для скачивания: {e}"))?;
+    }
+    // Повторное скачивание поверх остатка прошлой попытки — начинаем чисто.
+    let _ = std::fs::remove_file(dest);
+
+    let args: Vec<String> = vec![
+        "-sS".to_string(),
+        "-fL".to_string(),
+        "--retry".to_string(),
+        "2".to_string(),
+        "--retry-delay".to_string(),
+        "2".to_string(),
+        "--connect-timeout".to_string(),
+        "30".to_string(),
+        "--max-time".to_string(),
+        DOWNLOAD_TIMEOUT.as_secs().to_string(),
+        "--max-redirs".to_string(),
+        MAX_REDIRECTS.to_string(),
+        "--max-filesize".to_string(),
+        MAX_DOWNLOAD_BYTES.to_string(),
+        "--speed-limit".to_string(),
+        "1024".to_string(),
+        "--speed-time".to_string(),
+        DOWNLOAD_STALL_TIMEOUT.as_secs().to_string(),
+        "-A".to_string(),
+        "StackPilot/1.2 (toolchain installer)".to_string(),
+        "-o".to_string(),
+        dest.to_string_lossy().into_owned(),
+        "--".to_string(),
+        url.to_string(),
+    ];
+
+    let mut cmd = TokioCommand::new("curl");
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Не удалось запустить curl (нужен для скачивания {url}): {e}"))?;
+
+    let mut readers: tokio::task::JoinSet<StreamOutcome> = tokio::task::JoinSet::new();
+    if let Some(out) = child.stdout.take() {
+        let sink = Arc::clone(sink);
+        let task_id = task_id.to_string();
+        let tool_id = tool_id.to_string();
+        let session_id = session_id.to_string();
+        let abort = Arc::clone(&abort);
+        readers.spawn(async move {
+            stream_lines_capture(
+                BufReader::new(out),
+                sink,
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+                abort,
+            )
+            .await
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        let sink = Arc::clone(sink);
+        let task_id = task_id.to_string();
+        let tool_id = tool_id.to_string();
+        let session_id = session_id.to_string();
+        let abort = Arc::clone(&abort);
+        readers.spawn(async move {
+            stream_lines_capture(
+                BufReader::new(err),
+                sink,
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+                abort,
+            )
+            .await
+        });
+    }
+
+    let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let abort_watch = Arc::clone(&abort);
+    let abort_poller = tokio::spawn(async move {
+        loop {
+            if abort_watch.load(Ordering::SeqCst) {
+                let _ = abort_tx.send(()).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    let mut aborted = false;
+    let mut error_line: Option<String> = None;
+    let mut last_line: Option<String> = None;
+    let mut reported_bytes: u64 = 0;
+    let mut ticker = tokio::time::interval(Duration::from_millis(300));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = abort_rx.recv() => {
+                aborted = true;
+                let _ = child.kill().await;
+                break;
+            }
+            _ = ticker.tick() => {
+                if let Ok(meta) = std::fs::metadata(dest) {
+                    let size = meta.len();
+                    if size != reported_bytes {
+                        reported_bytes = size;
+                        sink.emit(event(
+                            ToolchainEventType::TaskProgress {
+                                line: format!("tc:dl {size} -1"),
+                            },
+                            index,
+                            total,
+                            task_id,
+                            tool_id,
+                            session_id,
+                        ));
+                    }
+                }
+            }
+            joined = readers.join_next() => {
+                match joined {
+                    Some(Ok(outcome)) => {
+                        if outcome.error_line.is_some() {
+                            error_line = outcome.error_line;
+                        }
+                        if outcome.last_line.is_some() {
+                            last_line = outcome.last_line;
+                        }
+                    }
+                    Some(Err(_)) => {}
+                    None => break,
+                }
+            }
+        }
+    }
+    abort_poller.abort();
+    while readers.join_next().await.is_some() {}
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Ошибка ожидания curl: {e}"))?;
+
+    // Последняя строка stderr curl — человеческая причина сбоя
+    // («curl: (22) ...», «curl: (28) Operation timed out»).
+    if error_line.is_none() {
+        error_line = last_line;
+    }
+    let res = PipedResult::from_status(status, aborted, error_line);
+
+    if res.success {
+        // --max-filesize не работает при chunked-ответе без
+        // Content-Length — жёсткий лимит проверяем и по факту.
+        if let Ok(meta) = std::fs::metadata(dest) {
+            if meta.len() > MAX_DOWNLOAD_BYTES {
+                let _ = std::fs::remove_file(dest);
+                return Err(format!(
+                    "Скачивание {url} превысило лимит {MAX_DOWNLOAD_BYTES} байт — прервано"
+                ));
+            }
+            let size = meta.len();
+            sink.emit(event(
+                ToolchainEventType::TaskProgress {
+                    line: format!("tc:dl {size} {size}"),
+                },
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+            ));
+        }
+    }
+
+    Ok(res)
 }
 
 // ------------------------------------------------------------
@@ -1000,10 +1295,14 @@ pub async fn run_elevated(
 ///
 /// sudo читает пароль с контролирующего терминала (/dev/tty). Когда
 /// приложение запущено из терминала — sudo работает «как есть».
-/// Когда у процесса нет терминала (GUI-запуск с рабочего стола) sudo
-/// падает с «a password is required»; на Linux для этого случая есть
-/// pkexec (PolicyKit) — он показывает графический диалог аутентификации
-/// через агента рабочего стола. Если pkexec нет — остаёмся на sudo.
+/// Когда у процесса нет терминала (GUI-запуск с рабочего стола):
+///   - Linux: pkexec (PolicyKit) — графический диалог аутентификации;
+///   - macOS: osascript `do shell script ... with administrator
+///     privileges` — штатный нативный диалог пароля. Без него sudo в
+///     Finder-процессе падает с «a password is required».
+/// Если ни pkexec, ни osascript недоступны — остаёмся на sudo
+/// (пользователь запустил приложение из терминала, либо получит
+/// понятную ошибку sudo).
 #[cfg(unix)]
 async fn run_elevated_unix(
     program: &str,
@@ -1045,6 +1344,35 @@ async fn run_elevated_unix(
                 )
                 .await;
             }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if !has_tty && which::which("osascript").is_ok() {
+            // osascript вернёт stdout/stderr выполненной команды;
+            // строка собирается с POSIX-экранированием каждого аргумента.
+            let command = std::iter::once(program.to_string())
+                .chain(args.iter().cloned())
+                .map(|a| posix_shell_quote(&a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let script = format!(
+                "do shell script \"{}\" with administrator privileges",
+                command.replace('\\', "\\\\").replace('"', "\\\"")
+            );
+            return piped_run(
+                "osascript",
+                &["-e".to_string(), script],
+                index,
+                total,
+                task_id,
+                tool_id,
+                session_id,
+                sink,
+                abort,
+            )
+            .await;
         }
     }
 
@@ -1315,6 +1643,19 @@ mod tests {
     }
 
     #[test]
+    fn posix_shell_quote_is_safe() {
+        // Безопасные аргументы не трогаются.
+        assert_eq!(posix_shell_quote("install"), "install");
+        assert_eq!(posix_shell_quote("/usr/bin/apt-get"), "/usr/bin/apt-get");
+        assert_eq!(posix_shell_quote("--channel"), "--channel");
+        // Опасные — оборачиваются в одинарные кавычки.
+        assert_eq!(posix_shell_quote("a b"), "'a b'");
+        assert_eq!(posix_shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(posix_shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+        assert_eq!(posix_shell_quote(""), "''");
+    }
+
+    #[test]
     fn windows_arg_quoting_matches_commandline_rules() {
         // Простые аргументы — просто в кавычках.
         assert_eq!(quote_windows_arg("quiet"), "\"quiet\"");
@@ -1339,8 +1680,15 @@ mod tests {
         assert!(validate_download_url("file:///C:/evil.exe").is_err());
     }
 
+    /// Тесты, работающие с ГЛОБАЛЬНЫМ реестром временных файлов, обязаны
+    /// выполняться строго по одному: `cleanup_tracked_temp_files` из
+    /// соседнего параллельного теста иначе удаляет файлы «до снимка», и
+    /// scoped-уборка ложно падает (флейк).
+    static TEMP_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn temp_files_are_unique_and_tracked() {
+        let _guard = TEMP_REGISTRY_LOCK.lock().unwrap();
         let a = tracked_temp_file("uniq-test", ".tmp");
         let b = tracked_temp_file("uniq-test", ".tmp");
         assert_ne!(a, b, "временные пути обязаны быть уникальными");
@@ -1354,6 +1702,7 @@ mod tests {
     /// установку — «файл исчез между скачиванием и запуском»).
     #[test]
     fn scoped_cleanup_removes_only_files_after_snapshot() {
+        let _guard = TEMP_REGISTRY_LOCK.lock().unwrap();
         let base = temp_registry_len();
         let before_file = tracked_temp_file("scoped-before", ".tmp");
         std::fs::write(&before_file, "x").unwrap();

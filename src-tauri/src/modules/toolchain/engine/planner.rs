@@ -537,7 +537,7 @@ fn draft_for(
                 id: selected.id.clone(),
                 description: describe_source(selected),
                 sha256: selected.sha256.clone(),
-                needs_admin: selected.needs_admin.unwrap_or(def.needs_admin),
+                needs_admin: tc_core::installer::source_requires_elevation(selected, def),
             };
 
             let action = decide_action(request.operation, status, req.force_reinstall);
@@ -567,7 +567,7 @@ fn draft_for(
                 action,
                 source: Some(selected_info),
                 size_mb: def.size_mb,
-                needs_admin: selected.needs_admin.unwrap_or(def.needs_admin),
+                needs_admin: tc_core::installer::source_requires_elevation(selected, def),
                 depends_on_tools: vec![],
                 path_entries: def.path_entries.clone(),
                 install_options: req.install_options.clone(),
@@ -1865,6 +1865,9 @@ mod tests {
 
         let mut req = install_request(&["terraform"]);
         req.confirm_unverified_sources = true; // реальный zip-источник без sha256
+        // На Linux первый источник terraform — пакетный менеджер (root),
+        // на Windows — zip без UAC: подтверждение прав даётся явно.
+        req.confirm_admin_elevation = true;
         let plan = build_plan(&req, &inputs).await.unwrap();
         assert_eq!(plan.tasks.len(), 1, "план содержит только запрошенный тул");
 

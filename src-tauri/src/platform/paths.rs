@@ -104,6 +104,41 @@ pub fn is_windows_store_alias(path: &std::path::Path) -> bool {
     }
 }
 
+/// Linux snap-заглушка (`/snap/bin/<tool>` — симлинк на `/usr/bin/snap`).
+///
+/// Snap создаёт в `/snap/bin` врапперы даже для сломанных/частично
+/// удалённых snap-пакетов: запуск такого файла не запускает инструмент,
+/// а пытается доустановить snap (в GUI-сессии падает с «sudo: A terminal
+/// is required to authenticate» и кодом 255). Это НЕ установка
+/// инструмента: считать молчащую заглушку «сломанным PATH» — ложь
+/// (пример: `/snap/bin/dotnet` при рабочем `~/.dotnet/dotnet`).
+///
+/// Заглушка определяется по каталогу `/snap/bin` и по симлинку на
+/// `snap`/`snapd` (на случай нестандартной установки snapd).
+pub fn is_snap_stub(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if path.starts_with("/snap/bin") {
+            return true;
+        }
+        if let Ok(target) = std::fs::read_link(path) {
+            let name = target
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name == "snap" || name == "snapd" {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +264,24 @@ mod tests {
         assert!(!is_batch_file("node"));
         assert!(!is_batch_file("node.exe"));
         assert!(!is_batch_file(""));
+    }
+
+    /// Snap-заглушки (/snap/bin/*) — не установка инструмента:
+    /// молчащая заглушка не даёт права на «PATH сломан».
+    #[test]
+    fn snap_stub_detection() {
+        #[cfg(target_os = "linux")]
+        {
+            assert!(is_snap_stub(Path::new("/snap/bin/dotnet")));
+            assert!(is_snap_stub(Path::new("/snap/bin/flutter")));
+            assert!(!is_snap_stub(Path::new("/usr/bin/dotnet")));
+            assert!(!is_snap_stub(Path::new("/home/user/.dotnet/dotnet")));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(!is_snap_stub(Path::new("/snap/bin/dotnet")));
+            assert!(!is_snap_stub(Path::new("C:\\tools\\dotnet.exe")));
+        }
     }
 
     #[test]

@@ -33,10 +33,13 @@ impl PlatformAdapter for MacosAdapter {
         Ok(unix_rc::read_rc_user_path())
     }
 
+    /// «Системный» PATH macOS: приложение, запущенное из Finder/Dock,
+    /// получает урезанный PATH (/usr/bin:/bin:/usr/sbin:/sbin), и
+    /// brew-инструменты для него не существуют. Собираем честный список:
+    /// /etc/paths + /etc/paths.d/* (штатный механизм macOS) плюс реально
+    /// существующие каталоги Homebrew (Apple Silicon и Intel).
     async fn read_system_path(&self) -> Result<Vec<String>, String> {
-        // На Unix системный и пользовательский PATH неразличимы —
-        // базой считаем текущий PATH процесса (его берёт path_service).
-        Ok(Vec::new())
+        Ok(macos_system_path_dirs())
     }
 
     async fn write_user_path(&self, dirs: &[String]) -> Result<(), String> {
@@ -59,4 +62,59 @@ impl PlatformAdapter for MacosAdapter {
             .map(|kb| kb / 1024)
             .ok_or_else(|| format!("Не разобрать вывод df:\n{raw}"))
     }
+}
+
+/// Существующие каталоги системного PATH macOS. /etc/paths и
+/// /etc/paths.d/* — штатные файлы ОС; Homebrew добавляется отдельно,
+/// потому что Finder-процесс о нём не знает. Отсутствующие каталоги
+/// не выдумываются.
+pub fn macos_system_path_dirs() -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+
+    let mut push = |dir: &str| {
+        if Path::new(dir).is_dir() && !dirs.iter().any(|d| d == dir) {
+            dirs.push(dir.to_string());
+        }
+    };
+
+    if let Ok(content) = std::fs::read_to_string("/etc/paths") {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            push(line);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir("/etc/paths.d") {
+        let mut files: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+        files.sort();
+        for file in files {
+            if let Ok(content) = std::fs::read_to_string(&file) {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    push(line);
+                }
+            }
+        }
+    }
+
+    // Homebrew: Apple Silicon (/opt/homebrew) и Intel (/usr/local).
+    for dir in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ] {
+        push(dir);
+    }
+
+    dirs
 }

@@ -29,6 +29,12 @@ use super::version;
 /// 10с: первый холодный запуск npm.cmd/code.cmd бывает медленным.
 const PROBE_TIMEOUT_SECS: u64 = 10;
 
+/// Таймаут повторной («терпеливой») пробы перед вердиктом PathBroken.
+/// Первый запуск только что установленного SDK (.NET: first-run
+/// experience, антивирусное сканирование) легко превышает 10с — без
+/// повтора пользователь видел «PATH сломан» при рабочей установке.
+const PATIENT_PROBE_TIMEOUT_SECS: u64 = 25;
+
 // ------------------------------------------------------------
 // Запуск процессов
 // ------------------------------------------------------------
@@ -60,12 +66,22 @@ fn cap_bytes(mut data: Vec<u8>) -> Vec<u8> {
 /// pub(crate): используется и health.rs (этап 6) для прогона
 /// health-проверок из tools.json.
 pub(crate) async fn run_capture(program: &str, args: &[String]) -> Option<String> {
+    run_capture_with_timeout(program, args, PROBE_TIMEOUT_SECS).await
+}
+
+/// run_capture с настраиваемым таймаутом: терпеливый повтор перед
+/// вердиктом PathBroken использует увеличенное окно.
+pub(crate) async fn run_capture_with_timeout(
+    program: &str,
+    args: &[String],
+    timeout_secs: u64,
+) -> Option<String> {
     let (program, args) = platforms::resolve_command(program, args);
     let mut cmd = TokioCommand::new(program);
     cmd.args(args);
     #[cfg(target_os = "windows")]
     crate::platform::suppress_child_console_async(&mut cmd);
-    let output = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output())
+    let output = timeout(Duration::from_secs(timeout_secs), cmd.output())
         .await
         .ok()?
         .ok()?;
@@ -297,6 +313,12 @@ fn natural_key(name: &str) -> Vec<(u64, String)> {
 /// Есть ли на диске хотя бы один из известных путей установки
 /// (с учётом glob-шаблонов вида `PostgreSQL/*/bin`).
 /// Использует effective_detection для платформенных переопределений.
+///
+/// Сам по себе след установки НЕ даёт права на PathBroken (контракт
+/// §4.2): вердикт «сломан» выносится только по реальному бинарю
+/// (known_path_binary_present / молчащий which). Функция сохранена для
+/// диагностики следов и будущих отчётов.
+#[allow(dead_code)]
 fn known_path_found(def: &ToolDefinition) -> bool {
     let os = platforms::current_platform().os_name();
     let det = def.effective_detection(&os);
@@ -319,6 +341,15 @@ fn known_path_found(def: &ToolDefinition) -> bool {
 /// уровень ниже (flutter: %USERPROFILE%/flutter → bin/): пробуем
 /// и подкаталог bin/ каждого каталога.
 async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
+    probe_version_at_known_paths_with_timeout(def, PROBE_TIMEOUT_SECS).await
+}
+
+/// Та же проба известных путей с настраиваемым таймаутом — терпеливый
+/// повтор перед вердиктом PathBroken (первый запуск SDK).
+async fn probe_version_at_known_paths_with_timeout(
+    def: &ToolDefinition,
+    timeout_secs: u64,
+) -> Option<String> {
     let exts: &[&str] = if cfg!(target_os = "windows") {
         &["", ".exe", ".cmd", ".bat"]
     } else {
@@ -352,7 +383,13 @@ async fn probe_version_at_known_paths(def: &ToolDefinition) -> Option<String> {
                     // Полный путь без cmd-обёртки: std::process на Windows
                     // сам оборачивает .cmd/.bat в cmd /c, а пути с пробелами
                     // («Program Files») при этом не ломаются.
-                    if let Some(out) = run_capture(&bin.to_string_lossy(), &probe[1..]).await {
+                    if let Some(out) = run_capture_with_timeout(
+                        &bin.to_string_lossy(),
+                        &probe[1..],
+                        timeout_secs,
+                    )
+                    .await
+                    {
                         return Some(out);
                     }
                 }
@@ -420,6 +457,9 @@ async fn registry_read_string(key: &str, value_name: &str) -> Option<String> {
 
 /// Проверяет наличие ключей реестра, используя effective_detection.
 /// На не-Windows registry_keys всегда пустые — reg.exe не вызывается.
+/// Ключ реестра — след установки, а не улика сломанного исполнения:
+/// PathBroken по нему не выносится (см. known_path_found).
+#[allow(dead_code)]
 async fn any_registry_found(def: &ToolDefinition) -> bool {
     let os = platforms::current_platform().os_name();
     let det = def.effective_detection(&os);
@@ -546,9 +586,9 @@ pub(crate) fn apply_version_rules(def: &ToolDefinition, raw_version: &str) -> To
 ///      (glob не совпал, но каталог на диске есть — erlang и т.п.);
 ///   4. чтение пути из реестра (InstallLocation) → Installed / UpdateAvailable
 ///      (NSIS/MSI установщик записал путь, но known_paths не совпал);
-///   5. бинарник есть в PATH, но молчит   → PathBroken (сломана установка);
-///   6. нашёлся известный путь/реестр     → PathBroken (не в PATH);
-///   7. ничего                            → Missing.
+///   5. молчащий бинарь в PATH или в известном каталоге (после
+///      терпеливого повтора)               → PathBroken (сломана установка);
+///   6. только след без бинаря (папка/ключ реестра) или ничего → Missing.
 pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
     let os = platforms::current_platform().os_name();
     let det = def.effective_detection(&os);
@@ -579,48 +619,122 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
         return apply_version_rules(def, &raw);
     }
 
-    // Бинарь в PATH есть, но ни одна проба не ответила:
-    // установка сломана (dll потерялись, версия не поддерживается...)
-    for probe in &det.version_probes {
-        if probe.is_empty() || is_shell_probe(&probe[0]) {
-            continue;
-        }
-        if let Ok(path) = which::which(&probe[0]) {
-            // Microsoft Store app-execution alias (python.exe в WindowsApps) —
-            // НЕ установка: это заглушка, открывающая Store (или код 9009
-            // без консоли). Считать её «сломанной установкой» — ложь: на
-            // чистой машине python честно отсутствует (Missing), и маcтер
-            // обязан предложить установку, а не писать «установлен, PATH сломан».
-            if crate::platform::paths::is_windows_store_alias(&path) {
-                continue;
-            }
-            return ToolStatus::PathBroken {
-                reason: format!(
-                    "{} найден в PATH, но не отвечает на `{}`",
-                    probe[0],
-                    probe.join(" ")
-                ),
-            };
-        }
+    // Улики перед вердиктом: молчащий бинарь в PATH и/или реальный
+    // бинарь в известном каталоге. След без бинаря (пустой/остаточный
+    // каталог, ключ реестра) НЕ даёт права на PathBroken (контракт
+    // §4.2): «найдена папка» ≠ «установка сломана» — иначе рабочий
+    // ~/.dotnet/dotnet с молчащей snap-заглушкой /snap/bin/dotnet
+    // показывался как «PATH сломан» при полностью скачанном SDK.
+    let silent_in_path: Option<std::path::PathBuf> = det
+        .version_probes
+        .iter()
+        .filter(|p| !p.is_empty() && !is_shell_probe(&p[0]))
+        .find_map(|p| which::which(&p[0]).ok())
+        .filter(|path| {
+            !crate::platform::paths::is_windows_store_alias(path)
+                && !crate::platform::paths::is_snap_stub(path)
+        });
+    let broken_known_binary = known_path_binary_present(def);
+
+    if silent_in_path.is_none() && broken_known_binary.is_none() {
+        return ToolStatus::Missing;
     }
 
-    // Установка есть, но не в PATH — и проба оттуда не сработала.
-    if known_path_found(def) || any_registry_found(def).await {
-        let footprint = det
-            .known_paths
-            .first()
-            .or_else(|| det.registry_keys.first())
-            .cloned()
-            .unwrap_or_default();
+    // Вторая попытка с увеличенным таймаутом: первый запуск только что
+    // установленного SDK (.NET: first-run experience) легко превышает
+    // 10с. Ожидание платится только при уже собранной улике сбоя.
+    if let Some(raw) = probe_version_patient(def).await {
+        return apply_version_rules(def, &raw);
+    }
+    if let Some(raw) =
+        probe_version_at_known_paths_with_timeout(def, PATIENT_PROBE_TIMEOUT_SECS).await
+    {
+        return apply_version_rules(def, &raw);
+    }
+
+    if let Some(path) = silent_in_path {
         return ToolStatus::PathBroken {
             reason: format!(
-                "Установка найдена ({}), но бинарник не отвечает на пробу",
-                footprint
+                "{} найден в PATH ({}), но не отвечает на пробу",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("бинарь"),
+                path.to_string_lossy()
+            ),
+        };
+    }
+    if let Some(dir) = broken_known_binary {
+        return ToolStatus::PathBroken {
+            reason: format!(
+                "В каталоге установки {dir} есть бинарь, но он не отвечает на пробу"
             ),
         };
     }
 
     ToolStatus::Missing
+}
+
+/// Повторная проба версии с увеличенным таймаутом (пауза + полный
+/// проход по пробам). Вызывается только перед вердиктом PathBroken.
+async fn probe_version_patient(def: &ToolDefinition) -> Option<String> {
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    for probe in &det.version_probes {
+        if probe.is_empty() {
+            continue;
+        }
+        if let Some(out) =
+            run_capture_with_timeout(&probe[0], &probe[1..], PATIENT_PROBE_TIMEOUT_SECS).await
+        {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// Есть ли в известных каталогах установки РЕАЛЬНЫЙ бинарь инструмента
+/// (имя из version_probes с расширениями ОС). Отличает «бинарь есть,
+/// но молчит» (законный PathBroken) от «след установки без бинаря»
+/// (пустой/остаточный каталог — это Missing, а не «сломан»).
+fn known_path_binary_present(def: &ToolDefinition) -> Option<String> {
+    let exts: &[&str] = if cfg!(target_os = "windows") {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    let os = platforms::current_platform().os_name();
+    let det = def.effective_detection(&os);
+    for known in &det.known_paths {
+        let Some(dir) = glob_first(&expand_env(known)) else {
+            continue;
+        };
+        let mut candidates: Vec<std::path::PathBuf> = vec![dir.clone()];
+        let is_bin_dir = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("bin"));
+        let nested_bin = dir.join("bin");
+        if !is_bin_dir && nested_bin.is_dir() {
+            candidates.push(nested_bin);
+        }
+        for candidate in &candidates {
+            for probe in &det.version_probes {
+                if probe.is_empty() {
+                    continue;
+                }
+                for ext in exts {
+                    if candidate
+                        .join(format!("{}{}", probe[0], ext))
+                        .is_file()
+                    {
+                        return Some(candidate.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Прямой скан каталога установки: перечисляет подкаталоги базового

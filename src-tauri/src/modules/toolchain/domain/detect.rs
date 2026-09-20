@@ -117,23 +117,40 @@ fn natural_key_desc(path: &PathBuf) -> std::cmp::Reverse<Vec<(u64, String)>> {
     std::cmp::Reverse(key)
 }
 
-/// Расширяет %VAR% в путях из tools.json (как discovery::expand_env).
+/// Расширяет %VAR%/$VAR/~ в путях из tools.json (паритет с
+/// discovery::expand_env): Windows — %VAR%; Unix — $VAR, ${VAR}, ~.
+/// Неизвестная переменная остаётся как есть — путь просто не найдётся.
 fn expand_env(raw: &str) -> PathBuf {
-    const VARS: [(&str, &str); 4] = [
-        ("%LOCALAPPDATA%", "LOCALAPPDATA"),
-        ("%APPDATA%", "APPDATA"),
-        ("%ProgramFiles%", "ProgramFiles"),
-        ("%USERPROFILE%", "USERPROFILE"),
-    ];
-    let mut expanded = raw.to_string();
-    for (pattern, var) in VARS {
-        if expanded.contains(pattern) {
-            if let Ok(value) = std::env::var(var) {
-                expanded = expanded.replace(pattern, &value);
+    #[cfg(target_os = "windows")]
+    {
+        const VARS: [(&str, &str); 4] = [
+            ("%LOCALAPPDATA%", "LOCALAPPDATA"),
+            ("%APPDATA%", "APPDATA"),
+            ("%ProgramFiles%", "ProgramFiles"),
+            ("%USERPROFILE%", "USERPROFILE"),
+        ];
+        let mut expanded = raw.to_string();
+        for (pattern, var) in VARS {
+            if expanded.contains(pattern) {
+                if let Ok(value) = std::env::var(var) {
+                    expanded = expanded.replace(pattern, &value);
+                }
             }
         }
+        PathBuf::from(expanded)
     }
-    PathBuf::from(expanded)
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut expanded = raw.to_string();
+        if let Some(rest) = expanded.strip_prefix('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                expanded = format!("{home}{rest}");
+            }
+        }
+        PathBuf::from(crate::modules::toolchain::core::path_service::expand_env_vars(
+            &expanded,
+        ))
+    }
 }
 
 /// Пробы, запускающие оболочку: их наличие в PATH ничего не говорит
@@ -310,6 +327,11 @@ pub async fn detect_detailed(
                 // заглушка, а не установка: проба молчит (Store/код 9009),
                 // но PathBroken был бы ложью — тул честно отсутствует (Missing).
                 if crate::platform::paths::is_windows_store_alias(&path) {
+                    continue;
+                }
+                // Linux snap-заглушка (/snap/bin/dotnet → snap): тот же
+                // класс — «не установка», а враппер самоустановки.
+                if crate::platform::paths::is_snap_stub(&path) {
                     continue;
                 }
                 let probe_log = failed_logs

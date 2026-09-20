@@ -390,7 +390,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/.cargo/bin"
+        "%USERPROFILE%/.cargo/bin",
+        "$HOME/.cargo/bin"
       ],
       "registry_keys": []
     },
@@ -437,7 +438,9 @@
             "stable"
           ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "file_name": "rustup-init.sh",
+          "execution": "script"
         }
       ],
       "macos": [
@@ -451,14 +454,17 @@
             "stable"
           ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "file_name": "rustup-init.sh",
+          "execution": "script"
         }
       ]
     },
     "size_mb": 250,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\.cargo\\bin"
+      "%USERPROFILE%\\.cargo\\bin",
+      "$HOME/.cargo/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -639,7 +645,8 @@
     "needs_admin": false,
     "path_entries": [
       "%APPDATA%\\npm",
-      "%USERPROFILE%\\.cargo\\bin"
+      "%USERPROFILE%\\.cargo\\bin",
+      "$HOME/.cargo/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1187,7 +1194,8 @@
         ]
       ],
       "known_paths": [
-        "%APPDATA%/npm"
+        "%APPDATA%/npm",
+        "$HOME/.npm-global/bin"
       ],
       "registry_keys": []
     },
@@ -1224,42 +1232,46 @@
       ],
       "linux": [
         {
-          "kind": "PkgManager",
-          "id": "firebase-tools",
-          "args": [],
-          "extra_args": [],
-          "dynamic_args": false
-        },
-        {
           "kind": "Official",
           "id": "npm-global",
           "url": "npm",
           "args": [
             "install",
             "-g",
+            "--prefix",
+            "$HOME/.npm-global",
             "firebase-tools"
           ],
+          "extra_args": [],
+          "dynamic_args": false
+        },
+        {
+          "kind": "PkgManager",
+          "id": "firebase-tools",
+          "args": [],
           "extra_args": [],
           "dynamic_args": false
         }
       ],
       "macos": [
         {
-          "kind": "PkgManager",
-          "id": "firebase-tools",
-          "args": [],
-          "extra_args": [],
-          "dynamic_args": false
-        },
-        {
           "kind": "Official",
           "id": "npm-global",
           "url": "npm",
           "args": [
             "install",
             "-g",
+            "--prefix",
+            "$HOME/.npm-global",
             "firebase-tools"
           ],
+          "extra_args": [],
+          "dynamic_args": false
+        },
+        {
+          "kind": "PkgManager",
+          "id": "firebase-tools",
+          "args": [],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -1268,7 +1280,8 @@
     "size_mb": 60,
     "needs_admin": false,
     "path_entries": [
-      "%APPDATA%\\npm"
+      "%APPDATA%\\npm",
+      "$HOME/.npm-global/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1280,7 +1293,12 @@
         ]
       }
     ],
-    "notes": "tool.firebase.notes"
+    "notes": "tool.firebase.notes",
+    "extended": {
+      "dependencies": [
+        "node"
+      ]
+    }
   },
   {
     "id": "dotnet",
@@ -1297,7 +1315,13 @@
       ],
       "known_paths": [
         "C:/Program Files/dotnet",
-        "%LOCALAPPDATA%/Microsoft/dotnet"
+        "%LOCALAPPDATA%/Microsoft/dotnet",
+        "$HOME/.dotnet",
+        "/usr/lib/dotnet",
+        "/usr/lib64/dotnet",
+        "/usr/share/dotnet",
+        "/opt/homebrew/opt/dotnet/libexec",
+        "/usr/local/opt/dotnet/libexec"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64"
@@ -1346,6 +1370,22 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Script",
+          "id": "dotnet-install",
+          "url": "https://dot.net/v1/dotnet-install.sh",
+          "file_name": "dotnet-install.sh",
+          "args": [
+            "--channel",
+            "10.0",
+            "--install-dir",
+            "$HOME/.dotnet"
+          ],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false,
+          "execution": "script"
         }
       ],
       "macos": [
@@ -1355,6 +1395,22 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Script",
+          "id": "dotnet-install",
+          "url": "https://dot.net/v1/dotnet-install.sh",
+          "file_name": "dotnet-install.sh",
+          "args": [
+            "--channel",
+            "10.0",
+            "--install-dir",
+            "$HOME/.dotnet"
+          ],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false,
+          "execution": "script"
         }
       ]
     },
@@ -1362,7 +1418,10 @@
     "needs_admin": true,
     "path_entries": [
       "C:\\Program Files\\dotnet",
-      "%LOCALAPPDATA%\\Microsoft\\dotnet"
+      "%LOCALAPPDATA%\\Microsoft\\dotnet",
+      "$HOME/.dotnet",
+      "/usr/lib/dotnet",
+      "/usr/share/dotnet"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1389,7 +1448,9 @@
           "--version"
         ]
       ],
-      "known_paths": [],
+      "known_paths": [
+        "$HOME/.dotnet/tools"
+      ],
       "registry_keys": []
     },
     "versions": {
@@ -1491,7 +1552,8 @@
     "size_mb": 20,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\.dotnet\\tools"
+      "%USERPROFILE%\\.dotnet\\tools",
+      "$HOME/.dotnet/tools"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1503,7 +1565,12 @@
         ]
       }
     ],
-    "notes": "tool.csharprepl.notes"
+    "notes": "tool.csharprepl.notes",
+    "extended": {
+      "dependencies": [
+        "dotnet"
+      ]
+    }
   },
   {
     "id": "msvc-build-tools",
@@ -1602,7 +1669,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/zig/*"
+        "%USERPROFILE%/zig/*",
+        "$HOME/.local/share/zig/*"
       ],
       "registry_keys": []
     },
@@ -1648,6 +1716,20 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "ziglang-tarball",
+          "url": "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share/zig",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "ziglang"
+          },
+          "url_template": "https://ziglang.org/download/{version}/zig-x86_64-linux-{version}.tar.xz"
         }
       ],
       "macos": [
@@ -1663,7 +1745,8 @@
     "size_mb": 100,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\zig\\*"
+      "%USERPROFILE%\\zig\\*",
+      "$HOME/.local/share/zig/*"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1692,13 +1775,20 @@
       ],
       "known_paths": [
         "C:/Program Files/Dart",
-        "%LOCALAPPDATA%/dart-sdk/*/bin"
+        "%LOCALAPPDATA%/dart-sdk/*/bin",
+        "$HOME/.local/share/dart-sdk/bin",
+        "/usr/lib/dart/bin",
+        "/opt/homebrew/opt/dart/libexec/bin",
+        "/usr/local/opt/dart/libexec/bin"
       ],
       "registry_keys": []
     },
     "versions": {
       "min": "3.0",
-      "recommended": "3.7"
+      "recommended": "3.7",
+      "resolver": {
+        "kind": "dart_sdk"
+      }
     },
     "sources": {
       "windows": [
@@ -1731,6 +1821,19 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dart-sdk",
+          "url": "https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-x64-release.zip",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "dart_sdk"
+          }
         }
       ],
       "macos": [
@@ -1740,6 +1843,18 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dart-sdk",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "dart_sdk"
+          }
         }
       ]
     },
@@ -1747,7 +1862,8 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\Dart\\bin",
-      "%LOCALAPPDATA%\\dart-sdk\\*\\bin"
+      "%LOCALAPPDATA%\\dart-sdk\\*\\bin",
+      "$HOME/.local/share/dart-sdk/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2312,7 +2428,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/flutter/bin"
+        "%USERPROFILE%/flutter/bin",
+        "$HOME/flutter/bin"
       ],
       "registry_keys": []
     },
@@ -2343,18 +2460,32 @@
       ],
       "linux": [
         {
-          "kind": "PkgManager",
-          "id": "flutter",
-          "args": [],
+          "kind": "Official",
+          "id": "flutter-git",
+          "url": "https://github.com/flutter/flutter.git",
+          "args": [
+            "--depth",
+            "1",
+            "-b",
+            "stable"
+          ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "execution": "git_clone",
+          "bootstrap": [
+            "flutter",
+            "--version"
+          ],
+          "needs_admin": false
         }
       ],
       "macos": [
         {
           "kind": "PkgManager",
           "id": "flutter",
-          "args": [],
+          "args": [
+            "--cask"
+          ],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -2363,7 +2494,8 @@
     "size_mb": 1000,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\flutter\\bin"
+      "%USERPROFILE%\\flutter\\bin",
+      "$HOME/flutter/bin"
     ],
     "bundled_with": null,
     "health_checks": [],

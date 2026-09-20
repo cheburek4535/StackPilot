@@ -326,6 +326,7 @@ async fn fetch(resolver: &VersionResolver) -> Result<ResolvedVersion, String> {
         VersionResolver::MongoDb => resolve_mongodb().await,
         VersionResolver::Winget { id } => resolve_winget(id).await,
         VersionResolver::DotnetChannel { channel } => resolve_dotnet_channel(channel).await,
+        VersionResolver::DartSdk => resolve_dart_sdk().await,
     }
 }
 
@@ -355,6 +356,26 @@ fn latest_stable<'a>(versions: impl Iterator<Item = &'a str>) -> Option<&'a str>
 
 // --- Zig: ziglang.org/download/index.json --------------------------
 
+/// Ключ ассета в index.json ziglang.org для текущей ОС и архитектуры:
+/// «x86_64-windows», «aarch64-linux», «x86_64-macos» и т.п.
+/// Неизвестная комбинация → None: резолвер честно отдаст ошибку, а
+/// caller откатится на статичный URL каталога.
+fn zig_asset_key() -> Option<String> {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        "x86" => "x86",
+        _ => return None,
+    };
+    let os = match std::env::consts::OS {
+        "windows" => "windows",
+        "linux" => "linux",
+        "macos" => "macos",
+        _ => return None,
+    };
+    Some(format!("{arch}-{os}"))
+}
+
 async fn resolve_ziglang() -> Result<ResolvedVersion, String> {
     let body = http_get("https://ziglang.org/download/index.json").await?;
     let json: Value = serde_json::from_str(&body)
@@ -365,15 +386,22 @@ async fn resolve_ziglang() -> Result<ResolvedVersion, String> {
     let Some(version) = latest_stable(obj.keys().map(String::as_str)) else {
         return Err("index.json zig: стабильный релиз не найден".to_string());
     };
+    let Some(asset_key) = zig_asset_key() else {
+        return Err(format!(
+            "index.json zig: нет сборки для {}-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS
+        ));
+    };
     let entry = obj.get(version).and_then(|v| v.as_object());
-    let windows = entry
-        .and_then(|e| e.get("x86_64-windows"))
+    let asset = entry
+        .and_then(|e| e.get(asset_key.as_str()))
         .and_then(|w| w.as_object());
-    let url = windows
+    let url = asset
         .and_then(|w| w.get("tarball"))
         .and_then(|t| t.as_str())
         .map(str::to_string);
-    let sha256 = windows
+    let sha256 = asset
         .and_then(|w| w.get("shasum"))
         .and_then(|s| s.as_str())
         .map(str::to_string);
@@ -895,6 +923,58 @@ async fn resolve_dotnet_channel(channel: &str) -> Result<ResolvedVersion, String
     Ok(ResolvedVersion::version_only(&version))
 }
 
+// --- Dart SDK: storage.googleapis.com/dart-archive ---------------------
+
+/// Имя архива Dart SDK для текущей ОС/архитектуры. Dart публикует
+/// отдельные сборки: linux/macos/windows × x64/arm64 (ia32 устарел).
+/// Неизвестная комбинация → None: установка честно откажется вместо
+/// скачивания чужой архитектуры.
+fn dart_asset_name() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("dartsdk-linux-x64-release.zip"),
+        ("linux", "aarch64") => Some("dartsdk-linux-arm64-release.zip"),
+        ("macos", "x86_64") => Some("dartsdk-macos-x64-release.zip"),
+        ("macos", "aarch64") => Some("dartsdk-macos-arm64-release.zip"),
+        ("windows", "x86_64") => Some("dartsdk-windows-x64-release.zip"),
+        _ => None,
+    }
+}
+
+/// Резолвер Dart SDK: VERSION-файл канала stable даёт актуальную версию,
+/// URL собирается под текущую платформу, SHA-256 — из .sha256sum рядом
+/// с архивом (best-effort: недоступен — установка с unverified-warning).
+async fn resolve_dart_sdk() -> Result<ResolvedVersion, String> {
+    const BASE: &str = "https://storage.googleapis.com/dart-archive/channels/stable/release";
+    let version_body = http_get(&format!("{BASE}/latest/VERSION")).await?;
+    let json: Value = serde_json::from_str(&version_body)
+        .map_err(|e| format!("Dart VERSION не разобрался: {e}"))?;
+    let version = json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Dart VERSION: нет поля version".to_string())?
+        .to_string();
+    let Some(asset) = dart_asset_name() else {
+        return Err(format!(
+            "Dart SDK: нет сборки для {}-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS
+        ));
+    };
+    let url = format!("{BASE}/{version}/sdk/{asset}");
+    let sha256 = match http_get(&format!("{url}.sha256sum")).await {
+        Ok(text) => {
+            let hash = text.split_whitespace().next().unwrap_or("").to_string();
+            (!hash.is_empty()).then_some(hash)
+        }
+        Err(_) => None,
+    };
+    Ok(ResolvedVersion {
+        version,
+        url: Some(url),
+        sha256,
+    })
+}
+
 // ------------------------------------------------------------
 // Интеграция с установкой
 // ------------------------------------------------------------
@@ -1090,6 +1170,33 @@ mod tests {
         assert_eq!(github_version_from_tag("OTP-29.0.5"), "29.0.5");
         assert_eq!(github_version_from_tag("8.10.1"), "8.10.1");
         assert_eq!(github_version_from_tag("release-1.2.3"), "1.2.3");
+    }
+
+    /// Zig-резолвер обязан выбирать ассет ТЕКУЩЕЙ платформы, а не
+    /// windows: на Linux/macOS fallback-источник иначе скачивал бы
+    /// windows-сборку.
+    #[test]
+    fn zig_asset_key_matches_current_platform() {
+        let key = zig_asset_key().expect("текущая платформа поддерживается zig");
+        assert!(
+            key.starts_with(std::env::consts::ARCH),
+            "архитектура не совпала: {key}"
+        );
+        assert!(
+            key.ends_with(std::env::consts::OS),
+            "ОС не совпала: {key}"
+        );
+    }
+
+    /// Имя архива Dart SDK выбирается под ОС/архитектуру; неизвестная
+    /// комбинация — честный None (никаких «чужих» сборок).
+    #[test]
+    fn dart_asset_name_matches_current_platform() {
+        let asset = dart_asset_name();
+        if let Some(name) = asset {
+            assert!(name.starts_with("dartsdk-"));
+            assert!(name.ends_with("-release.zip"));
+        }
     }
 
     #[test]
