@@ -15774,8 +15774,11 @@ mod tests {
     #[ignore = "requires a real python3 and network access (pip install)"]
     async fn execute_python_environment_end_to_end() {
         let engine = DefaultRecipeEngine::new();
+        // Кириллица в пути — как у реальных пользователей (Загрузки/…):
+        // вывод pip содержит этот путь, поэтому окно триггеров обязано
+        // обрезаться по границе UTF-8 (регрессия «Pipe to stdout was broken»).
         let dir = std::env::temp_dir().join(format!(
-            "stackpilot_python_e2e_{}",
+            "stackpilot_python_e2e_Загрузки_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -15784,14 +15787,17 @@ mod tests {
         let mut ctx = ctx_scenario(
             &["python"],
             &["fastapi"],
-            &["alembic", "sqlalchemy"],
+            &["alembic", "sqlalchemy", "pytest", "ruff"],
         );
         ctx.git_init = false;
         ctx.vscode_config = false;
         ctx.project_path = Some(dir.clone());
 
         let plan = engine.plan(&ctx, &dir).expect("план обязан построиться");
-        let (tx, _rx) = tokio::sync::mpsc::channel(256);
+        // Потребитель событий работает параллельно (как UI): большой вывод
+        // pip не должен блокировать ридер навсегда.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let result = engine.execute(plan, tx).await;
         assert!(
             matches!(result.overall, OverallStatus::Success),

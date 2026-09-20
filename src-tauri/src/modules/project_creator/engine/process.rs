@@ -426,14 +426,33 @@ impl ProcessRunner {
             },
         };
 
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        // Паника ридера (а не ошибка read) раньше убивала задачу молча:
+        // процесс-писатель получал EPIPE («Pipe to stdout was broken» у pip),
+        // а шаг показывал только его ошибку. Фиксируем панику/отмену задачи в
+        // том же слоте, что и ошибки чтения — причина сбоя не теряется.
+        for (stream, join) in [("stdout", stdout_task.await), ("stderr", stderr_task.await)] {
+            if let Err(join_error) = join {
+                if let Ok(mut slot) = reader_error.lock() {
+                    if slot.is_none() {
+                        *slot = Some((stream, reader_join_failure(join_error)));
+                    }
+                }
+            }
+        }
 
         let reader_failure = reader_error.lock().ok().and_then(|slot| slot.clone());
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let stdout_detail = tail_text(&stdout_tail);
-        let stderr_detail = tail_text(&stderr_tail);
+        let mut stderr_detail = tail_text(&stderr_tail);
+        // Провал ридера обязан быть виден в ошибке шага, даже когда процесс
+        // упал сам (иначе причина подменяется следствием — EPIPE у писателя).
+        if let Some((stream, source)) = &reader_failure {
+            stderr_detail = format!(
+                "{}\n[project_creator] {stream} reader failed: {source}",
+                stderr_detail
+            );
+        }
 
         match wait_result {
             Ok(status) if status.success() => match reader_failure {
@@ -473,6 +492,43 @@ impl ProcessRunner {
     }
 }
 
+/// Обрезать скользящее окно триггеров до последних `max_bytes` байт ПО
+/// ГРАНИЦЕ UTF-8.
+///
+/// Прежний `drain(..rolling.len() - 2048)` рвал многобайтовый символ
+/// (кириллица в путях и выводе pip, эмодзи и т.п.) — `String::drain`
+/// паникует на `is_char_boundary`, задача-ридер молча умирает, а
+/// процесс-писатель получает EPIPE: у pip это «ERROR: Pipe to stdout was
+/// broken» и код 120. Граница подтягивается вперёд (окно может стать на
+/// пару байт короче — для поиска триггеров это не важно).
+fn trim_rolling_window(rolling: &mut String, max_bytes: usize) {
+    if rolling.len() <= max_bytes {
+        return;
+    }
+    let mut cut = rolling.len() - max_bytes;
+    while !rolling.is_char_boundary(cut) {
+        cut += 1;
+    }
+    rolling.drain(..cut);
+}
+
+/// Текст причины завершения задачи-ридера: паника (с payload) или отмена.
+/// Используется, когда сама задача не смогла сообщить об ошибке через
+/// Err — без этого сбой ридера выглядел бы как EPIPE у писателя.
+fn reader_join_failure(join_error: tokio::task::JoinError) -> String {
+    if join_error.is_panic() {
+        let payload = join_error.into_panic();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|text| text.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_string());
+        format!("reader task panicked: {message}")
+    } else {
+        format!("reader task was cancelled: {join_error}")
+    }
+}
+
 /// Прочитать stdout побайтово: стриминг в sink, накопление хвоста,
 /// детекция триггеров и отправка ответов в stdin (если stdin piped),
 /// idle-fallback при молчании процесса. Ошибка чтения — Err (не
@@ -508,11 +564,9 @@ async fn read_stdout_loop(
                     sink.emit_stdout(&chunk).await;
                 }
 
-                // Добавляем в скользящее окно
+                // Добавляем в скользящее окно (обрезка — по границе UTF-8)
                 rolling.push_str(&chunk);
-                if rolling.len() > 2048 {
-                    rolling.drain(..rolling.len() - 2048);
-                }
+                trim_rolling_window(&mut rolling, 2048);
 
                 // Ищем триггеры (только если stdin открыт)
                 if let Some(stdin) = &mut stdin {
@@ -1247,6 +1301,84 @@ mod tests {
             output.stdout_tail
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rolling_window_trim_keeps_utf8_boundaries() {
+        // "привет" — многобайтовые символы: прежний drain(..len - 2048)
+        // попадал внутрь символа и паниковал (is_char_boundary), убивая
+        // ридер пайпа. Обрезка обязана быть по границе UTF-8.
+        let mut rolling = String::new();
+        while rolling.len() < 3000 {
+            rolling.push_str("привет ");
+        }
+        let before = rolling.len();
+        trim_rolling_window(&mut rolling, 2048);
+        assert!(before > 2048);
+        assert!(rolling.len() <= 2048, "окно не больше лимита");
+        assert!(
+            rolling.len() > 2048 - 4,
+            "обрезка не теряет лишнего: {}",
+            rolling.len()
+        );
+        assert!(rolling.is_char_boundary(rolling.len()));
+        assert!(
+            rolling.chars().all(|c| c.is_alphabetic() || c == ' '),
+            "многобайтовые символы не порваны: {rolling:?}"
+        );
+
+        // Окно меньше лимита не трогается.
+        let mut short = "привет".to_string();
+        trim_rolling_window(&mut short, 2048);
+        assert_eq!(short, "привет");
+    }
+
+    #[tokio::test]
+    async fn runner_streams_multibyte_output_without_losing_reader() {
+        // Регрессия: >2 КБ кириллического вывода (пути, локализованные
+        // сообщения) раньше панически убивали задачу-ридер — процесс-писатель
+        // получал EPIPE («Pipe to stdout was broken» у pip). Теперь вывод
+        // доходит целиком, а процесс завершается успешно.
+        let python = if cfg!(target_os = "windows") {
+            "python"
+        } else {
+            "python3"
+        };
+        if std::process::Command::new(python)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // без интерпретатора проверка недоступна
+        }
+        let spec = ProcessSpec {
+            command: python.to_string(),
+            args: vec![
+                "-c".into(),
+                "import sys; sys.stdout.write('привет мир ' * 1000); sys.stderr.write('ошибок нет\\n')"
+                    .into(),
+            ],
+            working_dir: None,
+            env: None,
+            timeout: Some(Duration::from_secs(60)),
+            // Как у Step::Command: stdin пайпится, поэтому работает и обрезка
+            // скользящего окна триггеров, и детекция фраз.
+            stdin: StdinMode::Piped(InteractiveRules::default()),
+            ci_mode: false,
+        };
+        let output = ProcessRunner::run(spec, None)
+            .await
+            .expect("процесс обязан завершиться успешно, а ридер — выжить");
+        assert!(
+            output.stdout_tail.contains("привет мир"),
+            "многобайтовый stdout дошёл: {}",
+            output.stdout_tail
+        );
+        assert!(
+            output.stderr_tail.contains("ошибок нет"),
+            "stderr дошёл: {}",
+            output.stderr_tail
+        );
     }
 
     #[tokio::test]
