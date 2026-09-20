@@ -158,6 +158,21 @@ pub fn requirements_abs(project_path: &str, python_dir: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Скрипт префлайта интерпретатора: путь, версия, наличие модулей `venv` и
+/// `ensurepip`. Отсутствие ensurepip (Debian/Ubuntu без python3-venv) — не
+/// ошибка префлайта: генератор python-venv создаст окружение и забутстрапит
+/// pip (virtualenv/колёса дистрибутива/get-pip.py), но пользователь видит
+/// причину заранее, а не только в момент создания venv.
+const PYTHON_PREFLIGHT_SCRIPT: &str = r#"import importlib.util, sys
+print('interpreter: ' + sys.executable)
+print('python version: ' + sys.version.split()[0])
+print('venv module: ' + ('present' if importlib.util.find_spec('venv') else 'missing'))
+if importlib.util.find_spec('ensurepip') is None:
+    print('ensurepip: missing (on Debian/Ubuntu install python3-venv; the project venv will be bootstrapped via virtualenv or get-pip.py)')
+else:
+    print('ensurepip: present')
+"#;
+
 /// Префлайт интерпретатора: печатает путь и версию ДО любых venv/pip-шагов,
 /// чтобы ошибка «python не найден» была видна сразу, а не в середине
 /// пайплайна.
@@ -168,11 +183,7 @@ pub fn python_preflight_step(project_path: &str) -> Step {
         description:
             "Verify the Python interpreter and print its executable path and version".into(),
         command: python_command(),
-        args: vec![
-            "-c".into(),
-            "import sys; print('interpreter: ' + sys.executable); print('python version: ' + sys.version.split()[0])"
-                .into(),
-        ],
+        args: vec!["-c".into(), PYTHON_PREFLIGHT_SCRIPT.into()],
         working_dir: Some(project_path.to_string()),
         env: None,
         timeout_secs: Some(30),
@@ -202,47 +213,35 @@ if importlib.util.find_spec('pip') is None:
     print('pip module: missing (will be bootstrapped by the next step)')
 else:
     print('pip module: present')
-if sys.version_info < (3, 9):
-    print('WARNING: Python ' + sys.version.split()[0] + ' is older than 3.9; current Django and FastAPI releases require Python 3.10+ and pip may refuse to install the manifest (requires-python)', file=sys.stderr)
+if sys.version_info < (3, 10):
+    print('WARNING: Python ' + sys.version.split()[0] + ' is older than 3.10; current Django and FastAPI releases require Python 3.10+ and pip may refuse to install the manifest (requires-python)', file=sys.stderr)
 "#;
 
 /// Канонический жизненный цикл окружения Python-проекта — ЕДИНСТВЕННЫЙ для
 /// всех Python-фреймворков (django, fastapi, flask, aiogram) и инструментов
 /// (alembic, ruff, pytest):
-///   1. py_venv_create — `python -m venv <abs>` ровно один раз (маркер);
+///   1. py_venv_create — venv ровно один раз;
 ///   2. py_venv_verify — проверка маркера/интерпретатора/версии;
 ///   3. py_pip_upgrade — bootstrap pip ИНТЕРПРЕТАТОРОМ venv;
 ///   4. py_pip_check — `python -m pip --version` (виден путь и версия pip);
 ///   5. py_pip_install — установка манифеста РОВНО один раз (`-r`).
 /// Все вызовы pip и Python-CLI (django-admin, alembic, ruff) идут только
 /// как `<venv>/python -m pip ...` / бинарники venv.
+///
+/// Шаг создания платформо-зависимый:
+///   - Windows: прежняя команда `python -m venv <abs>` с гейтом по маркеру;
+///   - Unix: генератор "python-venv" — дистрибутивы без python3-venv
+///     (Debian/Ubuntu) не содержат ensurepip, и `python -m venv` падает,
+///     оставляя полупустое окружение. Генератор идемпотентен: здоровый venv
+///     переиспользует, сломанный пересоздаёт, pip бутстрапит через
+///     virtualenv / системный pip / колёса дистрибутива / get-pip.py.
 pub fn python_environment_steps(project_path: &str, python_dir: &str) -> Vec<Step> {
     let wd = project_path.to_string();
-    let venv_str = venv_abs(project_path, python_dir)
-        .to_string_lossy()
-        .into_owned();
-    let marker = venv_marker_rel(python_dir);
     let req_str = requirements_abs(project_path, python_dir);
     let venv_py = python_venv_bin(project_path, python_dir, "python");
 
     vec![
-        Step::Command {
-            id: "py_venv_create".into(),
-            label: "Create Python virtual environment".into(),
-            description: format!(
-                "Run {} -m venv {} (canonical project environment, created once)",
-                python_command(),
-                venv_str
-            ),
-            command: python_command(),
-            args: vec!["-m".into(), "venv".into(), venv_str],
-            working_dir: Some(wd.clone()),
-            env: None,
-            timeout_secs: Some(120),
-            condition: Some(StepCondition::FileNotExists { path: marker }),
-            on_error: ErrorMode::Abort,
-            interactive: vec![],
-        },
+        python_venv_create_step(project_path, python_dir),
         Step::Command {
             id: "py_venv_verify".into(),
             label: "Verify Python virtual environment".into(),
@@ -311,6 +310,57 @@ pub fn python_environment_steps(project_path: &str, python_dir: &str) -> Vec<Ste
             interactive: vec![],
         },
     ]
+}
+
+/// Шаг создания канонического venv. Windows сохраняет историческую команду
+/// `python -m venv` с FileNotExists-гейтом; Unix делегирует генератору
+/// "python-venv", который сам проверяет здоровье окружения (маркер + pip) и
+/// лечит полупустой venv после неудачной попытки — условие по маркеру здесь
+/// недопустимо: после падения `python -m venv` pyvenv.cfg уже существует, и
+/// шаг навсегда пропускался бы.
+fn python_venv_create_step(project_path: &str, python_dir: &str) -> Step {
+    let venv_str = venv_abs(project_path, python_dir)
+        .to_string_lossy()
+        .into_owned();
+    if cfg!(target_os = "windows") {
+        Step::Command {
+            id: "py_venv_create".into(),
+            label: "Create Python virtual environment".into(),
+            description: format!(
+                "Run {} -m venv {} (canonical project environment, created once)",
+                python_command(),
+                venv_str
+            ),
+            command: python_command(),
+            args: vec!["-m".into(), "venv".into(), venv_str],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(120),
+            condition: Some(StepCondition::FileNotExists {
+                path: venv_marker_rel(python_dir),
+            }),
+            on_error: ErrorMode::Abort,
+            interactive: vec![],
+        }
+    } else {
+        Step::Generate {
+            id: "py_venv_create".into(),
+            label: "Create Python virtual environment".into(),
+            description: format!(
+                "Ensure {} exists with a working pip; recreate it and bootstrap pip \
+                 when the system Python has no ensurepip (python3-venv is not installed)",
+                venv_str
+            ),
+            generator_id: "python-venv".into(),
+            generator_config: serde_json::json!({
+                "python": python_command(),
+                "venv_path": venv_str,
+            }),
+            policy: None,
+            condition: None,
+            on_error: ErrorMode::Abort,
+        }
+    }
 }
 
 // ============================================================================
@@ -762,26 +812,59 @@ mod tests {
         for step in &steps {
             let on_error = match step {
                 Step::Command { on_error, .. } => on_error,
-                _ => panic!("все шаги цепочки — Command"),
+                Step::Generate { on_error, .. } => on_error,
+                _ => panic!("все шаги цепочки — Command/Generate"),
             };
             assert_eq!(on_error, &ErrorMode::Abort, "{:?}", step.id());
         }
-        // venv создаётся ровно один раз (маркер), pip — только через venv.
+        // venv создаётся ровно один раз, pip — только через venv. Windows
+        // сохраняет историческую команду `python -m venv` с маркером; Unix
+        // делегирует создание генератору "python-venv" (лечит дистрибутивы
+        // без ensurepip/python3-venv).
         let create = &steps[0];
-        let (cmd, args) = match create {
-            Step::Command { command, args, .. } => (command, args),
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            cmd, &python_command(),
-            "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка)"
-        );
-        assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
-        assert!(args[2].ends_with("venv"), "{args:?}");
-        assert!(matches!(
-            create.condition(),
-            Some(StepCondition::FileNotExists { path }) if path == "venv/pyvenv.cfg"
-        ));
+        if cfg!(target_os = "windows") {
+            let (cmd, args) = match create {
+                Step::Command { command, args, .. } => (command, args),
+                _ => panic!("на Windows py_venv_create — Command"),
+            };
+            assert_eq!(
+                cmd,
+                &python_command(),
+                "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка)"
+            );
+            assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
+            assert!(args[2].ends_with("venv"), "{args:?}");
+            assert!(matches!(
+                create.condition(),
+                Some(StepCondition::FileNotExists { path }) if path == "venv/pyvenv.cfg"
+            ));
+        } else {
+            match create {
+                Step::Generate {
+                    generator_id,
+                    generator_config,
+                    condition,
+                    ..
+                } => {
+                    assert_eq!(generator_id, "python-venv");
+                    assert_eq!(
+                        generator_config.get("python").and_then(|v| v.as_str()),
+                        Some(python_command().as_str()),
+                        "интерпретатор обязан совпадать с python_command(): {generator_config}"
+                    );
+                    let venv_path = generator_config
+                        .get("venv_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    assert!(venv_path.ends_with("venv"), "{venv_path}");
+                    // Гейт по маркеру недопустим: после падения `python -m venv`
+                    // pyvenv.cfg уже существует — шаг обязан выполняться и
+                    // лечить полупустое окружение.
+                    assert!(condition.is_none(), "{condition:?}");
+                }
+                _ => panic!("на Unix py_venv_create — Generate python-venv"),
+            }
+        }
         // pip install — интерпретатором venv, ровно из манифеста (-r).
         let install = &steps[4];
         let (cmd, args) = match install {

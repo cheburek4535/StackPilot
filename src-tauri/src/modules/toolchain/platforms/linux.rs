@@ -24,6 +24,11 @@ pub struct LinuxAdapter;
 /// реально существует в репозиториях целевого дистрибутива.
 pub fn package_alias(manager: &str, package: &str) -> String {
     let mapped = match (manager, package) {
+        // Debian/Ubuntu: интерпретатор ставится без модуля ensurepip (он
+        // выделен в python3.X-venv) — `python3 -m venv` без этого пакета
+        // оставляет окружение без pip. Строка раскрывается в несколько
+        // argv-пакетов в build_linux_pkg_command.
+        ("apt-get", "python3") => "python3 python3-venv",
         // Fedora / RHEL-совместимые (dnf).
         ("dnf", "openjdk-21-jdk") => "java-21-openjdk-devel",
         ("dnf", "redis-server") => "redis",
@@ -151,8 +156,14 @@ mod tests {
         // openSUSE.
         assert_eq!(package_alias("zypper", "redis-server"), "redis");
         assert_eq!(package_alias("zypper", "docker.io"), "docker");
-        // apt (Debian/Ubuntu) — каталог уже написан под эти имена.
+        // apt (Debian/Ubuntu) — каталог уже написан под эти имена; python3
+        // дополняется пакетом python3-venv (ensurepip/python3.X-venv).
         assert_eq!(package_alias("apt-get", "php"), "php");
+        assert_eq!(
+            package_alias("apt-get", "python3"),
+            "python3 python3-venv",
+            "на Debian без python3-venv нет ensurepip — venv остаётся без pip"
+        );
         // Неизвестный пакет проходит без изменений.
         assert_eq!(package_alias("dnf", "unknown-pkg-xyz"), "unknown-pkg-xyz");
     }

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::modules::project_creator::engine::content;
 use crate::modules::project_creator::engine::process::{
-    command_display, ExecutionEventSink, InteractiveRules, ProcessErrorKind, ProcessRunner,
-    ProcessSpec, StdinMode,
+    command_display, ExecutionEventSink, InteractiveRules, ProcessErrorKind, ProcessOutput,
+    ProcessRunner, ProcessSpec, StdinMode,
 };
 use crate::modules::project_creator::models::*;
 
@@ -71,6 +71,7 @@ impl GeneratorRegistry {
         registry.register(Arc::new(FsCleanupGenerator));
         registry.register(Arc::new(ManifestCheckGenerator));
         registry.register(Arc::new(HostToolCheckGenerator));
+        registry.register(Arc::new(PythonVenvGenerator));
         registry.register(Arc::new(DotnetMauiEnsureGenerator));
         registry.register(Arc::new(ScaffoldGenerator));
         registry.register(Arc::new(TauriConfigGenerator));
@@ -894,7 +895,607 @@ impl Generator for HostToolCheckGenerator {
 }
 
 // ============================================================================
-// DotnetMauiEnsureGenerator — гарантирует шаблон `dotnet new maui`.
+// PythonVenvGenerator — каноническое venv-окружение Python-проекта.
+//
+// Проблема (Debian/Ubuntu и производные): дистрибутивный python3 без пакета
+// python3-venv не содержит модуль ensurepip, поэтому `python3 -m venv <dir>`
+// падает с «The virtual environment was not created successfully because
+// ensurepip is not available», оставляя ПОЛУСОЗДАННОЕ окружение: pyvenv.cfg
+// есть, pip нет. Повторный запуск рецепта не исправлялся: условие
+// FileNotExists по маркеру пропускало создание, а pip-шаги падали на
+// «No module named pip».
+//
+// Генератор идемпотентен и доводит окружение до рабочего состояния:
+//   0. здоровое окружение (маркер + работающий `python -m pip`) —
+//      переиспользуется (повторный запуск рецепта ничего не пересоздаёт);
+//   1. `python -m venv` — штатный путь (ensurepip доступен, большинство
+//      дистрибутивов и python.org-сборки);
+//   2. `python -m virtualenv` — если virtualenv установлен: он несёт
+//      собственные wheel'ы pip и работает без сети и без python3-venv;
+//   3. `python -m venv --without-pip` + bootstrap pip:
+//      a. ensurepip интерпретатора venv;
+//      b. системный pip: `python -m pip install --python <venv-python> pip`
+//         (pip 22.3+ умеет ставить пакеты в чужое окружение);
+//      c. колесо pip из каталога дистрибутива (sysconfig WHEEL_PKG_DIR,
+//         Debian/Ubuntu: /usr/share/python-wheels) — офлайн-путь;
+//      d. get-pip.py (curl/wget) — последний шанс, требует сеть.
+//   4. финальная проверка `python -m pip --version`; провал — Err с точными
+//      инструкциями (apt install python3-venv) и диагностикой всех попыток.
+//
+// Каталог venv пересоздаётся с `--clear` ТОЛЬКО когда в нём уже лежит venv
+// (pyvenv.cfg): чужая непустая папка с именем venv не очищается.
+//
+// Конфиг (Step::Generate.generator_config):
+//   { "python": "python3", "venv_path": "/abs/path/to/venv" }
+// ============================================================================
+pub struct PythonVenvGenerator;
+
+/// Таймауты: создание venv, установка/бутстрап pip.
+const VENV_CREATE_TIMEOUT_SECS: u64 = 300;
+const PIP_BOOTSTRAP_TIMEOUT_SECS: u64 = 600;
+const PROBE_TIMEOUT_SECS: u64 = 30;
+
+#[async_trait]
+impl Generator for PythonVenvGenerator {
+    fn id(&self) -> &str {
+        "python-venv"
+    }
+    fn name(&self) -> &str {
+        "Python virtual environment"
+    }
+    fn description(&self) -> &str {
+        "Ensures the project venv exists with a working pip — recreates it and bootstraps pip when the distro python has no ensurepip (python3-venv)"
+    }
+
+    async fn generate_with_sink(
+        &self,
+        _context: &WizardContext,
+        project_path: &Path,
+        config: &serde_json::Value,
+        sink: Option<&ExecutionEventSink>,
+    ) -> Result<GenerationReport, String> {
+        let python = config
+            .get("python")
+            .and_then(|v| v.as_str())
+            .unwrap_or(if cfg!(target_os = "windows") {
+                "python"
+            } else {
+                "python3"
+            })
+            .to_string();
+        let venv_path = config
+            .get("venv_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "PythonVenvGenerator: missing 'venv_path' in config".to_string())?;
+        // Относительный project_path допустим (превью/CLI может прислать
+        // "."): приводим оба пути к абсолютным от текущего каталога —
+        // ровно так же их разрешает executor (working_dir процесса).
+        let absolute = |p: &Path| -> Result<PathBuf, String> {
+            if p.is_absolute() {
+                Ok(p.to_path_buf())
+            } else {
+                std::path::absolute(p).map_err(|e| {
+                    format!("PythonVenvGenerator: cannot resolve '{}': {e}", p.display())
+                })
+            }
+        };
+        let project_abs = absolute(project_path)?;
+        let venv = absolute(Path::new(venv_path))?;
+        // Окружение обязано лежать внутри проекта (venv_abs вычисляется от
+        // project_path; проверка — защита от битого конфига).
+        if !venv.starts_with(&project_abs) {
+            return Err(format!(
+                "PythonVenvGenerator: venv_path '{}' is outside the project root '{}'",
+                venv.display(),
+                project_abs.display()
+            ));
+        }
+        let venv_path = venv.to_string_lossy().into_owned();
+
+        let venv_python = python_venv_binary(&venv);
+        let venv_python_str = venv_python.to_string_lossy().into_owned();
+        let mut notes: Vec<String> = Vec::new();
+
+        // 0. Здоровое окружение — переиспользуем (идемпотентность рецепта).
+        if venv.join("pyvenv.cfg").is_file() {
+            if let Some(version) =
+                quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path).await
+            {
+                let message = format!(
+                    "Reused the existing virtual environment at {} ({})",
+                    venv.display(),
+                    version.trim()
+                );
+                emit_venv_note(sink, &message).await;
+                return Ok(GenerationReport::success(message));
+            }
+            let note = format!(
+                "the existing environment at {} is incomplete (no working pip) — recreating it",
+                venv.display()
+            );
+            emit_venv_note(sink, &note).await;
+            notes.push(note);
+        }
+
+        // 1. Штатный `python -m venv` (у интерпретатора есть ensurepip).
+        if quiet_ok(&python, &["-c", "import ensurepip"], project_path).await {
+            match run_venv_command(
+                &python,
+                &venv_create_args(&venv, &venv_path, false),
+                project_path,
+                None,
+                VENV_CREATE_TIMEOUT_SECS,
+                sink,
+            )
+            .await
+            {
+                Ok(_) => {
+                    if let Some(version) =
+                        quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path)
+                            .await
+                    {
+                        return Ok(venv_success(sink, &venv, "python -m venv", &version, notes)
+                            .await);
+                    }
+                    notes.push(
+                        "`python -m venv` completed but pip is unavailable in the created environment"
+                            .to_string(),
+                    );
+                }
+                Err(error) => notes.push(format!("`{python} -m venv` failed: {error}")),
+            }
+        } else {
+            let note = "the interpreter has no ensurepip module (on Debian/Ubuntu the python3-venv package is not installed) — bootstrapping pip without it"
+                .to_string();
+            if let Some(sink) = sink {
+                sink.emit_stdout(&format!(
+                    "Python interpreter '{python}': {note}"
+                ))
+                .await;
+            }
+            notes.push(note);
+        }
+
+        // 2. virtualenv: собственные wheel'ы pip, офлайн, без ensurepip.
+        if quiet_ok(&python, &["-m", "virtualenv", "--version"], project_path).await {
+            match run_venv_command(
+                &python,
+                &venv_virtualenv_args(&venv, &venv_path),
+                project_path,
+                None,
+                VENV_CREATE_TIMEOUT_SECS,
+                sink,
+            )
+            .await
+            {
+                Ok(_) => {
+                    if let Some(version) =
+                        quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path)
+                            .await
+                    {
+                        return Ok(venv_success(sink, &venv, "virtualenv", &version, notes).await);
+                    }
+                    notes.push(
+                        "`python -m virtualenv` completed but pip is unavailable in the created environment"
+                            .to_string(),
+                    );
+                }
+                Err(error) => notes.push(format!("`{python} -m virtualenv` failed: {error}")),
+            }
+        }
+
+        // 3. venv без pip + bootstrap pip внутрь него.
+        run_venv_command(
+            &python,
+            &venv_create_args(&venv, &venv_path, true),
+            project_path,
+            None,
+            VENV_CREATE_TIMEOUT_SECS,
+            sink,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "{}\n\n`{python} -m venv --without-pip` failed: {error}",
+                venv_failure_message(&python, &venv, project_path, &notes)
+            )
+        })?;
+
+        let mut pip_version =
+            quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path).await;
+
+        // 3a. ensurepip интерпретатора venv (вдруг он всё-таки доступен).
+        if pip_version.is_none() {
+            let _ = run_venv_command(
+                &venv_python_str,
+                &args_vec(&["-m", "ensurepip", "--upgrade"]),
+                project_path,
+                None,
+                PIP_BOOTSTRAP_TIMEOUT_SECS,
+                None,
+            )
+            .await;
+            pip_version =
+                quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path).await;
+        }
+
+        // 3b. Системный pip ставит pip в чужое окружение (pip 22.3+).
+        if pip_version.is_none()
+            && quiet_ok(&python, &["-m", "pip", "--version"], project_path).await
+        {
+            let _ = run_venv_command(
+                &python,
+                &args_vec(&[
+                    "-m",
+                    "pip",
+                    "install",
+                    "--python",
+                    &venv_python_str,
+                    "--upgrade",
+                    "pip",
+                ]),
+                project_path,
+                None,
+                PIP_BOOTSTRAP_TIMEOUT_SECS,
+                sink,
+            )
+            .await;
+            pip_version =
+                quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path).await;
+        }
+
+        // 3c. Колесо pip из каталога дистрибутива — офлайн (Debian/Ubuntu
+        // держат pip/setuptools/wheel в /usr/share/python-wheels).
+        if pip_version.is_none() {
+            if let Some((wheel_dir, wheel)) = distro_pip_wheel(&python, project_path).await {
+                let mut env = HashMap::new();
+                env.insert("PYTHONPATH".to_string(), wheel.clone());
+                let _ = run_venv_command(
+                    &venv_python_str,
+                    &args_vec(&[
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-index",
+                        "--find-links",
+                        &wheel_dir,
+                        "--upgrade",
+                        "pip",
+                    ]),
+                    project_path,
+                    Some(env),
+                    PIP_BOOTSTRAP_TIMEOUT_SECS,
+                    sink,
+                )
+                .await;
+                pip_version =
+                    quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path).await;
+            }
+        }
+
+        // 3d. get-pip.py — официальный bootstrap pip, требует сеть.
+        if pip_version.is_none() {
+            match download_get_pip(project_path, sink).await {
+                Ok(script) => {
+                    let _ = run_venv_command(
+                        &venv_python_str,
+                        &args_vec(&[&script]),
+                        project_path,
+                        None,
+                        PIP_BOOTSTRAP_TIMEOUT_SECS,
+                        sink,
+                    )
+                    .await;
+                    let _ = std::fs::remove_file(&script);
+                    pip_version =
+                        quiet_stdout(&venv_python_str, &["-m", "pip", "--version"], project_path)
+                            .await;
+                }
+                Err(error) => notes.push(error),
+            }
+        }
+
+        match pip_version {
+            Some(version) => Ok(venv_success(sink, &venv, "bootstrap", &version, notes).await),
+            None => Err(venv_failure_message(&python, &venv, project_path, &notes)),
+        }
+    }
+}
+
+/// `<venv>/bin/python` (Unix) или `<venv>\Scripts\python.exe` (Windows).
+fn python_venv_binary(venv: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+fn args_vec(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// Аргументы `python -m venv`: `--clear` — только для настоящего venv
+/// (pyvenv.cfg), чтобы не удалять содержимое чужой папки с именем venv.
+fn venv_create_args(venv: &Path, venv_path: &str, without_pip: bool) -> Vec<String> {
+    let mut args = args_vec(&["-m", "venv"]);
+    if venv.join("pyvenv.cfg").is_file() {
+        args.push("--clear".to_string());
+    }
+    if without_pip {
+        args.push("--without-pip".to_string());
+    }
+    args.push(venv_path.to_string());
+    args
+}
+
+/// Аргументы `python -m virtualenv` (--clear по тому же правилу).
+fn venv_virtualenv_args(venv: &Path, venv_path: &str) -> Vec<String> {
+    let mut args = args_vec(&["-m", "virtualenv"]);
+    if venv.join("pyvenv.cfg").is_file() {
+        args.push("--clear".to_string());
+    }
+    args.push(venv_path.to_string());
+    args
+}
+
+/// Запустить команду венв-пайплайна через общий ProcessRunner; ошибка —
+/// форматированный текст с командой, рабочей директорией и хвостами вывода.
+async fn run_venv_command(
+    command: &str,
+    args: &[String],
+    working_dir: &Path,
+    env: Option<HashMap<String, String>>,
+    timeout_secs: u64,
+    sink: Option<&ExecutionEventSink>,
+) -> Result<ProcessOutput, String> {
+    let spec = ProcessSpec {
+        command: command.to_string(),
+        args: args.to_vec(),
+        working_dir: Some(working_dir.to_path_buf()),
+        env,
+        timeout: Some(Duration::from_secs(timeout_secs)),
+        stdin: StdinMode::Null,
+        ci_mode: true,
+    };
+    ProcessRunner::run(spec, sink)
+        .await
+        .map_err(|error| error.format_command_error())
+}
+
+/// Тихая проверка команды (без стриминга в UI): true при exit 0.
+async fn quiet_ok(command: &str, args: &[&str], working_dir: &Path) -> bool {
+    let spec = ProcessSpec {
+        command: command.to_string(),
+        args: args_vec(args),
+        working_dir: Some(working_dir.to_path_buf()),
+        env: None,
+        timeout: Some(Duration::from_secs(PROBE_TIMEOUT_SECS)),
+        stdin: StdinMode::Null,
+        ci_mode: false,
+    };
+    ProcessRunner::run(spec, None).await.is_ok()
+}
+
+/// Тихий запуск с захватом stdout (первая строка хвоста) — для пробников
+/// вроде `python -m pip --version`.
+async fn quiet_stdout(command: &str, args: &[&str], working_dir: &Path) -> Option<String> {
+    let spec = ProcessSpec {
+        command: command.to_string(),
+        args: args_vec(args),
+        working_dir: Some(working_dir.to_path_buf()),
+        env: None,
+        timeout: Some(Duration::from_secs(PROBE_TIMEOUT_SECS)),
+        stdin: StdinMode::Null,
+        ci_mode: false,
+    };
+    match ProcessRunner::run(spec, None).await {
+        Ok(output) if !output.stdout_tail.trim().is_empty() => Some(output.stdout_tail),
+        _ => None,
+    }
+}
+
+/// Каталог колёс pip дистрибутива: sysconfig.WHEEL_PKG_DIR (Debian/Ubuntu:
+/// /usr/share/python-wheels) + стандартный путь как fallback. Возвращает
+/// (каталог, путь к самому свежему колесу pip).
+async fn distro_pip_wheel(python: &str, working_dir: &Path) -> Option<(String, String)> {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(raw) = quiet_stdout(
+        python,
+        &[
+            "-c",
+            "import sysconfig; print(sysconfig.get_config_var('WHEEL_PKG_DIR') or '')",
+        ],
+        working_dir,
+    )
+    .await
+    {
+        let raw = raw.trim().to_string();
+        if !raw.is_empty() {
+            dirs.push(raw);
+        }
+    }
+    dirs.push("/usr/share/python-wheels".to_string());
+
+    for dir in dirs {
+        let path = Path::new(&dir);
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            continue;
+        };
+        let mut wheels: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(String::from))
+            .filter(|name| name.starts_with("pip-") && name.ends_with(".whl"))
+            .collect();
+        wheels.sort_by_key(|name| wheel_version_key(name));
+        if let Some(best) = wheels.pop() {
+            let wheel = path.join(best);
+            return Some((dir, wheel.to_string_lossy().into_owned()));
+        }
+    }
+    None
+}
+
+/// Числовой ключ версии из имени колеса: `pip-26.2.1-py3-none-any.whl` →
+/// [26, 2, 1] (сравнение числовое, а не лексикографическое).
+fn wheel_version_key(name: &str) -> Vec<u64> {
+    let stem = name
+        .trim_start_matches("pip-")
+        .split("-py")
+        .next()
+        .unwrap_or(name);
+    let mut out: Vec<u64> = Vec::new();
+    let mut num = String::new();
+    for c in stem.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else if !num.is_empty() {
+            out.push(num.parse().unwrap_or(0));
+            num.clear();
+        }
+    }
+    if !num.is_empty() {
+        out.push(num.parse().unwrap_or(0));
+    }
+    out
+}
+
+/// Скачать официальный get-pip.py (единственный путь, требующий сети, когда
+/// у дистрибутива нет ни ensurepip, ни pip, ни колёс). Возвращает путь к
+/// скачанному скрипту в temp-каталоге.
+async fn download_get_pip(
+    working_dir: &Path,
+    sink: Option<&ExecutionEventSink>,
+) -> Result<String, String> {
+    const URL: &str = "https://bootstrap.pypa.io/get-pip.py";
+    let target = std::env::temp_dir().join(format!(
+        "stackpilot-get-pip-{}-{}.py",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    let target_str = target.to_string_lossy().into_owned();
+    let (command, args) = if quiet_ok("curl", &["--version"], working_dir).await {
+        (
+            "curl",
+            args_vec(&["-fsSL", "--retry", "2", "-o", &target_str, URL]),
+        )
+    } else if quiet_ok("wget", &["--version"], working_dir).await {
+        ("wget", args_vec(&["-q", "-O", &target_str, URL]))
+    } else {
+        return Err(
+            "neither curl nor wget is available to download get-pip.py — install the python3-venv package instead"
+                .to_string(),
+        );
+    };
+    emit_venv_note(
+        sink,
+        &format!("downloading {URL} to bootstrap pip (no python3-venv on this system)"),
+    )
+    .await;
+    run_venv_command(command, &args, working_dir, None, 300, sink)
+        .await
+        .map_err(|error| format!("failed to download get-pip.py: {error}"))?;
+    Ok(target_str)
+}
+
+async fn emit_venv_note(sink: Option<&ExecutionEventSink>, text: &str) {
+    if let Some(sink) = sink {
+        sink.emit_stdout(text).await;
+    }
+}
+
+/// Успешный отчёт генератора (единый формат сообщения + заметки о деградации).
+async fn venv_success(
+    sink: Option<&ExecutionEventSink>,
+    venv: &Path,
+    strategy: &str,
+    pip_version: &str,
+    notes: Vec<String>,
+) -> GenerationReport {
+    let message = format!(
+        "Created the virtual environment at {} ({strategy}; {})",
+        venv.display(),
+        pip_version.trim()
+    );
+    emit_venv_note(sink, &message).await;
+    GenerationReport {
+        message,
+        validation_warnings: notes,
+        ..GenerationReport::default()
+    }
+}
+
+/// Ошибка создания venv: точные инструкции (python3-venv/virtualenv/get-pip)
+/// + диагностика всех попыток.
+fn venv_failure_message(
+    python: &str,
+    venv: &Path,
+    project_path: &Path,
+    notes: &[String],
+) -> String {
+    let interpreter = interpreter_description(python, project_path);
+    let venv_python = python_venv_binary(venv);
+    let versioned_venv_package = interpreter
+        .as_deref()
+        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("venv-package: ")))
+        .unwrap_or("python3-venv");
+    let mut message = format!(
+        "Failed to create the Python virtual environment at {}.\n\n\
+         The interpreter '{python}' could not create a working environment with pip. \
+         On Debian/Ubuntu this usually means the python3-venv package (which provides \
+         the ensurepip module) is not installed — `python3 -m venv` then leaves an \
+         incomplete environment without pip.\n\n\
+         Fix it (pick one):\n\
+         \x20 - Debian/Ubuntu: sudo apt install python3-venv   # or: sudo apt install {versioned_venv_package}\n\
+         \x20 - Fedora/RHEL:   sudo dnf install python3-pip\n\
+         \x20 - no root:       {python} -m pip install --user virtualenv   # then re-run the generation\n\
+         \x20 - manual bootstrap: curl -fsSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py \
+         && {} get-pip.py\n",
+        venv.display(),
+        venv_python.display()
+    );
+    if let Some(text) = interpreter {
+        message.push_str(&format!("\nInterpreter: {}\n", text.replace('\n', " | ")));
+    }
+    if !notes.is_empty() {
+        message.push_str("\nWhat was tried:\n");
+        for note in notes {
+            message.push_str(&format!("  - {note}\n"));
+        }
+    }
+    message
+}
+
+/// Строка с путём/версией интерпретатора и именем versioned-пакета venv
+/// (python3.14-venv) для сообщений об ошибке.
+fn interpreter_description(python: &str, working_dir: &Path) -> Option<String> {
+    // Синхронный запуск: ошибка уже формируется как текст, сеть/таймауты не
+    // нужны, а stdout тут не стримится.
+    let output = std::process::Command::new(python)
+        .args([
+            "-c",
+            "import sys; print(sys.executable); print(sys.version.split()[0]); print('venv-package: python{}.{}-venv'.format(sys.version_info.major, sys.version_info.minor))",
+        ])
+        .current_dir(working_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 //
 // .NET SDK сам по себе НЕ содержит шаблон MAUI («Не найдены шаблоны или
 // подкоманды, соответствующие: "maui"», код 103): он появляется только
@@ -1802,6 +2403,12 @@ impl Generator for VsCodeMergeGenerator {
             .get("lang")
             .and_then(|v| v.as_str())
             .unwrap_or("python");
+        // Интерпретатор Python из канонической раскладки (venv в корне или
+        // backend/venv) — движок передаёт его в конфиге. Если python не
+        // главный язык, ключ всё равно добавляется к настройкам.
+        let python_interpreter = config
+            .get("python_interpreter")
+            .and_then(|v| v.as_str());
         let dirs: Vec<String> = config
             .get("dirs")
             .and_then(|d| d.as_array())
@@ -1812,7 +2419,23 @@ impl Generator for VsCodeMergeGenerator {
             })
             .unwrap_or_else(|| vec![".".to_string()]);
 
-        let settings_ours = parse_json(&content::generate_vscode_settings(lang))?;
+        let settings_ours = if lang == "python" {
+            parse_json(&content::generate_vscode_settings_with_interpreter(
+                lang,
+                python_interpreter,
+            ))?
+        } else {
+            let mut value = parse_json(&content::generate_vscode_settings(lang))?;
+            if let Some(interpreter) = python_interpreter {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "python.defaultInterpreterPath".to_string(),
+                        serde_json::json!(interpreter),
+                    );
+                }
+            }
+            value
+        };
         let extensions_ours = parse_json(&content::generate_vscode_extensions(lang))?;
 
         let mut created_files: Vec<String> = Vec::new();
@@ -2427,6 +3050,147 @@ mod tests {
         let result =
             tokio_test_block_on(gen.generate(&ctx, Path::new("."), &serde_json::json!({})));
         assert!(result.is_err(), "конфиг без tools обязан падать");
+    }
+
+    #[test]
+    fn python_venv_generator_rejects_relative_and_outside_paths() {
+        // venv обязан лежать внутри проекта: относительный путь разрешается
+        // от текущего каталога (как это делает executor), поэтому "venv" у
+        // временного проекта — выход за корень; абсолютный путь вне проекта
+        // отклоняется явно.
+        let gen = PythonVenvGenerator;
+        let ctx = WizardContext::default();
+        let project = temp_test_dir("pyvenv_guard");
+
+        let relative = tokio_test_block_on(gen.generate(
+            &ctx,
+            &project,
+            &serde_json::json!({ "python": "python3", "venv_path": "venv" }),
+        ));
+        assert!(
+            relative
+                .expect_err("относительный путь вне проекта обязан отклоняться")
+                .contains("outside the project root"),
+            "ошибка про выход за корень проекта"
+        );
+
+        let outside = project.parent().unwrap().join("elsewhere").join("venv");
+        let result = tokio_test_block_on(gen.generate(
+            &ctx,
+            &project,
+            &serde_json::json!({
+                "python": "python3",
+                "venv_path": outside.to_string_lossy(),
+            }),
+        ));
+        assert!(
+            result
+                .expect_err("путь вне проекта обязан отклоняться")
+                .contains("outside the project root"),
+            "ошибка про выход за корень проекта"
+        );
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn python_venv_create_args_clear_only_for_existing_venv() {
+        // --clear удаляет содержимое каталога: применяем его ТОЛЬКО когда
+        // там уже лежит venv (pyvenv.cfg), чтобы не стереть чужую папку.
+        let dir = temp_test_dir("pyvenv_clear");
+        let venv = dir.join("venv");
+        std::fs::create_dir_all(&venv).unwrap();
+
+        let args = venv_create_args(&venv, venv.to_string_lossy().as_ref(), true);
+        assert!(!args.iter().any(|a| a == "--clear"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--without-pip"), "{args:?}");
+        assert_eq!(args.last().unwrap(), venv.to_string_lossy().as_ref());
+        assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
+
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin").unwrap();
+        let args = venv_create_args(&venv, venv.to_string_lossy().as_ref(), false);
+        assert!(args.iter().any(|a| a == "--clear"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--without-pip"), "{args:?}");
+
+        let vargs = venv_virtualenv_args(&venv, venv.to_string_lossy().as_ref());
+        assert_eq!(&vargs[..2], &["-m".to_string(), "virtualenv".to_string()]);
+        assert!(vargs.iter().any(|a| a == "--clear"), "{vargs:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wheel_version_key_is_numeric_not_lexicographic() {
+        // pip-26.10 старше pip-26.2 лексикографически, но НОВЕЕ по версии.
+        assert!(wheel_version_key("pip-26.10-py3-none-any.whl") > wheel_version_key("pip-26.2-py3-none-any.whl"));
+        assert!(wheel_version_key("pip-26.2.1-py3-none-any.whl") > wheel_version_key("pip-26.2-py3-none-any.whl"));
+        assert!(wheel_version_key("pip-24.0-py3-none-any.whl") > wheel_version_key("pip-9.0.3-py3-none-any.whl"));
+    }
+
+    #[test]
+    fn python_venv_failure_message_has_instructions_and_notes() {
+        // Сообщение об ошибке обязано содержать точную команду установки
+        // python3-venv, путь venv и диагностику попыток.
+        let venv = Path::new("/tmp/proj/venv");
+        let notes = vec!["`python3 -m venv` failed: exit 1".to_string()];
+        let message = venv_failure_message(
+            "definitely-not-a-real-python-xyz",
+            venv,
+            Path::new("/tmp/proj"),
+            &notes,
+        );
+        assert!(message.contains("apt install python3-venv"), "{message}");
+        assert!(message.contains("get-pip.py"), "{message}");
+        assert!(message.contains("/tmp/proj/venv"), "{message}");
+        assert!(message.contains("`python3 -m venv` failed"), "{message}");
+    }
+
+    /// Сквозная проверка на реальном интерпретаторе: генератор обязан создать
+    /// venv с рабочим pip даже на дистрибутиве без python3-venv (Debian/Ubuntu
+    /// без ensurepip — путь через get-pip.py, нужна сеть), а повторный прогон
+    /// — переиспользовать здоровое окружение. Запускать вручную:
+    /// `cargo test --lib python_venv_generator_end_to_end -- --ignored`.
+    #[test]
+    #[ignore = "requires a real python3 and network access (pip bootstrap)"]
+    fn python_venv_generator_end_to_end_bootstraps_pip() {
+        let dir = temp_test_dir("pyvenv_e2e");
+        let venv = dir.join("venv");
+        let python = if cfg!(target_os = "windows") {
+            "python"
+        } else {
+            "python3"
+        };
+        let gen = PythonVenvGenerator;
+        let ctx = WizardContext::default();
+        let config = serde_json::json!({
+            "python": python,
+            "venv_path": venv.to_string_lossy(),
+        });
+
+        tokio_test_block_on(gen.generate(&ctx, &dir, &config))
+            .expect("venv обязан создаться с рабочим pip");
+
+        let pip = std::process::Command::new(python_venv_binary(&venv))
+            .args(["-m", "pip", "--version"])
+            .output()
+            .expect("интерпретатор venv обязан запускаться");
+        assert!(
+            pip.status.success(),
+            "pip недоступен: {}{}",
+            String::from_utf8_lossy(&pip.stdout),
+            String::from_utf8_lossy(&pip.stderr)
+        );
+
+        // Идемпотентность: здоровое окружение переиспользуется.
+        let again = tokio_test_block_on(gen.generate(&ctx, &dir, &config))
+            .expect("повторный прогон обязан переиспользовать venv");
+        assert!(
+            again.message.contains("Reused"),
+            "повторный прогон не пересоздаёт venv: {}",
+            again.message
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tokio_test_block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -3101,6 +3865,52 @@ mod tests {
             .iter()
             .any(|f| f == "./.vscode/settings.json"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vscode_merge_writes_configured_python_interpreter() {
+        // Движок передаёт канонический интерпретатор (venv проекта, в split —
+        // <segment>/venv) — VS Code не должен указывать на несуществующий
+        // `.venv` из исторического шаблона.
+        let gen = VsCodeMergeGenerator;
+        let dir = temp_test_dir("vscode_py_interp");
+        let ctx = WizardContext::default();
+
+        // python — главный язык: интерпретатор из конфига побеждает.
+        let cfg = serde_json::json!({
+            "lang": "python",
+            "dirs": ["."],
+            "python_interpreter": "${workspaceFolder}/backend/venv/bin/python",
+        });
+        tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("merge должен пройти");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["python.defaultInterpreterPath"],
+            "${workspaceFolder}/backend/venv/bin/python"
+        );
+
+        // python не главный язык: ключ всё равно добавляется.
+        let dir2 = temp_test_dir("vscode_py_interp2");
+        let cfg = serde_json::json!({
+            "lang": "typescript",
+            "dirs": ["."],
+            "python_interpreter": "${workspaceFolder}/venv/bin/python",
+        });
+        tokio_test_block_on(gen.generate(&ctx, &dir2, &cfg)).expect("merge должен пройти");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir2.join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["python.defaultInterpreterPath"],
+            "${workspaceFolder}/venv/bin/python"
+        );
+        assert_eq!(settings["editor.formatOnSave"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]

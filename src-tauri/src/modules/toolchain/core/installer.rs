@@ -726,7 +726,14 @@ fn build_linux_pkg_command(
             continue;
         }
         // Дистрибутивные имена пакетов: каталог написан под Debian/Ubuntu.
+        // Одно имя может раскрыться в НЕСКОЛЬКО пакетов через пробел
+        // (apt: python3 → "python3 python3-venv") — каждое имя уходит
+        // отдельным argv.
         let package = platforms::linux_package_alias(manager, &source.id);
+        let packages: Vec<String> = package
+            .split_whitespace()
+            .map(String::from)
+            .collect();
         let source_args: Vec<String> = source
             .args
             .iter()
@@ -745,9 +752,9 @@ fn build_linux_pkg_command(
             args.extend(source_args);
             args.extend(extra_args);
             args.push("--".to_string());
-            args.push(package);
+            args.extend(packages);
         } else {
-            args.push(package);
+            args.extend(packages);
             args.extend(source_args);
             args.extend(extra_args);
         }
@@ -3773,6 +3780,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Регрессия Linux-venv: python3 на Debian/Ubuntu обязан ставиться
+    /// ВМЕСТЕ с python3-venv (ensurepip выделен в отдельный пакет), иначе
+    /// `python3 -m venv` оставляет окружение без pip. Одно имя пакета
+    /// раскрывается в два argv.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_python_install_pulls_venv_package_on_apt() {
+        if !which_exists("apt-get") {
+            return; // тест про apt: на других менеджерах алиаса нет
+        }
+        let source = InstallSource {
+            kind: InstallSourceKind::PkgManager,
+            id: "python3".to_string(),
+            url: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        let cmd = build_linux_pkg_command(&source, None).unwrap();
+        let script = &cmd.args[1];
+        assert!(
+            script.contains("-- python3 python3-venv"),
+            "python3-venv обязан ставиться рядом с python3: {script}"
+        );
     }
 
     /// Script-источник без узнаваемого расширения (rustup: sh.rustup.rs)

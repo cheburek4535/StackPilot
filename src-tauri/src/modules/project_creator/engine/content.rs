@@ -1277,7 +1277,7 @@ pub fn dockerignore_content(lang: &str) -> String {
     let common = ".git\n.gitignore\n.env\n*.md\n";
     let specific = match lang {
         "rust" => "target/\n",
-        "python" => "__pycache__/\n.venv/\n*.pyc\n",
+        "python" => "__pycache__/\nvenv/\n.venv/\n*.pyc\n",
         _ => "node_modules/\ndist/\n",
     };
     format!("{}{}", common, specific)
@@ -1543,10 +1543,50 @@ pub fn gitignore_content(languages: &[String]) -> String {
 // CI workflow content
 // ---------------------------------------------------------------------------
 
-pub fn generate_ci_content(lang: &str, _framework: Option<&str>, _project_name: &str) -> String {
+/// Каталог сегмента для CI (`backend/`, `frontend/`, `src-tauri/`) или None,
+/// если команды выполняются из корня проекта.
+fn ci_segment(working_dir: Option<&str>) -> Option<&str> {
+    working_dir.filter(|dir| !dir.is_empty() && *dir != ".")
+}
+
+/// Блок `defaults.run.working-directory` для job CI: в split-раскладке
+/// команды обязаны выполняться в каталоге сегмента (backend/), иначе из
+/// корня проекта. Без сегмента — пустая строка (поведение как раньше).
+fn ci_working_dir_block(working_dir: Option<&str>) -> String {
+    match ci_segment(working_dir) {
+        Some(dir) => format!("    defaults:\n      run:\n        working-directory: {dir}\n"),
+        None => String::new(),
+    }
+}
+
+/// Строка `cache-dependency-path` для actions/setup-{node,go}: без неё
+/// экшены ищут lock-файл (package-lock.json / go.sum) в корне репозитория и
+/// падают в split-раскладке, где манифест живёт в сегменте.
+fn ci_cache_dependency_line(working_dir: Option<&str>, file: &str) -> String {
+    match ci_segment(working_dir) {
+        Some(dir) => format!("          cache-dependency-path: {dir}/{file}\n"),
+        None => String::new(),
+    }
+}
+
+pub fn generate_ci_content(
+    lang: &str,
+    _framework: Option<&str>,
+    _project_name: &str,
+    working_dir: Option<&str>,
+    tools: &[String],
+) -> String {
     match lang {
-        "rust" => format!(
-            r#"name: CI
+        "rust" => {
+            let defaults = ci_working_dir_block(working_dir);
+            // target тоже лежит в сегменте: кэш actions/cache берёт пути от
+            // корня workspace, а не от run.working-directory.
+            let cache_target = match ci_segment(working_dir) {
+                Some(dir) => format!("{dir}/target"),
+                None => "target".to_string(),
+            };
+            format!(
+                r#"name: CI
 
 on:
   push:
@@ -1560,7 +1600,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
+{defaults}    steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1570,78 +1610,33 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            {cache_target}
           key: ${{{{ runner.os }}}}-cargo-${{{{ hashFiles('**/Cargo.lock') }}}}
       - name: Run tests
         run: cargo test --verbose
       - name: Build
         run: cargo build --release
 "#
-        ),
+            )
+        }
 
-        "python" => format!(
-            r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check .
-      - name: Test with pytest
-        run: |
-          pip install pytest
-          pytest
-"#
-        ),
-
-        "typescript" | "javascript" | "node" => format!(
-            r#"name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-      - name: Install dependencies
-        run: npm ci
-      - name: Run tests
-        run: npm test
-      - name: Build
-        run: npm run build --if-present
-"#
-        ),
-
-        "go" => {
-            let go_version = detect_go_version();
+        "python" => {
+            // Split-раскладка: python-код и requirements.txt живут в backend/ —
+            // без working-directory каждый run-шаг CI искал бы манифест в корне.
+            let defaults = ci_working_dir_block(working_dir);
+            // ruff/pytest попадают в workflow ТОЛЬКО когда инструмент выбран
+            // в мастере: CI не должен ставить и запускать то, чего в проекте
+            // нет. `python -m pytest` — не зависим от PATH консольных скриптов.
+            let lint_step = if tools.iter().any(|t| t == "ruff") {
+                "      - name: Lint with ruff\n        run: |\n          pip install ruff\n          ruff check .\n"
+            } else {
+                ""
+            };
+            let test_step = if tools.iter().any(|t| t == "pytest") {
+                "      - name: Test with pytest\n        run: |\n          pip install pytest\n          python -m pytest\n"
+            } else {
+                ""
+            };
             format!(
                 r#"name: CI
 
@@ -1654,22 +1649,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
+{defaults}    steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          go-version: '{go_version}'
-      - name: Test
-        run: go test ./...
-      - name: Build
-        run: go build -v ./...
-"#
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+{lint_step}{test_step}"#
             )
         }
 
-        "java" => format!(
-            r#"name: CI
+        "typescript" | "javascript" | "node" => {
+            let defaults = ci_working_dir_block(working_dir);
+            // setup-node(cache: npm) ищет package-lock.json от корня
+            // репозитория: в split/frontend-only проекте он в сегменте.
+            let cache_dep = ci_cache_dependency_line(working_dir, "package-lock.json");
+            format!(
+                r#"name: CI
 
 on:
   push:
@@ -1680,21 +1680,86 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
+{defaults}    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+{cache_dep}      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Build
+        run: npm run build --if-present
+"#
+            )
+        }
+
+        "go" => {
+            let go_version = detect_go_version();
+            let defaults = ci_working_dir_block(working_dir);
+            // setup-go по умолчанию хэширует корневой go.sum: в split
+            // указываем манифест сегмента (иначе «unable to cache»).
+            let cache_dep = ci_cache_dependency_line(working_dir, "go.sum");
+            format!(
+                r#"name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+{defaults}    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '{go_version}'
+{cache_dep}      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -v ./...
+"#
+            )
+        }
+
+        "java" => {
+            // Языковой каркас Java — Maven (mvn archetype:generate), Spring
+            // Boot — Spring Initializr с типом по умолчанию maven-project:
+            // gradlew в проекте не появляется, CI обязан использовать mvn.
+            let defaults = ci_working_dir_block(working_dir);
+            format!(
+                r#"name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+{defaults}    steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-      - name: Setup Gradle
-        uses: gradle/gradle-build-action@v3
       - name: Run tests
-        run: ./gradlew test
+        run: mvn -B test
       - name: Build
-        run: ./gradlew build -x test
+        run: mvn -B package -DskipTests
 "#
-        ),
+            )
+        }
 
         _ => format!(
             r#"name: CI
@@ -1733,6 +1798,17 @@ jobs:
 // ---------------------------------------------------------------------------
 
 pub fn generate_vscode_settings(lang: &str) -> String {
+    generate_vscode_settings_with_interpreter(lang, None)
+}
+
+/// Настройки VS Code с переопределением интерпретатора Python: движок знает
+/// каноническую раскладку (venv в корне или backend/venv), поэтому передаёт
+/// `python_interpreter` из steps_for_vscode. Без переопределения остаётся
+/// исторический путь (для тестов и вызовов без раскладки).
+pub fn generate_vscode_settings_with_interpreter(
+    lang: &str,
+    python_interpreter: Option<&str>,
+) -> String {
     match lang {
         "rust" => r#"{
     "rust-analyzer.checkOnSave.command": "clippy",
@@ -1742,18 +1818,24 @@ pub fn generate_vscode_settings(lang: &str) -> String {
 }"#
         .to_string(),
 
-        "python" => r#"{
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+        "python" => {
+            let interpreter = python_interpreter
+                .unwrap_or("${workspaceFolder}/.venv/bin/python")
+                .to_string();
+            format!(
+                r#"{{
+    "python.defaultInterpreterPath": "{interpreter}",
     "python.analysis.typeCheckingMode": "basic",
-    "[python]": {
+    "[python]": {{
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "charliermarsh.ruff",
-        "editor.codeActionsOnSave": {
+        "editor.codeActionsOnSave": {{
             "source.organizeImports": "explicit"
+        }}
+    }}
+}}"#
+            )
         }
-    }
-}"#
-        .to_string(),
 
         "typescript" | "javascript" | "node" => r#"{
     "typescript.tsdk": "node_modules/typescript/lib",
@@ -2067,7 +2149,7 @@ mod tests {
             return;
         }
         let detected = detect_go_version();
-        let ci = generate_ci_content("go", None, "myapi");
+        let ci = generate_ci_content("go", None, "myapi", None, &[]);
         assert!(
             ci.contains(&format!("go-version: '{detected}'")),
             "CI обязана использовать detected версию {detected}: {ci}"
@@ -2223,5 +2305,100 @@ mod tests {
         let go = generate_dockerfile_content("go", Some("gin"), "myproj").expect("go dockerfile");
         assert!(go.contains("EXPOSE 8080"), "{go}");
         assert!(!go.contains("EXPOSE 3000"), "{go}");
+    }
+
+    #[test]
+    fn python_ci_runs_inside_python_segment_in_split_layout() {
+        // backend-only: CI работает в корне (как раньше).
+        let root = generate_ci_content(
+            "python",
+            Some("fastapi"),
+            "myapp",
+            None,
+            &["ruff".to_string(), "pytest".to_string()],
+        );
+        assert!(!root.contains("working-directory"), "{root}");
+        assert!(root.contains("pip install -r requirements.txt"), "{root}");
+        assert!(root.contains("ruff check ."), "{root}");
+        assert!(root.contains("python -m pytest"), "{root}");
+
+        // split: python-код и requirements.txt — в backend/, каждый run-шаг
+        // обязан выполняться оттуда, иначе pip не найдёт манифест.
+        let split = generate_ci_content(
+            "python",
+            Some("django"),
+            "myapp",
+            Some("backend"),
+            &["pytest".to_string()],
+        );
+        assert!(
+            split.contains("defaults:\n      run:\n        working-directory: backend"),
+            "{split}"
+        );
+        assert!(split.contains("pip install -r requirements.txt"), "{split}");
+        // ruff не выбран — шага линтера в workflow нет.
+        assert!(!split.contains("ruff check ."), "{split}");
+        assert!(split.contains("python -m pytest"), "{split}");
+
+        // без инструментов остаётся только установка зависимостей.
+        let bare = generate_ci_content("python", Some("flask"), "myapp", None, &[]);
+        assert!(!bare.contains("ruff check ."), "{bare}");
+        assert!(!bare.contains("pytest"), "{bare}");
+    }
+
+    #[test]
+    fn ci_working_directory_and_cache_paths_follow_segment() {
+        // Все явные шаблоны получают defaults.run.working-directory, а
+        // зависящие от корня кэши — путь к манифесту сегмента.
+        let rust = generate_ci_content("rust", None, "myapp", Some("backend"), &[]);
+        assert!(
+            rust.contains("defaults:\n      run:\n        working-directory: backend"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("backend/target"),
+            "кэш target лежит в сегменте: {rust}"
+        );
+
+        let go = generate_ci_content("go", None, "myapp", Some("backend"), &[]);
+        assert!(go.contains("working-directory: backend"), "{go}");
+        assert!(
+            go.contains("cache-dependency-path: backend/go.sum"),
+            "{go}"
+        );
+
+        let js = generate_ci_content("typescript", None, "myapp", Some("frontend"), &[]);
+        assert!(js.contains("working-directory: frontend"), "{js}");
+        assert!(
+            js.contains("cache-dependency-path: frontend/package-lock.json"),
+            "{js}"
+        );
+
+        let java = generate_ci_content("java", Some("spring-boot"), "myapp", Some("backend"), &[]);
+        assert!(java.contains("working-directory: backend"), "{java}");
+        assert!(java.contains("mvn -B test"), "каркас Java — Maven: {java}");
+        assert!(!java.contains("gradlew"), "gradlew в проекте нет: {java}");
+
+        // Корневые проекты: прежний payload без defaults и лишних путей.
+        for root in [
+            generate_ci_content("rust", None, "myapp", None, &[]),
+            generate_ci_content("go", None, "myapp", None, &[]),
+            generate_ci_content("typescript", None, "myapp", None, &[]),
+            generate_ci_content("java", None, "myapp", None, &[]),
+        ] {
+            assert!(!root.contains("working-directory"), "{root}");
+            assert!(!root.contains("cache-dependency-path"), "{root}");
+            assert!(root.contains("    steps:"), "{root}");
+        }
+    }
+
+    #[test]
+    fn python_dockerignore_excludes_venv_dirs() {
+        // venv — канонический каталог окружения: без него COPY . . затянул
+        // бы окружение в образ (и .dockerignore уже игнорирует .venv).
+        let ignore = dockerignore_content("python");
+        assert!(ignore.contains("venv/"), "{ignore}");
+        assert!(ignore.contains(".venv/"), "{ignore}");
+        assert!(ignore.contains("__pycache__/"), "{ignore}");
     }
 }

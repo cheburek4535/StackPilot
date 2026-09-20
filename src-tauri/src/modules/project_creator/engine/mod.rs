@@ -1293,6 +1293,7 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                             .unwrap_or("command");
                         format!("{} (CLI command)", cmd)
                     }
+                    "python-venv" => "StackPilot (Python virtual environment)".to_string(),
                     "spring-boot" => "Spring Initializr (spring-boot)".to_string(),
                     "vscode-merge" => "StackPilot (VS Code config)".to_string(),
                     "vscode-folders" => "StackPilot (VS Code folders)".to_string(),
@@ -1316,6 +1317,29 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                         )),
                         &mut expected_count,
                     );
+                }
+                // python-venv создаёт канонический venv (Unix: генератор
+                // вместо `python -m venv`) — каталог обязан попасть в
+                // предпросмотр файлов, как и у прежнего Command-шага.
+                if generator_id == "python-venv" {
+                    if let Some(venv_abs) = generator_config.get("venv_path").and_then(|v| v.as_str())
+                    {
+                        let venv_rel = rel_workdir(plan, Some(venv_abs));
+                        insert_entry(
+                            &mut root_entries,
+                            &venv_rel,
+                            true,
+                            FileCertainty::Expected,
+                            "python -m venv".into(),
+                            None,
+                            Some(
+                                "Created by the project virtual environment generator — contains \
+                                 the virtual environment"
+                                    .into(),
+                            ),
+                            &mut expected_count,
+                        );
+                    }
                 }
                 // Известные стабильные выходы инструмента + маркер «… other files».
                 let cmd = generator_config
@@ -1409,7 +1433,9 @@ pub fn build_project_file_preview(plan: &ExecutionPlan) -> ProjectFilePreview {
                         &mut expected_count,
                     );
                 }
-                // python -m venv <путь> → .venv (Expected: создаём сами).
+                // python -m venv <путь> → venv/ (Expected: создаём сами;
+                // Unix-ветку генератора python-venv предпросмотр обрабатывает
+                // отдельной веткой выше).
                 if matches!(command.as_str(), "python" | "python3")
                     && args.windows(2).any(|w| w[0] == "-m" && w[1] == "venv")
                 {
@@ -2034,7 +2060,7 @@ fn compose_recipe(
         project_name,
     ));
     steps.extend(steps_for_gitignore(context, project_path));
-    steps.extend(steps_for_ci(context, project_path, project_name));
+    steps.extend(steps_for_ci(layout, context, project_path, project_name));
     steps.extend(steps_for_readme(
         layout,
         context,
@@ -2155,6 +2181,9 @@ fn compose_recipe(
         dependencies.push(dep("py_requirements_check", "py_pip_install"));
         if context.tools.iter().any(|t| t == "alembic") {
             dependencies.push(dep("alembic_init", "py_pip_install"));
+            // Патч env.py применяется только после успешного alembic init
+            // (без migrations/env.py шаг и так пропускается по условию).
+            dependencies.push(dep("alembic_env_patch", "alembic_init"));
         }
         if has_django {
             dependencies.push(dep("django_start", "py_pip_install"));
@@ -7498,6 +7527,59 @@ fn python_venv_bin(project_path: &str, python_dir: &str, name: &str) -> String {
     bin.to_string_lossy().into_owned()
 }
 
+/// Путь `migrations/env.py` относительно корня проекта — условие шага
+/// alembic_env_patch (патч применяется только к реально созданному каркасу).
+fn alembic_env_py_rel(python_dir: &str) -> String {
+    if python_dir.is_empty() || python_dir == "." {
+        "migrations/env.py".to_string()
+    } else {
+        format!("{}/migrations/env.py", python_dir)
+    }
+}
+
+/// Скрипт-патч `migrations/env.py` (запускается интерпретатором venv из
+/// каталога python-сегмента). `alembic init` создаёт шаблон, читающий
+/// статический `sqlalchemy.url` из alembic.ini, — README и .env.example
+/// обещают `DATABASE_URL` из окружения (.env / docker compose). Патч:
+///   - идемпотентен (маркер STACKPILOT_DATABASE_URL);
+///   - вставляет `config.set_main_option(...)` из `os.environ` сразу после
+///     `config = context.config` (покрывает и offline-, и online-режим);
+///   - экранирует `%` — configparser интерполирует его в значениях;
+///   - если структура env.py иная (другая версия alembic) — печатает
+///     предупреждение и завершается нулём: шаг (on_error=Skip) не должен
+///     валить уже сгенерированный проект.
+///
+/// Скрипт ASCII-only: аргумент `-c` проходит через cmd.exe на Windows.
+const ALEMBIC_DATABASE_URL_PATCH: &str = r##"import pathlib, sys
+
+MARKER = 'STACKPILOT_DATABASE_URL'
+path = pathlib.Path('migrations') / 'env.py'
+if not path.is_file():
+    print('alembic: migrations/env.py not found - nothing to patch')
+    sys.exit(0)
+text = path.read_text(encoding='utf-8')
+if MARKER in text:
+    print('alembic: migrations/env.py already reads DATABASE_URL')
+    sys.exit(0)
+anchor = 'config = context.config'
+if anchor not in text:
+    print('WARNING: alembic migrations/env.py has no "config = context.config" anchor - DATABASE_URL was not wired', file=sys.stderr)
+    sys.exit(0)
+patch = anchor + '''
+
+
+# STACKPILOT_DATABASE_URL: connection string from the environment (.env / docker compose)
+import os  # noqa: E402
+
+_database_url = os.environ.get('DATABASE_URL')
+if _database_url:
+    # configparser interpolates %, so the URL must be escaped
+    config.set_main_option('sqlalchemy.url', _database_url.replace('%', '%%'))
+'''
+path.write_text(text.replace(anchor, patch, 1), encoding='utf-8')
+print('alembic: migrations/env.py patched - DATABASE_URL is used by migrations')
+"##;
+
 fn steps_for_tools(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let tools = &context.tools;
     let project_name = context.project_name.as_deref().unwrap_or("app");
@@ -7588,6 +7670,18 @@ def get_db():
                 }
             }
             "alembic" => {
+                // Каталог python-сегмента (backend/ в моно-репозитории,
+                // корень в монолите): alembic init создаёт migrations/ рядом
+                // с venv и requirements.txt, а не в корне проекта.
+                let alembic_wd = if python_dir == "." {
+                    project_path.to_string()
+                } else {
+                    format!(
+                        "{}/{}",
+                        project_path.trim_end_matches(['/', '\\']),
+                        python_dir
+                    )
+                };
                 steps.push(Step::Command {
                     id: "alembic_init".into(),
                     label: "Init Alembic".into(),
@@ -7599,19 +7693,7 @@ def get_db():
                     // отрабатывает ДО этого шага — см. выше.
                     command: python_venv_bin(project_path, &python_dir, "alembic"),
                     args: vec!["init".into(), "migrations".into()],
-                    // Рабочая директория — КАТАЛОГ python-сегмента (backend/
-                    // в моно-репозитории, корень в монолите): alembic init
-                    // создаёт migrations/ рядом с venv и requirements.txt,
-                    // а не в корне проекта.
-                    working_dir: Some(if python_dir == "." {
-                        project_path.to_string()
-                    } else {
-                        format!(
-                            "{}/{}",
-                            project_path.trim_end_matches(['/', '\\']),
-                            python_dir
-                        )
-                    }),
+                    working_dir: Some(alembic_wd.clone()),
                     env: None,
                     timeout_secs: Some(60),
                     condition: None,
@@ -7619,6 +7701,31 @@ def get_db():
                     // py_pip_install, поэтому провал — реальная ошибка,
                     // а не «тихо провалившийся» шаг генерации.
                     on_error: ErrorMode::Abort,
+                    interactive: vec![],
+                });
+                // alembic init создаёт env.py, читающий статический
+                // sqlalchemy.url из alembic.ini, — README и .env.example
+                // обещают DATABASE_URL из окружения (.env / docker compose).
+                steps.push(Step::Command {
+                    id: "alembic_env_patch".into(),
+                    label: "Wire Alembic to DATABASE_URL".into(),
+                    description: "Patch migrations/env.py to read DATABASE_URL from the environment"
+                        .into(),
+                    command: python_venv_bin(project_path, &python_dir, "python"),
+                    args: vec!["-c".into(), ALEMBIC_DATABASE_URL_PATCH.into()],
+                    working_dir: Some(alembic_wd),
+                    env: None,
+                    timeout_secs: Some(30),
+                    // Патч применяется только к реально созданному каркасу:
+                    // если alembic init был пропущен/неудачен, migrations/env.py
+                    // отсутствует и шаг скипается (без вторичных ошибок).
+                    condition: Some(StepCondition::FileExists {
+                        path: alembic_env_py_rel(&python_dir),
+                    }),
+                    // Skip: патч — улучшение конфигурации, его провал не
+                    // должен валить уже сгенерированный проект; скрипт сам
+                    // печатает предупреждение, если структура env.py иная.
+                    on_error: ErrorMode::Skip,
                     interactive: vec![],
                 });
             }
@@ -7816,6 +7923,24 @@ addopts = -v --tb=short
                     condition: None,
                     on_error: ErrorMode::Skip,
                 });
+                // Smoke-тест: без него `pytest` на свежем проекте завершается
+                // кодом 5 («no tests collected») и CI сразу красный. Тест
+                // тривиальный и перезаписывается пользователем по мере надобности
+                // (overwrite=false — существующий файл не трогается).
+                let smoke_path = if python_dir == "." {
+                    "tests/test_smoke.py".to_string()
+                } else {
+                    format!("{}/tests/test_smoke.py", python_dir)
+                };
+                steps.push(write_file(
+                    "pytest_smoke_test",
+                    "Pytest smoke test",
+                    &smoke_path,
+                    r#"def test_smoke():
+    """Первая проверка: pytest настроен и запускается."""
+    assert True
+"#,
+                ));
             }
             "ruff" => {
                 let ruff_path = if python_dir == "." {
@@ -8441,6 +8566,61 @@ fn steps_for_docker(
 
 /// Фаза 4: git init. Выполняется ДО шаблонизации (фаза 5) — чтобы
 /// README/конфиги, написанные позже, попали в стартовый коммит.
+///
+/// Шаг удаления вложенных `.git`: Windows сохраняет историческую
+/// PowerShell-команду; Unix — `find -mindepth 2`, который находит вложенные
+/// репозитории на любой глубине и НЕ трогает корневой `.git` проекта
+/// (прежняя PowerShell-команда на Linux молча скипалась, и `git add .`
+/// падал на вложенных репозиториях).
+fn git_cleanup_nested_step(project_path: &str) -> Step {
+    if cfg!(target_os = "windows") {
+        let root_git = format!("{}\\.git", project_path);
+        Step::Command {
+            id: "git_cleanup_nested".into(),
+            label: "Remove nested Git repositories".into(),
+            description: "Remove nested .git directories left by generators".into(),
+            command: format!(
+                r#"Get-ChildItem -LiteralPath '{project_path}' -Recurse -Force -Directory -Filter '.git' | Where-Object {{ $_.FullName -ne '{root_git}' }} | Remove-Item -Recurse -Force"#
+            ),
+            args: vec![],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(30),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        }
+    } else {
+        Step::Command {
+            id: "git_cleanup_nested".into(),
+            label: "Remove nested Git repositories".into(),
+            description: "Remove nested .git directories left by generators".into(),
+            command: "find".into(),
+            args: vec![
+                project_path.to_string(),
+                "-mindepth".into(),
+                "2".into(),
+                "-name".into(),
+                ".git".into(),
+                "-type".into(),
+                "d".into(),
+                "-prune".into(),
+                "-exec".into(),
+                "rm".into(),
+                "-rf".into(),
+                "{}".into(),
+                "+".into(),
+            ],
+            working_dir: Some(project_path.to_string()),
+            env: None,
+            timeout_secs: Some(30),
+            condition: None,
+            on_error: ErrorMode::Skip,
+            interactive: vec![],
+        }
+    }
+}
+
 fn steps_for_git_init(context: &WizardContext, project_path: &str) -> Vec<Step> {
     let mut steps = Vec::new();
 
@@ -8452,23 +8632,7 @@ fn steps_for_git_init(context: &WizardContext, project_path: &str) -> Vec<Step> 
     // инициализируют git во вложенных каталогах — `git add .` потом падает
     // с «'dir' does not have a commit checked out». Убираем вложенные .git,
     // корневой (созданный ранее пользователем или нами) не трогаем.
-    steps.push(Step::Command {
-        id: "git_cleanup_nested".into(),
-        label: "Remove nested Git repositories".into(),
-        description: "Remove nested .git directories left by generators".into(),
-        command: format!(
-            r#"Get-ChildItem -LiteralPath '{}' -Recurse -Force -Directory -Filter '.git' | Where-Object {{ $_.FullName -ne '{}' }} | Remove-Item -Recurse -Force"#,
-            project_path,
-            format!("{}\\.git", project_path)
-        ),
-        args: vec![],
-        working_dir: Some(project_path.to_string()),
-        env: None,
-        timeout_secs: Some(30),
-        condition: None,
-        on_error: ErrorMode::Skip,
-        interactive: vec![],
-    });
+    steps.push(git_cleanup_nested_step(project_path));
 
     // git init. Повторный запуск рецепта: .git/HEAD уже есть — шаг
     // пропускается (FileNotExists), git не переинициализируется.
@@ -8617,7 +8781,19 @@ fn steps_for_finalize(
     steps
 }
 
-fn steps_for_ci(context: &WizardContext, _project_path: &str, project_name: &str) -> Vec<Step> {
+/// Фаза 5 (часть): CI-workflow. Рабочий каталог job'а — там, где реально
+/// лежит код главного языка:
+///   - tauri: rust в `src-tauri/`, веб-часть — в `frontend/` (оболочка
+///     владеет корнем, cargo/npm из корня не находят манифесты);
+///   - иначе — каталог главного фреймворка (nest → backend/, react →
+///     frontend/), затем каталог главного языка (python → backend/ в split);
+///   - в одно-сторонних раскладках — корень проекта (без defaults-блока).
+fn steps_for_ci(
+    layout: &ProjectLayout,
+    context: &WizardContext,
+    _project_path: &str,
+    project_name: &str,
+) -> Vec<Step> {
     let mut steps = Vec::new();
 
     if !context.ci {
@@ -8631,6 +8807,27 @@ fn steps_for_ci(context: &WizardContext, _project_path: &str, project_name: &str
         .unwrap_or("python");
     let primary_fw = context.frameworks.first().map(|s| s.as_str());
 
+    let tauri_shell = context.frameworks.iter().any(|f| f == "tauri");
+    let work_dir: Option<String> = if tauri_shell {
+        match primary_lang {
+            "rust" => Some("src-tauri".to_string()),
+            "typescript" | "javascript" => Some("frontend".to_string()),
+            _ => None,
+        }
+    } else {
+        // Фреймворк главного языка (nest для typescript, django для python):
+        // первый фреймворк, который реально использует этот язык — иначе
+        // порядок карточек в мастере (react первым) увёл бы CI python-стека
+        // в frontend/. Если такого фреймворка нет — каталог самого языка.
+        primary_fw
+            .filter(|fw| {
+                framework_def(fw)
+                    .is_some_and(|def| def.languages.iter().any(|l| l == primary_lang))
+            })
+            .and_then(|fw| layout.framework_dir(fw))
+            .or_else(|| layout.language_dir(primary_lang))
+    };
+
     // Создаём директорию .github/workflows
     steps.push(Step::CreateDirectory {
         id: "github_dir".into(),
@@ -8641,7 +8838,13 @@ fn steps_for_ci(context: &WizardContext, _project_path: &str, project_name: &str
         on_error: ErrorMode::Skip,
     });
 
-    let ci_content = content::generate_ci_content(primary_lang, primary_fw, project_name);
+    let ci_content = content::generate_ci_content(
+        primary_lang,
+        primary_fw,
+        project_name,
+        work_dir.as_deref(),
+        &context.tools,
+    );
 
     steps.push(Step::WriteFile {
         id: "ci_workflow".into(),
@@ -8725,6 +8928,28 @@ fn steps_for_vscode(layout: &ProjectLayout, context: &WizardContext) -> Vec<Step
         }
     }
 
+    // Интерпретатор Python для .vscode/settings.json: канонический venv
+    // проекта (venv/ или backend/venv), а не исторический `.venv` — VS Code
+    // обязан видеть то же окружение, что создаёт пайплайн.
+    let python_interpreter: Option<String> = if context.languages.iter().any(|l| l == "python") {
+        let seg = python_segment_dir(context);
+        let venv_rel = if seg == "." {
+            "venv".to_string()
+        } else {
+            format!("{}/venv", seg)
+        };
+        if cfg!(target_os = "windows") {
+            Some(format!(
+                "${{workspaceFolder}}\\{}\\Scripts\\python.exe",
+                venv_rel.replace('/', "\\")
+            ))
+        } else {
+            Some(format!("${{workspaceFolder}}/{}/bin/python", venv_rel))
+        }
+    } else {
+        None
+    };
+
     vec![Step::Generate {
         id: "vscode_merge".into(),
         label: "Merge VS Code settings".into(),
@@ -8733,6 +8958,7 @@ fn steps_for_vscode(layout: &ProjectLayout, context: &WizardContext) -> Vec<Step
         generator_config: serde_json::json!({
             "lang": primary_lang,
             "dirs": dirs,
+            "python_interpreter": python_interpreter,
         }),
         policy: None,
         condition: None,
@@ -8823,6 +9049,31 @@ mod tests {
         match step {
             Step::Command { args, .. } => args.clone(),
             other => panic!("ожидался Command, получили {:?}", other.id()),
+        }
+    }
+
+    /// Путь канонического venv из шага py_venv_create на любой платформе:
+    /// Windows — последний аргумент `python -m venv <путь>`, Unix — конфиг
+    /// генератора "python-venv" (ensurepip-less дистрибутивы).
+    fn venv_path_of(step: &Step) -> String {
+        match step {
+            Step::Command { args, .. } => args.last().cloned().unwrap_or_default(),
+            Step::Generate {
+                generator_id,
+                generator_config,
+                ..
+            } => {
+                assert_eq!(
+                    generator_id, "python-venv",
+                    "создание venv на Unix — генератор python-venv"
+                );
+                generator_config
+                    .get("venv_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            }
+            other => panic!("ожидался Command/Generate, получили {:?}", other.id()),
         }
     }
 
@@ -11332,12 +11583,10 @@ mod tests {
             .iter()
             .find(|s| s.id() == "py_venv_create")
             .expect("py_venv_create должен быть в плане");
-        let venv_args = cmd_args(venv_create);
+        let venv_path = venv_path_of(venv_create);
         assert!(
-            venv_args
-                .iter()
-                .any(|a| a.ends_with("backend/venv") || a.ends_with("backend\\venv")),
-            "venv создаётся внутри backend/: {venv_args:?}"
+            venv_path.ends_with("backend/venv") || venv_path.ends_with("backend\\venv"),
+            "venv создаётся внутри backend/: {venv_path}"
         );
 
         let pip = recipe
@@ -12616,6 +12865,105 @@ mod tests {
     // ============ идемпотентность git-шагов и политики скаффолдов =========
 
     #[test]
+    fn git_cleanup_nested_works_on_current_platform() {
+        // Windows — историческая PowerShell-команда; Unix — find, который
+        // НЕ трогает корневой .git (mindepth 2) и удаляет вложенные
+        // репозитории на любой глубине (прежний PowerShell-шаг на Linux
+        // молча скипался, и git add . падал на вложенных .git).
+        let mut ctx = context();
+        ctx.git_init = true;
+        let steps = steps_for_git_init(&ctx, "C:\\dev\\myapp");
+        let cleanup = steps
+            .iter()
+            .find(|s| s.id() == "git_cleanup_nested")
+            .expect("git_cleanup_nested в плане");
+        match cleanup {
+            Step::Command {
+                command,
+                args,
+                on_error,
+                ..
+            } => {
+                if cfg!(target_os = "windows") {
+                    assert!(command.starts_with("Get-ChildItem"), "{command}");
+                } else {
+                    assert_eq!(command, "find");
+                    assert!(
+                        args.windows(2).any(|w| w[0] == "-mindepth" && w[1] == "2"),
+                        "корневой .git исключается mindepth: {args:?}"
+                    );
+                    assert!(args.iter().any(|a| a == ".git"), "{args:?}");
+                    assert!(args.iter().any(|a| a == "-prune"), "{args:?}");
+                    assert!(
+                        args.windows(3).any(|w| w[0] == "rm" && w[1] == "-rf" && w[2] == "{}"),
+                        "{args:?}"
+                    );
+                }
+                assert_eq!(
+                    on_error,
+                    &ErrorMode::Skip,
+                    "отсутствие git/find не валит генерацию"
+                );
+            }
+            other => panic!("git_cleanup_nested — Command: {:?}", other.id()),
+        }
+    }
+
+    /// Вложенные .git удаляются, корневой репозиторий проекта не трогается.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn git_cleanup_nested_removes_only_inner_repositories() {
+        let engine = DefaultRecipeEngine::new();
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_git_cleanup_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("frontend/.git")).unwrap();
+        std::fs::create_dir_all(dir.join("backend/nested/.git")).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let plan = ExecutionPlan {
+            recipe: Recipe {
+                id: "test".into(),
+                name: "Test recipe".into(),
+                description: String::new(),
+                tags: vec![],
+                steps: vec![],
+                dependencies: vec![],
+            },
+            context: WizardContext::default(),
+            project_path: dir.clone(),
+            steps: vec![git_cleanup_nested_step(&dir_str)],
+            dependencies: vec![],
+            layout_summary: LayoutSummary {
+                class: "custom".to_string(),
+                generated_directories: vec![],
+                root_owner: None,
+                framework_placement: vec![],
+            },
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.step_results[0].status, StepStatus::Success { .. }),
+            "шаг очистки обязан выполниться: {:?}",
+            result.step_results[0].status
+        );
+        assert!(dir.join(".git").is_dir(), "корневой репозиторий не трогаем");
+        assert!(
+            !dir.join("frontend/.git").exists(),
+            "вложенный .git во frontend/ удалён"
+        );
+        assert!(
+            !dir.join("backend/nested/.git").exists(),
+            "вложенный .git на глубине 3 удалён"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn git_init_gated_on_head_file() {
         let mut ctx = context();
         ctx.git_init = true;
@@ -12748,9 +13096,10 @@ mod tests {
     #[test]
     fn django_venv_gated_on_marker() {
         // Django (как и любой Python-фреймворк) использует ЕДИНСТВЕННЫЙ
-        // канонический venv проекта: py_venv_create гейтится маркером
-        // venv/pyvenv.cfg, повторный запуск не пересоздаёт окружение,
-        // а отдельного django-venv не существует.
+        // канонический venv проекта: отдельного django-venv не существует.
+        // Windows сохраняет гейт по маркеру venv/pyvenv.cfg; на Unix создание
+        // идемпотентно внутри генератора python-venv (гейт по маркеру
+        // недопустим: после падения `python -m venv` маркер уже существует).
         let mut ctx = context();
         ctx.languages = vec!["python".into()];
         ctx.frameworks = vec!["django".into()];
@@ -12760,13 +13109,27 @@ mod tests {
             .iter()
             .find(|s| s.id() == "py_venv_create")
             .expect("py_venv_create в плане");
-        assert_eq!(
-            create.condition(),
-            Some(&StepCondition::FileNotExists {
-                path: "venv/pyvenv.cfg".into()
-            }),
-            "повторный запуск не пересоздаёт venv"
-        );
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                create.condition(),
+                Some(&StepCondition::FileNotExists {
+                    path: "venv/pyvenv.cfg".into()
+                }),
+                "повторный запуск не пересоздаёт venv"
+            );
+        } else {
+            match create {
+                Step::Generate {
+                    generator_id,
+                    condition,
+                    ..
+                } => {
+                    assert_eq!(generator_id, "python-venv");
+                    assert!(condition.is_none());
+                }
+                other => panic!("ожидался Generate python-venv: {:?}", other.id()),
+            }
+        }
         assert!(
             !recipe.steps.iter().any(|s| s.id() == "django_venv_create"),
             "отдельного django-venv быть не должно — venv единственный"
@@ -14154,9 +14517,10 @@ mod tests {
 
     #[test]
     fn py_venv_create_skips_when_django_created_venv_early() {
-        // Ранний django-venv (django_venv_create) создаёт окружение ДО
-        // tools-фазы; штатный py_venv_create не должен дублировать работу —
-        // условие FileNotExists venv/pyvenv.cfg (seg-префикс в split).
+        // Ранний django-venv (django_venv_create) больше не существует, но
+        // шаг обязан оставаться идемпотентным: на Windows это гейт
+        // FileNotExists по маркеру (seg-префикс в split), на Unix —
+        // самопроверка здоровья внутри генератора python-venv.
         let mut ctx = context();
         ctx.languages = vec!["python".into(), "typescript".into()];
         ctx.backend_languages = vec!["python".into()];
@@ -14168,23 +14532,44 @@ mod tests {
             .iter()
             .find(|s| s.id() == "py_venv_create")
             .expect("py_venv_create должен быть в плане");
-        match venv {
-            Step::Command {
-                condition, command, ..
-            } => {
-                match condition {
-                    Some(StepCondition::FileNotExists { path }) => {
-                        assert_eq!(path, "backend/venv/pyvenv.cfg", "маркер в сегменте")
+        if cfg!(target_os = "windows") {
+            match venv {
+                Step::Command {
+                    condition, command, ..
+                } => {
+                    match condition {
+                        Some(StepCondition::FileNotExists { path }) => {
+                            assert_eq!(path, "backend/venv/pyvenv.cfg", "маркер в сегменте")
+                        }
+                        other => panic!("ожидали FileNotExists: {other:?}"),
                     }
-                    other => panic!("ожидали FileNotExists: {other:?}"),
+                    assert_eq!(
+                        command,
+                        &python_command(),
+                        "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка): {command}"
+                    );
                 }
-                assert_eq!(
-                    command,
-                    &python_command(),
-                    "интерпретатор обязан совпадать с python_command() (реальный бинарь, а не Store-заглушка): {command}"
-                );
+                other => panic!("на Windows py_venv_create — Command: {:?}", other.id()),
             }
-            _ => panic!("py_venv_create — Command"),
+        } else {
+            match venv {
+                Step::Generate {
+                    generator_id,
+                    generator_config,
+                    ..
+                } => {
+                    assert_eq!(generator_id, "python-venv");
+                    assert_eq!(
+                        generator_config.get("python").and_then(|v| v.as_str()),
+                        Some(python_command().as_str())
+                    );
+                    assert!(
+                        venv_path_of(venv).ends_with("backend/venv"),
+                        "venv в сегменте"
+                    );
+                }
+                other => panic!("на Unix py_venv_create — Generate: {:?}", other.id()),
+            }
         }
     }
 
@@ -14214,6 +14599,165 @@ mod tests {
             }
             _ => panic!("py_pip_upgrade — Command"),
         }
+    }
+
+    #[test]
+    fn alembic_env_patch_wires_database_url_in_segment() {
+        // alembic init генерирует env.py со статическим sqlalchemy.url —
+        // README/.env обещают DATABASE_URL из окружения. Патч-шаг обязан
+        // идти после init, работать в каталоге python-сегмента, применяться
+        // только к существующему migrations/env.py и не валить проект (Skip).
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["fastapi".into(), "react".into()];
+        ctx.tools = vec!["alembic".into(), "sqlalchemy".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+
+        let patch = find_step(&recipe, "alembic_env_patch");
+        match patch {
+            Step::Command {
+                command,
+                args,
+                working_dir,
+                condition,
+                on_error,
+                ..
+            } => {
+                assert!(
+                    command.contains("backend") && command.contains("venv"),
+                    "патч запускается интерпретатором venv сегмента: {command}"
+                );
+                assert_eq!(args[0], "-c");
+                let script = &args[1];
+                assert!(script.contains("DATABASE_URL"), "{script}");
+                assert!(script.contains("set_main_option"), "{script}");
+                assert!(
+                    script.contains("replace('%', '%%')"),
+                    "configparser интерполирует % — URL экранируется: {script}"
+                );
+                assert_eq!(
+                    working_dir.as_deref(),
+                    Some("./backend"),
+                    "патч работает там же, где alembic init"
+                );
+                assert!(
+                    matches!(
+                        condition,
+                        Some(StepCondition::FileExists { path })
+                            if path == "backend/migrations/env.py"
+                    ),
+                    "{condition:?}"
+                );
+                assert_eq!(
+                    on_error,
+                    &ErrorMode::Skip,
+                    "провал патча не должен валить сгенерированный проект"
+                );
+            }
+            other => panic!("alembic_env_patch — Command: {:?}", other.id()),
+        }
+        assert_dep(&recipe, "alembic_env_patch", "alembic_init");
+        let idx = |id: &str| {
+            recipe
+                .steps
+                .iter()
+                .position(|s| s.id() == id)
+                .unwrap_or_else(|| panic!("{id} должен быть в плане"))
+        };
+        assert!(idx("alembic_init") < idx("alembic_env_patch"));
+    }
+
+    #[test]
+    fn alembic_env_patch_script_rewrites_env_py_idempotently() {
+        // Реальное исполнение скрипта патча (без сети): fake env.py получает
+        // set_main_option из os.environ, повторный прогон — no-op.
+        let python = if cfg!(target_os = "windows") {
+            "python"
+        } else {
+            "python3"
+        };
+        if std::process::Command::new(python)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // интерпретатор недоступен — скрипт проверяется по конфигу выше
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_alembic_patch_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("migrations")).unwrap();
+        std::fs::write(dir.join("migrations/env.py"), "config = context.config\n").unwrap();
+
+        let run = || {
+            std::process::Command::new(python)
+                .args(["-c", ALEMBIC_DATABASE_URL_PATCH])
+                .current_dir(&dir)
+                .output()
+                .expect("скрипт патча обязан запускаться")
+        };
+
+        let first = run();
+        assert!(
+            first.status.success(),
+            "патч упал: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let text = std::fs::read_to_string(dir.join("migrations/env.py")).unwrap();
+        assert!(text.contains("STACKPILOT_DATABASE_URL"), "{text}");
+        assert!(text.contains("set_main_option"), "{text}");
+        assert!(text.contains("config = context.config"), "{text}");
+
+        // Идемпотентность: второй прогон ничего не добавляет.
+        let second = run();
+        assert!(second.status.success());
+        let stdout = String::from_utf8_lossy(&second.stdout);
+        assert!(stdout.contains("already reads DATABASE_URL"), "{stdout}");
+        let text_after = std::fs::read_to_string(dir.join("migrations/env.py")).unwrap();
+        assert_eq!(text, text_after, "повторный запуск не меняет файл");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pytest_tool_creates_smoke_test_in_python_segment() {
+        // Без smoke-теста `pytest` на свежем проекте возвращает код 5
+        // («no tests collected») и CI красный сразу после генерации.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["fastapi".into(), "react".into()];
+        ctx.tools = vec!["pytest".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let smoke = find_step(&recipe, "pytest_smoke_test");
+        assert_eq!(
+            write_path_of(smoke),
+            "backend/tests/test_smoke.py",
+            "smoke-тест живёт в python-сегменте рядом с pytest.ini"
+        );
+        match smoke {
+            Step::WriteFile { content, .. } => {
+                assert!(content.contains("def test_smoke"), "{content}");
+                assert!(content.contains("assert True"), "{content}");
+            }
+            other => panic!("pytest_smoke_test — WriteFile: {:?}", other.id()),
+        }
+
+        // Корневой проект: tests/test_smoke.py.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+        ctx.tools = vec!["pytest".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        assert_eq!(
+            write_path_of(find_step(&recipe, "pytest_smoke_test")),
+            "tests/test_smoke.py"
+        );
     }
 
     #[test]
@@ -14253,7 +14797,7 @@ mod tests {
         ctx.languages = vec!["python".into()];
         ctx.frameworks = vec!["fastapi".into()];
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
-        assert_file_not_exists(find_step(&recipe, "py_venv_create"), "venv/pyvenv.cfg");
+        assert_py_venv_create(&recipe, "venv/pyvenv.cfg", "venv");
         assert_eq!(
             write_path_of(find_step(&recipe, "requirements_txt")),
             "requirements.txt"
@@ -14298,10 +14842,7 @@ mod tests {
         ctx.frontend_languages = vec!["typescript".into()];
         ctx.frameworks = vec!["django".into(), "react".into()];
         let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
-        assert_file_not_exists(
-            find_step(&recipe, "py_venv_create"),
-            "backend/venv/pyvenv.cfg",
-        );
+        assert_py_venv_create(&recipe, "backend/venv/pyvenv.cfg", "backend/venv");
         assert_eq!(
             write_path_of(find_step(&recipe, "requirements_txt")),
             "backend/requirements.txt"
@@ -14325,6 +14866,155 @@ mod tests {
             }
             _ => panic!("py_requirements_check — Generate"),
         }
+    }
+
+    #[test]
+    fn vscode_settings_point_at_canonical_python_venv() {
+        // VS Code обязан видеть интерпретатор канонического venv (venv/ в
+        // корне, backend/venv в split), а не исторический `.venv`.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into()];
+        ctx.frameworks = vec!["fastapi".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let config = gen_config_of_step(find_step(&recipe, "vscode_merge"));
+        let interpreter = config
+            .get("python_interpreter")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                interpreter,
+                "${workspaceFolder}\\venv\\Scripts\\python.exe",
+                "корневой venv"
+            );
+        } else {
+            assert_eq!(
+                interpreter,
+                "${workspaceFolder}/venv/bin/python",
+                "корневой venv"
+            );
+        }
+
+        // Split: python-код и venv — в backend/.
+        let mut ctx = context();
+        ctx.languages = vec!["python".into(), "typescript".into()];
+        ctx.backend_languages = vec!["python".into()];
+        ctx.frontend_languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["django".into(), "react".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let config = gen_config_of_step(find_step(&recipe, "vscode_merge"));
+        let interpreter = config
+            .get("python_interpreter")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            interpreter.contains("backend")
+                && interpreter.contains("venv")
+                && interpreter.starts_with("${workspaceFolder}"),
+            "интерпретатор из backend/venv: {interpreter}"
+        );
+
+        // Без python интерпретатор не передаётся вовсе.
+        let mut ctx = context();
+        ctx.languages = vec!["typescript".into()];
+        ctx.frameworks = vec!["react".into()];
+        let recipe = recipe_for(&ctx, "myapp").expect("recipe must build");
+        let config = gen_config_of_step(find_step(&recipe, "vscode_merge"));
+        assert!(
+            config.get("python_interpreter").map(|v| v.is_null()).unwrap_or(true),
+            "без Python ключа быть не должно: {config}"
+        );
+    }
+
+    /// CI: рабочий каталог workflow (или None — корень проекта).
+    fn ci_workdir_of(
+        languages: &[&str],
+        backend_langs: &[&str],
+        frontend_langs: &[&str],
+        frameworks: &[&str],
+    ) -> Option<String> {
+        let mut ctx = context();
+        ctx.languages = languages.iter().map(|s| s.to_string()).collect();
+        ctx.backend_languages = backend_langs.iter().map(|s| s.to_string()).collect();
+        ctx.frontend_languages = frontend_langs.iter().map(|s| s.to_string()).collect();
+        ctx.frameworks = frameworks.iter().map(|s| s.to_string()).collect();
+        ctx.ci = true;
+        let layout = ProjectLayout::compute(&ctx);
+        let steps = steps_for_ci(&layout, &ctx, "C:\\dev\\myapp", "myapp");
+        let ci = steps
+            .iter()
+            .find(|s| s.id() == "ci_workflow")
+            .expect("ci_workflow должен быть в плане");
+        match ci {
+            Step::WriteFile { content, .. } => content
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("working-directory: "))
+                .map(String::from),
+            other => panic!("ci_workflow — WriteFile: {:?}", other.id()),
+        }
+    }
+
+    #[test]
+    fn ci_workdir_follows_layout() {
+        // Split nest+react: CI главного фреймворка (nest) — в backend/;
+        // без working-directory `npm ci` из корня не находит package.json.
+        assert_eq!(
+            ci_workdir_of(&["typescript"], &[], &[], &["nest", "react"]).as_deref(),
+            Some("backend"),
+            "nest+react — backend/"
+        );
+        // Frontend-only React: vite-каркас лежит в frontend/.
+        assert_eq!(
+            ci_workdir_of(&["typescript"], &[], &["typescript"], &["react"]).as_deref(),
+            Some("frontend"),
+            "react-only — frontend/"
+        );
+        // Backend-only python: всё в корне, defaults-блока нет.
+        assert_eq!(
+            ci_workdir_of(&["python"], &["python"], &[], &["fastapi"]),
+            None,
+            "fastapi backend-only — корень"
+        );
+        // Split python+react: django-код и venv — в backend/.
+        assert_eq!(
+            ci_workdir_of(
+                &["python", "typescript"],
+                &["python"],
+                &["typescript"],
+                &["django", "react"],
+            )
+            .as_deref(),
+            Some("backend"),
+            "django+react — backend/"
+        );
+        // Tauri: rust живёт в src-tauri/, веб-часть — в frontend/, корнем
+        // владеет оболочка.
+        assert_eq!(
+            ci_workdir_of(&["rust", "typescript"], &["rust"], &["typescript"], &["tauri", "react"])
+                .as_deref(),
+            Some("src-tauri"),
+            "tauri+rust — src-tauri/"
+        );
+        assert_eq!(
+            ci_workdir_of(&["typescript", "rust"], &["rust"], &["typescript"], &["tauri", "react"])
+                .as_deref(),
+            Some("frontend"),
+            "tauri+typescript — frontend/"
+        );
+        // Порядок карточек не должен ломать выбор: react первым в списке
+        // фреймворков не уводит CI python-стека в frontend/ — фреймворк
+        // обязан использовать главный язык (react не использует python).
+        assert_eq!(
+            ci_workdir_of(
+                &["python", "typescript"],
+                &["python"],
+                &["typescript"],
+                &["react", "django"],
+            )
+            .as_deref(),
+            Some("backend"),
+            "python + [react, django] — backend/"
+        );
     }
 
     // ==================== Scenario E: Zig / Flutter ====================
@@ -15073,6 +15763,102 @@ mod tests {
         }
     }
 
+    /// Сквозное выполнение python-пайплайна на реальном интерпретаторе —
+    /// проверяет исправление Debian/Ubuntu (без python3-venv): venv обязан
+    /// создаться с рабочим pip через fallback генератора, манифест —
+    /// установиться, fastapi — импортироваться, alembic env.py — получить
+    /// DATABASE_URL. Требует сеть (pip install fastapi/alembic).
+    /// Запускать вручную:
+    /// `cargo test --lib execute_python_environment -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires a real python3 and network access (pip install)"]
+    async fn execute_python_environment_end_to_end() {
+        let engine = DefaultRecipeEngine::new();
+        let dir = std::env::temp_dir().join(format!(
+            "stackpilot_python_e2e_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut ctx = ctx_scenario(
+            &["python"],
+            &["fastapi"],
+            &["alembic", "sqlalchemy"],
+        );
+        ctx.git_init = false;
+        ctx.vscode_config = false;
+        ctx.project_path = Some(dir.clone());
+
+        let plan = engine.plan(&ctx, &dir).expect("план обязан построиться");
+        let (tx, _rx) = tokio::sync::mpsc::channel(256);
+        let result = engine.execute(plan, tx).await;
+        assert!(
+            matches!(result.overall, OverallStatus::Success),
+            "pipeline обязан завершиться успешно: {:?}",
+            result
+                .step_results
+                .iter()
+                .filter(|r| matches!(r.status, StepStatus::Failed { .. }))
+                .map(|r| (r.step_id.clone(), r.status.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // pip работает и зависимости установлены внутри venv проекта.
+        let venv_bin = dir.join("venv").join(if cfg!(target_os = "windows") {
+            "Scripts"
+        } else {
+            "bin"
+        });
+        let venv_python = venv_bin.join(if cfg!(target_os = "windows") {
+            "python.exe"
+        } else {
+            "python"
+        });
+        let probe = std::process::Command::new(&venv_python)
+            .args(["-c", "import fastapi, uvicorn; print(fastapi.__version__)"])
+            .output()
+            .expect("интерпретатор venv обязан запускаться");
+        assert!(
+            probe.status.success(),
+            "fastapi/uvicorn обязаны импортироваться из venv: {}{}",
+            String::from_utf8_lossy(&probe.stdout),
+            String::from_utf8_lossy(&probe.stderr)
+        );
+
+        // alembic init создал env.py, патч-шаг привязал его к DATABASE_URL.
+        let env_py = std::fs::read_to_string(dir.join("migrations/env.py"))
+            .expect("migrations/env.py обязан существовать после alembic init");
+        assert!(
+            env_py.contains("STACKPILOT_DATABASE_URL"),
+            "env.py обязан читать DATABASE_URL: {env_py}"
+        );
+        assert!(env_py.contains("set_main_option"), "{env_py}");
+
+        // Функциональная проверка: alembic с DATABASE_URL (sqlite) обязан
+        // отработать. Без патча env.py взял бы битый sqlalchemy.url из
+        // alembic.ini («driver://user:pass@...») и упал бы на диалекте.
+        let alembic = venv_bin.join(if cfg!(target_os = "windows") {
+            "alembic.exe"
+        } else {
+            "alembic"
+        });
+        let upgrade = std::process::Command::new(&alembic)
+            .args(["upgrade", "head"])
+            .env("DATABASE_URL", "sqlite:///./alembic_check.db")
+            .current_dir(&dir)
+            .output()
+            .expect("alembic обязан запускаться");
+        assert!(
+            upgrade.status.success(),
+            "alembic upgrade head с DATABASE_URL: {}{}",
+            String::from_utf8_lossy(&upgrade.stdout),
+            String::from_utf8_lossy(&upgrade.stderr)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn plan_ids(recipe: &Recipe) -> Vec<String> {
         recipe.steps.iter().map(|s| s.id()).collect()
     }
@@ -15156,6 +15942,23 @@ mod tests {
                 assert_eq!(p, path, "FileNotExists path")
             }
             other => panic!("expected FileNotExists({path}), got {other:?}"),
+        }
+    }
+
+    /// py_venv_create: Windows — исторический гейт FileNotExists по маркеру
+    /// (повторный запуск не пересоздаёт venv); Unix — генератор python-venv
+    /// без условия, который сам проверяет здоровье окружения; путь venv
+    /// проверяется суффиксом (`venv` или `backend/venv`).
+    fn assert_py_venv_create(recipe: &Recipe, marker: &str, venv_suffix: &str) {
+        let step = find_step(recipe, "py_venv_create");
+        if cfg!(target_os = "windows") {
+            assert_file_not_exists(step, marker);
+        } else {
+            let venv_path = venv_path_of(step);
+            assert!(
+                venv_path.ends_with(venv_suffix),
+                "venv path '{venv_path}' must end with '{venv_suffix}'"
+            );
         }
     }
 
@@ -15488,15 +16291,22 @@ mod tests {
             _ => unreachable!(),
         }
 
-        // Ранний venv: python -m venv backend/venv, маркер root-relative.
-        // Единый канонический venv: python -m venv backend/venv, гейт —
-        // root-relative маркер. Никакого отдельного django-venv.
+        // Ранний venv: python -m venv backend/venv (Windows) или генератор
+        // python-venv (Unix), маркер root-relative. Никакого django-venv.
         let venv_create = find_step(&recipe, "py_venv_create");
-        let (cmd, args) = command_of(venv_create);
-        assert_eq!(cmd, python_command());
-        assert_eq!(&args[..2], &["-m".to_string(), "venv".to_string()]);
-        assert!(args[2].contains("venv"), "{args:?}");
-        assert_file_not_exists(venv_create, "backend/venv/pyvenv.cfg");
+        let venv_path = venv_path_of(venv_create);
+        assert!(
+            venv_path.ends_with("backend/venv") || venv_path.ends_with("backend\\venv"),
+            "venv создаётся внутри backend/: {venv_path}"
+        );
+        if cfg!(target_os = "windows") {
+            assert_file_not_exists(venv_create, "backend/venv/pyvenv.cfg");
+        } else {
+            match venv_create {
+                Step::Generate { generator_id, .. } => assert_eq!(generator_id, "python-venv"),
+                other => panic!("на Unix py_venv_create — Generate: {:?}", other.id()),
+            }
+        }
         assert!(matches!(error_mode_of(venv_create), ErrorMode::Abort));
 
         // django-admin строго из venv, в рабочей директории backend/.
@@ -15689,7 +16499,7 @@ mod tests {
             write_path_of(find_step(&recipe, "ruff_config")),
             "ruff.toml"
         );
-        assert_file_not_exists(find_step(&recipe, "py_venv_create"), "venv/pyvenv.cfg");
+        assert_py_venv_create(&recipe, "venv/pyvenv.cfg", "venv");
         let (_, pip_args) = command_of(find_step(&recipe, "py_pip_install"));
         assert!(pip_args.iter().any(|a| a == "-r"), "{pip_args:?}");
         assert!(
@@ -16373,7 +17183,8 @@ mod tests {
     fn error_mode_of(step: &Step) -> ErrorMode {
         match step {
             Step::Command { on_error, .. } => on_error.clone(),
-            other => panic!("expected Command, got {:?}", other.id()),
+            Step::Generate { on_error, .. } => on_error.clone(),
+            other => panic!("expected Command/Generate, got {:?}", other.id()),
         }
     }
 
