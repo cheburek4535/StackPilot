@@ -229,6 +229,12 @@ impl LaunchEngine for ProcessLaunchEngine {
                         }
                     }
                 };
+                // Flatpak installs resolve to "flatpak run <id>" — split it
+                // into a real program + arguments (a multi-word string cannot
+                // be exec'd directly on Linux).
+                let (resolved_path, mut launcher_args) =
+                    crate::platform::app_launcher::split_launcher_string(&resolved_path);
+                args_vec.append(&mut launcher_args);
 
                 let args_refs: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
@@ -502,15 +508,22 @@ impl LaunchEngine for ProcessLaunchEngine {
                 return Ok(false);
             }
         };
+        // Flatpak installs resolve to "flatpak run <id>": split it so the
+        // launcher is the `flatpak` binary with structured arguments. Passing
+        // the multi-word string to Command::new fails with ENOENT and the IDE
+        // silently never opens (Linux).
+        let (program, mut launcher_args) =
+            crate::platform::app_launcher::split_launcher_string(&resolved);
 
         let mut args: Vec<String> = Vec::new();
+        args.append(&mut launcher_args);
         if let Some(project) = project_path {
             args.push(project.to_string());
         }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         self.process_manager
-            .launch_detached(&resolved, &args_refs, None)
+            .launch_detached(&program, &args_refs, None)
             .map(|_| true)
             .map_err(|e| {
                 format!(

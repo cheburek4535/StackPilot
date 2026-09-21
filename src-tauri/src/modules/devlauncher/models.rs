@@ -603,6 +603,11 @@ pub struct PlatformCapabilities {
     pub has_compose: bool,
     pub default_terminal: String,
     pub supports_terminal_windows: bool,
+    /// Whether a Docker Desktop launcher resolves on this host (GUI app,
+    /// `open -a Docker`, `docker desktop` CLI plugin or the systemd unit).
+    /// `false` still allows Docker Engine to be present.
+    #[serde(default)]
+    pub docker_desktop: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -855,8 +855,14 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
             cli_diag.status != crate::platform::docker_service::DockerStatus::CliMissing;
         // Compose availability is a property of the CLI, not the daemon:
         // `docker compose version` answers even when the daemon is down.
-        let has_compose = if has_docker {
-            let mut cmd = std::process::Command::new("docker");
+        // The CLI is resolved (PATH, then platform-specific locations) rather
+        // than spawned by its bare name — GUI-launched apps do not inherit
+        // shell-profile PATH entries, and on Linux the Docker Desktop bundled
+        // CLI often is not on PATH at all.
+        let has_compose = if let Some(cli) =
+            crate::platform::docker_service::DockerService::resolve_cli()
+        {
+            let mut cmd = std::process::Command::new(&cli);
             cmd.args(["compose", "version"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
@@ -866,9 +872,19 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
         } else {
             false
         };
+        // Whether a Docker Desktop application launcher resolves on this
+        // host (the UI uses it to decide between "open Docker Desktop" hints
+        // and plain Docker Engine wording).
+        let docker_desktop =
+            crate::platform::docker_service::DockerService::desktop_launcher().is_some();
 
-        let default_shell = crate::platform::shell::default_shell_for_platform();
-        let (default_terminal, _) = crate::platform::shell::shell_executable(default_shell);
+        // The UI needs the TERMINAL, not the shell: `cmd`/`sh` is the shell
+        // used inside a terminal, while visible steps are opened with the
+        // platform terminal emulator (gnome-terminal, ptyxis, Terminal.app,
+        // Windows Terminal, ...). Reporting the shell here made every
+        // platform-aware terminal hint wrong on Linux/macOS.
+        let default_terminal =
+            format!("{}", crate::platform::terminal::default_terminal_for_platform());
 
         let supports_terminal_windows = cfg!(not(target_os = "windows"))
             || std::env::var("WT_SESSION").is_ok()
@@ -880,8 +896,9 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
             shells,
             has_docker,
             has_compose,
-            default_terminal: default_terminal.to_string(),
+            default_terminal,
             supports_terminal_windows,
+            docker_desktop,
         })
     })
     .await

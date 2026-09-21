@@ -984,6 +984,15 @@ impl RunOrchestrator {
                     }
                     launcher.program
                 };
+                // Flatpak installs resolve to "flatpak run <id>" (IDE
+                // resolver): split the multi-word string into a real program
+                // plus arguments, otherwise the spawn fails with ENOENT.
+                let (resolved, mut launcher_args) =
+                    crate::platform::app_launcher::split_launcher_string(&resolved);
+                if !launcher_args.is_empty() {
+                    launcher_args.append(&mut resolved_args);
+                    resolved_args = launcher_args;
+                }
                 let args_refs: Vec<&str> = resolved_args.iter().map(|s| s.as_str()).collect();
 
                 match process_manager.launch_detached(&resolved, &args_refs, working_dir) {
@@ -1156,11 +1165,37 @@ impl RunOrchestrator {
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = std::process::Command::new("open").arg(path).spawn();
+                    if let Ok(mut child) = std::process::Command::new("open").arg(path).spawn() {
+                        // Reap the short-lived launcher (no zombies on macOS).
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                    // Report a real failure instead of pretending success when
+                    // xdg-open is missing (a minimal container/SSH session),
+                    // and reap the child so it does not become a zombie.
+                    match std::process::Command::new("xdg-open").arg(path).spawn() {
+                        Ok(mut child) => {
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                        }
+                        Err(e) => {
+                            return StepCompletion {
+                                step_id: step.id.clone(),
+                                success: false,
+                                error: Some(format!(
+                                    "Failed to open folder '{}': {}",
+                                    path, e
+                                )),
+                                process_id: None,
+                                attempt_number: 0,
+                            };
+                        }
+                    }
                 }
                 StepCompletion {
                     step_id: step.id.clone(),
@@ -1314,6 +1349,14 @@ impl RunOrchestrator {
             } else {
                 None
             };
+        // Compose bootstraps are bounded, high-signal commands: their output
+        // is teed to a sidecar log so a failure ("port is already allocated",
+        // "no configuration file provided: not found", a broken Dockerfile)
+        // reaches the run report instead of dying with the terminal window.
+        // Long-running services are NOT captured: their log would grow
+        // unbounded while they run.
+        let capture_output = matches!(completion, CompletionPolicy::DockerComposeUp { .. })
+            && startup_marker.is_some();
 
         let tracked = match visibility {
             Visibility::VisibleTerminal => {
@@ -1338,6 +1381,7 @@ impl RunOrchestrator {
                         Some(run_id_owned),
                         Some(step_id_owned),
                         marker_owned.as_deref().and_then(|p| p.to_str()),
+                        capture_output,
                     )
                 })
                 .await
@@ -1463,7 +1507,7 @@ impl RunOrchestrator {
                     }
                 };
                 if let Some(path) = &marker {
-                    let _ = std::fs::remove_file(path);
+                    cleanup_startup_probe(path);
                 }
                 match probe_result {
                     Ok(true) => StepCompletion {
@@ -2422,6 +2466,9 @@ impl RunOrchestrator {
 
         loop {
             if cancelled.load(Ordering::SeqCst) {
+                if let Some(marker) = marker {
+                    cleanup_startup_probe(marker);
+                }
                 Self::emit_diagnostic(
                     run_id,
                     Some(step_id),
@@ -2449,7 +2496,7 @@ impl RunOrchestrator {
                         if let Ok(content) = std::fs::read_to_string(marker) {
                             match content.trim().parse::<i32>() {
                                 Ok(0) => {
-                                    let _ = std::fs::remove_file(marker);
+                                    cleanup_startup_probe(marker);
                                     Self::emit_diagnostic(
                                         run_id,
                                         Some(step_id),
@@ -2467,16 +2514,18 @@ impl RunOrchestrator {
                                     };
                                 }
                                 Ok(code) => {
-                                    let _ = std::fs::remove_file(marker);
                                     let mut msg = format!(
                                         "Docker Compose failed with exit code {} (reported \
                                          by the startup probe); check the terminal output",
                                         code
                                     );
-                                    let tail = output_tail_hint(process_manager, proc_id);
-                                    if !tail.is_empty() {
-                                        msg.push_str(&tail);
-                                    }
+                                    append_probe_output_hint(
+                                        &mut msg,
+                                        process_manager,
+                                        proc_id,
+                                        Some(marker),
+                                    );
+                                    cleanup_startup_probe(marker);
                                     return StepCompletion {
                                         step_id: step_id.to_string(),
                                         success: false,
@@ -2498,7 +2547,7 @@ impl RunOrchestrator {
                 let running = crate::platform::docker_service::compose_running_ids(Path::new(dir));
                 if !running.is_empty() {
                     if let Some(marker) = marker {
-                        let _ = std::fs::remove_file(marker);
+                        cleanup_startup_probe(marker);
                     }
                     Self::emit_diagnostic(
                         run_id,
@@ -2524,9 +2573,9 @@ impl RunOrchestrator {
                      check the 'Start Docker Compose' terminal for build/start errors",
                     timeout_secs
                 );
-                let tail = output_tail_hint(process_manager, proc_id);
-                if !tail.is_empty() {
-                    msg.push_str(&tail);
+                append_probe_output_hint(&mut msg, process_manager, proc_id, marker);
+                if let Some(marker) = marker {
+                    cleanup_startup_probe(marker);
                 }
                 Self::emit_diagnostic(
                     run_id,
@@ -3206,6 +3255,25 @@ fn resolve_relative_program(
             program, dir
         ));
     }
+    // A file without the execute bit (a `gradlew`/`mvnw`/hook script copied
+    // from a zip or from Windows) passes the existence check and then dies
+    // with a bare "Permission denied". Surface the actionable fix instead.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&candidate).map(|m| m.permissions().mode());
+        if let Ok(mode) = mode {
+            if mode & 0o111 == 0 {
+                return Err(format!(
+                    "Executable '{}' in '{}' is not executable (missing the +x permission). \
+                     Run `chmod +x '{}'` and retry.",
+                    program,
+                    dir,
+                    candidate.display()
+                ));
+            }
+        }
+    }
     Ok((candidate.to_string_lossy().into_owned(), args.to_vec()))
 }
 
@@ -3517,7 +3585,81 @@ fn normalize_profile_for_run(
     // directly into their service dependents.
     bridge_disabled_step_dependencies(&mut profile, diagnostics);
 
+    repair_docker_desktop_steps(&mut profile, diagnostics);
+
     profile
+}
+
+/// Whether a path points at the Docker CLI itself (never the Desktop GUI).
+#[cfg(not(target_os = "windows"))]
+fn is_docker_cli_path(path: &str) -> bool {
+    let exe = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    matches!(
+        exe.as_str(),
+        "docker"
+            | "docker.exe"
+            | "docker.cmd"
+            | "docker.bat"
+            | "docker-compose"
+            | "docker-compose.exe"
+    )
+}
+
+/// Repair "Open Docker Desktop" steps generated by the buggy non-Windows
+/// resolver, which pointed the step at the bare `docker` CLI. That CLI only
+/// prints help, so the step reported success while no window ever opened.
+/// Profiles saved before the fix are rewritten in place (for the run only —
+/// the stored profile is never modified) to the platform Docker Desktop
+/// launcher: the GUI binary, `docker desktop start`, or the systemd unit.
+fn repair_docker_desktop_steps(
+    profile: &mut LaunchProfileV2,
+    diagnostics: &mut Vec<super::validation::ProfileValidationDiagnostic>,
+) {
+    // Windows profiles were generated correctly; never touch them.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (profile, diagnostics);
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some((program, launcher_args)) =
+            crate::platform::docker_service::DockerService::desktop_launcher()
+        else {
+            return;
+        };
+        for step in &mut profile.steps {
+            let StepKind::OpenApplication { path, args } = &mut step.kind else {
+                continue;
+            };
+            if !is_docker_cli_path(path) || !step.label.to_ascii_lowercase().contains("docker") {
+                continue;
+            }
+            let previous = path.clone();
+            *path = program.clone();
+            *args = if launcher_args.is_empty() {
+                None
+            } else {
+                Some(launcher_args.clone())
+            };
+            diagnostics.push(super::validation::ProfileValidationDiagnostic {
+                severity: DiagnosticSeverity::Info,
+                code: "DOCKER_DESKTOP_LAUNCHER_REPAIRED".to_string(),
+                message: format!(
+                    "'{}' pointed at the docker CLI ('{}'), which cannot open Docker \
+                     Desktop; using '{}' instead",
+                    step.label, previous, program
+                ),
+                step_id: Some(step.id.clone()),
+                field: Some("path".to_string()),
+            });
+        }
+    }
 }
 
 /// Repair graphs whose chain routes through a DISABLED step. A disabled step
@@ -3808,6 +3950,74 @@ fn create_startup_marker_path() -> std::path::PathBuf {
     ))
 }
 
+/// Tail of the terminal output captured next to a startup-probe marker
+/// (POSIX terminals tee their output there when the step opts into capture).
+/// Returns the LAST lines, because build/start failures name their cause at
+/// the end of the output. Empty when the step did not request capture or
+/// produced no output.
+fn startup_probe_log_tail(marker: &std::path::Path) -> String {
+    let log = crate::platform::terminal::startup_log_path(&marker.to_string_lossy());
+    let Ok(text) = std::fs::read_to_string(log) else {
+        return String::new();
+    };
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    const MAX_LINES: usize = 15;
+    if lines.len() > MAX_LINES {
+        lines.drain(..lines.len() - MAX_LINES);
+    }
+    let joined = lines.join("\n");
+    truncate_bytes(&joined, 4096).to_string()
+}
+
+/// Remove a startup-probe marker together with its captured-output log.
+fn cleanup_startup_probe(marker: &std::path::Path) {
+    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(crate::platform::terminal::startup_log_path(
+        &marker.to_string_lossy(),
+    ));
+}
+
+/// Append the output a failed visible-terminal step produced: the captured
+/// manager tail (Windows cmd backend) when present, otherwise the sidecar log
+/// the POSIX terminals tee (the terminal window owns the real output; the log
+/// is the only machine-readable copy).
+fn append_probe_output_hint(
+    msg: &mut String,
+    process_manager: &Arc<dyn ProcessManager>,
+    proc_id: &str,
+    marker: Option<&std::path::Path>,
+) {
+    let manager_tail = output_tail_hint(process_manager, proc_id);
+    if !manager_tail.is_empty() {
+        msg.push_str(&manager_tail);
+        return;
+    }
+    if let Some(marker) = marker {
+        let log_tail = startup_probe_log_tail(marker);
+        if !log_tail.is_empty() {
+            msg.push_str(&format!("\n--- terminal output ---\n{}", log_tail));
+        }
+    }
+}
+
+/// Truncate `text` to at most `max_bytes` bytes without splitting a UTF-8
+/// character. Byte slicing panics when the cut lands inside a multi-byte
+/// character (Russian or accented build output), and the panic would take
+/// down the step task.
+fn truncate_bytes(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Verify that a visible-terminal command actually started, using the
 /// exit-code marker the terminal writes after the inner command exits.
 ///
@@ -3850,11 +4060,9 @@ async fn probe_startup_marker(
                         );
                         // The wrapper's captured output (cmd backend) usually
                         // carries the real failure line ("The system cannot
-                        // find the path specified" and similar) вЂ” surface it.
-                        let tail = output_tail_hint(process_manager, proc_id);
-                        if !tail.is_empty() {
-                            msg.push_str(&tail);
-                        }
+                        // find the path specified" and similar); POSIX
+                        // terminals tee it to the sidecar log вЂ” surface both.
+                        append_probe_output_hint(&mut msg, process_manager, proc_id, Some(marker));
                         return Err(msg);
                     }
                     Err(_) => {
@@ -3984,7 +4192,7 @@ fn truncate_lines(text: &str, max_lines: usize) -> String {
             out.push_str(" | ");
         }
         let trimmed = line.trim();
-        out.push_str(&trimmed[..trimmed.len().min(200)]);
+        out.push_str(truncate_bytes(trimmed, 200));
     }
     out
 }
@@ -4009,7 +4217,13 @@ fn output_tail_hint(process_manager: &Arc<dyn ProcessManager>, proc_id: &str) ->
     tail.reverse();
     let text = tail.join("\n");
     let text = if text.len() > 2048 {
-        format!("вЂ¦{}", &text[text.len() - 2048..])
+        // Keep the TAIL (build/start failures name their cause at the end)
+        // without splitting a multi-byte character.
+        let mut start = text.len() - 2048;
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("…{}", &text[start..])
     } else {
         text
     };
@@ -4694,6 +4908,61 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| d.code == "FAILURE_POLICY_DOWNGRADED"));
+    }
+
+    /// Profiles generated before the Docker Desktop launcher fix point the
+    /// "Open Docker Desktop" step at the bare docker CLI (which only prints
+    /// help). Run-time normalization must rewrite the step to the platform
+    /// launcher so saved profiles start working without re-analysis.
+    #[test]
+    fn normalize_profile_repairs_docker_cli_open_step() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let Some((expected, _args)) =
+                crate::platform::docker_service::DockerService::desktop_launcher()
+            else {
+                // Docker Desktop is not installed on this machine.
+                return;
+            };
+
+            let mut open = make_step("open-docker", vec![]);
+            open.label = "Open Docker Desktop".to_string();
+            open.kind = StepKind::OpenApplication {
+                path: "/usr/local/bin/docker".to_string(),
+                args: None,
+            };
+            // An unrelated application step must stay untouched.
+            let mut code = make_step("open-code", vec![]);
+            code.label = "Open VS Code".to_string();
+            code.kind = StepKind::OpenApplication {
+                path: "/usr/bin/code".to_string(),
+                args: Some(vec![".".to_string()]),
+            };
+
+            let profile = valid_profile(vec![open, code]);
+            let mut diagnostics = Vec::new();
+            let normalized = normalize_profile_for_run(profile, &mut diagnostics);
+
+            let repaired = normalized.steps.iter().find(|s| s.id == "open-docker").unwrap();
+            match &repaired.kind {
+                StepKind::OpenApplication { path, .. } => {
+                    assert_eq!(path, &expected, "docker CLI must be replaced");
+                }
+                other => panic!("unexpected kind: {other:?}"),
+            }
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == "DOCKER_DESKTOP_LAUNCHER_REPAIRED"),
+                "the repair must be reported"
+            );
+
+            let untouched = normalized.steps.iter().find(|s| s.id == "open-code").unwrap();
+            match &untouched.kind {
+                StepKind::OpenApplication { path, .. } => assert_eq!(path, "/usr/bin/code"),
+                other => panic!("unexpected kind: {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -5891,6 +6160,7 @@ mod tests {
             has_compose: false,
             default_terminal: "cmd".to_string(),
             supports_terminal_windows: true,
+            docker_desktop: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         assert!(json.contains("windows"));
@@ -6291,6 +6561,38 @@ mod tests {
         assert!(matches!(result, Ok(true)), "{result:?}");
     }
 
+    /// The POSIX terminal wrapper tees the command output next to the marker.
+    /// A failed compose step must surface that output (the REAL reason —
+    /// "port is already allocated", a broken Dockerfile, ...) instead of a
+    /// bare "check the terminal output" that the user cannot see.
+    #[test]
+    fn startup_probe_log_tail_is_surfaced_in_failure_hints() {
+        let marker = std::env::temp_dir().join(format!(
+            "stackpilot_dl_probe_log_{}.txt",
+            std::process::id()
+        ));
+        let log = std::path::PathBuf::from(crate::platform::terminal::startup_log_path(
+            &marker.to_string_lossy(),
+        ));
+        std::fs::write(&log, "build line 1\nError response from daemon: port is already allocated\n")
+            .unwrap();
+        let pm: Arc<dyn ProcessManager> = Arc::new(RunningPM);
+
+        let mut msg = "Docker Compose failed with exit code 1".to_string();
+        append_probe_output_hint(&mut msg, &pm, "proc_x", Some(&marker));
+        assert!(
+            msg.contains("port is already allocated"),
+            "captured terminal output must reach the error: {msg}"
+        );
+        assert!(msg.contains("terminal output"), "{msg}");
+
+        // The tail helper itself is bounded and keeps the LAST lines.
+        let tail = startup_probe_log_tail(&marker);
+        assert!(tail.contains("port is already allocated"), "{tail}");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&marker);
+    }
+
     #[tokio::test]
     async fn startup_marker_probe_reports_nonzero_exit() {
         let marker = std::env::temp_dir().join(format!(
@@ -6319,6 +6621,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         let exe = dir.join("bin").join("tool.py");
         std::fs::write(&exe, "#!/usr/bin/env python\n").unwrap();
+        // A relative program must be executable on Unix (a script copied
+        // without +x dies with "Permission denied" otherwise).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755));
+        }
         let dir_str = dir.to_string_lossy().into_owned();
         let args = vec!["manage.py".to_string(), "runserver".to_string()];
 
@@ -6355,6 +6664,18 @@ mod tests {
         // of silently spawning in the app's own cwd.
         let err = resolve_relative_program(".venv\\Scripts\\python.exe", &args, None).unwrap_err();
         assert!(err.contains("no working directory"), "{err}");
+
+        // A relative program that exists but is not executable must produce
+        // the actionable chmod hint, not a bare "Permission denied" at spawn.
+        #[cfg(unix)]
+        {
+            let plain = dir.join("bin").join("plain-tool.sh");
+            std::fs::write(&plain, "#!/bin/sh\necho hi\n").unwrap();
+            let err = resolve_relative_program("bin/plain-tool.sh", &args, Some(&dir_str))
+                .unwrap_err();
+            assert!(err.contains("not executable"), "{err}");
+            assert!(err.contains("chmod +x"), "{err}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

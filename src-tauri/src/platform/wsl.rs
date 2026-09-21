@@ -102,8 +102,11 @@ static ENSURE: std::sync::Mutex<Option<(Instant, WslEnsureOutcome)>> = std::sync
 /// runs `wsl --update` — that stays a launch-time action.
 pub fn health() -> WslStateView {
     if !cfg!(target_os = "windows") {
+        // WSL is a Windows-only subsystem: report it as absent (with an
+        // explicit "not applicable" message) so no UI can mistake the
+        // non-Windows host for a machine with WSL installed.
         return WslStateView {
-            present: true,
+            present: false,
             wsl2_default: false,
             message: "WSL is not applicable on this platform".to_string(),
         };

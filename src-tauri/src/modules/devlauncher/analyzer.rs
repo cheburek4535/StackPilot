@@ -1361,34 +1361,12 @@ fn resolve_db_viewer(preferred: Option<&str>) -> Option<(String, String)> {
 }
 
 /// Resolve the Docker Desktop application for the "Open Docker Desktop"
-/// step. On macOS the canonical launcher is `open -a Docker`; elsewhere the
-/// Desktop app is resolved through the platform resolvers (never the bare
-/// docker CLI — that prints help instead of starting the daemon UI).
+/// step. Delegates to the platform Docker service so the analyzer, the
+/// profile builder and the daemon auto-launch all agree: the GUI app (or its
+/// canonical launcher) is used — never the bare docker CLI, which only
+/// prints help and made the step "succeed" without opening anything on Linux.
 fn resolve_docker_desktop() -> Option<(String, Vec<String>)> {
-    if cfg!(target_os = "macos") {
-        return Some((
-            "open".to_string(),
-            vec!["-a".to_string(), "Docker".to_string()],
-        ));
-    }
-    let name = if cfg!(target_os = "windows") {
-        "Docker Desktop"
-    } else {
-        "docker-desktop"
-    };
-    if let Some(p) = resolve_app(name) {
-        return Some((p, Vec::new()));
-    }
-    // Windows last resort: Start Menu shortcut. Covers Store/MSIX installs
-    // that register neither App Paths nor a plain exe path; the structured
-    // launcher carries the `shell:AppsFolder` alias arguments.
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(l) = crate::platform::app_launcher::start_menu_launcher("Docker Desktop") {
-            return Some((l.program, l.args));
-        }
-    }
-    None
+    crate::platform::docker_service::DockerService::desktop_launcher()
 }
 
 // ---------------------------------------------------------------------------

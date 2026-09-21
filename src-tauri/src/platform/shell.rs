@@ -10,6 +10,8 @@ pub enum ShellKind {
     Sh,
     Bash,
     Zsh,
+    /// fish (Unix)
+    Fish,
     Cmd,
     PowerShell,
     /// Cross-platform PowerShell (pwsh) — allowed on any OS when available.
@@ -24,7 +26,7 @@ impl fmt::Display for UnsupportedShell {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "unsupported shell: '{}'. valid values: sh, bash, zsh, cmd, powershell, pwsh",
+            "unsupported shell: '{}'. valid values: sh, bash, zsh, fish, cmd, powershell, pwsh",
             self.0
         )
     }
@@ -39,6 +41,7 @@ impl fmt::Display for ShellKind {
             ShellKind::Sh => write!(f, "sh"),
             ShellKind::Bash => write!(f, "bash"),
             ShellKind::Zsh => write!(f, "zsh"),
+            ShellKind::Fish => write!(f, "fish"),
             ShellKind::Cmd => write!(f, "cmd"),
             ShellKind::PowerShell => write!(f, "powershell"),
             ShellKind::Pwsh => write!(f, "pwsh"),
@@ -55,6 +58,7 @@ pub fn parse_shell(s: &str) -> Result<ShellKind, UnsupportedShell> {
         "sh" => Ok(ShellKind::Sh),
         "bash" => Ok(ShellKind::Bash),
         "zsh" => Ok(ShellKind::Zsh),
+        "fish" => Ok(ShellKind::Fish),
         "cmd" | "cmd.exe" => Ok(ShellKind::Cmd),
         "powershell" | "pwsh.exe" => Ok(ShellKind::PowerShell),
         "pwsh" => Ok(ShellKind::Pwsh),
@@ -90,19 +94,37 @@ pub fn resolve_shell(shell: ShellKind) -> ShellKind {
 /// `cmd /C <command>` with separate args.
 /// `PowerShell` → `("powershell", "-Command")`.
 /// `Pwsh` → `("pwsh", "-Command")`.
-/// Unix shells → `(name, "-lc")` — login flag for deterministic env.
+/// Unix shells → `(name, "-c")` on Linux and `(name, "-lc")` on macOS.
+///
+/// The login flag (`-l`) is deliberately NOT used on Linux: the distro
+/// `/etc/profile` scripts (Debian/Ubuntu in particular) *overwrite* `PATH`,
+/// which silently discarded the environment overlay's prepended toolchain
+/// paths for every captured command, script and visible step. macOS keeps
+/// `-lc` because GUI-launched apps inherit a minimal `PATH` there and the
+/// login profile (`path_helper`) is what makes Homebrew tools resolvable.
 pub fn shell_executable(shell: ShellKind) -> (&'static str, &'static str) {
     match shell {
         ShellKind::Cmd => ("cmd", "/C"),
         ShellKind::PowerShell => ("powershell", "-Command"),
         ShellKind::Pwsh => ("pwsh", "-Command"),
-        ShellKind::Sh => ("sh", "-lc"),
-        ShellKind::Bash => ("bash", "-lc"),
-        ShellKind::Zsh => ("zsh", "-lc"),
+        ShellKind::Sh => ("sh", unix_shell_flag()),
+        ShellKind::Bash => ("bash", unix_shell_flag()),
+        ShellKind::Zsh => ("zsh", unix_shell_flag()),
+        ShellKind::Fish => ("fish", unix_shell_flag()),
         ShellKind::Default => {
             let resolved = default_shell_for_platform();
             shell_executable(resolved)
         }
+    }
+}
+
+/// Command flag for non-interactive Unix shells: `-lc` (login) on macOS,
+/// `-c` on Linux (see [`shell_executable`]).
+fn unix_shell_flag() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "-lc"
+    } else {
+        "-c"
     }
 }
 
@@ -126,6 +148,7 @@ mod tests {
         assert_eq!(parse_shell("sh").unwrap(), ShellKind::Sh);
         assert_eq!(parse_shell("bash").unwrap(), ShellKind::Bash);
         assert_eq!(parse_shell("zsh").unwrap(), ShellKind::Zsh);
+        assert_eq!(parse_shell("fish").unwrap(), ShellKind::Fish);
         assert_eq!(parse_shell("cmd").unwrap(), ShellKind::Cmd);
         assert_eq!(parse_shell("cmd.exe").unwrap(), ShellKind::Cmd);
         assert_eq!(parse_shell("powershell").unwrap(), ShellKind::PowerShell);
@@ -142,9 +165,9 @@ mod tests {
 
     #[test]
     fn parse_shell_unsupported() {
-        let err = parse_shell("fish").unwrap_err();
-        assert_eq!(err, UnsupportedShell("fish".to_string()));
-        assert!(err.to_string().contains("fish"));
+        let err = parse_shell("nu").unwrap_err();
+        assert_eq!(err, UnsupportedShell("nu".to_string()));
+        assert!(err.to_string().contains("nu"));
 
         let err = parse_shell("zsh-plus").unwrap_err();
         assert_eq!(err.0, "zsh-plus");
@@ -189,15 +212,31 @@ mod tests {
 
         let (exe, flag) = shell_executable(ShellKind::Sh);
         assert_eq!(exe, "sh");
-        assert_eq!(flag, "-lc");
+        assert_eq!(flag, unix_shell_flag());
 
         let (exe, flag) = shell_executable(ShellKind::Bash);
         assert_eq!(exe, "bash");
-        assert_eq!(flag, "-lc");
+        assert_eq!(flag, unix_shell_flag());
 
         let (exe, flag) = shell_executable(ShellKind::Zsh);
         assert_eq!(exe, "zsh");
-        assert_eq!(flag, "-lc");
+        assert_eq!(flag, unix_shell_flag());
+
+        let (exe, flag) = shell_executable(ShellKind::Fish);
+        assert_eq!(exe, "fish");
+        assert_eq!(flag, unix_shell_flag());
+    }
+
+    /// The login flag must not be used on Linux: distro profile scripts
+    /// overwrite PATH and silently drop the environment overlay's prepended
+    /// toolchain paths. macOS keeps `-lc` (GUI apps need path_helper).
+    #[test]
+    fn unix_shell_flag_matches_platform() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(unix_shell_flag(), "-lc");
+        } else {
+            assert_eq!(unix_shell_flag(), "-c");
+        }
     }
 
     #[test]

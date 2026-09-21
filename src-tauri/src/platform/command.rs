@@ -349,9 +349,10 @@ fn validate_shell_os(shell: ShellKind, os: HostOs) -> Result<(), CommandBuildErr
         (ShellKind::Cmd | ShellKind::PowerShell, HostOs::Linux | HostOs::Macos) => {
             Err(CommandBuildError::WindowsOnlyShell { shell, os })
         }
-        (ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh, HostOs::Windows) => {
-            Err(CommandBuildError::UnixOnlyShell { shell, os })
-        }
+        (
+            ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish,
+            HostOs::Windows,
+        ) => Err(CommandBuildError::UnixOnlyShell { shell, os }),
         _ => Ok(()),
     }
 }
@@ -379,7 +380,7 @@ fn build_script_line(program: &str, args: &[String], shell: ShellKind) -> String
             }
             line
         }
-        ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh => {
+        ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish => {
             let mut line = program.to_string();
             for arg in args {
                 line.push(' ');

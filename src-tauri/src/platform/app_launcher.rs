@@ -757,6 +757,26 @@ fn resolve_known_app(
     }
 }
 
+/// Split a resolved launcher string into a spawnable program + arguments.
+///
+/// IDE resolution returns `"flatpak run <id>"` for flatpak installs (see
+/// [`crate::platform::ide::resolve_ide_executable`]). Passing that whole
+/// string to `Command::new` tries to exec a file literally named
+/// `flatpak run com.visualstudio.code` and fails with ENOENT — the IDE
+/// silently never opens on Linux. This helper turns it into the structured
+/// `("flatpak", ["run", "<id>"])` form; any other string passes through
+/// unchanged.
+pub fn split_launcher_string(spec: &str) -> (String, Vec<String>) {
+    let trimmed = spec.trim();
+    if is_flatpak_invocation(trimmed) {
+        let launcher = parse_flatpak_invocation(trimmed);
+        if launcher.found {
+            return (launcher.program, launcher.args);
+        }
+    }
+    (trimmed.to_string(), Vec::new())
+}
+
 /// Check if a string looks like a flatpak invocation.
 fn is_flatpak_invocation(s: &str) -> bool {
     let trimmed = s.trim();

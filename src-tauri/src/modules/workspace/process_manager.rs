@@ -30,6 +30,10 @@ struct ActiveProcess {
     /// Run/step ownership for output events.
     run_id: Option<String>,
     step_id: Option<String>,
+    /// Pid file written by a visible-terminal command (POSIX). Terminal
+    /// launchers detach immediately, so this recorded process group is the
+    /// only handle that can stop the real command tree.
+    pid_file: Option<std::path::PathBuf>,
     /// Reader thread join handles for cleanup.
     _reader_handles: Vec<thread::JoinHandle<()>>,
 }
@@ -110,6 +114,9 @@ pub trait ProcessManager: Send + Sync {
     /// inside the terminal writes its exit code to that file after it exits,
     /// so the orchestrator can verify the command actually started (and did
     /// not fail instantly) instead of trusting that a terminal window opened.
+    /// When `capture_output` is also set, the terminal's inner command tees
+    /// its output to a sidecar log (see `terminal::startup_log_path`) so the
+    /// orchestrator can report the real failure reason in the run report.
     ///
     /// The default implementation ignores the marker and delegates to
     /// [`Self::spawn_visible_owned`] so managers that do not implement it
@@ -125,6 +132,7 @@ pub trait ProcessManager: Send + Sync {
         run_id: Option<String>,
         step_id: Option<String>,
         _startup_marker: Option<&str>,
+        _capture_output: bool,
     ) -> Result<TrackedProcess, String> {
         self.spawn_visible_owned(
             command,
@@ -345,6 +353,11 @@ impl OsProcessManager {
     }
 
     /// Build a Command for launching a GUI application detached.
+    ///
+    /// On Unix the child becomes a session leader (`setsid`) so the GUI
+    /// application leaves StackPilot's process group: it then survives the
+    /// app exiting and is never hit by signals sent to the app's group
+    /// (the Windows path uses `DETACHED_PROCESS` for the same reason).
     fn build_detached_command(command: &str, args: &[&str], working_dir: Option<&str>) -> Command {
         let plan = crate::platform::command::resolve_spawn_plan(command);
         // Batch shims run through `cmd /C <cmd-style-quoted line>`. The
@@ -390,6 +403,13 @@ impl OsProcessManager {
         }
         #[cfg(not(target_os = "windows"))]
         {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
 
@@ -451,6 +471,7 @@ fn spawn_in_terminal(
     run_id: Option<String>,
     step_id: Option<String>,
     startup_marker: Option<&str>,
+    capture_output: bool,
 ) -> Result<TrackedProcess, String> {
     use crate::platform::terminal::{
         resolve_terminal_plan, TerminalBackend, TerminalConfig, TerminalWindowPolicy,
@@ -458,6 +479,14 @@ fn spawn_in_terminal(
 
     // The inner command executed inside the terminal window.
     let inner = join_command(command, args);
+
+    // POSIX terminals detach: the launcher exits as soon as the window is up,
+    // so the real command tree can only be stopped through the process group
+    // it records here. Windows keeps the launcher-based `taskkill /T` kill.
+    #[cfg(not(target_os = "windows"))]
+    let pid_file = Some(crate::platform::terminal::create_pid_file_path());
+    #[cfg(target_os = "windows")]
+    let pid_file: Option<String> = None;
 
     let config = TerminalConfig {
         backend: TerminalBackend::Default,
@@ -468,10 +497,13 @@ fn spawn_in_terminal(
         keep_open: true,
         env: None,
         startup_marker: startup_marker.map(String::from),
+        capture_output,
+        pid_file,
     };
 
     let plan = resolve_terminal_plan(&config)
         .map_err(|e| format!("Failed to resolve terminal plan: {}", e))?;
+    let pid_file_path = config.pid_file.as_deref().map(std::path::PathBuf::from);
 
     // The terminal plan's LAST argument is the `cmd /K` / `wt` payload. It
     // must reach the spawned process VERBATIM: standard argument quoting
@@ -505,6 +537,7 @@ fn spawn_in_terminal(
         overlay,
         run_id,
         step_id,
+        pid_file_path,
     )
 }
 
@@ -587,6 +620,73 @@ fn kill_windows_tree(pid: u32) -> Result<bool, String> {
 // ============================================================================
 // Unix process group termination
 // ============================================================================
+
+/// Kill the process group recorded by a visible-terminal command (POSIX).
+///
+/// Terminal launchers detach as soon as the window is up, so the tracked
+/// child is usually gone while the real command (a dev server, `docker
+/// compose up`) keeps running. The pid file written by the inner command is
+/// the only handle that reaches that tree. Returns `Ok(true)` when a live
+/// process group was signalled.
+///
+/// The file is removed after reading (a stale pid must never be signalled
+/// twice) and the recorded group is checked for liveness before SIGTERM, so
+/// a pid file left behind by a crashed terminal cannot kill an unrelated
+/// reused PID.
+pub(crate) fn kill_recorded_process_group(pid_file: &std::path::Path) -> Result<bool, String> {
+    let text = match std::fs::read_to_string(pid_file) {
+        Ok(t) => t,
+        Err(_) => return Ok(false),
+    };
+    let _ = std::fs::remove_file(pid_file);
+
+    let mut parts = text.split_whitespace();
+    let pid: i32 = parts
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let pgid: i32 = parts
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(pid);
+    if pid <= 1 {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        let target = if pgid > 1 { -pgid } else { pid };
+        // Safety: never signal StackPilot's own process group or session.
+        let own_group = unsafe { libc::getpgrp() };
+        if pgid > 1 && pgid == own_group {
+            return Ok(false);
+        }
+        if unsafe { libc::kill(target, 0) } != 0 {
+            // No such process group: the command already exited (or the
+            // terminal window was closed long ago).
+            return Ok(false);
+        }
+        unsafe {
+            libc::kill(target, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+        while std::time::Instant::now() < deadline {
+            if unsafe { libc::kill(target, 0) } != 0 {
+                return Ok(true);
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        unsafe {
+            libc::kill(target, libc::SIGKILL);
+        }
+        Ok(true)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, pgid);
+        Ok(false)
+    }
+}
 
 #[cfg(unix)]
 fn kill_unix_group(child: &mut Child, pid: u32) -> Result<bool, String> {
@@ -677,6 +777,7 @@ impl ProcessManager for OsProcessManager {
             false,
             None,
             None,
+            None,
         )
     }
 
@@ -698,6 +799,7 @@ impl ProcessManager for OsProcessManager {
             session_id,
             Some(overlay),
             false,
+            None,
             None,
             None,
         )
@@ -723,6 +825,7 @@ impl ProcessManager for OsProcessManager {
             None,
             None,
             None,
+            false,
         )
     }
 
@@ -733,9 +836,11 @@ impl ProcessManager for OsProcessManager {
         working_dir: Option<&str>,
     ) -> Result<(), String> {
         let mut cmd = Self::build_detached_command(command, args, working_dir);
-        cmd.spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to launch '{}': {}", command, e))
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to launch '{}': {}", command, e))?;
+        reap_child(child);
+        Ok(())
     }
 
     fn spawn_and_track_owned(
@@ -759,6 +864,7 @@ impl ProcessManager for OsProcessManager {
             false,
             run_id,
             step_id,
+            None,
         )
     }
 
@@ -784,6 +890,7 @@ impl ProcessManager for OsProcessManager {
             run_id,
             step_id,
             None,
+            false,
         )
     }
 
@@ -798,6 +905,7 @@ impl ProcessManager for OsProcessManager {
         run_id: Option<String>,
         step_id: Option<String>,
         startup_marker: Option<&str>,
+        capture_output: bool,
     ) -> Result<TrackedProcess, String> {
         spawn_in_terminal(
             self,
@@ -810,6 +918,7 @@ impl ProcessManager for OsProcessManager {
             run_id,
             step_id,
             startup_marker,
+            capture_output,
         )
     }
 
@@ -835,6 +944,7 @@ impl ProcessManager for OsProcessManager {
             false,
             run_id,
             step_id,
+            None,
         )
     }
 
@@ -860,6 +970,7 @@ impl ProcessManager for OsProcessManager {
             false,
             run_id,
             step_id,
+            None,
         )
     }
 
@@ -919,8 +1030,30 @@ impl ProcessManager for OsProcessManager {
             .find(|p| p.info.id == id)
             .ok_or_else(|| format!("Process '{}' not found", id))?;
 
+        // A visible-terminal step's real command runs in the terminal's own
+        // session: the tracked launcher (gnome-terminal, ptyxis, osascript)
+        // has usually exited already, so `child` is None while the dev server
+        // is still running. The pid file written by the inner command is the
+        // only handle that reaches it — use it before the "nothing to kill"
+        // shortcuts below.
+        let recorded_group_killed = match entry.pid_file.clone() {
+            Some(pid_file) => kill_recorded_process_group(&pid_file).unwrap_or(false),
+            None => false,
+        };
+
         // If the child handle is already gone, the process exited naturally.
         if entry.child.is_none() {
+            if recorded_group_killed {
+                entry.info.status = ProcessStatus::Killed;
+                let handle_guard = self.app_handle.lock().expect("app_handle lock poisoned");
+                Self::emit_status(
+                    &handle_guard,
+                    id,
+                    &entry.info.status,
+                    &entry.info.last_error,
+                );
+                return Ok(());
+            }
             match &entry.info.status {
                 ProcessStatus::Exited(_)
                 | ProcessStatus::ExitedWithError(_)
@@ -953,7 +1086,7 @@ impl ProcessManager for OsProcessManager {
 
         match kill_result {
             Ok(was_running) => {
-                if was_running {
+                if was_running || recorded_group_killed {
                     entry.info.status = ProcessStatus::Killed;
                 }
 
@@ -1068,6 +1201,7 @@ impl ProcessManager for OsProcessManager {
 
 impl OsProcessManager {
     /// Shared spawn+track implementation with ownership metadata.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_and_track_inner(
         &self,
         command: &str,
@@ -1080,6 +1214,7 @@ impl OsProcessManager {
         visible: bool,
         run_id: Option<String>,
         step_id: Option<String>,
+        pid_file: Option<std::path::PathBuf>,
     ) -> Result<TrackedProcess, String> {
         let plan = crate::platform::command::resolve_spawn_plan(command);
         // Batch shims must go through `cmd /C`. The command line built by
@@ -1210,6 +1345,7 @@ impl OsProcessManager {
             stderr_seq,
             run_id,
             step_id,
+            pid_file,
             _reader_handles: reader_handles,
         };
 
@@ -1242,6 +1378,7 @@ impl OsProcessManager {
             true,
             None,
             None,
+            None,
         )
     }
 
@@ -1267,10 +1404,12 @@ impl OsProcessManager {
             true,
             None,
             None,
+            None,
         )
     }
 
     /// Spawn with ownership metadata and optional overlay.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_and_track_visible_inner(
         &self,
         command: &str,
@@ -1282,6 +1421,7 @@ impl OsProcessManager {
         overlay: Option<&EnvironmentOverlay>,
         run_id: Option<String>,
         step_id: Option<String>,
+        pid_file: Option<std::path::PathBuf>,
     ) -> Result<TrackedProcess, String> {
         self.spawn_and_track_inner(
             command,
@@ -1294,6 +1434,7 @@ impl OsProcessManager {
             true,
             run_id,
             step_id,
+            pid_file,
         )
     }
 }
@@ -1301,6 +1442,19 @@ impl OsProcessManager {
 /// Generate a collision-safe process ID using UUID v4.
 fn generate_process_id() -> String {
     format!("proc_{}", uuid::Uuid::new_v4())
+}
+
+/// Reap a detached child on a background thread.
+///
+/// Dropping a `Child` does NOT wait for it, so every short-lived launcher
+/// (`code`, `open`, `xdg-open`, `osascript`, `docker desktop start`) would
+/// stay a zombie until StackPilot exits on Unix. The process is detached
+/// (`setsid` / `DETACHED_PROCESS`), so waiting never blocks the app; the exit
+/// status is intentionally discarded — detached launches are fire-and-forget.
+fn reap_child(mut child: Child) {
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 fn timestamp_now() -> String {
@@ -1377,6 +1531,53 @@ mod tests {
         let mut child = child;
         let status = child.wait().expect("should wait");
         assert!(status.success());
+    }
+
+    /// Terminal launchers detach immediately, so Stop/Cancel can only reach
+    /// the real command tree through the recorded process group. This is the
+    /// Linux/macOS equivalent of Windows' `taskkill /T`.
+    #[cfg(unix)]
+    #[test]
+    fn kill_recorded_process_group_terminates_a_live_group() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("60");
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn sleep");
+        let pid = child.id() as i32;
+        let file = std::env::temp_dir().join(format!(
+            "devlauncher_pid_test_{}_{}.txt",
+            std::process::id(),
+            pid
+        ));
+        std::fs::write(&file, format!("{} {}\n", pid, pid)).expect("write pid file");
+
+        assert!(
+            kill_recorded_process_group(&file).unwrap(),
+            "a live recorded group must be killed"
+        );
+        let _ = child.wait();
+        assert!(!file.exists(), "the pid file must be consumed");
+        // A second call (file gone) must be a no-op, not an error.
+        assert!(!kill_recorded_process_group(&file).unwrap());
+    }
+
+    #[test]
+    fn kill_recorded_process_group_ignores_garbage_and_init() {
+        let file = std::env::temp_dir().join(format!(
+            "devlauncher_pid_test_garbage_{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&file, "not a pid\n").expect("write");
+        assert!(!kill_recorded_process_group(&file).unwrap());
+        std::fs::write(&file, "1 1\n").expect("write");
+        assert!(!kill_recorded_process_group(&file).unwrap());
+        let _ = std::fs::remove_file(&file);
     }
 
     #[cfg(target_os = "windows")]

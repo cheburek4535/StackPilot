@@ -961,19 +961,16 @@ pub fn build_profile_v2_from_context_with_options(
     // 3001 next to a Grafana container on 3001).
     let mut compose_published_ports: Vec<u16> = Vec::new();
     if docker {
-        let docker_app = if cfg!(target_os = "windows") {
-            "Docker Desktop"
-        } else {
-            "docker"
-        };
-        if let Some(resolved) = resolve_app(docker_app) {
-            open_app_step(
-                &mut g,
-                "Open Docker Desktop",
-                &resolved,
-                Vec::new(),
-                Vec::new(),
-            );
+        // Docker Desktop resolution is centralized in the platform Docker
+        // service: Windows keeps its App Paths/Start Menu resolution, macOS
+        // uses `open -a Docker`, Linux finds the GUI binary / CLI plugin /
+        // systemd unit. Using the bare `docker` CLI here (the old Linux
+        // branch) opened nothing — it only prints help — while the step was
+        // reported as successful.
+        if let Some((program, args)) =
+            crate::platform::docker_service::DockerService::desktop_launcher()
+        {
+            open_app_step(&mut g, "Open Docker Desktop", &program, args, Vec::new());
         } else {
             diagnostics.push(AnalysisDiagnostic::new(
                 DiagnosticSeverity::Info,

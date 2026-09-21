@@ -7,6 +7,7 @@
 //! means on the current host.
 
 use std::path::Path;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 
 use super::host::{current_os, HostOs};

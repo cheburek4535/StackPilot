@@ -4,9 +4,10 @@
   import { goto } from "$app/navigation";
   import { getProfile, getDemoProfile, executeAction, deleteProfile, runProfile, saveProfile, saveProfileV2, getWslState, installWsl } from "$lib/modules/devlauncher/api";
   import { setCurrentProject } from "$lib/modules/workspace/api";
-  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun, WslState } from "$lib/modules/devlauncher/types";
+  import type { LaunchProfile, LaunchProfileV2, LaunchAction, LaunchStep, ActionType, ActionStatus, LaunchRun, WslState, PlatformCapabilities } from "$lib/modules/devlauncher/types";
   import { isV2Profile, isRunTerminal, runStatusLabel, stepKindIcon, stepKindLabel, stepKindSummary, stepStatusClass, trackingQualityLabel, profileHasDockerSteps } from "$lib/modules/devlauncher/types";
   import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
+  import { loadPlatformCapabilities, isWindowsHost } from "$lib/modules/devlauncher/platform";
   import { buildStep, stepToAction, deleteStepCascade, emptyAddTemplateDraft, type AddTemplate, type AddTemplateDraft } from "$lib/modules/devlauncher/stepBuilder";
   import { markProfileOpened, shouldShowTerminalHint, markHintShown } from "$lib/modules/devlauncher/onboarding";
   import { markHelpDid, HELP, HINT_PROFILE_RUN } from "$lib/core/help";
@@ -83,6 +84,13 @@
   /** Status of this profile's latest run seen by the last sync. */
   let lastSyncedStatus: import("$lib/modules/devlauncher/types").RunStatus | null = null;
 
+  // ---- Platform capabilities (OS, docker desktop availability) ----
+  // Windows-only guidance must not render on Linux/macOS: the WSL dialog and
+  // the "Docker Desktop may ask you to sign in" note are meaningless where
+  // Docker is not the Windows/WSL2 runtime.
+  let caps = $state<PlatformCapabilities | null>(null);
+  const isWindows = $derived(isWindowsHost(caps));
+
   // ---- WSL readiness (Docker on Windows requires WSL2) ----
   let wslState = $state<WslState | null>(null);
   let showWslModal = $state(false);
@@ -100,11 +108,14 @@
   /** The profile includes docker steps. */
   const hasDockerSteps = $derived(profileHasDockerSteps(v2Profile));
   /** WSL is not installed on this machine (regardless of docker steps) —
-   *  drives the always-visible "Download WSL" button. */
-  const wslAbsent = $derived(!!wslState && !wslState.present);
+   *  drives the always-visible "Download WSL" button. Windows only. */
+  const wslAbsent = $derived(isWindows && !!wslState && !wslState.present);
   /** Docker steps exist but WSL (their Windows backend) is not installed.
    *  When true the launch is blocked behind the WSL install dialog instead. */
   const wslMissing = $derived(!!hasDockerSteps && wslAbsent);
+  /** The Docker Desktop first-run note (sign-in/terms) only applies where
+   *  Docker Desktop is the runtime — never on a plain Linux Docker Engine. */
+  const showDockerSigninNote = $derived(hasDockerSteps && caps?.docker_desktop === true);
 
   /** Load the session-cached WSL state (cheap after the first call). */
   async function refreshWsl() {
@@ -112,6 +123,16 @@
       wslState = await getWslState();
     } catch {
       wslState = null;
+    }
+  }
+
+  /** Load the session-cached platform capabilities (OS gating for the WSL
+   *  dialog and Docker Desktop hints). */
+  async function refreshCaps() {
+    try {
+      caps = await loadPlatformCapabilities();
+    } catch {
+      caps = null;
     }
   }
 
@@ -210,6 +231,7 @@
     }
     void refreshDetectedApps();
     void refreshWsl();
+    void refreshCaps();
   });
 
   onDestroy(() => {
@@ -341,6 +363,14 @@
     const steps = (profile as any).steps as Array<{ id: string; label?: string }>;
     const found = steps.find((s) => s.id === stepId);
     return found?.label || stepId;
+  }
+
+  /** Visibility of a step (from the loaded V2 profile step graph). Used by
+   *  the log modal to explain why a visible-terminal step has no captured
+   *  output. */
+  function stepVisibility(stepId: string): string | null {
+    const found = profileSteps.find((s) => s.id === stepId);
+    return (found?.visibility as string | undefined) ?? null;
   }
 
   /** Stop all processes of a run. */
@@ -661,6 +691,13 @@
     logStepId = stepId;
     logOpen = true;
     logLines = [];
+    // The step's error is the primary diagnostic when the command ran in a
+    // native terminal window (visible_terminal steps have no captured
+    // stdout/stderr) — show it above whatever output was captured.
+    const state = activeRun.steps.find((s) => s.step_id === stepId);
+    const errorLine = state?.error
+      ? `✗ ${i18n.t("devl.logs_failed_step")}: ${state.error}`
+      : null;
     try {
       const { getStepLogs } = await import("$lib/modules/devlauncher/api");
       const logs = await getStepLogs(activeRun.run_id, stepId);
@@ -668,6 +705,7 @@
     } catch (e) {
       logLines = [`Failed to load logs: ${e}`];
     }
+    if (errorLine) logLines = [errorLine, ...logLines];
   }
 
   /** View combined logs for an entire run. */
@@ -866,7 +904,7 @@
                 {/if}
               </div>
               <div class="step-controls">
-                {#if (step.status === "running" || step.status === "succeeded") && step.process_id}
+                {#if step.process_id || step.status === "failed"}
                   <button class="small-btn" onclick={() => viewStepLogs(step.step_id)}>
                     Logs
                   </button>
@@ -891,10 +929,11 @@
       </section>
     {/if}
 
-    <!-- Docker sign-in note: purely informational. Docker Desktop may show a
-         sign-in / terms prompt on first launch — it is optional and does not
-         block containers. -->
-    {#if hasDockerSteps}
+    <!-- Docker sign-in note: purely informational, and only where Docker
+         Desktop is the runtime. Docker Desktop may show a sign-in / terms
+         prompt on first launch — it is optional and does not block
+         containers. On Linux with Docker Engine there is no such prompt. -->
+    {#if showDockerSigninNote}
       <p class="docker-signin-note">
         {i18n.t("devl.docker_signin_hint") as TranslationKey}
       </p>
@@ -1128,24 +1167,46 @@
     <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
     <div class="modal-content" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Step logs">
       <div class="modal-header">
-        <span>Logs: {logStepId}</span>
+        <span>
+          {i18n.t("devl.logs_title", {
+            name: logStepId ? stepLabel(logStepId) : (activeRun?.profile_name ?? ""),
+          }) as TranslationKey}
+        </span>
         <button class="modal-close" onclick={closeLogs}>✕</button>
       </div>
       <div class="modal-body">
         {#if logLines.length === 0}
-          <div class="log-empty">Нет логов для этого шага (процесс не запускался или терминал открыт в отдельном окне).</div>
+          <div class="log-empty">
+            {#if logStepId && stepVisibility(logStepId) === "visible_terminal"}
+              {i18n.t("devl.logs_empty_terminal") as TranslationKey}
+            {:else}
+              {i18n.t("devl.logs_empty") as TranslationKey}
+            {/if}
+          </div>
         {:else}
           {#each logLines as line}
-            <div class="log-line">{line}</div>
+            <div class="log-line" class:log-error={line.startsWith("✗")}>{line}</div>
           {/each}
         {/if}
+      </div>
+      <div class="modal-actions">
+        <button
+          class="secondary"
+          onclick={() => {
+            closeLogs();
+            void goto(`/workspace/logs?log=${logStepId ?? ""}`);
+          }}
+        >
+          {i18n.t("devl.logs_open_in_workspace") as TranslationKey}
+        </button>
       </div>
     </div>
   </div>
 {/if}
 
-<!-- WSL pre-flight / install modal -->
-{#if showWslModal}
+<!-- WSL pre-flight / install modal (Windows only: WSL is the Windows
+     backend for Docker Desktop) -->
+{#if showWslModal && isWindows}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-overlay" onclick={closeWslInstall} role="presentation">
     <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
@@ -1722,4 +1783,5 @@
     line-height: 1.5;
   }
   .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+  .log-line.log-error { color: var(--sp-danger, #e5484d); }
 </style>

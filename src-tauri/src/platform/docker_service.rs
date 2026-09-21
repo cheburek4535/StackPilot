@@ -152,6 +152,130 @@ pub struct DockerReadinessResult {
 pub struct DockerService;
 
 impl DockerService {
+    /// Structured launcher for the Docker Desktop APPLICATION on this host.
+    ///
+    /// - **Windows** — unchanged: the app resolvers (App Paths, install
+    ///   dirs, Start Menu shortcuts including Store/MSIX aliases).
+    /// - **macOS** — the canonical `open -a Docker`.
+    /// - **Linux** — the GUI binary on PATH or in the deb/rpm install
+    ///   directory (`/opt/docker-desktop`), then the `.desktop` entry (custom
+    ///   installs), then the `docker desktop` CLI plugin (Docker Desktop
+    ///   4.26+), then the systemd user unit older packages registered.
+    ///
+    /// The bare `docker` CLI is NEVER returned: launching it just prints help
+    /// (it cannot start the daemon), which made the "Open Docker Desktop"
+    /// step report success on Linux while nothing opened.
+    pub fn desktop_launcher() -> Option<(String, Vec<String>)> {
+        match crate::platform::host::current_os() {
+            crate::platform::host::HostOs::Windows => {
+                if let Some(path) = crate::platform::ide::resolve_ide_executable("Docker Desktop") {
+                    return Some((path, Vec::new()));
+                }
+                let launcher =
+                    crate::platform::app_launcher::resolve_application("Docker Desktop", None, None);
+                if launcher.found && !launcher.is_flatpak {
+                    return Some((launcher.program, launcher.args));
+                }
+                // Start Menu shortcut: covers Store/MSIX installs that
+                // register neither App Paths nor a plain exe path. The
+                // structured launcher carries the `shell:AppsFolder` alias.
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(l) =
+                        crate::platform::app_launcher::start_menu_launcher("Docker Desktop")
+                    {
+                        return Some((l.program, l.args));
+                    }
+                }
+                None
+            }
+            crate::platform::host::HostOs::Macos => Some((
+                "open".to_string(),
+                vec!["-a".to_string(), "Docker".to_string()],
+            )),
+            crate::platform::host::HostOs::Linux => Self::linux_desktop_launcher(),
+        }
+    }
+
+    /// Linux Docker Desktop launcher (see [`Self::desktop_launcher`]).
+    #[cfg(target_os = "linux")]
+    fn linux_desktop_launcher() -> Option<(String, Vec<String>)> {
+        // 1. A `docker-desktop` CLI/wrapper on PATH (some packages install
+        //    /usr/bin/docker-desktop).
+        if let Some(path) = resolve_executable("docker-desktop", None) {
+            return Some((path.to_string_lossy().into_owned(), Vec::new()));
+        }
+        // 2. The deb/rpm install layout. This is the binary the desktop entry
+        //    itself launches, and it opens the Dashboard window.
+        for candidate in [
+            "/opt/docker-desktop/bin/docker-desktop",
+            "/usr/lib/docker-desktop/bin/docker-desktop",
+        ] {
+            if Path::new(candidate).is_file() {
+                return Some((candidate.to_string(), Vec::new()));
+            }
+        }
+        // 3. The desktop entry, for installs in non-standard locations.
+        if let Some((program, args)) = desktop_entry_exec("docker-desktop.desktop") {
+            return Some((program, args));
+        }
+        // 4. `docker desktop start` (Docker Desktop 4.26+). Starts the app
+        //    and its engine; the GUI opens when a desktop session exists.
+        if Self::desktop_plugin_available() {
+            if let Some(cli) = Self::resolve_cli() {
+                return Some((
+                    cli.to_string_lossy().into_owned(),
+                    vec!["desktop".to_string(), "start".to_string()],
+                ));
+            }
+        }
+        // 5. The systemd user unit older Docker Desktop packages installed.
+        if linux_systemd_user_unit_exists("docker-desktop.service") {
+            return Some((
+                "systemctl".to_string(),
+                vec![
+                    "--user".to_string(),
+                    "start".to_string(),
+                    "docker-desktop".to_string(),
+                ],
+            ));
+        }
+        None
+    }
+
+    /// Non-Linux stub.
+    #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
+    fn linux_desktop_launcher() -> Option<(String, Vec<String>)> {
+        None
+    }
+
+    /// Whether the `docker desktop` CLI plugin is installed for this host.
+    #[cfg(target_os = "linux")]
+    fn desktop_plugin_available() -> bool {
+        let mut candidates: Vec<std::path::PathBuf> = vec![
+            std::path::PathBuf::from("/usr/lib/docker/cli-plugins/docker-desktop"),
+            std::path::PathBuf::from("/usr/local/lib/docker/cli-plugins/docker-desktop"),
+            std::path::PathBuf::from("/usr/libexec/docker/cli-plugins/docker-desktop"),
+        ];
+        if let Ok(home) = std::env::var("HOME") {
+            candidates.push(
+                std::path::PathBuf::from(home).join(".docker/cli-plugins/docker-desktop"),
+            );
+        }
+        if let Ok(config) = std::env::var("DOCKER_CONFIG") {
+            candidates.push(std::path::PathBuf::from(config).join("cli-plugins/docker-desktop"));
+        }
+        candidates.iter().any(|p| p.is_file())
+    }
+
+    /// Non-Linux stub.
+    #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
+    fn desktop_plugin_available() -> bool {
+        false
+    }
+
     /// Resolve the docker CLI executable. PATH is tried first; when the
     /// CLI is missing there (GUI-launched apps do not inherit shell-profile
     /// PATH entries), the Docker Desktop bundled CLI is used.
@@ -203,6 +327,20 @@ impl DockerService {
                 let p = std::path::Path::new(cand);
                 if p.is_file() {
                     return Some(p.to_path_buf());
+                }
+            }
+            // Docker Desktop for Linux ships its own CLI in the user's home;
+            // on a Desktop-only machine (no distro package) the daemon is
+            // running while `docker` is missing from PATH — every docker step
+            // then reported "CLI missing".
+            if let Ok(home) = std::env::var("HOME") {
+                let bundled = std::path::PathBuf::from(home)
+                    .join(".docker")
+                    .join("desktop")
+                    .join("bin")
+                    .join("docker");
+                if bundled.is_file() {
+                    return Some(bundled);
                 }
             }
         }
@@ -612,21 +750,43 @@ impl DockerService {
                 Ok(())
             }
             crate::platform::host::HostOs::Linux => {
-                // 1. Docker Desktop ships a `docker-desktop` CLI.
-                if resolve_executable("docker-desktop", None).is_some() {
-                    if let Err(e) = spawn_detached("docker-desktop", &[]) {
-                        return Err(err_diag(
-                            format!("Failed to launch Docker Desktop: {}", e),
-                            Some("Start Docker Desktop manually.".to_string()),
-                        ));
+                // 1. `docker desktop start` (Docker Desktop 4.26+): boots the
+                //    app AND its engine, needs no display session, and is
+                //    idempotent. Preferred over the GUI binary for the daemon
+                //    wait because the wait only cares about the engine.
+                if Self::desktop_plugin_available() {
+                    if let Some(cli) = Self::resolve_cli() {
+                        let args = vec!["desktop".to_string(), "start".to_string()];
+                        if let Err(e) = spawn_detached(&cli.to_string_lossy(), &args) {
+                            log::warn!(
+                                "[docker] failed to run `{} desktop start`: {}",
+                                cli.display(),
+                                e
+                            );
+                        } else {
+                            log::info!(
+                                "[docker] started Docker Desktop via `{} desktop start`",
+                                cli.display()
+                            );
+                            return Ok(());
+                        }
                     }
-                    log::info!("[docker] launched Docker Desktop via `docker-desktop`");
-                    Self::best_effort_engine_start();
-                    return Ok(());
                 }
-                // 2. systemd service (rootless attempts are harmless: the
-                // launch is fire-and-forget and the wait loop will report
-                // the daemon state as-is).
+                // 2. The GUI launcher (deb/rpm installs, custom paths, the
+                //    systemd user unit) — same resolver the "Open Docker
+                //    Desktop" step uses, so both stay in sync.
+                if let Some((program, args)) = Self::desktop_launcher() {
+                    if let Err(e) = spawn_detached(&program, &args) {
+                        log::warn!("[docker] failed to launch Docker Desktop: {}", e);
+                    } else {
+                        log::info!("[docker] launched Docker Desktop via '{}'", program);
+                        return Ok(());
+                    }
+                }
+                // 3. Docker Engine installed as a system service (no Docker
+                //    Desktop at all). The launch is best-effort: without
+                //    privileges the daemon stays down and the wait loop
+                //    reports the authoritative state.
                 if resolve_executable("systemctl", None).is_some() {
                     let _ =
                         spawn_detached("systemctl", &["start".to_string(), "docker".to_string()]);
@@ -636,8 +796,8 @@ impl DockerService {
                 Err(err_diag(
                     "No way to auto-start Docker on this system".to_string(),
                     Some(
-                        "Start the Docker daemon manually (`sudo systemctl start docker` \
-                         or Docker Desktop), then retry the profile."
+                        "Start Docker Desktop (`docker desktop start`) or the Docker Engine \
+                         (`sudo systemctl start docker`), then retry the profile."
                             .to_string(),
                     ),
                 ))
@@ -720,8 +880,81 @@ impl DockerService {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Read the `Exec=` line of a desktop entry from the standard application
+/// directories. Used to launch Docker Desktop on Linux installs that do not
+/// follow the deb/rpm layout; `%`-field codes are dropped because there is no
+/// file/URL argument to substitute.
+#[cfg(target_os = "linux")]
+fn desktop_entry_exec(file_name: &str) -> Option<(String, Vec<String>)> {
+    let mut dirs: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from("/usr/share/applications")];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join(".local/share/applications"));
+    }
+    if let Ok(data_dirs) = std::env::var("XDG_DATA_DIRS") {
+        for dir in data_dirs.split(':').filter(|d| !d.trim().is_empty()) {
+            dirs.push(std::path::PathBuf::from(dir).join("applications"));
+        }
+    }
+    for dir in dirs {
+        let Ok(text) = std::fs::read_to_string(dir.join(file_name)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some(exec) = line.trim().strip_prefix("Exec=") else {
+                continue;
+            };
+            let tokens: Vec<&str> = exec
+                .split_whitespace()
+                .filter(|t| !t.starts_with('%'))
+                .collect();
+            let Some((program, args)) = tokens.split_first() else {
+                continue;
+            };
+            return Some((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
+        }
+    }
+    None
+}
+
+/// Non-Linux stub.
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn desktop_entry_exec(_file_name: &str) -> Option<(String, Vec<String>)> {
+    None
+}
+
+/// Whether a systemd user unit with this name exists (Linux). Used to detect
+/// the Docker Desktop service older packages installed; the unit lives in the
+/// user's systemd directory, so a plain `systemctl --user start` bootstraps
+/// Docker Desktop without any GUI assumptions.
+#[cfg(target_os = "linux")]
+fn linux_systemd_user_unit_exists(unit: &str) -> bool {
+    let mut dirs: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from("/usr/lib/systemd/user")];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(
+            std::path::PathBuf::from(home)
+                .join(".config/systemd/user"),
+        );
+    }
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+        dirs.push(std::path::PathBuf::from(config_home).join("systemd/user"));
+    }
+    dirs.iter().any(|dir| dir.join(unit).is_file())
+}
+
+/// Non-Linux stub.
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn linux_systemd_user_unit_exists(_unit: &str) -> bool {
+    false
+}
+
 /// Spawn a GUI application detached (fire-and-forget, no output capture,
-/// new process group on Windows so it outlives the parent).
+/// new process group on Windows so it outlives the parent; `setsid` on Unix
+/// for the same reason).
 fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
@@ -736,11 +969,25 @@ fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
         cmd.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
     }
     cmd.spawn()
-        .map(|_| ())
+        .map(|child| {
+            // Reap the detached child so Unix does not accumulate zombies
+            // (dropping a Child does not wait for it).
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
+        })
         .map_err(|e| format!("Failed to launch '{}': {}", program, e))
 }
 
@@ -750,6 +997,8 @@ fn classify_docker_error(stderr: &str, os: crate::platform::host::HostOs) -> Doc
         || stderr.contains("pipe")
         || stderr.contains("daemon not running")
         || stderr.contains("error during connect")
+        || stderr.contains("is the docker daemon running")
+        || stderr.contains("connection refused")
     {
         DockerDiagnostic {
             status: DockerStatus::DaemonUnavailable,
@@ -766,8 +1015,31 @@ fn classify_docker_error(stderr: &str, os: crate::platform::host::HostOs) -> Doc
                         .to_string()
                 }
                 crate::platform::host::HostOs::Linux => {
-                    "Start the Docker daemon with `sudo systemctl start docker` \
-                     or start Docker Desktop if installed."
+                    "Start Docker Desktop (`docker desktop start`) or the Docker Engine \
+                     (`sudo systemctl start docker`), then retry."
+                        .to_string()
+                }
+            }),
+            detected_os: os,
+        }
+    } else if stderr.contains("permission denied")
+        && (stderr.contains("docker.sock") || stderr.contains("socket"))
+    {
+        // The classic "user is not in the docker group" case: the daemon is
+        // running fine, the socket just refuses the connection. Without this
+        // branch the user only saw a raw "Docker error: permission denied
+        // while trying to connect..." with no hint.
+        DockerDiagnostic {
+            status: DockerStatus::DaemonUnavailable,
+            message: "Permission denied on the Docker socket".to_string(),
+            suggested_action: Some(match os {
+                crate::platform::host::HostOs::Windows | crate::platform::host::HostOs::Macos => {
+                    "Start Docker Desktop and make sure it is running, then retry.".to_string()
+                }
+                crate::platform::host::HostOs::Linux => {
+                    "Add your user to the docker group (`sudo usermod -aG docker $USER`), \
+                     then log out and back in вЂ” or use Docker Desktop, which manages \
+                     the socket for the current user."
                         .to_string()
                 }
             }),
@@ -1045,6 +1317,35 @@ mod tests {
         // No assertion on the outcome: the machine may or may not have
         // Docker installed. The call must simply not panic.
         let _ = DockerService::try_launch_docker();
+    }
+
+    /// The "Open Docker Desktop" launcher must never be the bare `docker`
+    /// CLI: on Linux that CLI only prints help, so the step reported success
+    /// while no window ever opened. The CLI is only acceptable as
+    /// `docker desktop start` (CLI plugin, Docker Desktop 4.26+).
+    #[test]
+    fn desktop_launcher_is_never_the_bare_docker_cli() {
+        let Some((program, args)) = DockerService::desktop_launcher() else {
+            return; // Docker Desktop is not installed on this machine.
+        };
+        let exe = std::path::Path::new(&program)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if exe == "docker" {
+            assert_eq!(
+                args,
+                vec!["desktop".to_string(), "start".to_string()],
+                "the docker CLI may only be used as `docker desktop start`"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_systemd_user_unit_is_not_found() {
+        assert!(!linux_systemd_user_unit_exists(
+            "stackpilot-unit-that-does-not-exist.service"
+        ));
     }
 
     #[test]

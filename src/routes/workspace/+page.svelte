@@ -46,6 +46,7 @@
     LaunchRun,
     ActionStatus,
     WslState,
+    PlatformCapabilities,
   } from "$lib/modules/devlauncher/types";
   import {
     isV2Profile,
@@ -55,6 +56,7 @@
     profileHasDockerSteps,
   } from "$lib/modules/devlauncher/types";
   import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
+  import { loadPlatformCapabilities, isWindowsHost } from "$lib/modules/devlauncher/platform";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
@@ -89,6 +91,10 @@
   // ---- Docker / WSL ----
   /** Whether the most recent launch was a V2 profile with docker steps. */
   let launchedHasDocker = $state(false);
+  /** Platform capabilities (OS gating for the WSL dialog and Docker
+   *  Desktop hints). */
+  let caps = $state<PlatformCapabilities | null>(null);
+  const isWindows = $derived(isWindowsHost(caps));
   // ---- WSL readiness (Docker on Windows requires WSL2) ----
   let wslState = $state<WslState | null>(null);
   let showWslModal = $state(false);
@@ -105,6 +111,15 @@
       wslState = await getWslState();
     } catch {
       wslState = null;
+    }
+  }
+
+  /** Load the session-cached platform capabilities. */
+  async function refreshCaps() {
+    try {
+      caps = await loadPlatformCapabilities();
+    } catch {
+      caps = null;
     }
   }
 
@@ -154,8 +169,16 @@
   }
 
   /** Docker steps exist but WSL (their Windows backend) is not installed.
-   *  When true the launch is blocked behind the WSL install dialog instead. */
-  const wslMissing = $derived(!!launchedHasDocker && !!wslState && !wslState.present);
+   *  When true the launch is blocked behind the WSL install dialog instead.
+   *  Windows only: WSL is meaningless on Linux/macOS. */
+  const wslMissing = $derived(
+    isWindows && !!launchedHasDocker && !!wslState && !wslState.present,
+  );
+  /** The Docker Desktop first-run note (sign-in/terms) only applies where
+   *  Docker Desktop is the runtime — never on a plain Linux Docker Engine. */
+  const showDockerSigninNote = $derived(
+    launchedHasDocker && caps?.docker_desktop === true,
+  );
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -193,6 +216,7 @@
       }
     }
     void refreshWsl();
+    void refreshCaps();
   });
 
   onDestroy(() => {
@@ -964,7 +988,7 @@
             </div>
           {/if}
 
-          {#if launchedHasDocker}
+          {#if showDockerSigninNote}
             <p class="docker-signin-note">
               {i18n.t("devl.docker_signin_hint") as TranslationKey}
             </p>
@@ -975,7 +999,7 @@
   {/if}
 </PageContainer>
 
-{#if showWslModal}
+{#if showWslModal && isWindows}
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
   <div class="docker-auth-modal-overlay" onclick={closeWslInstall} role="presentation">
     <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
