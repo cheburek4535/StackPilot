@@ -75,15 +75,7 @@
     "sources": {
       "windows": [],
       "linux": [],
-      "macos": [
-        {
-          "kind": "PkgManager",
-          "id": "brew",
-          "args": [],
-          "extra_args": [],
-          "dynamic_args": false
-        }
-      ]
+      "macos": []
     },
     "size_mb": 400,
     "needs_admin": false,

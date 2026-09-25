@@ -162,6 +162,8 @@ fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> Exe
     match ext.as_str() {
         "phar" => ExecutionKind::Phar,
         "ps1" | "sh" => ExecutionKind::Script,
+        "pkg" => ExecutionKind::ApplePkg,
+        "dmg" => ExecutionKind::AppleDmg,
         _ if is_archive_name(path) => ExecutionKind::Archive,
         // Script-источник без узнаваемого расширения (rustup-init:
         // https://sh.rustup.rs) — это скрипт, а не бинарь: запускать
@@ -524,6 +526,37 @@ fn build_install_command(
                     source.id
                 )),
 
+                ExecutionKind::ApplePkg => {
+                    let mut args = vec![
+                        "-pkg".to_string(),
+                        path.to_string_lossy().into_owned(),
+                        "-target".to_string(),
+                        "/".to_string(),
+                    ];
+                    args.extend(source.args.iter().cloned());
+                    args.extend(dynamic);
+                    Ok(InstallCommand {
+                        program: "installer".to_string(),
+                        args,
+                    })
+                }
+
+                ExecutionKind::AppleDmg => {
+                    let path_str = path.to_string_lossy().into_owned();
+                    // We use sh -c to sequence the mount, copy, and unmount.
+                    // If elevation is required, `run_elevated` will execute this entire
+                    // sh command with administrator privileges.
+                    let script = format!(
+                        "hdiutil attach -nobrowse -mountpoint /Volumes/sp_mnt_{id} '{path_str}' && cp -R /Volumes/sp_mnt_{id}/*.app /Applications/ && hdiutil detach /Volumes/sp_mnt_{id}",
+                        id = source.id,
+                        path_str = path_str
+                    );
+                    Ok(InstallCommand {
+                        program: "sh".to_string(),
+                        args: vec!["-c".to_string(), script],
+                    })
+                }
+
                 // Бинарь/инсталлятор: msi → msiexec, msix → App Installer,
                 // exe → запуск напрямую.
                 ExecutionKind::Exe => {
@@ -831,6 +864,13 @@ pub fn source_requires_elevation(source: &InstallSource, def: &ToolDefinition) -
         "macos" => {
             if matches!(source.kind, InstallSourceKind::PkgManager) {
                 return false;
+            }
+            if let Some(url) = source.url.as_deref().or(source.url_template.as_deref()) {
+                let tail = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+                let tail_lower = tail.to_ascii_lowercase();
+                if tail_lower.ends_with(".pkg") || tail_lower.ends_with(".dmg") {
+                    return true;
+                }
             }
             catalog_flag
         }

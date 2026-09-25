@@ -228,6 +228,8 @@ fn looks_like_pkg_manager_error(line: &str) -> bool {
         || line.starts_with("error: ")
         || line.starts_with("Error: ")
         || line.starts_with("Problem: ")
+        || line.starts_with("brew: ")
+        || line.starts_with("fatal: ")
 }
 
 /// Читает поток построчно и шлёт каждую непустую строку как

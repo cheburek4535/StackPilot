@@ -29,6 +29,15 @@ pub fn run() {
 
             core::logging::init(&data_dir);
 
+            // Приложение стартует с PATH момента запуска — инструменты,
+            // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
+            // winget, SDK), могут остаться вне него. Подтягиваем свежий
+            // пользовательский PATH из системы ДО инициализации модулей,
+            // иначе Homebrew и другие утилиты не будут найдены при первой детекции.
+            tauri::async_runtime::block_on(async {
+                let _ = modules::toolchain::core::path_service::sync_process_path().await;
+            });
+
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 
             std::fs::create_dir_all(data_dir.join("profiles"))
@@ -113,14 +122,6 @@ pub fn run() {
                     app.handle().clone(),
                 );
             }
-
-            // Приложение стартует с PATH момента запуска — инструменты,
-            // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
-            // winget, SDK), могут остаться вне него. Подтягиваем свежий
-            // пользовательский PATH из системы, пока UI ещё инициализируется.
-            tauri::async_runtime::spawn(async move {
-                let _ = modules::toolchain::core::path_service::sync_process_path().await;
-            });
 
             // Register all states
             app.manage(devlauncher_state);

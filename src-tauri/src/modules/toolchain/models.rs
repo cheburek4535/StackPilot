@@ -357,6 +357,10 @@ pub enum ExecutionKind {
     Phar,
     /// Архив (.zip/.tgz): распаковывается в install_dir, а не запускается.
     Archive,
+    /// Пакет macOS (.pkg): устанавливается через `installer -pkg`.
+    ApplePkg,
+    /// Образ диска macOS (.dmg): монтируется, копируется `.app`, размонтируется.
+    AppleDmg,
     /// Автоопределение по URL/расширению (значение по умолчанию).
     Auto,
 }
