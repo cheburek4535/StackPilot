@@ -54,10 +54,10 @@
     "JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "Fira Code",
     ui-monospace, SFMono-Regular, "Consolas", "Liberation Mono", monospace;
 
-  --sp-text-1: #e6e9ef;
-  --sp-text-2: #a3adbf;
-  --sp-text-3: #7b869a;
-  --sp-text-disabled: #556072;
+  --sp-text-1: #ffffff;
+  --sp-text-2: rgba(255, 255, 255, 0.75);
+  --sp-text-3: rgba(255, 255, 255, 0.5);
+  --sp-text-disabled: rgba(255, 255, 255, 0.25);
 
   --sp-fs-xs: 0.75rem;
   --sp-fs-sm: 0.8125rem;
@@ -96,17 +96,16 @@
 
   /* ---- Elevation ---- */
   --sp-shadow-1:
-    0 1px 2px rgba(0, 0, 0, 0.55),
-    0 1px 3px rgba(0, 0, 0, 0.35);
+    0 1px 3px rgba(0, 0, 0, 0.2);
   --sp-shadow-2:
-    0 2px 8px rgba(0, 0, 0, 0.5),
-    0 6px 20px rgba(0, 0, 0, 0.4);
+    0 4px 12px rgba(0, 0, 0, 0.15),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
   --sp-shadow-3:
-    0 8px 28px rgba(0, 0, 0, 0.6),
-    0 20px 56px rgba(0, 0, 0, 0.5);
+    0 12px 32px rgba(0, 0, 0, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
   --sp-shadow-accent:
-    0 0 0 1px var(--sp-accent-border),
-    0 4px 24px rgba(228, 87, 10, 0.22);
+    0 2px 8px rgba(224, 94, 0, 0.15),
+    0 0 0 1px rgba(224, 94, 0, 0.3);
 
   /* ---- Glossy surface helpers ---- */
   --sp-gloss-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -119,18 +118,15 @@
     0 0 0 2px var(--sp-bg-0),
     0 0 0 4px var(--sp-accent);
 
-  /* ---- Surfaces (deep, neutral black — no plastic layers) ---- */
+  /* ---- Surfaces (glassmorphism ready) ---- */
   --sp-bg-0: #050507;
   --sp-bg-1: #0b0b11;
   --sp-bg-2: #12141d;
   --sp-bg-3: #191c28;
-  --sp-glass-bg: rgba(11, 11, 17, 0.82);
-  --sp-glass-strong: rgba(7, 7, 12, 0.9);
-  /* Почти непрозрачная поверхность для постоянно видимых панелей (топбар,
-   * сайдбар, sticky-хедеры): заменяет backdrop-filter, который заставляет
-   * композитор пересобирать всё под панелью на каждом кадре. */
-  --sp-solid-chrome: rgba(11, 11, 17, 0.97);
-  --sp-border: rgba(148, 163, 184, 0.08);
+  --sp-glass-bg: rgba(11, 11, 17, 0.85);
+  --sp-glass-strong: rgba(7, 7, 12, 0.95);
+  --sp-solid-chrome: #0b0b11;
+  --sp-border: rgba(255, 255, 255, 0.06);
   --sp-border-strong: rgba(148, 163, 184, 0.14);
   --sp-border-faint: rgba(148, 163, 184, 0.04);
 
@@ -182,10 +178,10 @@
   --sp-blue-soft: rgba(37, 99, 235, 0.08);
   --sp-blue-border: rgba(37, 99, 235, 0.28);
 
-  --sp-text-1: #181a1f;
-  --sp-text-2: #4b5162;
-  --sp-text-3: #6b7285;
-  --sp-text-disabled: #9aa1b0;
+  --sp-text-1: #000000;
+  --sp-text-2: rgba(0, 0, 0, 0.7);
+  --sp-text-3: rgba(0, 0, 0, 0.55);
+  --sp-text-disabled: rgba(0, 0, 0, 0.3);
 
   --sp-shadow-1: 0 1px 2px rgba(15, 20, 40, 0.06);
   --sp-shadow-2: 0 2px 8px rgba(15, 20, 40, 0.08);
@@ -202,9 +198,9 @@
   --sp-bg-1: #ffffff;
   --sp-bg-2: #f0f2f7;
   --sp-bg-3: #e6e9f1;
-  --sp-glass-bg: rgba(255, 255, 255, 0.78);
-  --sp-glass-strong: rgba(255, 255, 255, 0.92);
-  --sp-solid-chrome: rgba(255, 255, 255, 0.97);
+  --sp-glass-bg: rgba(255, 255, 255, 0.85);
+  --sp-glass-strong: rgba(255, 255, 255, 0.95);
+  --sp-solid-chrome: #ffffff;
   --sp-border: rgba(23, 28, 48, 0.1);
   --sp-border-strong: rgba(23, 28, 48, 0.18);
   --sp-border-faint: rgba(23, 28, 48, 0.05);
@@ -238,9 +234,15 @@ body {
   padding: 0;
   height: 100%;
   background-color: var(--sp-bg-0);
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(124, 94, 240, 0.05) 0%, transparent 60%),
+    radial-gradient(circle at 10% 100%, rgba(37, 181, 208, 0.03) 0%, transparent 50%);
+  background-attachment: fixed;
   color: var(--sp-text-1);
   font-family: var(--sp-font-sans);
   font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv05", "cv08", "ss01";
 }
 
 body {
@@ -251,6 +253,15 @@ body {
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.02em;
+}
+
+.sp-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv05", "cv08", "ss01";
 }
 
 ::selection {

@@ -15,6 +15,7 @@
   import type { Locale, TranslationKey } from "$lib/core/i18n.svelte";
   import { listenExitRequest } from "$lib/core/exit";
   import type { ExitAskPayload } from "$lib/core/exit";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
@@ -64,13 +65,29 @@
   $effect(() => {
     if (restoreRoute) rememberRoute(pathname);
   });
+
+  function minimizeWindow() {
+    getCurrentWindow().minimize();
+  }
+  function maximizeWindow() {
+    getCurrentWindow().toggleMaximize();
+  }
+  function closeWindow() {
+    getCurrentWindow().close();
+  }
+  
+  function startDrag(e: PointerEvent) {
+    if (e.target instanceof Element && e.target.closest('button, a')) return;
+    getCurrentWindow().startDragging();
+  }
 </script>
 
 <div class="sp-app">
-  <header class="sp-topbar">
+  <header class="sp-topbar" data-tauri-drag-region onpointerdown={startDrag}>
     <a href="/" class="sp-brand">
-      <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
+      <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo" />
     </a>
+    <div class="sp-topbar-drag" data-tauri-drag-region onpointerdown={startDrag}></div>
     <div class="sp-topbar-actions">
       <button
         type="button"
@@ -89,6 +106,17 @@
         onclick={() => reopenOnboarding()}
       />
       <IconButton icon="settings" label={i18n.t("nav.settings") as TranslationKey} href="/settings" />
+      <div class="sp-window-controls">
+        <button class="sp-window-control" onclick={minimizeWindow} aria-label="Minimize">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 0,5 10,5" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <button class="sp-window-control" onclick={maximizeWindow} aria-label="Maximize">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,1 9,9 1,9 Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <button class="sp-window-control sp-window-close" onclick={closeWindow} aria-label="Close">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,9 M 1,9 9,1" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -162,7 +190,7 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    background: var(--sp-bg-0);
+    background: transparent;
     color: var(--sp-text-1);
     font-family: var(--sp-font-sans);
   }
@@ -178,10 +206,9 @@
     gap: var(--sp-4);
     height: var(--sp-topbar-h);
     padding: 0 var(--sp-4);
-    background: var(--sp-panel-sheen),
-      var(--sp-solid-chrome);
-    border-bottom: 1px solid var(--sp-border);
-    box-shadow: var(--sp-gloss-top-strong);
+    background: transparent;
+    border-bottom: none;
+    box-shadow: none;
     z-index: 10;
   }
 
@@ -227,6 +254,12 @@
     border-radius: var(--sp-radius-full);
   }
 
+  .sp-topbar-drag {
+    flex: 1;
+    height: 100%;
+    /* No visual styles needed, this is an invisible drag handle */
+  }
+
   .sp-brand-logo {
     height: 30px;
     width: auto;
@@ -264,6 +297,36 @@
     color: var(--sp-text-1);
   }
 
+  .sp-window-controls {
+    display: flex;
+    align-items: center;
+    margin-left: var(--sp-2);
+    -webkit-app-region: no-drag;
+  }
+
+  .sp-window-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2rem;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-2);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .sp-window-control:hover {
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
+  }
+
+  .sp-window-close:hover {
+    background: #e81123;
+    color: white;
+  }
+
   /* ---- body ---- */
 
   .sp-body {
@@ -281,10 +344,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--sp-panel-sheen),
-      var(--sp-solid-chrome);
-    border-right: 1px solid var(--sp-border);
-    box-shadow: var(--sp-gloss-top);
+    background: transparent;
+    border-right: none;
+    box-shadow: none;
   }
 
   .sp-nav {
@@ -433,5 +495,15 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    background: var(--sp-bg-0);
+    border-radius: 10px;
+    margin: 0 8px 8px 0;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.4), 
+      inset 0 1px 1px rgba(255, 255, 255, 0.1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(24px) saturate(150%);
   }
 </style>

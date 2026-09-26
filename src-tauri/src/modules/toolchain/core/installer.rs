@@ -543,11 +543,9 @@ fn build_install_command(
 
                 ExecutionKind::AppleDmg => {
                     let path_str = path.to_string_lossy().into_owned();
-                    // We use sh -c to sequence the mount, copy, and unmount.
-                    // If elevation is required, `run_elevated` will execute this entire
-                    // sh command with administrator privileges.
+                    // We use a robust script to ensure we detach even if cp fails.
                     let script = format!(
-                        "hdiutil attach -nobrowse -mountpoint /Volumes/sp_mnt_{id} '{path_str}' && cp -R /Volumes/sp_mnt_{id}/*.app /Applications/ && hdiutil detach /Volumes/sp_mnt_{id}",
+                        "MNT=\"/Volumes/sp_mnt_{id}\"; hdiutil attach -nobrowse -mountpoint \"$MNT\" '{path_str}' && {{ cp -R \"$MNT\"/*.app /Applications/; hdiutil detach \"$MNT\"; }}",
                         id = source.id,
                         path_str = path_str
                     );
