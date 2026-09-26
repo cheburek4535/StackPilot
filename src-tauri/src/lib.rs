@@ -130,6 +130,36 @@ pub fn run() {
             app.manage(project_env_state);
             app.manage(core::settings::SettingsState(settings_service));
 
+            // Catch SIGTERM / Ctrl+C to terminate all processes.
+            tauri::async_runtime::spawn(async move {
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to bind SIGTERM");
+                    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to bind SIGINT");
+                    tokio::select! {
+                        _ = sigterm.recv() => {
+                            log::info!("Received SIGTERM, terminating processes...");
+                            crate::core::process_registry::terminate_all();
+                            std::process::exit(0);
+                        }
+                        _ = sigint.recv() => {
+                            log::info!("Received SIGINT, terminating processes...");
+                            crate::core::process_registry::terminate_all();
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if let Ok(()) = tokio::signal::ctrl_c().await {
+                        log::info!("Received Ctrl-C, terminating processes...");
+                        crate::core::process_registry::terminate_all();
+                        std::process::exit(0);
+                    }
+                }
+            });
+
             // Auto-track process errors in the session
             let handle = app.handle().clone();
             app.listen("process-status", move |event| {
@@ -228,6 +258,7 @@ pub fn run() {
             modules::project_creator::commands::preview_project_recipe,
             modules::project_creator::commands::preview_project_files,
             modules::project_creator::commands::start_project_execution,
+            modules::project_creator::commands::cancel_project_execution,
             modules::project_creator::commands::project_execution_snapshot,
             modules::project_creator::commands::count_project_files,
             modules::project_creator::commands::check_project_folder_exists,

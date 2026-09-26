@@ -113,18 +113,21 @@ pub async fn delete_profile(
         .map_err(|e| format!("Delete profile task failed: {e}"))?
 }
 
-/// Относительный working_dir действия (например "./backend") резолвится
-/// относительно текущего проекта Workspace — иначе команда выполнится в
-/// рабочей папке самого приложения и упадёт с "No such file or directory".
-fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
-    let project_path = workspace
-        .project
-        .get_current()
-        .and_then(|ctx| ctx.project_path);
+/// Относительный working_dir действия (например "./backend") и цель IDE
+/// резолвятся относительно корня проекта профиля — иначе команда выполнится
+/// в рабочей папке самого приложения и упадёт или откроет src-tauri.
+fn resolve_working_dir(
+    action: &mut LaunchAction,
+    workspace: &WorkspaceState,
+    profile_project_path: Option<&str>,
+) {
+    let project_path = profile_project_path
+        .map(String::from)
+        .or_else(|| workspace.project.get_current().and_then(|ctx| ctx.project_path));
     match &mut action.action_type {
         ActionType::RunCommand { working_dir, .. } => {
             let Some(dir) = working_dir else { return };
-            let Some(base) = project_path else { return };
+            let Some(ref base) = project_path else { return };
             let path = Path::new(dir);
             if path.is_relative() {
                 *dir = PathBuf::from(base)
@@ -136,20 +139,44 @@ fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
         ActionType::OpenApplication {
             ref mut args_list,
             ref mut args,
-            ..
+            ref path,
         } => {
-            let Some(base) = project_path else { return };
+            let Some(ref base) = project_path else { return };
             let base_str = PathBuf::from(base).to_string_lossy().into_owned();
+            let mut replaced = false;
+
             if let Some(list) = args_list {
                 for arg in list.iter_mut() {
                     if arg == "." {
                         *arg = base_str.clone();
+                        replaced = true;
                     }
                 }
             }
             if let Some(single) = args {
                 if single == "." {
-                    *single = base_str;
+                    *single = base_str.clone();
+                    replaced = true;
+                }
+            }
+
+            let lower_path = path.to_ascii_lowercase();
+            let is_ide = lower_path == "code"
+                || lower_path.contains("vscode")
+                || lower_path.contains("cursor")
+                || lower_path.contains("windsurf")
+                || lower_path.contains("idea")
+                || lower_path.contains("pycharm")
+                || lower_path.contains("webstorm")
+                || lower_path.contains("goland")
+                || lower_path.contains("clion")
+                || lower_path.contains("rider");
+
+            if is_ide && !replaced {
+                let has_args = args_list.as_ref().map_or(false, |l| !l.is_empty())
+                    || args.as_ref().map_or(false, |s| !s.trim().is_empty());
+                if !has_args {
+                    *args_list = Some(vec![base_str]);
                 }
             }
         }
@@ -176,10 +203,38 @@ pub async fn execute_action(
     action: LaunchAction,
     session_id: Option<String>,
     environment_binding_id: Option<String>,
+    project_path: Option<String>,
 ) -> Result<ActionStatus, String> {
     let engine = Arc::clone(&state.launch_engine);
     let mut action = action;
-    resolve_working_dir(&mut action, &workspace);
+
+    // Resolve profile project path:
+    // 1. Explicitly passed from frontend (profile.project_path)
+    // 2. Looked up in saved profiles by action ID
+    // 3. Fallback to active workspace project
+    let profile_project_path = project_path.or_else(|| {
+        if let Ok(profiles) = state.profile_manager.list_profiles_v2() {
+            for p in profiles {
+                if p.steps.iter().any(|s| s.id == action.id) {
+                    if let Some(root) = p.project_root {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        if let Ok(profiles) = state.profile_manager.list_profiles() {
+            for p in profiles {
+                if p.actions.iter().any(|a| a.id == action.id) {
+                    if let Some(root) = p.project_path {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    resolve_working_dir(&mut action, &workspace, profile_project_path.as_deref());
     let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
     // Процессы, запущенные из профиля, привязываются к текущей сессии —
     // иначе таймер сессии никогда не увидит их завершения. If no session is
@@ -1031,4 +1086,65 @@ pub async fn devl_wsl_install(app: tauri::AppHandle) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::platform::wsl::install(emit))
         .await
         .map_err(|e| format!("WSL install task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::devlauncher::models::ActionType;
+    use crate::modules::workspace::process_manager::OsProcessManager;
+
+    #[test]
+    fn test_resolve_working_dir_replaces_dot_for_open_app() {
+        let pm = Arc::new(OsProcessManager::new());
+        let ws = WorkspaceState::new(pm, None);
+        let mut action = LaunchAction {
+            id: "act-1".into(),
+            label: "Open VS Code".into(),
+            action_type: ActionType::OpenApplication {
+                path: "code".into(),
+                args: None,
+                args_list: Some(vec![".".into()]),
+            },
+            enabled: true,
+        };
+
+        resolve_working_dir(&mut action, &ws, Some("C:\\my\\target\\project"));
+
+        if let ActionType::OpenApplication { args_list, .. } = &action.action_type {
+            assert_eq!(
+                args_list.as_ref().unwrap(),
+                &vec!["C:\\my\\target\\project".to_string()]
+            );
+        } else {
+            panic!("Unexpected action type");
+        }
+    }
+
+    #[test]
+    fn test_resolve_working_dir_injects_root_when_empty_ide_args() {
+        let pm = Arc::new(OsProcessManager::new());
+        let ws = WorkspaceState::new(pm, None);
+        let mut action = LaunchAction {
+            id: "act-2".into(),
+            label: "Open VS Code".into(),
+            action_type: ActionType::OpenApplication {
+                path: "code".into(),
+                args: None,
+                args_list: None,
+            },
+            enabled: true,
+        };
+
+        resolve_working_dir(&mut action, &ws, Some("C:\\my\\target\\project"));
+
+        if let ActionType::OpenApplication { args_list, .. } = &action.action_type {
+            assert_eq!(
+                args_list.as_ref().unwrap(),
+                &vec!["C:\\my\\target\\project".to_string()]
+            );
+        } else {
+            panic!("Unexpected action type");
+        }
+    }
 }

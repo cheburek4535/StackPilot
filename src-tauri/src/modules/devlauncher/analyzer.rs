@@ -1760,6 +1760,7 @@ fn generate_steps(
     diagnostics: &mut Vec<AnalysisDiagnostic>,
 ) -> Vec<LaunchStep> {
     let root = &model.root;
+    let root_str = root.to_string_lossy().to_string();
     let mut steps: Vec<PendingStep> = Vec::new();
     let mut known: HashSet<(String, String)> = HashSet::new();
 
@@ -1769,7 +1770,7 @@ fn generate_steps(
         if let Some(resolved) = resolve_app(ide_name) {
             steps.push(PendingStep::open_app(
                 &resolved,
-                vec![".".to_string()],
+                vec![root_str.clone()],
                 "Open VS Code",
             ));
         } else {
@@ -1789,7 +1790,7 @@ fn generate_steps(
             if let Some(resolved) = resolve_app(android_studio_cli_name()) {
                 steps.push(PendingStep::open_app(
                     &resolved,
-                    vec![".".to_string()],
+                    vec![root_str.clone()],
                     "Open Android Studio",
                 ));
             } else {

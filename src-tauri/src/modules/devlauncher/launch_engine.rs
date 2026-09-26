@@ -240,7 +240,16 @@ impl LaunchEngine for ProcessLaunchEngine {
 
                 // Use detached launch so the GUI app opens natively without
                 // output suppression. VSCode, PyCharm, Docker Desktop, etc.
-                let ide_dir = working_dir_for_ide(overlay, action, &resolved_path);
+                let ide_dir = working_dir_for_ide(overlay, action, &resolved_path).or_else(|| {
+                    args_vec.iter().find_map(|a| {
+                        let p = std::path::Path::new(a);
+                        if p.is_dir() {
+                            Some(a.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                });
                 self.process_manager
                     .launch_detached(&resolved_path, &args_refs, ide_dir)?;
 

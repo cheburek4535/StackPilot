@@ -343,8 +343,9 @@ impl ProcessRunner {
                 });
             }
         };
+        let pid = child.id().unwrap_or(0);
         crate::core::process_registry::register(
-            child.id().unwrap_or(0),
+            pid,
             command.clone(),
             command.clone(),
             args.clone(),
@@ -370,9 +371,6 @@ impl ProcessRunner {
         let stdout_tail_task = Arc::clone(&stdout_tail);
         let stderr_tail_task = Arc::clone(&stderr_tail);
 
-        // Ошибки ридеров stdout/stderr не замалчиваются: первая ошибка чтения
-        // попадает в общий слот и, если процесс в остальном завершился
-        // успешно, превращается в различимый ProcessErrorKind::ReadOutput.
         let reader_error: Arc<Mutex<Option<(&'static str, String)>>> = Arc::new(Mutex::new(None));
         let stdout_reader_error = Arc::clone(&reader_error);
         let stderr_reader_error = Arc::clone(&reader_error);
@@ -394,8 +392,6 @@ impl ProcessRunner {
             }
         });
 
-        // Таймаут: убиваем процесс и возвращаем различимый Timeout-вид
-        // ошибки (в отличие от обычного Exit/Wait/Spawn).
         let wait_result = match spec.timeout {
             Some(timeout) => match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(status)) => Ok(status),
@@ -426,10 +422,6 @@ impl ProcessRunner {
             },
         };
 
-        // Паника ридера (а не ошибка read) раньше убивала задачу молча:
-        // процесс-писатель получал EPIPE («Pipe to stdout was broken» у pip),
-        // а шаг показывал только его ошибку. Фиксируем панику/отмену задачи в
-        // том же слоте, что и ошибки чтения — причина сбоя не теряется.
         for (stream, join) in [("stdout", stdout_task.await), ("stderr", stderr_task.await)] {
             if let Err(join_error) = join {
                 if let Ok(mut slot) = reader_error.lock() {
@@ -440,13 +432,14 @@ impl ProcessRunner {
             }
         }
 
+        crate::core::process_registry::unregister(pid);
+
         let reader_failure = reader_error.lock().ok().and_then(|slot| slot.clone());
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let stdout_detail = tail_text(&stdout_tail);
         let mut stderr_detail = tail_text(&stderr_tail);
-        // Провал ридера обязан быть виден в ошибке шага, даже когда процесс
-        // упал сам (иначе причина подменяется следствием — EPIPE у писателя).
+
         if let Some((stream, source)) = &reader_failure {
             stderr_detail = format!(
                 "{}\n[project_creator] {stream} reader failed: {source}",

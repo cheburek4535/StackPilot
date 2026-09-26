@@ -984,6 +984,32 @@ impl RunOrchestrator {
                     }
                     launcher.program
                 };
+
+                if let Some(root) = profile.project_root.as_deref().or(working_dir) {
+                    let mut replaced = false;
+                    for arg in resolved_args.iter_mut() {
+                        if arg == "." {
+                            *arg = root.to_string();
+                            replaced = true;
+                        }
+                    }
+                    let lower_path = path.to_ascii_lowercase();
+                    let is_ide = lower_path == "code"
+                        || lower_path.contains("vscode")
+                        || lower_path.contains("cursor")
+                        || lower_path.contains("windsurf")
+                        || lower_path.contains("idea")
+                        || lower_path.contains("pycharm")
+                        || lower_path.contains("webstorm")
+                        || lower_path.contains("goland")
+                        || lower_path.contains("clion")
+                        || lower_path.contains("rider");
+
+                    if is_ide && !replaced && resolved_args.is_empty() {
+                        resolved_args.push(root.to_string());
+                    }
+                }
+
                 // Flatpak installs resolve to "flatpak run <id>" (IDE
                 // resolver): split the multi-word string into a real program
                 // plus arguments, otherwise the spawn fails with ENOENT.

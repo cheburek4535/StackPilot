@@ -91,6 +91,8 @@ pub struct ProjectCreatorState {
     pub execution_events: Arc<Mutex<Vec<ExecutionEvent>>>,
     /// true, пока выполнение проекта активно (tokio-задача не завершилась).
     pub execution_running: Arc<AtomicBool>,
+    /// Флаг отмены для остановки запущенной задачи генерации.
+    pub execution_cancel_flag: Arc<AtomicBool>,
 }
 
 impl ProjectCreatorState {
@@ -110,6 +112,7 @@ impl ProjectCreatorState {
             knowledge,
             execution_events: Arc::new(Mutex::new(Vec::new())),
             execution_running: Arc::new(AtomicBool::new(false)),
+            execution_cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 }

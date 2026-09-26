@@ -83,6 +83,13 @@ pub fn register(
     }
 }
 
+/// Удалить процесс из реестра (например, когда он завершился).
+pub fn unregister(pid: u32) {
+    if let Ok(mut guard) = registry().lock() {
+        guard.retain(|p| p.pid != pid);
+    }
+}
+
 /// Текущий список процессов StackPilot.
 pub fn list() -> Vec<SpawnedProcessInfo> {
     registry()
@@ -227,6 +234,21 @@ pub fn terminate_all() -> usize {
         }
     }
     clear();
+    killed
+}
+
+/// Завершить процессы определенной группы (source). Возвращает число завершённых.
+pub fn terminate_group(source: &str) -> usize {
+    let procs = list();
+    let mut killed = 0;
+    for p in &procs {
+        if p.source == source {
+            if terminate_by_pid(p.pid) {
+                killed += 1;
+            }
+            unregister(p.pid);
+        }
+    }
     killed
 }
 

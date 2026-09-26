@@ -297,8 +297,13 @@ pub async fn start_project_execution(
     let app_clone = app.clone();
     let events_store = Arc::clone(&state.execution_events);
     let running_flag = Arc::clone(&state.execution_running);
+    let cancel_flag = Arc::clone(&state.execution_cancel_flag);
 
-    running_flag.store(true, Ordering::SeqCst);
+    if running_flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("Generation is already in progress".to_string());
+    }
+    cancel_flag.store(false, Ordering::SeqCst);
+
     *events_store
         .lock()
         .map_err(|_| "execution state poisoned".to_string())? = Vec::new();
@@ -323,7 +328,7 @@ pub async fn start_project_execution(
             }
         });
 
-        engine.execute(plan_clone, tx).await;
+        engine.execute(plan_clone, tx, cancel_flag).await;
 
         let _ = app_clone.emit("project_creator:execution_done", ());
         running_flag.store(false, Ordering::SeqCst);
@@ -368,3 +373,11 @@ pub async fn count_project_files(path: String) -> Result<ProjectFileCount, Strin
     .await
     .map_err(|e| format!("Count files task failed: {e}"))?
 }
+
+#[tauri::command]
+pub fn cancel_project_execution(state: State<'_, ProjectCreatorState>) -> Result<(), String> {
+    state.execution_cancel_flag.store(true, Ordering::SeqCst);
+    crate::core::process_registry::terminate_group("project_creator");
+    Ok(())
+}
+

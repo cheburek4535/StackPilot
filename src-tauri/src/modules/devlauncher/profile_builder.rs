@@ -897,6 +897,12 @@ pub fn build_profile_v2_from_context_with_options(
     let has_frontend = !frontend_frameworks(ctx).is_empty();
 
     // --- 1. IDE / tool windows (roots) ---
+    let project_dir_arg = ctx
+        .project_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     let effective_vscode = opts
         .vscode
         .as_deref()
@@ -909,7 +915,7 @@ pub fn build_profile_v2_from_context_with_options(
             &mut g,
             "Open VS Code",
             &resolved,
-            vec![".".to_string()],
+            vec![project_dir_arg.clone()],
             Vec::new(),
         );
         ide_opened = true;
@@ -938,7 +944,7 @@ pub fn build_profile_v2_from_context_with_options(
                 &mut g,
                 "Open Android Studio",
                 &resolved,
-                vec![".".to_string()],
+                vec![project_dir_arg.clone()],
                 Vec::new(),
             );
         } else {

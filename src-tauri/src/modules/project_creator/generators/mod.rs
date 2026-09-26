@@ -426,18 +426,22 @@ impl Generator for FsCleanupGenerator {
             ));
         }
 
-        // Маркер, что артефакты создал именно prisma init.
-        let prisma_skills = project_path.join("skills-lock.json").exists();
+        let marker_file = config.get("marker_file").and_then(|v| v.as_str());
+        let marker_exists = marker_file
+            .map(|m| project_path.join(m).exists())
+            .unwrap_or(true);
+
+        if !marker_exists {
+            return Ok(GenerationReport::success(
+                format!("Marker file '{}' not found, nothing to clean up", marker_file.unwrap_or(""))
+            ));
+        }
 
         let mut removed: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for p in &paths {
             let full = project_path.join(p);
             if full.is_dir() {
-                if !prisma_skills {
-                    skipped.push(format!("{} (no skills-lock.json marker)", p));
-                    continue;
-                }
                 match std::fs::remove_dir_all(&full) {
                     Ok(_) => removed.push(p.clone()),
                     Err(e) => {

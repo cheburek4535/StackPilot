@@ -181,11 +181,38 @@ pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo>
 // Файловый IO (read_dir, чтение/запись файлов) — блокирующая работа:
 // async + spawn_blocking, чтобы навигация по файлам не фризила UI.
 
+fn validate_sandbox_path(state: &WorkspaceState, path: &str) -> Result<(), String> {
+    let ctx = state.project.get_current().ok_or_else(|| "No active project".to_string())?;
+    let project_path_str = ctx.project_path.ok_or_else(|| "Project path is not set".to_string())?;
+    
+    let target_path = std::path::Path::new(path);
+    
+    let canonical_target = if target_path.exists() {
+        std::fs::canonicalize(target_path).map_err(|e| format!("Invalid path: {}", e))?
+    } else {
+        let parent = target_path.parent().unwrap_or(target_path);
+        let mut canon = std::fs::canonicalize(parent).map_err(|e| format!("Invalid path: {}", e))?;
+        if let Some(name) = target_path.file_name() {
+            canon.push(name);
+        }
+        canon
+    };
+    
+    let canonical_project = std::fs::canonicalize(&project_path_str)
+        .map_err(|e| format!("Invalid project path: {}", e))?;
+        
+    if !canonical_target.starts_with(&canonical_project) {
+        return Err("Access denied: path is outside the project workspace".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_directory(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<Vec<file_explorer::FileEntry>, String> {
+    validate_sandbox_path(&state, &path)?;
     let explorer = Arc::clone(&state.file_explorer);
     tauri::async_runtime::spawn_blocking(move || explorer.list_directory(&path))
         .await
@@ -197,6 +224,7 @@ pub async fn read_file(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<file_explorer::FileContent, String> {
+    validate_sandbox_path(&state, &path)?;
     let explorer = Arc::clone(&state.file_explorer);
     tauri::async_runtime::spawn_blocking(move || explorer.read_file(&path))
         .await
@@ -209,10 +237,39 @@ pub async fn write_file(
     path: String,
     content: String,
 ) -> Result<(), String> {
+    validate_sandbox_path(&state, &path)?;
     let explorer = Arc::clone(&state.file_explorer);
     tauri::async_runtime::spawn_blocking(move || explorer.write_file(&path, &content))
         .await
         .map_err(|e| format!("Write file task failed: {e}"))?
+}
+
+fn resolve_open_vscode_path(state: &WorkspaceState, path: &str) -> Result<String, String> {
+    let trimmed = path.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    let target = std::path::Path::new(trimmed);
+    let resolved_path = if target.is_relative() {
+        if let Some(ctx) = state.project.get_current() {
+            if let Some(ref proj_dir) = ctx.project_path {
+                std::path::PathBuf::from(proj_dir).join(target)
+            } else {
+                target.to_path_buf()
+            }
+        } else {
+            target.to_path_buf()
+        }
+    } else {
+        target.to_path_buf()
+    };
+
+    if !resolved_path.exists() {
+        return Err(format!("Path does not exist: {}", resolved_path.display()));
+    }
+
+    Ok(resolved_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -221,10 +278,11 @@ pub async fn open_in_vscode(
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<(), String> {
+    let path_str = resolve_open_vscode_path(&state, &path)?;
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     let explorer = Arc::clone(&state.file_explorer);
     tauri::async_runtime::spawn_blocking(move || {
-        explorer.open_in_vscode(&path, vscode_path.as_deref())
+        explorer.open_in_vscode(&path_str, vscode_path.as_deref())
     })
     .await
     .map_err(|e| format!("Open in VS Code task failed: {e}"))?
@@ -253,4 +311,56 @@ pub fn get_workspace_overview(state: State<'_, WorkspaceState>) -> OverviewData 
         .get_session()
         .and_then(|s| s.started_at.parse::<u64>().ok());
     state.overview.compute_overview(&processes, session_started)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::workspace::process_manager::OsProcessManager;
+
+    fn create_test_workspace() -> WorkspaceState {
+        WorkspaceState::new(Arc::new(OsProcessManager::new()), None)
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_empty() {
+        let ws = create_test_workspace();
+        let err = resolve_open_vscode_path(&ws, "").unwrap_err();
+        assert!(err.contains("Path cannot be empty"));
+
+        let err_spaces = resolve_open_vscode_path(&ws, "   ").unwrap_err();
+        assert!(err_spaces.contains("Path cannot be empty"));
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_nonexistent() {
+        let ws = create_test_workspace();
+        let err = resolve_open_vscode_path(&ws, "C:/this/path/definitely/does/not/exist_12345").unwrap_err();
+        assert!(err.contains("Path does not exist"));
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_existing_without_active_project() {
+        let ws = create_test_workspace();
+        // Ensure there is NO active project
+        assert!(ws.project.get_current().is_none());
+
+        // Test with current directory which exists
+        let current_dir = std::env::current_dir().unwrap();
+        let current_dir_str = current_dir.to_str().unwrap();
+
+        let resolved = resolve_open_vscode_path(&ws, current_dir_str).unwrap();
+        assert_eq!(resolved, current_dir_str);
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_with_quotes() {
+        let ws = create_test_workspace();
+        let current_dir = std::env::current_dir().unwrap();
+        let current_dir_str = current_dir.to_str().unwrap();
+        let quoted = format!("\"{}\"", current_dir_str);
+
+        let resolved = resolve_open_vscode_path(&ws, &quoted).unwrap();
+        assert_eq!(resolved, current_dir_str);
+    }
 }

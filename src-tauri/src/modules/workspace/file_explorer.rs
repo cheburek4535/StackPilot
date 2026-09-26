@@ -142,12 +142,19 @@ impl FileExplorerService for DefaultFileExplorerService {
                 // `.cmd` shims must run through cmd.exe (CreateProcess cannot
                 // execute batch files directly).
                 let args = crate::platform::command::batch_shim_cmd_line(&resolved, &[path]);
-                Command::new("cmd").args(args).spawn()
+                let mut cmd = Command::new("cmd");
+                cmd.args(args);
+                #[cfg(target_os = "windows")]
+                crate::platform::suppress_child_console(&mut cmd);
+                cmd.spawn()
             } else {
                 Command::new(&resolved).arg(path).spawn()
             }
         } else {
-            Command::new(&resolved).arg(path).spawn()
+            let (program, mut launcher_args) =
+                crate::platform::app_launcher::split_launcher_string(&resolved);
+            launcher_args.push(path.to_string());
+            Command::new(&program).args(&launcher_args).spawn()
         };
         match result {
             Ok(_) => Ok(()),
