@@ -9,6 +9,27 @@
   import { availableLocales } from "$lib/core/i18n.svelte";
 
   const store = getProjectStore();
+
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      }
+    };
+  }
+
+  $effect(() => {
+    const dismiss = () => store.hideTooltip();
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("pointerdown", dismiss, true);
+    return () => {
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("pointerdown", dismiss, true);
+    };
+  });
 </script>
 
       <div class="builder">
@@ -51,55 +72,60 @@
             {/if}
           {/snippet}
 
-          {#if store.phase === 0}
-            <p class="prompt">{i18n.t("create.what_building") as TranslationKey}</p>
-          {/if}
-          {#if store.phase === 1}
-            <p class="prompt">{i18n.t("create.stack_tools") as TranslationKey}</p>
-            {@render archBanner()}
-            {#if store.selectedFrameworks.length > 0 || store.selectedTools.length > 0}
-              <button
-                class="btn-clear-stack"
-                title={i18n.t("create.clear_stack_title") as TranslationKey}
-                onclick={() => (store.confirmClearStack = true)}
-              >
-                {i18n.t("create.clear_stack") as TranslationKey}
-              </button>
+          <div class="builder-head-text">
+            {#if store.phase === 0}
+              <h2 class="prompt">{i18n.t("create.what_building") as TranslationKey}</h2>
+              <p class="prompt-sub">Выберите базовый тип архитектуры для формирования правильного стека технологий</p>
             {/if}
-            {#if store.dropNotice}
-              <p class="notice-bar" role="status">{store.dropNotice}</p>
-            {/if}
-            <p class="hint">
-              {i18n.t("create.fw_hint") as TranslationKey}
-            </p>
+            {#if store.phase === 1}
+              <div class="phase-title-row">
+                <h2 class="prompt">{i18n.t("create.stack_tools") as TranslationKey}</h2>
+                {#if store.selectedFrameworks.length > 0 || store.selectedTools.length > 0}
+                  <button
+                    class="btn-clear-stack"
+                    title={i18n.t("create.clear_stack_title") as TranslationKey}
+                    onclick={() => (store.confirmClearStack = true)}
+                  >
+                    <Icon name="x" size={13} />
+                    <span>{i18n.t("create.clear_stack") as TranslationKey}</span>
+                  </button>
+                {/if}
+              </div>
+              <p class="prompt-sub">{i18n.t("create.fw_hint") as TranslationKey}</p>
+              {@render archBanner()}
+              {#if store.dropNotice}
+                <p class="notice-bar" role="status">{store.dropNotice}</p>
+              {/if}
 
-            <store.HelpHint
-              id={store.HINT_CREATE_STACK.id}
-              resolvedBy={store.HINT_CREATE_STACK.resolvedBy}
-              icon="layers"
-              title={i18n.t("help.create_stack.title") as TranslationKey}
-              text={i18n.t("help.create_stack.body") as TranslationKey}
-            />
+              <store.HelpHint
+                id={store.HINT_CREATE_STACK.id}
+                resolvedBy={store.HINT_CREATE_STACK.resolvedBy}
+                icon="layers"
+                title={i18n.t("help.create_stack.title") as TranslationKey}
+                text={i18n.t("help.create_stack.body") as TranslationKey}
+              />
 
-            {#if store.confirmClearStack}
-              <div class="clear-overlay" onclick={() => (store.confirmClearStack = false)}>
-                <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-                  <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
-                  <p>
-                    {i18n.t("create.clear_confirm_body") as TranslationKey}
-                  </p>
-                  <div class="clear-actions">
-                    <button class="btn-primary" onclick={() => store.clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
-                    <button class="btn-back" onclick={() => (store.confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
+              {#if store.confirmClearStack}
+                <div class="clear-overlay" onclick={() => (store.confirmClearStack = false)}>
+                  <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+                    <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
+                    <p>
+                      {i18n.t("create.clear_confirm_body") as TranslationKey}
+                    </p>
+                    <div class="clear-actions">
+                      <button class="btn-primary" onclick={() => store.clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
+                      <button class="btn-back" onclick={() => (store.confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
+                    </div>
                   </div>
                 </div>
-              </div>
+              {/if}
             {/if}
-          {/if}
-          {#if store.phase === 2}
-            <p class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</p>
-            {@render archBanner()}
-          {/if}
+            {#if store.phase === 2}
+              <h2 class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</h2>
+              <p class="prompt-sub">Проверьте выбранный стек, имя директории и перейдите к генерации проекта</p>
+              {@render archBanner()}
+            {/if}
+          </div>
         </div>
 
         <div class="builder-left">
@@ -141,8 +167,14 @@
                   class="card"
                   class:selected={store.selectedFrameworks.includes(fw.id)}
                   class:blocked={reason !== null}
-                  title={altInfo?.detail}
-                  onclick={() => store.clickFramework(fw.id)}
+                  onclick={() => {
+                    store.hideTooltip();
+                    store.clickFramework(fw.id);
+                  }}
+                  onmouseenter={(e) => store.showTooltip({ type: "framework", fw, reason, altInfo, warnReason }, e)}
+                  onmouseleave={store.hideTooltip}
+                  onfocus={(e) => store.showTooltip({ type: "framework", fw, reason, altInfo, warnReason }, e)}
+                  onblur={store.hideTooltip}
                 >
                   {#if store.selectedFrameworks.includes(fw.id)}
                     <span class="card-check" aria-hidden="true">✓</span>
@@ -448,8 +480,14 @@
                             class:selected={store.backendLangs.includes(lang.id)}
                             class:blocked={blockedReason !== null}
                             disabled={blockedReason !== null}
-                            title={blockedDetail ?? undefined}
-                            onclick={() => store.toggleLang("backend", lang.id)}
+                            onclick={() => {
+                              store.hideTooltip();
+                              store.toggleLang("backend", lang.id);
+                            }}
+                            onmouseenter={(e) => store.showTooltip({ type: "language", lang, side: "backend", blockedReason, blockedDetail }, e)}
+                            onmouseleave={store.hideTooltip}
+                            onfocus={(e) => store.showTooltip({ type: "language", lang, side: "backend", blockedReason, blockedDetail }, e)}
+                            onblur={store.hideTooltip}
                           >
                             {#if store.backendLangs.includes(lang.id)}
                               <span class="card-check" aria-hidden="true">✓</span>
@@ -508,7 +546,14 @@
                             class:selected={store.frontendLangs.includes(lang.id)}
                             class:blocked={blockedReason !== null}
                             disabled={blockedReason !== null}
-                            onclick={() => store.toggleLang("frontend", lang.id)}
+                            onclick={() => {
+                              store.hideTooltip();
+                              store.toggleLang("frontend", lang.id);
+                            }}
+                            onmouseenter={(e) => store.showTooltip({ type: "language", lang, side: "frontend", blockedReason }, e)}
+                            onmouseleave={store.hideTooltip}
+                            onfocus={(e) => store.showTooltip({ type: "language", lang, side: "frontend", blockedReason }, e)}
+                            onblur={store.hideTooltip}
                           >
                             {#if store.frontendLangs.includes(lang.id)}
                               <span class="card-check" aria-hidden="true">✓</span>
@@ -580,10 +625,13 @@
                           <button
                             class="tool-item"
                             class:selected={store.selectedTools.includes(tool.id)}
-                            onclick={() => store.toggleTool(tool.id)}
-                            onmouseenter={(e) => store.showTooltip(tool, e)}
+                            onclick={() => {
+                              store.hideTooltip();
+                              store.toggleTool(tool.id);
+                            }}
+                            onmouseenter={(e) => store.showTooltip({ type: "tool", tool }, e)}
                             onmouseleave={store.hideTooltip}
-                            onfocus={(e) => store.showTooltip(tool, e)}
+                            onfocus={(e) => store.showTooltip({ type: "tool", tool }, e)}
                             onblur={store.hideTooltip}
                           >
                             <TechIcon icon={tool.icon} alt={i18n.t(tool.label as TranslationKey)} size="md" />
@@ -614,21 +662,7 @@
                   {/if}
                 {/each}
 
-                {#if store.tooltipData}
-                  <div class="tooltip" style="left: {store.tooltipData.x}px; top: {store.tooltipData.y}px;">
-                    <strong>{i18n.t(store.tooltipData.tool.label as TranslationKey)}</strong>
-                    <p>{i18n.t(store.tooltipData.tool.description as TranslationKey)}</p>
-                    {#if store.tooltipData.tool.requires.length > 0}
-                      <p class="tt-req">{i18n.t("create.requires", { list: store.tooltipData.tool.requires.join(", ") }) as TranslationKey}</p>
-                    {/if}
-                    {#if store.tooltipData.tool.conflicts.length > 0}
-                      <p class="tt-conf">{i18n.t("create.conflicts_with", { list: store.tooltipData.tool.conflicts.join(", ") }) as TranslationKey}</p>
-                    {/if}
-                    {#if store.tooltipData.tool.requires_docker}
-                      <p class="tt-docker"><TechIcon icon="docker.svg" alt="" size="xs" /> {i18n.t("create.requires_docker") as TranslationKey}</p>
-                    {/if}
-                  </div>
-                {/if}
+
 
                 <div class="features-panel">
                   <p class="group-label">{i18n.t("create.features") as TranslationKey}</p>
@@ -975,6 +1009,161 @@
         </div>
       </div>
 
+{#if store.tooltipData}
+  <div
+    use:portal
+    class="sp-floating-tooltip sp-tt-{store.tooltipData.placement}"
+    style="left: {store.tooltipData.x}px; top: {store.tooltipData.y}px;"
+    role="tooltip"
+  >
+    {#if store.tooltipData.item.type === "tool"}
+      {@const tool = store.tooltipData.item.tool}
+      <div class="tt-header">
+        <TechIcon icon={tool.icon} alt="" size="sm" />
+        <span class="tt-title">{i18n.t(tool.label as TranslationKey)}</span>
+      </div>
+      <p class="tt-desc">{i18n.t(tool.description as TranslationKey)}</p>
+
+      {#if store.recommendedBadgeIds().includes(tool.id)}
+        <div class="tt-badge-row">
+          <span class="tt-chip tt-chip-rec">⭐ {i18n.t("create.recommended") as TranslationKey}</span>
+        </div>
+      {/if}
+
+      {#if tool.requires_docker}
+        <div class="tt-row tt-docker">
+          <TechIcon icon="docker.svg" alt="" size="xs" />
+          <span>{i18n.t("create.requires_docker") as TranslationKey}</span>
+        </div>
+      {/if}
+
+      {#if tool.requires && tool.requires.length > 0}
+        <div class="tt-row">
+          <span class="tt-label">{i18n.t("create.requires", { list: "" }) as TranslationKey}</span>
+          <span class="tt-val">{tool.requires.join(", ")}</span>
+        </div>
+      {/if}
+
+      {#if tool.conflicts && tool.conflicts.length > 0}
+        <div class="tt-row tt-conf">
+          <span class="tt-label">{i18n.t("create.conflicts_with", { list: "" }) as TranslationKey}</span>
+          <span class="tt-val">{tool.conflicts.join(", ")}</span>
+        </div>
+      {/if}
+
+    {:else if store.tooltipData.item.type === "framework"}
+      {@const fw = store.tooltipData.item.fw}
+      {@const item = store.tooltipData.item}
+      <div class="tt-header">
+        <TechIcon icon={fw.icon} alt="" size="sm" />
+        <div class="tt-title-wrap">
+          <span class="tt-title">{i18n.t(fw.label as TranslationKey)}</span>
+          <div class="tt-tags">
+            <span class="tt-tag">
+              {fw.side === "backend" ? i18n.t("create.backend") : fw.side === "frontend" ? i18n.t("create.frontend") : "Fullstack"}
+            </span>
+            <span class="tt-tag">{fw.class === "standalone" ? "Standalone" : "In-place"}</span>
+          </div>
+        </div>
+      </div>
+      <p class="tt-desc">{i18n.t(fw.description as TranslationKey)}</p>
+
+      <div class="tt-meta-block">
+        <div class="tt-row">
+          <span class="tt-label">Языки:</span>
+          <span class="tt-val">{fw.languages.map((l) => store.langLabel(l)).join(", ")}</span>
+        </div>
+        {#if fw.languages.length > 1}
+          <div class="tt-row">
+            <span class="tt-label">Основной язык:</span>
+            <span class="tt-val highlight">{store.langLabel(fw.recommended_language)}</span>
+          </div>
+        {/if}
+      </div>
+
+      {#if fw.recommends && fw.recommends.length > 0}
+        {@const recNames = fw.recommends.map((r) => {
+          const rf = store.tree?.frameworks.find((x) => x.id === r.framework);
+          return rf ? i18n.t(rf.label as TranslationKey) : r.framework;
+        }).join(", ")}
+        <div class="tt-row tt-rec">
+          <span class="tt-label">Рекомендуется с:</span>
+          <span class="tt-val">{recNames}</span>
+        </div>
+      {/if}
+
+      {#if item.reason}
+        <div class="tt-alert tt-alert-error">
+          <span class="tt-alert-icon">⛔</span>
+          <div>
+            <div class="tt-alert-msg">{item.reason}</div>
+            {#if item.altInfo?.detail}
+              <div class="tt-alert-sub">{item.altInfo.detail}</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      {#if item.warnReason}
+        <div class="tt-alert tt-alert-warn">
+          <span class="tt-alert-icon">⚠️</span>
+          <div class="tt-alert-msg">{item.warnReason}</div>
+        </div>
+      {/if}
+
+    {:else if store.tooltipData.item.type === "language"}
+      {@const lang = store.tooltipData.item.lang}
+      {@const item = store.tooltipData.item}
+      {@const compatFws = (store.tree?.frameworks ?? []).filter((f) => f.languages.includes(lang.id))}
+      <div class="tt-header">
+        <TechIcon icon={lang.icon} alt="" size="sm" />
+        <div class="tt-title-wrap">
+          <span class="tt-title">{store.langLabel(lang.id)}</span>
+          <span class="tt-tag">
+            {item.side === "backend" ? i18n.t("create.backend_language") : i18n.t("create.frontend_language2")}
+          </span>
+        </div>
+      </div>
+
+      {#if lang.category === "static"}
+        <p class="tt-desc">{i18n.t("create.plain_html") as TranslationKey}</p>
+      {:else}
+        <p class="tt-desc">
+          {item.side === "backend"
+            ? "Язык программирования для серверной части проекта."
+            : "Язык программирования для клиентской части проекта."}
+        </p>
+      {/if}
+
+      {#if compatFws.length > 0}
+        <div class="tt-meta-block">
+          <span class="tt-label">Фреймворки в каталоге ({compatFws.length}):</span>
+          <div class="tt-fw-pills">
+            {#each compatFws.slice(0, 6) as cfw}
+              <span class="tt-fw-pill">{i18n.t(cfw.label as TranslationKey)}</span>
+            {/each}
+            {#if compatFws.length > 6}
+              <span class="tt-fw-pill-more">+{compatFws.length - 6}</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      {#if item.blockedReason}
+        <div class="tt-alert tt-alert-error">
+          <span class="tt-alert-icon">⛔</span>
+          <div>
+            <div class="tt-alert-msg">{item.blockedReason}</div>
+            {#if item.blockedDetail}
+              <div class="tt-alert-sub">{item.blockedDetail}</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    {/if}
+  </div>
+{/if}
+
 
 <style>
 .wizard { max-width: 1280px; margin: 0 auto; padding: 2rem; }
@@ -1008,13 +1197,86 @@
 .backendless-note { border-left: 3px solid var(--sp-accent-strong); padding: 0.35rem 0.75rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top); margin: 0.75rem 0; }
 
 /* ---- Конструктор: Две колонки (Строгий стиль) ---- */
-.builder { display: grid; grid-template-columns: 1fr 340px; gap: 2rem; align-items: start; max-width: 1280px; margin: 0 auto; }
+.builder {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 1.5rem;
+  align-items: start;
+  width: 100%;
+}
+
 /* Шапка фазы */
-.builder-head { grid-column: 1 / -1; min-width: 0; text-align: center; margin-bottom: 1rem; }
-.builder-left { display: flex; flex-direction: column; gap: 2rem; min-width: 0; }
+.builder-head {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 1.25rem 2rem 1.5rem;
+  background: var(--sp-surface-grad), var(--sp-bg-1);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-xl);
+  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.builder-head-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.prompt {
+  margin: 0;
+  font-size: var(--sp-fs-xl);
+  font-weight: var(--sp-fw-bold);
+  color: var(--sp-text-1);
+  letter-spacing: -0.02em;
+}
+
+.prompt-sub {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--sp-fs-sm);
+  color: var(--sp-text-3);
+  max-width: 42rem;
+  line-height: var(--sp-lh-normal);
+}
+
+.phase-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.btn-clear-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0.25rem 0.6rem;
+  background: var(--sp-danger-soft);
+  color: var(--sp-danger);
+  border: 1px solid var(--sp-danger-border);
+  border-radius: var(--sp-radius-md);
+  font-size: var(--sp-fs-xs);
+  font-weight: var(--sp-fw-medium);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-clear-stack:hover {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fff;
+}
+
+.builder-left { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
 .builder-side {
   position: sticky;
-  top: 2rem;
+  top: 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -1025,8 +1287,8 @@
   padding: 1.25rem;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-xl);
-  background: var(--sp-bg-1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  background: var(--sp-surface-grad), var(--sp-bg-1);
+  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
 }
 
 /* Подсказка «Попробуйте тип Кастомный стэк» под панелью контекста */
@@ -1096,43 +1358,76 @@
 }
 .btn-change:hover { color: var(--sp-accent-strong); text-decoration: underline; opacity: 1; }
 
-/* ---- Фазы (slim stepper) ---- */
-.phase-nav { display: flex; align-items: center; justify-content: center; gap: 0; margin-bottom: 1.75rem; flex-wrap: wrap; }
-.phase-item {
-  display: flex;
+/* ---- Фазы (stepper) ---- */
+.phase-nav {
+  display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  justify-content: center;
+  gap: 0;
+  margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+  padding: 0.25rem 0.5rem;
+  background: var(--sp-bg-2);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-full);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.phase-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   background: none;
   border: none;
   cursor: pointer;
   color: var(--sp-text-3);
-  font-size: 0.8rem;
-  padding: 0.3rem 0.75rem;
+  font-size: var(--sp-fs-sm);
+  font-weight: var(--sp-fw-medium);
+  font-family: inherit;
+  padding: 0.35rem 0.85rem;
+  border-radius: var(--sp-radius-full);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .phase-item + .phase-item::before {
   content: "";
-  width: 26px;
+  width: 24px;
   height: 1px;
   background: var(--sp-border-strong);
-  margin-right: 0.75rem;
+  margin-right: 0.85rem;
   flex-shrink: 0;
 }
-.phase-item:hover { color: var(--sp-text-2); }
-.phase-item.active { color: #fff; }
-.phase-item.active .phase-circle { background: var(--sp-accent-strong); color: #fff; box-shadow: 0 0 0 3px var(--sp-accent-soft); }
-.phase-item.done .phase-circle { background: var(--sp-success); color: #0c0d11; }
+.phase-item:hover {
+  color: var(--sp-text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.phase-item.active {
+  color: #fff;
+  background: var(--sp-surface-grad), var(--sp-bg-3);
+  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+}
 .phase-circle {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--sp-bg-2);
+  background: var(--sp-bg-1);
   border: 1px solid var(--sp-border);
-  font-weight: 700;
-  font-size: 0.7rem;
-  transition: background 0.15s, border-color 0.15s;
+  font-weight: var(--sp-fw-bold);
+  font-size: 0.72rem;
+  color: var(--sp-text-3);
+  transition: all 0.2s ease;
+}
+.phase-item.active .phase-circle {
+  background: var(--sp-accent-strong);
+  border-color: var(--sp-accent);
+  color: #fff;
+  box-shadow: 0 0 14px var(--sp-accent-glow);
+}
+.phase-item.done .phase-circle {
+  background: var(--sp-success-soft);
+  border-color: var(--sp-success);
+  color: var(--sp-success);
 }
 .phase-label { font-weight: 600; }
 
@@ -1267,7 +1562,8 @@
 .grayscale:hover { border-color: var(--sp-border-strong); background: var(--sp-bg-1); }
 .card h3 { margin: 0; font-size: 0.95rem; }
 .card p { margin: 0; font-size: 0.78rem; color: var(--sp-text-3); }
-.type-grid { grid-template-columns: repeat(auto-fill, 230px); justify-content: center; }
+.type-grid { grid-template-columns: repeat(4, 1fr); }
+.type-grid .card { height: 100%; box-sizing: border-box; }
 .fw-grid { grid-template-columns: repeat(auto-fill, 230px); grid-auto-rows: 1fr; align-items: stretch; justify-content: center; }
 .fw-grid .card { min-height: 220px; height: 100%; width: 100%; box-sizing: border-box; flex: 1; }
 .fw-grid .card p { flex: 1; }
@@ -1510,27 +1806,207 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 .tool-item-badge.rec { color: var(--sp-warning); background: var(--sp-warning-soft); border: 1px solid var(--sp-warning-border); }
 .tool-item-check { color: var(--sp-accent-strong); font-weight: 700; font-size: 0.95rem; }
 .group-label { font-size: 0.85rem; font-weight: 600; color: var(--sp-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-.tooltip {
+:global(.sp-floating-tooltip) {
   position: fixed;
-  background: var(--sp-glass-strong);
-  border: 1px solid var(--sp-border-strong);
-  border-radius: var(--sp-radius-lg);
-  padding: 0.6rem 0.9rem;
-  font-size: 0.8rem;
-  max-width: 240px;
-  z-index: 999;
+  z-index: 99999;
   pointer-events: none;
-  color: var(--sp-text-2);
-  opacity: 0.96;
-  box-shadow: var(--sp-gloss-top), 0 6px 20px rgba(0, 0, 0, 0.45);
-  animation: tooltip-in 0.14s ease-out;
+  width: min(300px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--sp-radius-xl, 12px);
+  background: rgba(14, 18, 25, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: var(--sp-text-1, #f8fafc);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
-@keyframes tooltip-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 0.94; transform: translateY(0); }
+
+:global(.sp-floating-tooltip.sp-tt-bottom) {
+  transform: translate(-50%, 0);
+  animation: sp-tt-fade-down 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.tooltip strong { color: #fff; }
-.tt-req, .tt-conf, .tt-docker { margin: 0.2rem 0; font-size: 0.75rem; }
+
+:global(.sp-floating-tooltip.sp-tt-top) {
+  transform: translate(-50%, -100%);
+  animation: sp-tt-fade-up 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes sp-tt-fade-down {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes sp-tt-fade-up {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 6px)); }
+  to { opacity: 1; transform: translate(-50%, -100%); }
+}
+
+:global(.sp-floating-tooltip .tt-header) {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.45rem;
+}
+
+:global(.sp-floating-tooltip .tt-title-wrap) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+:global(.sp-floating-tooltip .tt-title) {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #fff;
+  letter-spacing: -0.01em;
+}
+
+:global(.sp-floating-tooltip .tt-tags) {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+:global(.sp-floating-tooltip .tt-tag) {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--sp-text-2, #94a3b8);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+:global(.sp-floating-tooltip .tt-desc) {
+  margin: 0 0 0.5rem;
+  font-size: 0.77rem;
+  color: var(--sp-text-2, #cbd5e1);
+  line-height: 1.38;
+}
+
+:global(.sp-floating-tooltip .tt-badge-row) {
+  margin-bottom: 0.45rem;
+}
+
+:global(.sp-floating-tooltip .tt-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+}
+
+:global(.sp-floating-tooltip .tt-chip-rec) {
+  background: var(--sp-warning-soft, rgba(245, 158, 11, 0.15));
+  border: 1px solid var(--sp-warning-border, rgba(245, 158, 11, 0.3));
+  color: var(--sp-warning, #f59e0b);
+}
+
+:global(.sp-floating-tooltip .tt-meta-block) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.45rem 0.6rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--sp-radius-md, 8px);
+  margin-bottom: 0.5rem;
+}
+
+:global(.sp-floating-tooltip .tt-row) {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+:global(.sp-floating-tooltip .tt-label) {
+  color: var(--sp-text-3, #94a3b8);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+:global(.sp-floating-tooltip .tt-val) {
+  color: var(--sp-text-1, #f1f5f9);
+  font-weight: 600;
+}
+
+:global(.sp-floating-tooltip .tt-val.highlight) {
+  color: var(--sp-accent-strong, #fb923c);
+}
+
+:global(.sp-floating-tooltip .tt-docker) {
+  color: var(--sp-info, #38bdf8);
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+:global(.sp-floating-tooltip .tt-conf) {
+  color: var(--sp-danger, #f87171);
+}
+
+:global(.sp-floating-tooltip .tt-fw-pills) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+}
+
+:global(.sp-floating-tooltip .tt-fw-pill) {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--sp-text-1, #e2e8f0);
+}
+
+:global(.sp-floating-tooltip .tt-fw-pill-more) {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  color: var(--sp-text-3, #64748b);
+}
+
+:global(.sp-floating-tooltip .tt-alert) {
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--sp-radius-md, 8px);
+  font-size: 0.73rem;
+  line-height: 1.35;
+  margin-top: 0.45rem;
+}
+
+:global(.sp-floating-tooltip .tt-alert-error) {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+:global(.sp-floating-tooltip .tt-alert-warn) {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+:global(.sp-floating-tooltip .tt-alert-msg) {
+  font-weight: 600;
+}
+
+:global(.sp-floating-tooltip .tt-alert-sub) {
+  margin-top: 0.2rem;
+  opacity: 0.9;
+  font-size: 0.7rem;
+}
 .features-panel { margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
 .feature-toggle { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.9rem; }
 .feature-toggle input { accent-color: var(--sp-accent-strong); }
@@ -1753,7 +2229,7 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 .skeleton-sidebar { padding-top: 2rem; }
 
 @media (max-width: 1100px) {
-
+  .type-grid { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 1080px) {
   .tool-menu { grid-template-columns: 1fr; }
@@ -1764,9 +2240,9 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
   .builder-context { position: static; }
   .skeleton-builder { grid-template-columns: 1fr; }
   .skeleton-sidebar { display: none; }
-
+  .type-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
-
+  .type-grid { grid-template-columns: 1fr; }
 }
 </style>

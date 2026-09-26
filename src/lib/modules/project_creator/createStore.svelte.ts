@@ -64,7 +64,7 @@ import { setContext, getContext } from "svelte";
   import { goto } from "$app/navigation";
   import { deleteProfile } from "$lib/modules/devlauncher/api";
   import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
-  import { notifyError } from "$lib/core/toasts";
+  import { notifyError, notifySuccess } from "$lib/core/toasts";
   import { userExperienced, markExperienced } from "$lib/core/novice";
   import {
     markHelpDid,
@@ -80,6 +80,29 @@ import { setContext, getContext } from "svelte";
   } from "$lib/core/help";
   import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
+export type TooltipItem =
+  | { type: 'tool'; tool: ToolDef }
+  | {
+      type: 'framework';
+      fw: FrameworkDef;
+      reason?: string | null;
+      altInfo?: any;
+      warnReason?: string | null;
+    }
+  | {
+      type: 'language';
+      lang: LanguageDef;
+      side: 'backend' | 'frontend';
+      blockedReason?: string | null;
+      blockedDetail?: string | null;
+    };
+
+export type ActiveTooltip = {
+  x: number;
+  y: number;
+  placement: 'top' | 'bottom';
+  item: TooltipItem;
+};
 
 export function createProjectStore() {
   
@@ -413,28 +436,50 @@ export function createProjectStore() {
       envTicker = null;
     }
   }
-  
-  let tooltipData = $state<{ x: number; y: number; tool: ToolDef } | null>(null);
+
+  let tooltipData = $state<ActiveTooltip | null>(null);
   let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
   
-  function showTooltip(tool: ToolDef, e: MouseEvent | FocusEvent) {
+  function showTooltip(item: ToolDef | TooltipItem, e: MouseEvent | FocusEvent) {
     if (tooltipTimer) clearTimeout(tooltipTimer);
-    // currentTarget жив только во время диспатча события — захватываем элемент
-    // синхронно, а rect берём при показе (позиция может устареть из-за скролла).
     const target = e.currentTarget as HTMLElement | null;
+    if (!target) return;
+
+    const normalizedItem: TooltipItem =
+      'requires' in item && 'category' in item && !('type' in item)
+        ? { type: 'tool', tool: item as ToolDef }
+        : (item as TooltipItem);
+
     tooltipTimer = setTimeout(() => {
-      const rect = target?.getBoundingClientRect();
-      if (!rect) return;
-      // Тултип у самой карточки, с привязкой к вьюпорту, чтобы не уезжал за край.
-      const x = Math.max(8, Math.min(rect.left, window.innerWidth - 260));
-      const y = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 140));
-      tooltipData = { x, y, tool };
-    }, 300);
+      if (!target.isConnected) return;
+      const rect = target.getBoundingClientRect();
+      if (!rect || (rect.width === 0 && rect.height === 0)) return;
+
+      const tooltipWidth = 300;
+      let x = rect.left + rect.width / 2;
+      const minX = tooltipWidth / 2 + 12;
+      const maxX = window.innerWidth - tooltipWidth / 2 - 12;
+      x = Math.max(minX, Math.min(x, maxX));
+
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      let placement: 'top' | 'bottom' = 'bottom';
+      let y = rect.bottom + 8;
+
+      if (spaceBelow < 240 && spaceAbove > spaceBelow) {
+        placement = 'top';
+        y = rect.top - 8;
+      }
+
+      tooltipData = { x, y, placement, item: normalizedItem };
+    }, 120);
   }
   
   function hideTooltip() {
-    if (tooltipTimer) clearTimeout(tooltipTimer);
-    tooltipTimer = null;
+    if (tooltipTimer) {
+      clearTimeout(tooltipTimer);
+      tooltipTimer = null;
+    }
     tooltipData = null;
   }
   
@@ -2313,9 +2358,14 @@ export function createProjectStore() {
   }
   
   async function openInVSCode() {
-    if (!execPlan?.project_path) return;
+    const targetPath = (execPlan?.project_path || execProjectPath || effectiveProjectPath())?.toString().trim();
+    if (!targetPath) {
+      notifyError(i18n.t("create.open_vscode") as TranslationKey, "No project path available");
+      return;
+    }
     try {
-      await invoke("open_in_vscode", { path: execPlan.project_path });
+      await invoke("open_in_vscode", { path: targetPath });
+      notifySuccess("VS Code", i18n.t("create.open_vscode") as TranslationKey);
     } catch (error) {
       notifyError(i18n.t("create.open_vscode") as TranslationKey, String(error));
     }

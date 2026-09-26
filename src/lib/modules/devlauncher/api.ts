@@ -40,12 +40,13 @@ export async function deleteProfile(name: string): Promise<void> {
 
 export async function executeAction(
   action: LaunchAction,
-  opts?: { sessionId?: string; environmentBindingId?: string },
+  opts?: { sessionId?: string; environmentBindingId?: string; projectPath?: string | null },
 ): Promise<ActionStatus> {
   return invoke("execute_action", {
     action,
     sessionId: opts?.sessionId ?? null,
     environmentBindingId: opts?.environmentBindingId ?? null,
+    projectPath: opts?.projectPath ?? null,
   });
 }
 

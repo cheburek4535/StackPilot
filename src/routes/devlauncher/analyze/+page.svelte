@@ -13,9 +13,11 @@
     type DraftProfile,
     type FailurePolicy,
     type LaunchStep,
+    type StepKind,
     type Visibility,
   } from "$lib/modules/devlauncher/types";
   import Icon from "$lib/components/ui/Icon.svelte";
+  import type { IconName } from "$lib/components/ui/icons";
   import {
     buildStep,
     emptyAddTemplateDraft,
@@ -25,6 +27,11 @@
   import { markProfileCreated } from "$lib/modules/devlauncher/onboarding";
   import { markHelpDid, HELP, HINT_ANALYZE } from "$lib/core/help";
   import HelpHint from "$lib/components/ui/HelpHint.svelte";
+  import PageContainer from "$lib/components/ui/PageContainer.svelte";
+  import PageHeader from "$lib/components/ui/PageHeader.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import Badge from "$lib/components/ui/Badge.svelte";
 
   let projectPath = $state("");
   let draft = $state<DraftProfile | null>(null);
@@ -87,6 +94,8 @@
         draft = null;
         error = "";
         savedOk = false;
+        // Автоматически запускаем анализ при выборе папки для быстрого UX
+        void handleAnalyze();
       }
     } catch (e) {
       error = `Ошибка выбора папки: ${e}`;
@@ -164,11 +173,62 @@
       default: return "низкая";
     }
   }
+
+  function stepIconForKind(kind: StepKind): IconName {
+    switch (kind.type) {
+      case "open_terminal": return "terminal";
+      case "run_command":
+      case "run_script": return "play";
+      case "open_folder": return "folder";
+      case "open_url": return "globe";
+      case "wait_for_port":
+      case "wait_for_url":
+      case "wait_for_docker": return "refresh";
+      case "delay": return "clock";
+      default: return "layers";
+    }
+  }
 </script>
 
-<main>
-  <h1>{i18n.t("analyze.title" as TranslationKey)}</h1>
-  <p class="subtitle">{i18n.t("analyze.subtitle" as TranslationKey)}</p>
+<PageContainer width="wide">
+  <PageHeader
+    title={i18n.t("analyze.title" as TranslationKey)}
+    description={i18n.t("analyze.subtitle" as TranslationKey)}
+    icon="search"
+  >
+    {#snippet actions()}
+      {#if projectPath}
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="folder"
+          onclick={pickFolder}
+        >
+          {i18n.t("analyze.select_folder" as TranslationKey)}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          icon="refresh"
+          loading={loading}
+          onclick={handleAnalyze}
+        >
+          {loading ? (i18n.t("analyze.analyzing" as TranslationKey)) : (i18n.t("analyze.analyze_btn" as TranslationKey))}
+        </Button>
+      {/if}
+      {#if draft}
+        <Button
+          variant="primary"
+          size="sm"
+          icon="bookmark"
+          loading={saving}
+          onclick={handleSave}
+        >
+          {saving ? (i18n.t("analyze.saving" as TranslationKey)) : (i18n.t("analyze.save_profile" as TranslationKey))}
+        </Button>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
   <HelpHint
     id={HINT_ANALYZE.id}
@@ -178,611 +238,1082 @@
     text={i18n.t("help.analyze.body") as TranslationKey}
   />
 
-  <div class="picker-card">
-    <div class="picker-row">
-      <button class="primary" onclick={pickFolder}>{i18n.t("analyze.select_folder" as TranslationKey)}</button>
-      {#if projectPath}
-        <span class="path-display">{projectPath}</span>
-        <button class="secondary" onclick={handleAnalyze} disabled={loading}>
-          {loading ? i18n.t("analyze.analyzing" as TranslationKey) : i18n.t("analyze.analyze_btn" as TranslationKey)}
-        </button>
-      {/if}
+  {#if error}
+    <div class="sp-banner sp-banner-error" role="alert">
+      <span class="sp-banner-icon"><Icon name="alert" size={16} /></span>
+      <span class="sp-banner-text">{error}</span>
     </div>
-    {#if !projectPath}
-      <p class="hint">{i18n.t("analyze.folder_hint" as TranslationKey)}</p>
-    {/if}
+  {/if}
 
-    {#if error}
-      <div class="msg error">{error}</div>
-    {/if}
-
-    {#if savedOk}
-      <div class="msg success">
-        {i18n.t("analyze.saved" as TranslationKey)}
-        <button class="link" onclick={() => goto("/workspace")}>{i18n.t("analyze.go_to_profiles" as TranslationKey)}</button>
+  {#if savedOk}
+    <div class="sp-banner sp-banner-success" role="status">
+      <span class="sp-banner-icon"><Icon name="check" size={16} /></span>
+      <div class="sp-banner-content">
+        <strong>{i18n.t("analyze.saved" as TranslationKey)}</strong>
+        <span class="sp-banner-desc">Профиль запуска успешно сохранён и готов к использованию.</span>
       </div>
-    {/if}
-  </div>
+      <div class="sp-banner-actions">
+        <Button size="sm" variant="primary" icon="layers" href="/workspace">
+          Перейти в Workspace
+        </Button>
+        <Button size="sm" variant="secondary" icon="bookmark" href="/devlauncher/profiles">
+          {i18n.t("analyze.go_to_profiles" as TranslationKey)}
+        </Button>
+      </div>
+    </div>
+  {/if}
 
-  {#if draft}
-    <section class="editor">
-      <div class="editor-header">
-        <div>
-          <h2>{draft.profile.name}</h2>
-          <p class="desc">{draft.profile.description}</p>
+  {#if !draft}
+    <!-- ================================================================
+         Начальное состояние: Сканер проекта + Инфо-блоки возможностей
+         ================================================================ -->
+    <div class="sp-analyze-landing">
+      <Card variant="elevated" padding="lg">
+        <div class="sp-hero-scanner">
+          <div class="sp-hero-icon-box" aria-hidden="true">
+            <Icon name="search" size={28} />
+          </div>
+          <div class="sp-hero-body">
+            <h2 class="sp-hero-title">
+              {projectPath ? "Папка готова к анализу" : "Выберите локальный проект для сканирования"}
+            </h2>
+            <p class="sp-hero-desc">
+              DevLauncher исследует конфигурационные файлы репозитория, зависимости пакетов, скрипты запуска и сервисы, чтобы автоматически сформировать профиль запуска с последовательностью действий, терминалами и проверками готовности.
+            </p>
+
+            {#if projectPath}
+              <div class="sp-hero-path-box">
+                <span class="sp-path-icon"><Icon name="folder" size={16} /></span>
+                <span class="sp-path-text" title={projectPath}>{projectPath}</span>
+                <Badge tone="lime" dot>Готово</Badge>
+              </div>
+            {/if}
+
+            <div class="sp-hero-actions">
+              {#if !projectPath}
+                <Button
+                  variant="primary"
+                  size="lg"
+                  icon="folder"
+                  onclick={pickFolder}
+                >
+                  {i18n.t("analyze.select_folder" as TranslationKey)}
+                </Button>
+              {:else}
+                <Button
+                  variant="primary"
+                  size="lg"
+                  icon="refresh"
+                  loading={loading}
+                  onclick={handleAnalyze}
+                >
+                  {loading ? (i18n.t("analyze.analyzing" as TranslationKey)) : "Запустить анализ проекта"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  icon="folder"
+                  onclick={pickFolder}
+                >
+                  Выбрать другую папку
+                </Button>
+              {/if}
+            </div>
+          </div>
         </div>
-        <button class="primary save-btn" onclick={handleSave} disabled={saving}>
-          {saving ? i18n.t("analyze.saving" as TranslationKey) : i18n.t("analyze.save_profile" as TranslationKey)}
-        </button>
-      </div>
+      </Card>
 
+      <!-- Информационные блоки возможностей -->
+      <div class="sp-features-grid">
+        <Card variant="glass" padding="md">
+          <div class="sp-feature-item">
+            <div class="sp-feature-icon-badge" aria-hidden="true">
+              <Icon name="layers" size={20} />
+            </div>
+            <h4 class="sp-feature-title">Глубокая детекция стека</h4>
+            <p class="sp-feature-desc">
+              Парсит package.json, Cargo.toml, pyproject.toml, go.mod, docker-compose.yml и распознаёт веб-фреймворки, базы данных и фоновые сервисы.
+            </p>
+          </div>
+        </Card>
+
+        <Card variant="glass" padding="md">
+          <div class="sp-feature-item">
+            <div class="sp-feature-icon-badge" aria-hidden="true">
+              <Icon name="terminal" size={20} />
+            </div>
+            <h4 class="sp-feature-title">Умные шаги запуска</h4>
+            <p class="sp-feature-desc">
+              Автоматически конфигурирует запуск бэкенда, фронтенда, фоновых воркеров, ожидание готовности сетевых портов и задержки.
+            </p>
+          </div>
+        </Card>
+
+        <Card variant="glass" padding="md">
+          <div class="sp-feature-item">
+            <div class="sp-feature-icon-badge" aria-hidden="true">
+              <Icon name="bookmark" size={20} />
+            </div>
+            <h4 class="sp-feature-title">Профиль DevLauncher</h4>
+            <p class="sp-feature-desc">
+              Сохраняет профиль в единую экосистему StackPilot для запуска в 1 клик, мониторинга процессов и просмотра объединённых логов.
+            </p>
+          </div>
+        </Card>
+      </div>
+    </div>
+  {:else}
+    <!-- ================================================================
+         Результат анализа: Редактор профиля и сформированных действий
+         ================================================================ -->
+    <div class="sp-editor-layout">
+      <!-- Верхняя сводка профиля -->
+      <Card variant="elevated" padding="lg">
+        <div class="sp-profile-summary">
+          <div class="sp-profile-info">
+            <div class="sp-profile-title-row">
+              <h2 class="sp-profile-name">{draft.profile.name}</h2>
+              <Badge tone="cyan">Черновик профиля</Badge>
+              <Badge tone="neutral">{draft.profile.steps.length} действий</Badge>
+            </div>
+            <p class="sp-profile-desc">{draft.profile.description || "Автоматически сгенерированный профиль проекта"}</p>
+            <div class="sp-profile-path-chip">
+              <Icon name="folder" size={14} />
+              <span>{projectPath}</span>
+            </div>
+          </div>
+          <div class="sp-profile-actions">
+            <Button
+              variant="primary"
+              size="md"
+              icon="bookmark"
+              loading={saving}
+              onclick={handleSave}
+            >
+              {saving ? (i18n.t("analyze.saving" as TranslationKey)) : (i18n.t("analyze.save_profile" as TranslationKey))}
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <!-- Диагностические заметки -->
       {#if draft.diagnostics.length > 0}
-        <div class="diagnostics">
-          <h3>{i18n.t("analyze.diagnostics" as TranslationKey)}</h3>
-          {#each draft.diagnostics as d, i (i)}
-            <div class="diag-row" class:diag-warning={d.severity === "warning"} class:diag-error={d.severity === "error"}>
-              <span class="diag-dot" class:diag-dot-warning={d.severity === "warning"} class:diag-dot-error={d.severity === "error"}></span>
-              <span class="diag-text">
-                {d.message}
-                {#if d.file}
-                  <span class="diag-file">({d.file})</span>
-                {/if}
-              </span>
-              <span class="diag-conf">{i18n.t("analyze.confidence") as TranslationKey}: {confidenceLabel(d.confidence)}</span>
+        <Card variant="glass" padding="md" title={i18n.t("analyze.diagnostics" as TranslationKey)}>
+          <div class="sp-diagnostics-list">
+            {#each draft.diagnostics as d, i (i)}
+              <div
+                class="sp-diag-item"
+                class:sp-diag-warning={d.severity === "warning"}
+                class:sp-diag-error={d.severity === "error"}
+              >
+                <div class="sp-diag-icon">
+                  <Icon name={d.severity === "error" ? "alert" : "info"} size={15} />
+                </div>
+                <div class="sp-diag-text-block">
+                  <span class="sp-diag-message">{d.message}</span>
+                  {#if d.file}
+                    <code class="sp-diag-file">{d.file}</code>
+                  {/if}
+                </div>
+                <div class="sp-diag-meta">
+                  <Badge tone={d.confidence === "high" ? "lime" : d.confidence === "medium" ? "amber" : "neutral"}>
+                    {i18n.t("analyze.confidence" as TranslationKey)}: {confidenceLabel(d.confidence)}
+                  </Badge>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </Card>
+      {/if}
+
+      <!-- Секция шагов запуска -->
+      <Card variant="elevated" padding="md">
+        {#snippet actions()}
+          <div class="sp-steps-toolbar">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={showAddPanel ? "x" : "plus"}
+              onclick={() => (showAddPanel = !showAddPanel)}
+            >
+              {showAddPanel ? (i18n.t("analyze.hide_templates") as TranslationKey) : (i18n.t("analyze.add_action") as TranslationKey)}
+            </Button>
+            <span class="sp-drag-hint">{i18n.t("analyze.drag_hint")}</span>
+          </div>
+        {/snippet}
+
+        <div class="sp-steps-header">
+          <h3 class="sp-section-heading">Цепочка запуска ({draft.profile.steps.length})</h3>
+        </div>
+
+        {#if showAddPanel}
+          <div class="sp-template-panel">
+            <div class="sp-tpl-grid">
+              <div class="sp-tpl-card">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Пустой терминал</span>
+                  <span class="sp-tpl-desc">Открыть терминал в корне проекта без выполнения команды</span>
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "terminal_plain" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Терминал с командой</span>
+                  <span class="sp-tpl-desc">Запустить команду в интерактивном окне терминала</span>
+                </div>
+                <div class="sp-tpl-inputs">
+                  <input type="text" placeholder="Команда (например: npm run dev)" bind:value={addTpl.command} />
+                  <input type="text" placeholder={`Рабочая папка (по умолчанию: корень проекта)`} bind:value={addTpl.workdir} />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "terminal_cmd" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Выполнить команду</span>
+                  <span class="sp-tpl-desc">Фоновая команда с перехватом вывода (CI/build/daemon)</span>
+                </div>
+                <div class="sp-tpl-inputs">
+                  <input type="text" placeholder="Команда (например: npm test)" bind:value={addTpl.command} />
+                  <input type="text" placeholder={`Рабочая папка (по умолчанию: корень проекта)`} bind:value={addTpl.workdir} />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "run_command" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Открыть папку</span>
+                  <span class="sp-tpl-desc">Открыть проводник в указанной директории</span>
+                </div>
+                <div class="sp-tpl-inputs">
+                  <input type="text" placeholder={`Путь (по умолчанию: корень проекта)`} bind:value={addTpl.path} />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "open_folder" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Открыть URL</span>
+                  <span class="sp-tpl-desc">Открыть страницу в браузере по умолчанию</span>
+                </div>
+                <div class="sp-tpl-inputs">
+                  <input type="text" placeholder="http://localhost:3000" bind:value={addTpl.url} />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "open_url" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Ожидать порт</span>
+                  <span class="sp-tpl-desc">Healthcheck: ждать доступности сокета перед следующим шагом</span>
+                </div>
+                <div class="sp-tpl-inputs sp-tpl-inputs-row">
+                  <input type="text" placeholder="Хост" bind:value={addTpl.host} style="width: 110px;" />
+                  <input type="number" placeholder="Порт" bind:value={addTpl.port} style="width: 90px;" />
+                  <input type="number" placeholder="Таймаут (сек)" bind:value={addTpl.timeout} style="width: 110px;" />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "wait_port" })}>
+                  Добавить
+                </Button>
+              </div>
+
+              <div class="sp-tpl-card sp-tpl-card-fields">
+                <div class="sp-tpl-info">
+                  <span class="sp-tpl-name">Пауза (задержка)</span>
+                  <span class="sp-tpl-desc">Подождать N секунд перед запуском следующего действия</span>
+                </div>
+                <div class="sp-tpl-inputs sp-tpl-inputs-row">
+                  <input type="number" placeholder="Секунды" bind:value={addTpl.seconds} style="width: 120px;" />
+                </div>
+                <Button size="sm" variant="secondary" icon="plus" onclick={() => addStep({ kind: "delay" })}>
+                  Добавить
+                </Button>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        <div class="sp-action-list" role="list">
+          {#each draft.profile.steps as step, i (step.id)}
+            <div
+              class="sp-action-card"
+              class:expanded={expanded.has(step.id)}
+              class:disabled={!step.enabled}
+              class:drag-over={dragOverIndex === i}
+              draggable="true"
+              ondragstart={(e) => {
+                dragIndex = i;
+                if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+              }}
+              ondragover={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                dragOverIndex = i;
+              }}
+              ondragleave={() => {
+                if (dragOverIndex === i) dragOverIndex = null;
+              }}
+              ondrop={(e) => {
+                e.preventDefault();
+                onDropStep(i);
+              }}
+              ondragend={() => {
+                dragIndex = null;
+                dragOverIndex = null;
+              }}
+            >
+              <div class="sp-card-row">
+                <div class="sp-drag-handle" title={i18n.t("analyze.drag_reorder" as TranslationKey)}>
+                  <span>⋮⋮</span>
+                </div>
+
+                <div class="sp-step-kind-icon" aria-hidden="true">
+                  <Icon name={stepIconForKind(step.kind)} size={16} />
+                </div>
+
+                <div
+                  class="sp-step-details"
+                  onclick={() => toggleExpand(step.id)}
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => e.key === "Enter" && toggleExpand(step.id)}
+                >
+                  <div class="sp-step-header-line">
+                    <span class="sp-step-title">{step.label || i18n.t("analyze.untitled" as TranslationKey)}</span>
+                    <Badge tone="neutral">{stepKindLabel(step.kind)}</Badge>
+                  </div>
+                  <span class="sp-step-summary">{stepKindSummary(step.kind)}</span>
+                </div>
+
+                <div class="sp-step-controls">
+                  <button
+                    type="button"
+                    class="sp-toggle-pill"
+                    class:on={step.enabled}
+                    onclick={() => toggleEnabled(i)}
+                    title={step.enabled ? (i18n.t("analyze.disable" as TranslationKey)) : (i18n.t("analyze.enable" as TranslationKey))}
+                  >
+                    {step.enabled ? (i18n.t("analyze.on" as TranslationKey)) : (i18n.t("analyze.off" as TranslationKey))}
+                  </button>
+
+                  <button
+                    type="button"
+                    class="sp-icon-action-btn"
+                    class:expanded={expanded.has(step.id)}
+                    onclick={() => toggleExpand(step.id)}
+                    title={i18n.t("analyze.expand" as TranslationKey)}
+                  >
+                    <Icon name="chevronRight" size={14} />
+                  </button>
+
+                  <button
+                    type="button"
+                    class="sp-icon-action-btn sp-action-delete"
+                    onclick={() => removeStep(i)}
+                    title={i18n.t("analyze.delete" as TranslationKey)}
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {#if expanded.has(step.id)}
+                <div class="sp-card-editor-panel">
+                  <div class="sp-editor-grid">
+                    <div class="sp-field">
+                      <label for="step-label-{step.id}">{i18n.t("analyze.label" as TranslationKey)}</label>
+                      <input
+                        id="step-label-{step.id}"
+                        type="text"
+                        value={step.label}
+                        oninput={(e) => updateStep(i, { label: (e.target as HTMLInputElement).value })}
+                        placeholder={i18n.t("analyze.label_placeholder" as TranslationKey)}
+                      />
+                    </div>
+
+                    <div class="sp-field">
+                      <label for="step-timeout-{step.id}">Таймаут (сек) — пусто = по умолчанию</label>
+                      <input
+                        id="step-timeout-{step.id}"
+                        type="number"
+                        value={step.timeout ?? ""}
+                        oninput={(e) => updateTimeout(i, (e.target as HTMLInputElement).value)}
+                        placeholder="120"
+                      />
+                    </div>
+
+                    <div class="sp-field">
+                      <label for="step-fail-{step.id}">Политика при ошибке</label>
+                      <select
+                        id="step-fail-{step.id}"
+                        value={step.failure_policy ?? ""}
+                        onchange={(e) => {
+                          const v = (e.target as HTMLSelectElement).value;
+                          updateStep(i, { failure_policy: (v as FailurePolicy) || null });
+                        }}
+                      >
+                        <option value="">{failurePolicyLabel(null)}</option>
+                        {#each failurePolicies as fp}
+                          <option value={fp.key}>{fp.label}</option>
+                        {/each}
+                      </select>
+                    </div>
+
+                    <div class="sp-field">
+                      <label for="step-vis-{step.id}">Видимость терминала</label>
+                      <select
+                        id="step-vis-{step.id}"
+                        value={step.visibility ?? ""}
+                        onchange={(e) => {
+                          const v = (e.target as HTMLSelectElement).value;
+                          updateStep(i, { visibility: (v as Visibility) || null });
+                        }}
+                      >
+                        <option value="">{visibilityLabel(null)}</option>
+                        {#each visibilities as vis}
+                          <option value={vis.key}>{vis.label}</option>
+                        {/each}
+                      </select>
+                    </div>
+                  </div>
+
+                  {#if (step.depends_on ?? []).length > 0}
+                    <div class="sp-field sp-field-full">
+                      <span class="sp-label">Запускается после</span>
+                      <div class="sp-chips">
+                        {#each step.depends_on ?? [] as dep}
+                          <span class="sp-chip">{dep}</span>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/each}
         </div>
-      {/if}
+      </Card>
 
-      <div class="add-bar">
-        <button class="secondary add-toggle" onclick={() => (showAddPanel = !showAddPanel)}>
-          <Icon name={showAddPanel ? "x" : "plus"} size={14} />
-          {showAddPanel ? i18n.t("analyze.hide_templates") : i18n.t("analyze.add_action")}
-        </button>
-        <span class="add-hint">{i18n.t("analyze.drag_hint")}</span>
+      <!-- Нижняя кнопка сохранения -->
+      <div class="sp-footer-save">
+        <Button
+          variant="primary"
+          size="lg"
+          icon="bookmark"
+          loading={saving}
+          onclick={handleSave}
+        >
+          {saving ? (i18n.t("analyze.saving" as TranslationKey)) : (i18n.t("analyze.save_profile" as TranslationKey))}
+        </Button>
       </div>
-
-      {#if showAddPanel}
-        <div class="template-panel">
-          <div class="tpl-row">
-            <div class="tpl-body">
-              <div class="tpl-name">Пустой терминал</div>
-              <div class="tpl-desc">Открыть терминал в корне проекта без команды</div>
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "terminal_plain" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields">
-              <div class="tpl-name">Терминал с командой</div>
-              <input type="text" placeholder="Команда (например: docker logs -f backend)" bind:value={addTpl.command} />
-              <input type="text" placeholder={`Рабочая папка (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.workdir} />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "terminal_cmd" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields">
-              <div class="tpl-name">Выполнить команду</div>
-              <input type="text" placeholder="Команда (например: npm test)" bind:value={addTpl.command} />
-              <input type="text" placeholder={`Рабочая папка (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.workdir} />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "run_command" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields">
-              <div class="tpl-name">Открыть папку</div>
-              <input type="text" placeholder={`Путь (по умолчанию: ${projectPath || "корень проекта"})`} bind:value={addTpl.path} />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "open_folder" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields">
-              <div class="tpl-name">Открыть URL</div>
-              <input type="text" placeholder="https://localhost:3000" bind:value={addTpl.url} />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "open_url" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields tpl-inline">
-              <div class="tpl-name">Ожидать порт</div>
-              <input type="text" placeholder="Хост" bind:value={addTpl.host} class="tpl-sm" />
-              <input type="number" placeholder="Порт" bind:value={addTpl.port} class="tpl-sm" />
-              <input type="number" placeholder="Таймаут, сек" bind:value={addTpl.timeout} class="tpl-sm" />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "wait_port" })}>Добавить</button>
-          </div>
-
-          <div class="tpl-row">
-            <div class="tpl-body tpl-fields tpl-inline">
-              <div class="tpl-name">Пауза</div>
-              <input type="number" placeholder="Секунды" bind:value={addTpl.seconds} class="tpl-sm" />
-            </div>
-            <button class="secondary" onclick={() => addStep({ kind: "delay" })}>Добавить</button>
-          </div>
-        </div>
-      {/if}
-
-      <div class="action-list" role="list">
-        {#each draft.profile.steps as step, i (step.id)}
-          <div
-            class="action-card"
-            class:expanded={expanded.has(step.id)}
-            class:disabled={!step.enabled}
-            class:drag-over={dragOverIndex === i}
-            draggable="true"
-            ondragstart={(e) => {
-              dragIndex = i;
-              if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-            }}
-            ondragover={(e) => {
-              e.preventDefault();
-              if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-              dragOverIndex = i;
-            }}
-            ondragleave={() => {
-              if (dragOverIndex === i) dragOverIndex = null;
-            }}
-            ondrop={(e) => {
-              e.preventDefault();
-              onDropStep(i);
-            }}
-            ondragend={() => {
-              dragIndex = null;
-              dragOverIndex = null;
-            }}
-          >
-            <div class="card-header">
-              <div
-                class="card-info"
-                onclick={() => toggleExpand(step.id)}
-                role="button"
-                tabindex="0"
-                onkeydown={(e) => e.key === "Enter" && toggleExpand(step.id)}
-              >
-                <span class="card-label">{step.label || i18n.t("analyze.untitled" as TranslationKey)}</span>
-                <span class="card-type">{stepKindLabel(step.kind)}</span>
-                <span class="card-summary">{stepKindSummary(step.kind)}</span>
-              </div>
-              <div class="card-controls">
-                <button
-                  class="toggle-btn"
-                  class:on={step.enabled}
-                  onclick={() => toggleEnabled(i)}
-                  title={step.enabled ? i18n.t("analyze.disable" as TranslationKey) : i18n.t("analyze.enable" as TranslationKey)}
-                >
-                  {step.enabled ? i18n.t("analyze.on" as TranslationKey) : i18n.t("analyze.off" as TranslationKey)}
-                </button>
-                <button
-                  class="icon-btn expand-btn"
-                  class:expanded={expanded.has(step.id)}
-                  onclick={() => toggleExpand(step.id)}
-                  title={i18n.t("analyze.expand" as TranslationKey)}
-                >
-                  <Icon name="chevronRight" size={14} />
-                </button>
-                <button class="icon-btn delete-btn" onclick={() => removeStep(i)} title="Удалить действие">
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-            </div>
-
-            {#if expanded.has(step.id)}
-              <div class="card-editor">
-                <div class="field">
-                  <label>{i18n.t("analyze.label" as TranslationKey)}</label>
-                  <input
-                    type="text"
-                    value={step.label}
-                    oninput={(e) => updateStep(i, { label: (e.target as HTMLInputElement).value })}
-                    placeholder={i18n.t("analyze.label_placeholder" as TranslationKey)}
-                  />
-                </div>
-                <div class="field">
-                  <label>Таймаут (сек) — 0 / пусто = по умолчанию</label>
-                  <input
-                    type="number"
-                    value={step.timeout ?? ""}
-                    oninput={(e) => updateTimeout(i, (e.target as HTMLInputElement).value)}
-                    placeholder="120"
-                  />
-                </div>
-                <div class="field">
-                  <label>Политика при ошибке</label>
-                  <select
-                    value={step.failure_policy ?? ""}
-                    onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
-                      updateStep(i, { failure_policy: (v as FailurePolicy) || null });
-                    }}
-                  >
-                    <option value="">{failurePolicyLabel(null)}</option>
-                    {#each failurePolicies as fp}
-                      <option value={fp.key}>{fp.label}</option>
-                    {/each}
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Видимость</label>
-                  <select
-                    value={step.visibility ?? ""}
-                    onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
-                      updateStep(i, { visibility: (v as Visibility) || null });
-                    }}
-                  >
-                    <option value="">{visibilityLabel(null)}</option>
-                    {#each visibilities as vis}
-                      <option value={vis.key}>{vis.label}</option>
-                    {/each}
-                  </select>
-                </div>
-                {#if (step.depends_on ?? []).length > 0}
-                  <div class="field">
-                    <label>Запускается после</label>
-                    <div class="chips">
-                      {#each step.depends_on ?? [] as dep}
-                        <span class="chip">{dep}</span>
-                      {/each}
-                    </div>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-
-      <div class="footer-save">
-        <button class="primary" onclick={handleSave} disabled={saving}>
-          {saving ? i18n.t("analyze.saving" as TranslationKey) : i18n.t("analyze.save_profile" as TranslationKey)}
-        </button>
-      </div>
-    </section>
+    </div>
   {/if}
-</main>
+</PageContainer>
 
 <style>
-  main {
-    max-width: 780px;
-    margin: 0 auto;
-    padding: 2rem;
-    color: var(--sp-text-1);
-  }
-
-  h1 { margin: 0; font-size: var(--sp-fs-xl); color: var(--sp-text-1); }
-  .subtitle { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.2rem 0 1.5rem; }
-
-  .picker-card {
-    background: var(--sp-bg-1);
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-lg);
-    padding: 1.25rem;
-    box-shadow: var(--sp-shadow-1);
-    margin-bottom: 1.5rem;
-  }
-
-  .picker-row {
+  /* Banners / Alerts */
+  .sp-banner {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-  }
-
-  .path-display {
-    font-family: var(--sp-font-mono);
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--sp-radius-lg);
+    margin-bottom: var(--sp-6);
     font-size: var(--sp-fs-sm);
-    color: var(--sp-text-2);
-    background: var(--sp-code-bg);
-    padding: 0.4rem 0.75rem;
-    border-radius: var(--sp-radius-sm);
-    flex: 1;
-    min-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .hint { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.75rem 0 0; }
-  .msg { margin-top: 0.75rem; padding: 0.6rem 1rem; border-radius: var(--sp-radius-md); font-size: var(--sp-fs-sm); }
-  .msg.error {
+  .sp-banner-error {
     background: var(--sp-danger-soft);
     color: var(--sp-danger);
     border: 1px solid var(--sp-danger-border);
   }
-  .msg.success {
+
+  .sp-banner-success {
     background: var(--sp-success-soft);
     color: var(--sp-success);
     border: 1px solid var(--sp-success-border);
-  }
-  .msg .link {
-    background: none;
-    border: none;
-    color: var(--sp-blue);
-    cursor: pointer;
-    text-decoration: underline;
-    font-size: var(--sp-fs-sm);
-  }
-
-  .editor { margin-top: 0; }
-
-  .editor-header {
-    display: flex;
     justify-content: space-between;
-    align-items: flex-start;
-    gap: 1rem;
-    margin-bottom: 1rem;
   }
 
-  .editor-header h2 { margin: 0; font-size: var(--sp-fs-lg); color: var(--sp-text-1); }
-  .desc { color: var(--sp-text-3); font-size: var(--sp-fs-sm); margin: 0.15rem 0 0; }
-  .save-btn { white-space: nowrap; }
-
-  .diagnostics {
-    background: var(--sp-bg-2);
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-lg);
-    padding: 0.75rem 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .diagnostics h3 {
-    margin: 0 0 0.5rem;
-    font-size: var(--sp-fs-sm);
-    color: var(--sp-text-2);
-  }
-
-  .diag-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.25rem 0;
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-2);
-  }
-
-  .diag-row.diag-warning .diag-text { color: var(--sp-amber); }
-  .diag-row.diag-error .diag-text { color: var(--sp-danger); }
-
-  .diag-dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    align-self: center;
-    border-radius: var(--sp-radius-full);
-    background: var(--sp-info);
-    opacity: 0.7;
-  }
-
-  .diag-dot-warning { background: var(--sp-warning); }
-  .diag-dot-error { background: var(--sp-danger); }
-
-  .diag-text { flex: 1; word-break: break-word; }
-  .diag-file { opacity: 0.6; font-family: var(--sp-font-mono); }
-  .diag-conf { flex-shrink: 0; opacity: 0.6; }
-
-  .action-list {
+  .sp-banner-content {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 2px;
   }
 
-  .add-bar {
+  .sp-banner-desc {
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+  }
+
+  .sp-banner-actions {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin: 0.75rem 0;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+  }
+
+  /* Landing Screen */
+  .sp-analyze-landing {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-6);
+  }
+
+  .sp-hero-scanner {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-5);
+  }
+
+  .sp-hero-icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.75rem;
+    height: 3.75rem;
+    border-radius: var(--sp-radius-xl);
+    background: var(--sp-surface-grad), var(--sp-bg-2);
+    color: var(--sp-accent);
+    border: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top), 0 0 20px var(--sp-accent-glow);
+    flex-shrink: 0;
+  }
+
+  .sp-hero-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sp-hero-title {
+    margin: 0;
+    font-size: var(--sp-fs-xl);
+    font-weight: var(--sp-fw-bold);
+    color: var(--sp-text-1);
+    letter-spacing: -0.02em;
+  }
+
+  .sp-hero-desc {
+    margin: var(--sp-2) 0 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+    line-height: var(--sp-lh-normal);
+    max-width: 48rem;
+  }
+
+  .sp-hero-path-box {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-4);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
+    max-width: 100%;
+  }
+
+  .sp-path-icon {
+    color: var(--sp-text-3);
+    display: flex;
+  }
+
+  .sp-path-text {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 38rem;
+  }
+
+  .sp-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-5);
     flex-wrap: wrap;
   }
 
-  .add-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
+  /* Capabilities 3-Grid */
+  .sp-features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--sp-4);
   }
 
-  .add-hint {
+  .sp-feature-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .sp-feature-icon-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: var(--sp-radius-lg);
+    background: var(--sp-surface-grad), var(--sp-bg-2);
+    color: var(--sp-text-2);
+    border: 1px solid var(--sp-border);
+    box-shadow: var(--sp-gloss-top);
+    margin-bottom: var(--sp-1);
+  }
+
+  .sp-feature-title {
+    margin: 0;
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .sp-feature-desc {
+    margin: 0;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    line-height: var(--sp-lh-normal);
+  }
+
+  /* Editor Layout */
+  .sp-editor-layout {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-6);
+  }
+
+  .sp-profile-summary {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    flex-wrap: wrap;
+  }
+
+  .sp-profile-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sp-profile-title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+  }
+
+  .sp-profile-name {
+    margin: 0;
+    font-size: var(--sp-fs-xl);
+    font-weight: var(--sp-fw-bold);
+    color: var(--sp-text-1);
+    letter-spacing: -0.02em;
+  }
+
+  .sp-profile-desc {
+    margin: var(--sp-1) 0 0;
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-3);
+  }
+
+  .sp-profile-path-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: 0.2rem 0.6rem;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    font-family: var(--sp-font-mono);
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
   }
 
-  .template-panel {
-    background: var(--sp-bg-2);
-    border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-lg);
-    padding: 0.6rem;
-    margin-bottom: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
+  .sp-profile-actions {
+    flex-shrink: 0;
   }
 
-  .tpl-row {
+  /* Diagnostics */
+  .sp-diagnostics-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .sp-diag-item {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.5rem 0.6rem;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    font-size: var(--sp-fs-xs);
+  }
+
+  .sp-diag-item.sp-diag-warning {
+    border-color: var(--sp-warning-border);
+    background: var(--sp-warning-soft);
+  }
+
+  .sp-diag-item.sp-diag-error {
+    border-color: var(--sp-danger-border);
+    background: var(--sp-danger-soft);
+  }
+
+  .sp-diag-icon {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .sp-diag-item.sp-diag-warning .sp-diag-icon { color: var(--sp-warning); }
+  .sp-diag-item.sp-diag-error .sp-diag-icon { color: var(--sp-danger); }
+
+  .sp-diag-text-block {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+  }
+
+  .sp-diag-message {
+    color: var(--sp-text-1);
+  }
+
+  .sp-diag-file {
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    background: var(--sp-bg-1);
+    padding: 1px 4px;
+    border-radius: var(--sp-radius-xs);
+  }
+
+  .sp-diag-meta {
+    flex-shrink: 0;
+  }
+
+  /* Steps section */
+  .sp-steps-header {
+    margin-bottom: var(--sp-4);
+  }
+
+  .sp-section-heading {
+    margin: 0;
+    font-size: var(--sp-fs-md);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .sp-steps-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+
+  .sp-drag-hint {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  /* Template Picker */
+  .sp-template-panel {
+    background: var(--sp-surface-grad), var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg);
+    padding: var(--sp-4);
+    margin-bottom: var(--sp-4);
+  }
+
+  .sp-tpl-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+
+  .sp-tpl-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
     background: var(--sp-bg-1);
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-md);
   }
 
-  .tpl-body { flex: 1; min-width: 0; }
-  .tpl-name { font-size: var(--sp-fs-sm); font-weight: var(--sp-fw-semibold); color: var(--sp-text-1); }
-  .tpl-desc { font-size: var(--sp-fs-xs); color: var(--sp-text-3); }
-  .tpl-fields { display: flex; flex-direction: column; gap: 0.3rem; }
-  .tpl-fields input,
-  .tpl-fields .tpl-sm {
-    padding: 0.3rem 0.5rem;
-    border: 1px solid var(--sp-border-strong);
+  .sp-tpl-card-fields {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .sp-tpl-info {
+    flex: 1;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .sp-tpl-name {
+    font-size: var(--sp-fs-sm);
+    font-weight: var(--sp-fw-semibold);
+    color: var(--sp-text-1);
+  }
+
+  .sp-tpl-desc {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
+
+  .sp-tpl-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    flex: 2;
+    min-width: 220px;
+  }
+
+  .sp-tpl-inputs-row {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .sp-tpl-inputs input {
+    padding: 0.35rem 0.6rem;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-sm);
     font-size: var(--sp-fs-xs);
-    background: var(--sp-bg-1);
     color: var(--sp-text-1);
     font-family: inherit;
-    width: 100%;
-    box-sizing: border-box;
   }
-  .tpl-fields input:focus {
+
+  .sp-tpl-inputs input:focus {
     outline: none;
     border-color: var(--sp-accent);
   }
-  .tpl-inline { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
-  .tpl-inline .tpl-sm { width: auto; min-width: 90px; }
 
-  .action-card {
-    background: var(--sp-bg-1);
+  /* Action Cards List */
+  .sp-action-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .sp-action-card {
+    background: var(--sp-surface-grad), var(--sp-bg-1);
     border: 1px solid var(--sp-border);
     border-radius: var(--sp-radius-lg);
-    box-shadow: var(--sp-shadow-1);
-    cursor: grab;
-    transition: border-color 0.15s, opacity 0.15s;
+    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+    transition: all 0.15s ease;
   }
 
-  .action-card:active { cursor: grabbing; }
-  .action-card.drag-over {
+  .sp-action-card.disabled {
+    opacity: 0.55;
+  }
+
+  .sp-action-card.drag-over {
     border-color: var(--sp-accent);
-    box-shadow: var(--sp-shadow-accent);
+    box-shadow: 0 0 16px var(--sp-accent-glow);
   }
 
-  .action-card.disabled { opacity: 0.5; }
-
-  .card-header {
+  .sp-card-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.6rem 0.8rem;
+    gap: var(--sp-3);
+    padding: 0.65rem 0.85rem;
   }
 
-  .card-info {
+  .sp-drag-handle {
+    cursor: grab;
+    color: var(--sp-text-3);
+    font-size: 0.85rem;
+    user-select: none;
+    padding: 0 2px;
+  }
+
+  .sp-drag-handle:active {
+    cursor: grabbing;
+  }
+
+  .sp-step-kind-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    color: var(--sp-text-2);
+    flex-shrink: 0;
+  }
+
+  .sp-step-details {
     flex: 1;
     min-width: 0;
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 2px;
   }
 
-  .card-label {
-    font-weight: var(--sp-fw-semibold);
+  .sp-step-header-line {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-step-title {
     font-size: var(--sp-fs-sm);
-    line-height: 1.3;
+    font-weight: var(--sp-fw-semibold);
     color: var(--sp-text-1);
   }
 
-  .card-type {
+  .sp-step-summary {
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .card-summary {
-    font-size: var(--sp-fs-xs);
-    color: var(--sp-text-3);
-    word-break: break-all;
-    margin-top: 0.1rem;
-  }
-
-  .card-controls {
+  .sp-step-controls {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--sp-2);
     flex-shrink: 0;
   }
 
-  .toggle-btn {
-    padding: 0.2rem 0.5rem;
-    border-radius: var(--sp-radius-xs);
+  .sp-toggle-pill {
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--sp-radius-sm);
     border: 1px solid var(--sp-border);
     background: var(--sp-bg-2);
     color: var(--sp-text-3);
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-bold);
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all 0.15s ease;
   }
 
-  .toggle-btn.on {
+  .sp-toggle-pill.on {
     background: var(--sp-success-soft);
     border-color: var(--sp-success-border);
     color: var(--sp-success);
   }
 
-  .icon-btn {
+  .sp-icon-action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.25rem 0.5rem;
+    width: 1.85rem;
+    height: 1.85rem;
+    border-radius: var(--sp-radius-md);
     border: 1px solid var(--sp-border);
-    border-radius: var(--sp-radius-sm);
     background: transparent;
     color: var(--sp-text-3);
     cursor: pointer;
-    font-size: var(--sp-fs-xs);
-    transition: all 0.15s;
+    transition: all 0.15s ease;
   }
 
-  .icon-btn:hover { background: var(--sp-bg-2); color: var(--sp-text-1); }
-  .icon-btn:active { background: var(--sp-bg-3); }
-  .expand-btn { min-width: 2em; }
-  .expand-btn :global(.sp-icon) {
-    transition: transform 0.15s ease;
+  .sp-icon-action-btn:hover {
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
   }
-  .expand-btn.expanded :global(.sp-icon) {
+
+  .sp-icon-action-btn.expanded :global(.sp-icon) {
     transform: rotate(90deg);
   }
-  .delete-btn:hover { background: rgba(239, 68, 68, 0.15); color: var(--sp-danger); }
 
-  .card-editor {
+  .sp-icon-action-btn :global(.sp-icon) {
+    transition: transform 0.15s ease;
+  }
+
+  .sp-action-delete:hover {
+    background: var(--sp-danger-soft);
+    border-color: var(--sp-danger-border);
+    color: var(--sp-danger);
+  }
+
+  /* Card Expanded Form */
+  .sp-card-editor-panel {
     border-top: 1px solid var(--sp-border);
-    padding: 0.75rem 0.8rem 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    background: var(--sp-bg-2);
+    padding: var(--sp-4);
+    background: var(--sp-surface-grad), var(--sp-bg-2);
     border-radius: 0 0 var(--sp-radius-lg) var(--sp-radius-lg);
-  }
-
-  .field {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: var(--sp-3);
   }
 
-  .field label {
+  .sp-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--sp-3);
+  }
+
+  .sp-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .sp-field-full {
+    grid-column: 1 / -1;
+  }
+
+  .sp-field label,
+  .sp-field .sp-label {
     font-size: var(--sp-fs-xs);
     font-weight: var(--sp-fw-medium);
     color: var(--sp-text-2);
   }
 
-  .field input,
-  .field select,
-  .field textarea {
-    padding: 0.4rem 0.6rem;
-    border: 1px solid var(--sp-border-strong);
-    border-radius: var(--sp-radius-sm);
-    font-size: var(--sp-fs-sm);
+  .sp-field input,
+  .sp-field select {
+    padding: 0.4rem 0.65rem;
     background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-md);
     color: var(--sp-text-1);
-    transition: border-color 0.15s;
+    font-size: var(--sp-fs-sm);
     font-family: inherit;
+    transition: border-color 0.15s ease;
   }
 
-  .field input:focus,
-  .field select:focus,
-  .field textarea:focus {
+  .sp-field input:focus,
+  .sp-field select:focus {
     outline: none;
     border-color: var(--sp-accent);
-    box-shadow: var(--sp-shadow-accent);
   }
 
-  .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .sp-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    margin-top: var(--sp-1);
+  }
 
-  .chip {
+  .sp-chip {
     padding: 0.15rem 0.5rem;
     border-radius: var(--sp-radius-xs);
     border: 1px solid var(--sp-border);
@@ -792,43 +1323,18 @@
     color: var(--sp-text-2);
   }
 
-  .footer-save {
-    margin-top: 1.5rem;
-    text-align: center;
+  .sp-footer-save {
+    display: flex;
+    justify-content: center;
+    padding: var(--sp-4) 0;
   }
 
-  button.primary {
-    padding: 0.5rem 1.2rem;
-    border-radius: var(--sp-radius-md);
-    border: 1px solid rgba(0, 0, 0, 0.35);
-    background: var(--sp-accent-strong);
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
-      var(--sp-accent-strong) 45%,
-      var(--sp-accent) 100%
-    );
-    color: #fff;
-    font-size: var(--sp-fs-sm);
-    font-weight: var(--sp-fw-semibold);
-    cursor: pointer;
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-    transition: background 0.15s, box-shadow 0.15s;
+  @media (max-width: 900px) {
+    .sp-features-grid {
+      grid-template-columns: 1fr;
+    }
+    .sp-editor-grid {
+      grid-template-columns: 1fr;
+    }
   }
-  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
-  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  button.secondary {
-    padding: 0.5rem 1.2rem;
-    border-radius: var(--sp-radius-md);
-    border: 1px solid var(--sp-border);
-    background: var(--sp-bg-2);
-    color: var(--sp-text-1);
-    font-size: var(--sp-fs-sm);
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  button.secondary:hover:not(:disabled) { background: var(--sp-bg-3); }
-  button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

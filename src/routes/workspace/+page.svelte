@@ -341,7 +341,9 @@
         if (!action.enabled) continue;
         launchCurrent = action.label;
         try {
-          const result = await executeAction(action);
+          const result = await executeAction(action, {
+            projectPath: profile.project_path,
+          });
           actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
         } catch (e) {
           actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);

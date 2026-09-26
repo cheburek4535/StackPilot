@@ -432,7 +432,9 @@
     markHelpDid(HELP.devlProfileRan);
 
     try {
-      const result = await executeAction(action);
+      const result = await executeAction(action, {
+        projectPath: profile.project_path,
+      });
       const msg = formatResult(result);
       actionResults = new Map(actionResults.set(actionId, msg));
     } catch (e) {
@@ -629,7 +631,9 @@
         if (!action.enabled) continue;
         currentAction = action.label;
         try {
-          const result = await executeAction(action);
+          const result = await executeAction(action, {
+            projectPath: profile.project_path,
+          });
           results.set(action.id, formatResult(result));
         } catch (err) {
           results.set(action.id, `✗ ${err}`);
@@ -652,7 +656,9 @@
       if (!action) continue;
       currentAction = action.label;
       try {
-        const result = await executeAction(action);
+        const result = await executeAction(action, {
+          projectPath: profile.project_path,
+        });
         results.set(action.id, formatResult(result));
       } catch (e) {
         results.set(action.id, `✗ ${e}`);
