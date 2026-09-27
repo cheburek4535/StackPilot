@@ -122,7 +122,7 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         "unity" => &["unity"],
         "unreal" => &["unreal"],
         "godot" => &["godot"],
-        "qt" => &["qt"],
+        "qt" | "qt-qml" | "qt-widgets" | "qt-webengine" | "qt-kirigami" => &["qt"],
         // SwiftUI/Vapor — только macOS: нужен Xcode (xcodebuild).
         "swiftui" | "vapor" => &["xcodebuild"],
         _ => &[],
