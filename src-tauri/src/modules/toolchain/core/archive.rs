@@ -124,10 +124,13 @@ impl ArchiveListing {
                 validate_entry_name(link_name)
                     .map_err(|e| format!("опасное имя симлинка {link_name:?}: {e}"))?;
 
-                if !target.is_empty() {
-                    if target.starts_with('/') || target.starts_with('\\') {
-                        return Err(format!("симлинк указывает на абсолютный путь: {rest:?}"));
-                    }
+                if target.is_empty() {
+                    return Err(format!("симлинк без целевого пути запрещён: {rest:?}"));
+                }
+
+                if target.starts_with('/') || target.starts_with('\\') {
+                    return Err(format!("симлинк указывает на абсолютный путь: {rest:?}"));
+                }
                     if target.contains(':') {
                         return Err(format!("симлинк содержит недопустимый префикс: {rest:?}"));
                     }
@@ -158,7 +161,6 @@ impl ArchiveListing {
                             _ => {}
                         }
                     }
-                }
             }
         }
         Ok(())
@@ -251,7 +253,11 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     for info in z.infolist():
         mode = info.external_attr >> 16
         if stat.S_ISLNK(mode):
-            print("\x01symlink:" + info.filename)
+            try:
+                target = z.read(info).decode("utf-8", "replace").strip()
+                print("\x01symlink:" + info.filename + " -> " + target)
+            except Exception:
+                print("\x01symlink:" + info.filename)
         else:
             print(info.filename)
 "#;

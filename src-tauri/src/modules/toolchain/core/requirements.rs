@@ -239,6 +239,7 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
         // реальный REPL — CSharpRepl (dotnet tool install -g CSharpRepl).
         // «dotnet-cmd» замаплен на него для совместимости с мастером.
         "dotnet-cmd" | "csharprepl" => Some("csharprepl"),
+        "msvc-build-tools" => Some("msvc-build-tools"),
         _ => None,
     }
 }
@@ -492,6 +493,29 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
 mod tests {
     use super::*;
 
+    fn base_tools() -> Vec<&'static str> {
+        #[cfg(target_os = "windows")]
+        {
+            vec!["winget"]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            vec!["brew"]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            vec![]
+        }
+    }
+
+    fn expected_with_base(tools: &[&'static str]) -> Vec<String> {
+        let mut res: Vec<String> = base_tools().into_iter().map(String::from).collect();
+        for t in tools {
+            res.push(t.to_string());
+        }
+        res
+    }
+
     fn req() -> ProjectRequirements {
         ProjectRequirements::default()
     }
@@ -500,18 +524,18 @@ mod tests {
     fn language_python_resolves_to_python() {
         let mut r = req();
         r.languages = vec!["python".into()];
-        assert_eq!(resolve(&r), vec!["winget", "python"]);
+        assert_eq!(resolve(&r), expected_with_base(&["python"]));
     }
 
     #[test]
     fn typescript_and_javascript_use_node() {
         let mut r = req();
         r.languages = vec!["typescript".into()];
-        assert_eq!(resolve(&r), vec!["winget", "node"]);
+        assert_eq!(resolve(&r), expected_with_base(&["node"]));
 
         let mut r = req();
         r.languages = vec!["javascript".into()];
-        assert_eq!(resolve(&r), vec!["winget", "node"]);
+        assert_eq!(resolve(&r), expected_with_base(&["node"]));
     }
 
     #[test]
@@ -520,7 +544,7 @@ mod tests {
         r.languages = vec!["elixir".into()];
         // erlang идёт ПЕРВЫМ: elixir.bat запускает erl, без рантайма
         // на PATH проверка установленного elixir не сработает.
-        assert_eq!(resolve(&r), vec!["winget", "erlang", "elixir"]);
+        assert_eq!(resolve(&r), expected_with_base(&["erlang", "elixir"]));
     }
 
     #[test]
@@ -728,13 +752,13 @@ mod tests {
             "mailpit".into(),
             "docker".into(),
         ];
-        assert_eq!(resolve(&r), vec!["winget", "docker"]);
+        assert_eq!(resolve(&r), expected_with_base(&["docker"]));
 
         // попытка выбрать «локально» чисто docker-инструмент (нет источников
         // в tools.json) ничего не даёт: clickhouse/airflow/mailpit не замаплены
         let mut r2 = r.clone();
         r2.local_infra_tools = vec!["clickhouse".into(), "mailpit".into()];
-        assert_eq!(resolve(&r2), vec!["winget", "docker"]);
+        assert_eq!(resolve(&r2), expected_with_base(&["docker"]));
     }
 
     #[test]
@@ -781,7 +805,7 @@ mod tests {
             "mysql".into(),
         ];
         // resolve() (легаси-мастер) прячет их за local_infra_tools...
-        assert_eq!(resolve(&r), vec!["winget"]);
+        assert_eq!(resolve(&r), expected_with_base(&[]));
         // ...а resolve_standalone() ставит локально все шесть.
         let ids = resolve_standalone(&r);
         for expected in [
@@ -798,7 +822,10 @@ mod tests {
             );
         }
         // Порядок детерминирован = порядок выбора.
+        #[cfg(target_os = "windows")]
         assert_eq!(ids[0], "winget");
+        #[cfg(target_os = "macos")]
+        assert_eq!(ids[0], "brew");
     }
 
     /// STANDALONE: чисто docker-инструменты (нет маппинга/источников)
@@ -813,7 +840,7 @@ mod tests {
             "mysql".into(),
         ];
         let ids = resolve_standalone(&r);
-        assert_eq!(ids, vec!["winget", "mysql"]);
+        assert_eq!(ids, expected_with_base(&["mysql"]));
     }
 
     /// Легаси-поведение `resolve()` не изменилось (совместимость мастера):
@@ -822,10 +849,10 @@ mod tests {
     fn legacy_resolve_keeps_opt_in_gating_for_wizard() {
         let mut r = req();
         r.tools = vec!["mysql".into(), "postgresql".into()];
-        assert_eq!(resolve(&r), vec!["winget"]);
+        assert_eq!(resolve(&r), expected_with_base(&[]));
 
         r.local_infra_tools = vec!["mysql".into()];
-        assert_eq!(resolve(&r), vec!["winget", "mysql"]);
+        assert_eq!(resolve(&r), expected_with_base(&["mysql"]));
     }
 
     #[test]
@@ -889,9 +916,21 @@ mod tests {
         for id in &ids {
             assert!(seen.insert(id), "дубликат {id} в {ids:?}");
         }
-        // winget идёт первым, языки — раньше тулов фреймворка
-        assert_eq!(ids[0], "winget");
-        assert_eq!(ids[1], "rust");
+        // winget/brew идёт первым на Win/Mac, языки — раньше тулов фреймворка
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(ids[0], "winget");
+            assert_eq!(ids[1], "rust");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(ids[0], "brew");
+            assert_eq!(ids[1], "rust");
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            assert_eq!(ids[0], "rust");
+        }
     }
 
     #[test]
@@ -991,8 +1030,8 @@ mod tests {
 
     #[test]
     fn empty_requirements_resolve_to_winget_only() {
-        // winget — обязательный базовый инструмент даже при пустом запросе
-        assert_eq!(resolve(&req()), vec!["winget"]);
+        // Базовый менеджер пакетов (winget/brew) даже при пустом запросе
+        assert_eq!(resolve(&req()), expected_with_base(&[]));
     }
 
     /// Гарантия отсутствия молчаливых дыр: каждый id, который resolve()
@@ -1110,9 +1149,10 @@ mod tests {
             let mut r = req();
             r.frameworks = vec![fw.clone()];
             let ids = resolve(&r);
+            let min_expected = if base_tools().is_empty() { 1 } else { 2 };
             assert!(
-                ids.len() > 1,
-                "фреймворк {fw} не даёт ни одного требования (только winget): {ids:?}"
+                ids.len() >= min_expected,
+                "фреймворк {fw} не даёт ни одного требования: {ids:?}"
             );
         }
     }

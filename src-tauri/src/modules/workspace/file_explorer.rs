@@ -74,11 +74,34 @@ pub fn resolve_and_verify_path(project_root: &Path, user_path: &str) -> Result<P
     }
 
     let target_path = Path::new(trimmed);
-    let target = if target_path.is_relative() {
-        project_root.join(target_path)
+    let stripped_root = strip_unc_prefix(&canonical_root);
+
+    let mut normalized = if target_path.is_relative() {
+        stripped_root.clone()
     } else {
-        target_path.to_path_buf()
+        PathBuf::new()
     };
+
+    for comp in target_path.components() {
+        match comp {
+            std::path::Component::Prefix(p) => normalized.push(p.as_os_str()),
+            std::path::Component::RootDir => normalized.push(comp.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if target_path.is_relative() && normalized == stripped_root {
+                    return Err("Access Denied: Path Traversal detected".into());
+                }
+                normalized.pop();
+            }
+            std::path::Component::Normal(c) => normalized.push(c),
+        }
+    }
+
+    if !normalized.starts_with(&stripped_root) {
+        return Err("Access Denied: Path Traversal detected".into());
+    }
+
+    let target = normalized;
 
     if target.exists() {
         let canonical_target = target

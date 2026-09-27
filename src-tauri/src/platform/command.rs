@@ -381,12 +381,16 @@ fn build_script_line(program: &str, args: &[String], shell: ShellKind) -> String
             line
         }
         ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish => {
-            let mut line = sh_quote(program);
-            for arg in args {
-                line.push(' ');
-                line.push_str(&sh_quote(arg));
+            if args.is_empty() {
+                program.to_string()
+            } else {
+                let mut line = sh_quote(program);
+                for arg in args {
+                    line.push(' ');
+                    line.push_str(&sh_quote(arg));
+                }
+                line
             }
-            line
         }
         ShellKind::Default => {
             let resolved = default_shell_for_platform();
