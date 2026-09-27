@@ -15,6 +15,7 @@ pub trait ProjectService: Send + Sync {
     ) -> ProjectContext;
 }
 
+#[derive(Clone)]
 pub struct DefaultProjectService {
     current: Arc<Mutex<Option<ProjectContext>>>,
 }
