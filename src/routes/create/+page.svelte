@@ -196,10 +196,10 @@
   }
 
   .sp-mode-btn.active {
-    background: var(--sp-surface-grad), var(--sp-bg-3);
-    border-color: var(--sp-border);
+    background: var(--sp-bg-3);
+    border-color: var(--sp-border-strong);
     color: var(--sp-text-1);
     font-weight: var(--sp-fw-semibold);
-    box-shadow: var(--sp-shadow-1), var(--sp-gloss-top);
+    box-shadow: var(--sp-shadow-1);
   }
 </style>

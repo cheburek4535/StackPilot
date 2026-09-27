@@ -323,14 +323,10 @@
     padding: 0.5rem 0.95rem 0.5rem 0.6rem;
     border-radius: var(--sp-radius-full);
     border: 1px solid var(--sp-accent-border);
-    background: linear-gradient(
-      180deg,
-      var(--sp-accent-soft),
-      color-mix(in srgb, var(--sp-accent-soft) 68%, var(--sp-bg-1))
-    );
+    background: var(--sp-accent-soft);
     color: var(--sp-text-1);
     cursor: pointer;
-    box-shadow: var(--sp-gloss-top);
+    box-shadow: var(--sp-shadow-1);
     transition: background 0.15s, box-shadow 0.15s, border-color 0.15s, transform 0.15s;
   }
   .devl-chip:hover {
@@ -413,22 +409,22 @@
   .btn-secondary { background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.6rem 1.5rem; border-radius: 8px; border: 1px solid var(--sp-border-strong); cursor: pointer; font-size: 0.95rem; }
   .btn-primary {
     background: var(--sp-accent-strong);
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
-      var(--sp-accent-strong) 45%,
-      var(--sp-accent) 100%
-    );
     color: #fff;
-    padding: 0.6rem 1.5rem;
+    padding: 0.65rem 1.5rem;
     border-radius: var(--sp-radius-lg);
-    border: 1px solid rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--sp-accent-border);
     cursor: pointer;
     font-weight: 600;
     font-size: 0.95rem;
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-    transition: background 0.15s, box-shadow 0.15s;
+    box-shadow: var(--sp-shadow-1), 0 2px 10px rgba(228, 87, 10, 0.25);
+    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--sp-accent);
+    box-shadow: var(--sp-shadow-accent), 0 4px 14px rgba(228, 87, 10, 0.35);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+  }
 </style>

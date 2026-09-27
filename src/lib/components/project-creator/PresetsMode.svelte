@@ -60,25 +60,33 @@
 
   .presets-header {
     text-align: center;
-    padding: 1.25rem 2rem;
-    background: var(--sp-surface-grad), var(--sp-bg-1);
-    border: 1px solid var(--sp-border);
+    justify-self: center;
+    width: 100%;
+    max-width: 580px;
+    margin: 0 auto 1.5rem;
+    padding: 0.85rem 1.5rem 1rem;
+    background: var(--sp-glass-bg);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--sp-radius-xl);
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   }
 
   .prompt {
     margin: 0;
-    font-size: var(--sp-fs-xl);
+    font-size: 1.15rem;
     font-weight: var(--sp-fw-bold);
     color: var(--sp-text-1);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
   }
 
   .hint {
-    margin: var(--sp-1) 0 0;
+    margin: 0.25rem 0 0;
     color: var(--sp-text-3);
-    font-size: var(--sp-fs-sm);
+    font-size: var(--sp-fs-xs);
+    line-height: 1.4;
   }
 
   .preset-grid {
@@ -93,19 +101,21 @@
     align-items: center;
     gap: 0.65rem;
     padding: 1.25rem;
-    border: 1px solid var(--sp-border);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--sp-radius-xl);
-    background: var(--sp-surface-grad), var(--sp-bg-1);
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+    background: var(--sp-glass-bg);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
     text-align: center;
     color: var(--sp-text-1);
-    transition: all 0.2s ease;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .preset-card:hover {
-    border-color: var(--sp-border-strong);
-    background: var(--sp-surface-grad), var(--sp-bg-2);
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-2);
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.05);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
     transform: translateY(-2px);
   }
 

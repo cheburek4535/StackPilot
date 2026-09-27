@@ -84,22 +84,22 @@
   .analyzed-path { font-size: 0.85rem; color: var(--sp-accent-strong); margin-top: 0.3rem; }
   .btn-primary {
     background: var(--sp-accent-strong);
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
-      var(--sp-accent-strong) 45%,
-      var(--sp-accent) 100%
-    );
     color: #fff;
-    padding: 0.6rem 1.5rem;
+    padding: 0.65rem 1.5rem;
     border-radius: var(--sp-radius-lg);
-    border: 1px solid rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--sp-accent-border);
     cursor: pointer;
     font-weight: 600;
     font-size: 0.95rem;
-    box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-    transition: background 0.15s, box-shadow 0.15s;
+    box-shadow: var(--sp-shadow-1), 0 2px 10px rgba(228, 87, 10, 0.25);
+    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--sp-accent);
+    box-shadow: var(--sp-shadow-accent), 0 4px 14px rgba(228, 87, 10, 0.35);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+  }
 </style>

@@ -32,6 +32,30 @@
   });
 </script>
 
+{#snippet archBanner()}
+  {#if store.archMode}
+    <div class="arch-banner arch-{store.archMode}" role="status">
+      <div class="arch-body">
+        <p class="arch-title">
+          {store.archMode === "integrated"
+            ? (i18n.t("create.mode_integrated") as TranslationKey)
+            : (i18n.t("create.mode_decoupled") as TranslationKey)}
+        </p>
+        <p class="arch-text">
+          {store.archMode === "integrated"
+            ? (i18n.t("create.mode_integrated_desc") as TranslationKey)
+            : (i18n.t("create.mode_decoupled_desc") as TranslationKey)}
+        </p>
+        <p class="arch-examples">
+          {store.archMode === "integrated"
+            ? (i18n.t("create.mode_integrated_ex") as TranslationKey)
+            : (i18n.t("create.mode_decoupled_ex") as TranslationKey)}
+        </p>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
       <div class="builder">
         <div class="builder-head">
           <div class="phase-nav">
@@ -47,30 +71,6 @@
               </button>
             {/each}
           </div>
-
-          {#snippet archBanner()}
-            {#if store.archMode}
-              <div class="arch-banner arch-{store.archMode}" role="status">
-                <div class="arch-body">
-                  <p class="arch-title">
-                    {store.archMode === "integrated"
-                      ? (i18n.t("create.mode_integrated") as TranslationKey)
-                      : (i18n.t("create.mode_decoupled") as TranslationKey)}
-                  </p>
-                  <p class="arch-text">
-                    {store.archMode === "integrated"
-                      ? (i18n.t("create.mode_integrated_desc") as TranslationKey)
-                      : (i18n.t("create.mode_decoupled_desc") as TranslationKey)}
-                  </p>
-                  <p class="arch-examples">
-                    {store.archMode === "integrated"
-                      ? (i18n.t("create.mode_integrated_ex") as TranslationKey)
-                      : (i18n.t("create.mode_decoupled_ex") as TranslationKey)}
-                  </p>
-                </div>
-              </div>
-            {/if}
-          {/snippet}
 
           <div class="builder-head-text">
             {#if store.phase === 0}
@@ -92,41 +92,28 @@
                 {/if}
               </div>
               <p class="prompt-sub">{i18n.t("create.fw_hint") as TranslationKey}</p>
-              {@render archBanner()}
-              {#if store.dropNotice}
-                <p class="notice-bar" role="status">{store.dropNotice}</p>
-              {/if}
-
-              <store.HelpHint
-                id={store.HINT_CREATE_STACK.id}
-                resolvedBy={store.HINT_CREATE_STACK.resolvedBy}
-                icon="layers"
-                title={i18n.t("help.create_stack.title") as TranslationKey}
-                text={i18n.t("help.create_stack.body") as TranslationKey}
-              />
-
-              {#if store.confirmClearStack}
-                <div class="clear-overlay" onclick={() => (store.confirmClearStack = false)}>
-                  <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-                    <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
-                    <p>
-                      {i18n.t("create.clear_confirm_body") as TranslationKey}
-                    </p>
-                    <div class="clear-actions">
-                      <button class="btn-primary" onclick={() => store.clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
-                      <button class="btn-back" onclick={() => (store.confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
-                    </div>
-                  </div>
-                </div>
-              {/if}
             {/if}
             {#if store.phase === 2}
               <h2 class="prompt">{i18n.t("create.review_create_short") as TranslationKey}</h2>
               <p class="prompt-sub">Проверьте выбранный стек, имя директории и перейдите к генерации проекта</p>
-              {@render archBanner()}
             {/if}
           </div>
         </div>
+
+        {#if store.confirmClearStack}
+          <div class="clear-overlay" onclick={() => (store.confirmClearStack = false)}>
+            <div class="clear-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+              <h3>{i18n.t("create.clear_confirm_title") as TranslationKey}</h3>
+              <p>
+                {i18n.t("create.clear_confirm_body") as TranslationKey}
+              </p>
+              <div class="clear-actions">
+                <button class="btn-primary" onclick={() => store.clearStack()}>{i18n.t("create.clear_yes") as TranslationKey}</button>
+                <button class="btn-back" onclick={() => (store.confirmClearStack = false)}>{i18n.t("create.cancel") as TranslationKey}</button>
+              </div>
+            </div>
+          </div>
+        {/if}
 
         <div class="builder-left">
           <!-- Phase 0: Project Type -->
@@ -152,6 +139,19 @@
 
           <!-- Phase 1: Stack & Tools — одна скролл-страница -->
           {#if store.phase === 1}
+            {@render archBanner()}
+            {#if store.dropNotice}
+              <p class="notice-bar" role="status">{store.dropNotice}</p>
+            {/if}
+
+            <store.HelpHint
+              id={store.HINT_CREATE_STACK.id}
+              resolvedBy={store.HINT_CREATE_STACK.resolvedBy}
+              icon="layers"
+              title={i18n.t("help.create_stack.title") as TranslationKey}
+              text={i18n.t("help.create_stack.body") as TranslationKey}
+            />
+
             {@const fws = store.availableFrameworks()}
             {@const backendFws = fws.filter((f) => f.side === "backend")}
             {@const frontendFws = fws.filter((f) => f.side === "frontend")}
@@ -726,6 +726,7 @@
 
           <!-- Phase 2: Review -->
           {#if store.phase === 2}
+            {@render archBanner()}
             <div class="dest-card" class:dest-card-attention={!store.selectedFolder}>
               <div class="dest-head">
                 <span class="dest-icon" aria-hidden="true">📁</span>
@@ -1194,7 +1195,7 @@
 .prompt { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.4rem; letter-spacing: -0.02em; }
 .hint { color: var(--sp-text-3); margin-bottom: 1.5rem; font-size: 0.95rem; }
 .creator-footer { margin: 0.9rem 0 0; font-size: 0.8rem; color: var(--sp-text-3); opacity: 0.7; }
-.backendless-note { border-left: 3px solid var(--sp-accent-strong); padding: 0.35rem 0.75rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top); margin: 0.75rem 0; }
+.backendless-note { border-left: 3px solid var(--sp-accent-strong); padding: 0.35rem 0.75rem; background: var(--sp-bg-1); border-radius: var(--sp-radius-md); box-shadow: var(--sp-shadow-1); margin: 0.75rem 0; }
 
 /* ---- Конструктор: Две колонки (Строгий стиль) ---- */
 .builder {
@@ -1205,20 +1206,25 @@
   width: 100%;
 }
 
-/* Шапка фазы */
+/* Шапка фазы: компактная скругленная область по центру */
 .builder-head {
   grid-column: 1 / -1;
+  justify-self: center;
+  width: 100%;
+  max-width: 580px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--sp-3);
-  padding: 1.25rem 2rem 1.5rem;
-  background: var(--sp-surface-grad), var(--sp-bg-1);
-  border: 1px solid var(--sp-border);
+  gap: var(--sp-2);
+  padding: 0.85rem 1.5rem 1rem;
+  background: var(--sp-glass-bg);
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--sp-radius-xl);
-  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
-  margin-bottom: 0.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  margin-bottom: 0.75rem;
   text-align: center;
 }
 
@@ -1231,18 +1237,19 @@
 
 .prompt {
   margin: 0;
-  font-size: var(--sp-fs-xl);
+  font-size: 1.15rem;
   font-weight: var(--sp-fw-bold);
   color: var(--sp-text-1);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
 }
 
 .prompt-sub {
-  margin: var(--sp-1) 0 0;
-  font-size: var(--sp-fs-sm);
+  margin: 0.25rem 0 0;
+  font-size: var(--sp-fs-xs);
   color: var(--sp-text-3);
-  max-width: 42rem;
-  line-height: var(--sp-lh-normal);
+  max-width: 32rem;
+  line-height: 1.4;
 }
 
 .phase-title-row {
@@ -1285,10 +1292,12 @@
   display: flex;
   flex-direction: column;
   padding: 1.25rem;
-  border: 1px solid var(--sp-border);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--sp-radius-xl);
-  background: var(--sp-surface-grad), var(--sp-bg-1);
-  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+  background: var(--sp-glass-bg);
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 /* Подсказка «Попробуйте тип Кастомный стэк» под панелью контекста */
@@ -1299,18 +1308,22 @@
   align-items: flex-start;
   width: 100%;
   text-align: left;
-  padding: 0.85rem;
-  border: 1px solid var(--sp-border);
-  border-radius: var(--sp-radius-lg);
-  background: transparent;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--sp-radius-xl);
+  background: var(--sp-glass-bg);
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   color: var(--sp-text-3);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 .custom-stack-hint:hover {
   border-color: var(--sp-accent-border);
   background: var(--sp-bg-2);
   color: var(--sp-text-2);
+  transform: translateY(-1px);
 }
 .custom-stack-hint .csh-title {
   font-size: 0.74rem;
@@ -1363,50 +1376,50 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0;
+  gap: 0.25rem;
   margin-bottom: 0.35rem;
   flex-wrap: wrap;
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.35rem;
   background: var(--sp-bg-2);
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-full);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 .phase-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   background: none;
-  border: none;
+  border: 1px solid transparent;
   cursor: pointer;
   color: var(--sp-text-3);
-  font-size: var(--sp-fs-sm);
+  font-size: var(--sp-fs-xs);
   font-weight: var(--sp-fw-medium);
   font-family: inherit;
-  padding: 0.35rem 0.85rem;
+  padding: 0.3rem 0.75rem;
   border-radius: var(--sp-radius-full);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .phase-item + .phase-item::before {
   content: "";
-  width: 24px;
+  width: 14px;
   height: 1px;
   background: var(--sp-border-strong);
-  margin-right: 0.85rem;
+  margin-right: 0.5rem;
   flex-shrink: 0;
 }
 .phase-item:hover {
   color: var(--sp-text-1);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
 }
 .phase-item.active {
-  color: #fff;
-  background: var(--sp-surface-grad), var(--sp-bg-3);
-  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1);
+  color: var(--sp-text-1);
+  background: var(--sp-bg-3);
+  border-color: var(--sp-border-strong);
+  box-shadow: var(--sp-shadow-1);
 }
 .phase-circle {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -1414,7 +1427,7 @@
   background: var(--sp-bg-1);
   border: 1px solid var(--sp-border);
   font-weight: var(--sp-fw-bold);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--sp-text-3);
   transition: all 0.2s ease;
 }
@@ -1422,7 +1435,7 @@
   background: var(--sp-accent-strong);
   border-color: var(--sp-accent);
   color: #fff;
-  box-shadow: 0 0 14px var(--sp-accent-glow);
+  box-shadow: 0 0 10px var(--sp-accent-glow);
 }
 .phase-item.done .phase-circle {
   background: var(--sp-success-soft);
@@ -1441,10 +1454,10 @@
   gap: 0.75rem;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-lg);
-  padding: 0.7rem 0.9rem;
+  padding: 0.75rem 1rem;
   margin: 0 0 1rem;
-  background: var(--sp-surface-grad), var(--sp-bg-1);
-  box-shadow: var(--sp-gloss-top);
+  background: var(--sp-bg-1);
+  box-shadow: var(--sp-shadow-1);
 }
 .arch-integrated { border-color: var(--sp-success-border); background: var(--sp-success-soft); }
 .arch-decoupled { border-color: var(--sp-accent-border); background: var(--sp-accent-soft); }
@@ -1459,8 +1472,8 @@
 .fw-level {
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-lg);
-  background: var(--sp-surface-grad), var(--sp-bg-2);
-  box-shadow: var(--sp-gloss-top);
+  background: var(--sp-bg-2);
+  box-shadow: var(--sp-shadow-1);
   margin-bottom: 0.75rem;
 }
 .fw-level > summary {
@@ -1567,7 +1580,7 @@
 .fw-grid { grid-template-columns: repeat(auto-fill, 230px); grid-auto-rows: 1fr; align-items: stretch; justify-content: center; }
 .fw-grid .card { min-height: 220px; height: 100%; width: 100%; box-sizing: border-box; flex: 1; }
 .fw-grid .card p { flex: 1; }
-.unavailable-summary { min-height: 200px; display: flex; flex-direction: column; justify-content: center; gap: 0.5rem; padding: 1rem; border: 1px dashed var(--sp-border-strong); border-radius: var(--sp-radius-lg); background: var(--sp-surface-grad), var(--sp-bg-1); color: var(--sp-text-2); cursor: pointer; text-align: center; }
+.unavailable-summary { min-height: 200px; display: flex; flex-direction: column; justify-content: center; gap: 0.5rem; padding: 1rem; border: 1px dashed var(--sp-border-strong); border-radius: var(--sp-radius-lg); background: var(--sp-bg-1); color: var(--sp-text-2); cursor: pointer; text-align: center; }
 .unavailable-summary:hover { border-color: var(--sp-accent-strong); color: var(--sp-text-1); background: var(--sp-bg-2); }
 .unavailable-summary strong { color: var(--sp-text-1); font-size: 0.9rem; }
 .unavailable-summary span { color: var(--sp-text-3); font-size: 0.75rem; }
@@ -1610,7 +1623,7 @@
   border: 1px solid var(--sp-border-strong);
   border-radius: var(--sp-radius-lg);
   padding: 0.8rem;
-  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-3);
+  box-shadow: var(--sp-shadow-3);
 }
 .popup-title { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: #fff; }
 .popup-label { margin: 0.5rem 0 0.3rem; font-size: 0.72rem; color: var(--sp-text-2); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -1621,7 +1634,7 @@
   padding: 0.45rem 0.6rem; border-radius: var(--sp-radius-md); cursor: pointer; font-size: 0.82rem; text-align: left;
 }
 .popup-opt:hover { border-color: var(--sp-accent-strong); }
-.popup-opt.selected { border-color: var(--sp-accent); background: var(--sp-surface-grad), var(--sp-bg-2); color: #fff; box-shadow: inset 0 0 0 1px var(--sp-accent-border); }
+.popup-opt.selected { border-color: var(--sp-accent); background: var(--sp-accent-soft); color: #fff; box-shadow: inset 0 0 0 1px var(--sp-accent-border); }
 .popup-opt.stack { flex-direction: column; align-items: stretch; gap: 0.2rem; }
 .popup-opt-label { display: flex; align-items: center; gap: 0.45rem; font-weight: 600; }
 .popup-opt-desc { font-size: 0.7rem; color: var(--sp-text-3); line-height: 1.35; font-weight: 400; }
@@ -1650,11 +1663,13 @@
   align-items: center;
   gap: 1rem;
   margin-top: 1.25rem;
-  padding: 0.75rem 1rem;
-  background: var(--sp-panel-sheen), var(--sp-solid-chrome);
-  border: 1px solid var(--sp-border);
-  border-radius: var(--sp-radius-lg);
-  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-2);
+  padding: 0.75rem 1.25rem;
+  background: var(--sp-glass-strong);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--sp-radius-xl);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
   z-index: 40;
 }
 .mega-summary { font-size: 0.85rem; color: var(--sp-text-2); display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
@@ -2012,46 +2027,59 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 .feature-toggle input { accent-color: var(--sp-accent-strong); }
 
 /* ---- Кнопки ---- */
-.btn-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }.btn-back { background: none; border: 1px solid var(--sp-border-strong); color: var(--sp-text-3); padding: 0.4rem 0.9rem; border-radius: var(--sp-radius-md); cursor: pointer; font-size: 0.85rem; }
+.btn-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }
+.btn-back { background: none; border: 1px solid var(--sp-border-strong); color: var(--sp-text-3); padding: 0.4rem 0.9rem; border-radius: var(--sp-radius-md); cursor: pointer; font-size: 0.85rem; }
 .btn-back:hover { border-color: var(--sp-accent-strong); color: #fff; }
 .btn-primary {
   background: var(--sp-accent-strong);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sp-accent-strong) 72%, black) 0%,
-    var(--sp-accent-strong) 45%,
-    var(--sp-accent) 100%
-  );
   color: #fff;
-  padding: 0.6rem 1.5rem;
+  padding: 0.65rem 1.5rem;
   border-radius: var(--sp-radius-lg);
-  border: 1px solid rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--sp-accent-border);
   cursor: pointer;
   font-weight: 600;
   font-size: 0.95rem;
-  box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 2px 14px rgba(228, 87, 10, 0.2);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
-  transition: background 0.15s, box-shadow 0.15s;
+  box-shadow: var(--sp-shadow-1), 0 2px 10px rgba(228, 87, 10, 0.25);
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--sp-accent-strong);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sp-accent-strong) 62%, black) 0%,
-    var(--sp-accent-strong) 40%,
-    color-mix(in srgb, var(--sp-accent) 88%, var(--sp-accent-strong)) 100%
-  );
-  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-accent);
+  background: var(--sp-accent);
+  box-shadow: var(--sp-shadow-accent), 0 4px 14px rgba(228, 87, 10, 0.35);
+  transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
 }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-secondary { background: var(--sp-surface-grad), var(--sp-bg-2); color: var(--sp-text-1); padding: 0.6rem 1.5rem; border-radius: var(--sp-radius-lg); border: 1px solid var(--sp-border); box-shadow: var(--sp-gloss-top); cursor: pointer; font-size: 0.95rem; transition: background 0.15s, border-color 0.15s; }
-.btn-secondary:hover { background: var(--sp-bg-3); border-color: var(--sp-border-strong); }
+.btn-secondary {
+  background: var(--sp-bg-2);
+  color: var(--sp-text-1);
+  padding: 0.65rem 1.5rem;
+  border-radius: var(--sp-radius-lg);
+  border: 1px solid var(--sp-border);
+  box-shadow: var(--sp-shadow-1);
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.btn-secondary:hover {
+  background: var(--sp-bg-3);
+  border-color: var(--sp-border-strong);
+  transform: translateY(-1px);
+}
 .create-btn { font-size: 1.1rem; padding: 0.75rem 2rem; }
 .review-error { color: var(--sp-danger); font-weight: 600; font-size: 0.9rem; margin: 1rem 0 0; }
 .review-hint { color: var(--sp-text-3); font-size: 0.8rem; margin: 0.5rem 0 0; }
 
 /* ---- Проблемы стека ---- */
-.stack-issues { border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-lg); padding: 0.8rem 1rem; margin-bottom: 0.75rem; background: var(--sp-surface-grad), var(--sp-bg-2); box-shadow: var(--sp-gloss-top); }
+.stack-issues {
+  border: 1px solid var(--sp-border-strong);
+  border-radius: var(--sp-radius-lg);
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.75rem;
+  background: var(--sp-bg-2);
+  box-shadow: var(--sp-shadow-1);
+}
 .stack-issue { display: flex; flex-wrap: wrap; gap: 0.3rem 0.4rem; align-items: flex-start; margin: 0.4rem 0; font-size: 0.8rem; line-height: 1.35; }
 .stack-issue.error { color: var(--sp-danger); }
 .stack-issue.warning { color: var(--sp-warning); }
@@ -2071,8 +2099,8 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 }
 .dest-card-attention { animation: dest-pulse 1.6s ease-in-out 3; }
 @keyframes dest-pulse {
-  0%, 100% { box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 0 0 3px var(--sp-accent-soft); }
-  50% { box-shadow: var(--sp-gloss-top), var(--sp-shadow-1), 0 0 0 7px var(--sp-accent-soft); }
+  0%, 100% { box-shadow: var(--sp-shadow-1), 0 0 0 3px var(--sp-accent-soft); }
+  50% { box-shadow: var(--sp-shadow-1), 0 0 0 7px var(--sp-accent-soft); }
 }
 .dest-head { display: flex; align-items: flex-start; gap: 0.7rem; margin-bottom: 0.9rem; }
 .dest-icon { font-size: 1.4rem; line-height: 1.2; }
@@ -2089,7 +2117,15 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 .folder-pick-path { font-family: var(--sp-font-mono); font-size: 0.82rem; color: var(--sp-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-pick-path.muted { font-family: var(--sp-font-sans); color: var(--sp-text-3); }
 .folder-pick-action { font-size: 0.72rem; color: var(--sp-accent); margin-top: 0.1rem; }
-.preview-section { border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-lg); padding: 1rem; margin-bottom: 1rem; background: var(--sp-surface-grad), var(--sp-bg-1); box-shadow: var(--sp-gloss-top), var(--sp-shadow-1); min-height: 360px; }
+.preview-section {
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-xl);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  background: var(--sp-bg-1);
+  box-shadow: var(--sp-shadow-1);
+  min-height: 360px;
+}
 .pn-input { width: 100%; padding: 0.7rem 0.85rem; border-radius: var(--sp-radius-lg); border: 1px solid var(--sp-border-strong); background: var(--sp-bg-1); color: #fff; font-size: 1rem; box-sizing: border-box; outline: none; }
 .pn-input:focus { border-color: var(--sp-accent-strong); box-shadow: 0 0 0 3px var(--sp-accent-soft); }
 .pn-input::placeholder { color: var(--sp-text-3); }
@@ -2115,7 +2151,7 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 .pp-exists { font-size: 0.8rem; color: var(--sp-warning); font-weight: 600; }
 .conflict-overlay { position: fixed; inset: 0; background: rgba(2, 3, 6, 0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .clear-overlay { position: fixed; inset: 0; background: rgba(2, 3, 6, 0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.clear-dialog { background: var(--sp-glass-strong); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-xl); padding: 1.5rem; max-width: 460px; width: 90%; box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-3); }
+.clear-dialog { background: var(--sp-glass-strong); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-xl); padding: 1.5rem; max-width: 460px; width: 90%; box-shadow: var(--sp-shadow-3); }
 .clear-dialog h3 { margin: 0 0 0.75rem; color: var(--sp-warning); }
 .clear-dialog p { font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 1.25rem; line-height: 1.4; }
 .clear-actions { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -2135,7 +2171,7 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 }
 .btn-clear-stack:hover { background: var(--sp-danger-soft); border-color: var(--sp-danger); }
 .notice-bar { display: inline-block; font-size: 0.78rem; color: var(--sp-warning); background: var(--sp-warning-soft); border: 1px solid var(--sp-warning-border); border-radius: var(--sp-radius-lg); padding: 0.45rem 0.7rem; margin-bottom: 0.8rem; }
-.conflict-dialog { background: var(--sp-glass-strong); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-xl); padding: 1.5rem; max-width: 480px; width: 90%; box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-3); }
+.conflict-dialog { background: var(--sp-glass-strong); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid var(--sp-border-strong); border-radius: var(--sp-radius-xl); padding: 1.5rem; max-width: 480px; width: 90%; box-shadow: var(--sp-shadow-3); }
 .conflict-dialog h3 { margin: 0 0 0.75rem; color: var(--sp-warning); }
 .conflict-dialog p { font-size: 0.9rem; color: var(--sp-text-2); margin: 0 0 1.25rem; line-height: 1.4; }
 .conflict-actions { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -2173,7 +2209,7 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
   font-size: 0.82rem;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: var(--sp-gloss-top-strong), var(--sp-shadow-2), 0 4px 24px rgba(228, 87, 10, 0.28);
+  box-shadow: var(--sp-shadow-2), 0 4px 24px rgba(228, 87, 10, 0.28);
   animation: scroll-hint-in 0.35s ease-out;
 }
 .scroll-hint:hover { background: var(--sp-bg-2); }
