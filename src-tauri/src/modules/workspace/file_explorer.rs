@@ -333,7 +333,10 @@ impl FileExplorerService for DefaultFileExplorerService {
             Command::new(&program).args(&launcher_args).spawn()
         };
         match result {
-            Ok(_) => Ok(()),
+            Ok(child) => {
+                super::process_manager::reap_child(child);
+                Ok(())
+            }
             Err(e) => Err(format!(
                 "Failed to open VSCode ({}): {}. Make sure the path is correct in Settings -> System.",
                 resolved, e

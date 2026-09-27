@@ -306,14 +306,25 @@ impl DockerService {
         }
         #[cfg(target_os = "macos")]
         {
-            for cand in [
-                "/Applications/Docker.app/Contents/Resources/bin/docker",
-                "/usr/local/bin/docker",
-                "/opt/homebrew/bin/docker",
-            ] {
-                let p = std::path::Path::new(cand);
-                if p.is_file() {
-                    return Some(p.to_path_buf());
+            let mut candidates = vec![
+                std::path::PathBuf::from("/Applications/Docker.app/Contents/Resources/bin/docker"),
+                std::path::PathBuf::from("/usr/local/bin/docker"),
+                std::path::PathBuf::from("/opt/homebrew/bin/docker"),
+            ];
+            if let Ok(home) = std::env::var("HOME") {
+                candidates.push(
+                    std::path::PathBuf::from(home)
+                        .join("Applications")
+                        .join("Docker.app")
+                        .join("Contents")
+                        .join("Resources")
+                        .join("bin")
+                        .join("docker"),
+                );
+            }
+            for cand in candidates {
+                if cand.is_file() {
+                    return Some(cand);
                 }
             }
         }

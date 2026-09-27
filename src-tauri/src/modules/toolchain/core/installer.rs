@@ -357,10 +357,20 @@ fn build_install_command(
                     })
                 }
                 "macos" => {
-                    // Homebrew: brew install <id> [args...]
+                    // Homebrew: brew install [--cask] <id> [args...]
                     // Homebrew must NOT use sudo.
-                    let mut args = vec!["install".to_string(), source.id.clone()];
-                    args.extend(source.args.iter().cloned());
+                    let is_cask = source.args.iter().any(|a| a == "--cask")
+                        || matches!(source.id.as_str(), "visual-studio-code" | "docker");
+                    let mut args = vec!["install".to_string()];
+                    if is_cask {
+                        args.push("--cask".to_string());
+                    }
+                    args.push(source.id.clone());
+                    for a in &source.args {
+                        if a != "--cask" {
+                            args.push(a.clone());
+                        }
+                    }
                     args.extend(source.extra_args.iter().cloned());
                     Ok(InstallCommand {
                         program: "brew".to_string(),
@@ -2990,10 +3000,9 @@ mod tests {
             .find(|d| d.id == "java")
             .expect("java в tools.json");
 
-        assert_eq!(java.detection.known_paths, vec!["C:/Program Files/Eclipse Adoptium/*/bin"]);
-        assert_eq!(
-            java.path_entries,
-            vec!["C:\\Program Files\\Eclipse Adoptium\\*\\bin"]
+        assert!(java.detection.known_paths.iter().any(|p| p == "C:/Program Files/Eclipse Adoptium/*/bin"));
+        assert!(
+            java.path_entries.iter().any(|p| p == "C:\\Program Files\\Eclipse Adoptium\\*\\bin")
         );
 
         let msi = java

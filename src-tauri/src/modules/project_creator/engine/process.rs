@@ -1348,7 +1348,7 @@ mod tests {
             command: python.to_string(),
             args: vec![
                 "-c".into(),
-                "import sys; sys.stdout.write('привет мир ' * 1000); sys.stderr.write('ошибок нет\\n')"
+                "import sys; hasattr(sys.stdout, 'reconfigure') and sys.stdout.reconfigure(encoding='utf-8'); hasattr(sys.stderr, 'reconfigure') and sys.stderr.reconfigure(encoding='utf-8'); sys.stdout.write('привет мир ' * 1000); sys.stderr.write('ошибок нет\\n')"
                     .into(),
             ],
             working_dir: None,

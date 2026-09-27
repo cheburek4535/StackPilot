@@ -334,6 +334,12 @@ pub async fn detect_detailed(
                 if crate::platform::paths::is_snap_stub(&path) {
                     continue;
                 }
+                // macOS Xcode Command Line Tools заглушка (/usr/bin/git и др.):
+                // запуск без установленных CLT вызывает GUI-модалку Apple
+                // и падает с ошибкой, тул честно отсутствует (Missing).
+                if crate::platform::paths::is_macos_clt_stub(&path) {
+                    continue;
+                }
                 let probe_log = failed_logs
                     .iter()
                     .find(|(program, _)| program == &probe_cmd[0])

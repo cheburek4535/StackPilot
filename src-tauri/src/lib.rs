@@ -43,6 +43,17 @@ pub fn run() {
             std::fs::create_dir_all(data_dir.join("profiles"))
                 .expect("Failed to create profiles dir");
 
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
+                    let _ = app.set_menu(menu);
+                }
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_decorations(true);
+                    let _ = window.set_shadow(true);
+                }
+            }
+
             // Project environments directory
             std::fs::create_dir_all(data_dir.join("project_environments"))
                 .expect("Failed to create project_environments dir");

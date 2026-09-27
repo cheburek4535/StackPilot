@@ -50,12 +50,24 @@ use crate::modules::toolchain::models::{
 fn language_tools(lang: &str) -> &'static [&'static str] {
     match lang {
         "python" => &["python"],
-        "rust" => &["rust", "msvc-build-tools"],
+        "rust" => {
+            #[cfg(target_os = "windows")]
+            { &["rust", "msvc-build-tools"] }
+            #[cfg(not(target_os = "windows"))]
+            { &["rust"] }
+        },
         "go" => &["go"],
         "typescript" | "javascript" => &["node"],
         "java" => &["java"],
         "csharp" => &["dotnet"],
-        "cpp" => &["msvc-build-tools"],
+        "cpp" => {
+            #[cfg(target_os = "windows")]
+            { &["msvc-build-tools"] }
+            #[cfg(target_os = "macos")]
+            { &["xcodebuild"] }
+            #[cfg(target_os = "linux")]
+            { &[] }
+        },
         "dart" => &["dart"],
         "kotlin" => &["java", "kotlin"],
         "php" => &["php"],
@@ -391,7 +403,10 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
         }
     };
 
+    #[cfg(target_os = "windows")]
     push("winget");
+    #[cfg(target_os = "macos")]
+    push("brew");
 
     for lang in &requirements.languages {
         for id in language_tools(lang) {
@@ -540,7 +555,11 @@ mod tests {
         let ids = resolve(&r);
         // рантаймы из статичной таблицы (tauri-cli больше не нужен —
         // генерация идёт через npx create-tauri-app)
-        for expected in ["rust", "node", "msvc-build-tools"] {
+        #[cfg(target_os = "windows")]
+        let expected_tools = ["rust", "node", "msvc-build-tools"];
+        #[cfg(not(target_os = "windows"))]
+        let expected_tools = ["rust", "node"];
+        for expected in expected_tools {
             assert!(
                 ids.iter().any(|i| i == expected),
                 "нет {expected} в {ids:?}"

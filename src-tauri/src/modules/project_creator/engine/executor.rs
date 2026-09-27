@@ -479,6 +479,15 @@ impl StepExecutor {
     ) -> StepStatus {
         match std::fs::write(path, content) {
             Ok(_) => {
+                #[cfg(unix)]
+                {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.ends_with(".sh") || name == "gradlew" || name == "mvnw" {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
                 tx.send(ExecutionEvent {
                     event_type: ExecutionEventType::StepProgress {
                         stdout: format!("Wrote {display_path}"),

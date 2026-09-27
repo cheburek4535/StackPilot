@@ -381,7 +381,7 @@ fn build_script_line(program: &str, args: &[String], shell: ShellKind) -> String
             line
         }
         ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish => {
-            let mut line = program.to_string();
+            let mut line = sh_quote(program);
             for arg in args {
                 line.push(' ');
                 line.push_str(&sh_quote(arg));
@@ -868,5 +868,18 @@ mod tests {
         );
         // The argument stays protected in single quotes
         assert!(line.contains("'const x = '"), "{line}");
+    }
+
+    #[test]
+    fn sh_script_line_quotes_program_with_spaces() {
+        let line = build_script_line(
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            &["--version".into()],
+            ShellKind::Sh,
+        );
+        assert_eq!(
+            line,
+            "'/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' --version"
+        );
     }
 }

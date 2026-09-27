@@ -368,6 +368,22 @@ impl Generator for SpringBootGenerator {
             }
         }
 
+        // 3.1) On Unix, ensure downloaded wrappers (mvnw, gradlew) have executable permissions (0o755).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for wrapper in ["mvnw", "gradlew"] {
+                let p = target.join(wrapper);
+                if p.is_file() {
+                    if let Ok(meta) = p.metadata() {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&p, perms);
+                    }
+                }
+            }
+        }
+
         // 4) Уборка.
         let _ = std::fs::remove_file(&zip_path);
 

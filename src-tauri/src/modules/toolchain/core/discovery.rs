@@ -633,6 +633,7 @@ pub async fn detect_tool(def: &ToolDefinition) -> ToolStatus {
         .filter(|path| {
             !crate::platform::paths::is_windows_store_alias(path)
                 && !crate::platform::paths::is_snap_stub(path)
+                && !crate::platform::paths::is_macos_clt_stub(path)
         });
     let broken_known_binary = known_path_binary_present(def);
 

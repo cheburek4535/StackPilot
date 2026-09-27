@@ -12,7 +12,13 @@ pub fn paths_eq(a: &Path, b: &Path, os: HostOs) -> bool {
             let b_s = b.to_string_lossy().replace('/', "\\").to_lowercase();
             a_s == b_s
         }
-        HostOs::Linux | HostOs::Macos => a == b,
+        HostOs::Macos => {
+            // Standard macOS filesystems (APFS and HFS+) are case-insensitive by default.
+            let a_s = a.to_string_lossy().replace('\\', "/").to_lowercase();
+            let b_s = b.to_string_lossy().replace('\\', "/").to_lowercase();
+            a_s == b_s
+        }
+        HostOs::Linux => a == b,
     }
 }
 
@@ -31,7 +37,17 @@ pub fn is_descendant(child: &Path, ancestor: &Path, os: HostOs) -> bool {
             };
             child_s.starts_with(&ancestor_with_sep) || child_s == ancestor_s
         }
-        HostOs::Linux | HostOs::Macos => child.starts_with(ancestor),
+        HostOs::Macos => {
+            let child_s = child.to_string_lossy().replace('\\', "/").to_lowercase();
+            let ancestor_s = ancestor.to_string_lossy().replace('\\', "/").to_lowercase();
+            let ancestor_with_sep = if ancestor_s.ends_with('/') {
+                ancestor_s.clone()
+            } else {
+                format!("{ancestor_s}/")
+            };
+            child_s.starts_with(&ancestor_with_sep) || child_s == ancestor_s
+        }
+        HostOs::Linux => child.starts_with(ancestor),
     }
 }
 
@@ -133,6 +149,56 @@ pub fn is_snap_stub(path: &std::path::Path) -> bool {
         false
     }
     #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// macOS Xcode Command Line Tools shims (`/usr/bin/git`, `/usr/bin/python3`, etc.).
+///
+/// On macOS, Apple installs stub binaries in `/usr/bin/` for developer tools
+/// (`git`, `python3`, `clang`, `gcc`, `make`, etc.). When Xcode / Command Line Tools
+/// are not installed, invoking these stubs displays a macOS GUI dialog prompting
+/// the user to install them, and fails in non-interactive/CLI execution.
+///
+/// If developer tools are not active (e.g. `xcode-select -p` fails), any binary
+/// located in `/usr/bin` that corresponds to an Apple developer shim is NOT
+/// an active installation of the tool.
+pub fn is_macos_clt_stub(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if !path.starts_with("/usr/bin") {
+            return false;
+        }
+        let Some(file_name) = path.file_name().and_then(|f| f.to_str()) else {
+            return false;
+        };
+        const CLT_SHIMS: &[&str] = &[
+            "git", "python3", "python", "clang", "clang++", "gcc", "g++",
+            "make", "lldb", "svn", "ar", "as", "nm", "ranlib", "size", "strings", "strip",
+        ];
+        if !CLT_SHIMS.contains(&file_name) {
+            return false;
+        }
+        static CLT_ACTIVE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0=untested, 1=active, 2=inactive
+        let status = CLT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+        if status == 1 {
+            return false;
+        } else if status == 2 {
+            return true;
+        }
+
+        let is_active = std::process::Command::new("/usr/bin/xcode-select")
+            .arg("-p")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+
+        CLT_ACTIVE.store(if is_active { 1 } else { 2 }, std::sync::atomic::Ordering::Relaxed);
+        !is_active
+    }
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = path;
         false
@@ -310,5 +376,47 @@ mod tests {
         assert!(!is_windows_store_alias(Path::new(r"C:\Windows\System32\python.exe")));
         assert!(!is_windows_store_alias(Path::new(r"C:\WindowsApps\python.exe")));
         assert!(!is_windows_store_alias(Path::new(r"C:\Users\WindowsAppsX\python.exe")));
+    }
+
+    #[test]
+    fn paths_eq_macos_case_insensitive() {
+        assert!(paths_eq(
+            Path::new("/Applications/Visual Studio Code.app"),
+            Path::new("/applications/visual studio code.app"),
+            HostOs::Macos,
+        ));
+        assert!(paths_eq(
+            Path::new("/Users/Alex/Project"),
+            Path::new("/users/alex/project"),
+            HostOs::Macos,
+        ));
+    }
+
+    #[test]
+    fn is_descendant_macos() {
+        assert!(is_descendant(
+            Path::new("/Users/Alex/Project/src"),
+            Path::new("/users/alex/project"),
+            HostOs::Macos,
+        ));
+        assert!(is_descendant(
+            Path::new("/Users/Alex/Project"),
+            Path::new("/users/alex/project"),
+            HostOs::Macos,
+        ));
+        assert!(!is_descendant(
+            Path::new("/Users/Other/Project"),
+            Path::new("/users/alex/project"),
+            HostOs::Macos,
+        ));
+    }
+
+    #[test]
+    fn macos_clt_stub_non_macos_returns_false() {
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(!is_macos_clt_stub(Path::new("/usr/bin/git")));
+            assert!(!is_macos_clt_stub(Path::new("/usr/bin/python3")));
+        }
     }
 }

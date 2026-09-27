@@ -1451,7 +1451,7 @@ fn generate_process_id() -> String {
 /// stay a zombie until StackPilot exits on Unix. The process is detached
 /// (`setsid` / `DETACHED_PROCESS`), so waiting never blocks the app; the exit
 /// status is intentionally discarded — detached launches are fire-and-forget.
-fn reap_child(mut child: Child) {
+pub(crate) fn reap_child(mut child: Child) {
     thread::spawn(move || {
         let _ = child.wait();
     });

@@ -16,6 +16,8 @@
   import { listenExitRequest } from "$lib/core/exit";
   import type { ExitAskPayload } from "$lib/core/exit";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { loadPlatformCapabilities, isMacosHost } from "$lib/modules/devlauncher/platform";
+  import type { PlatformCapabilities } from "$lib/modules/devlauncher/types";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
@@ -26,6 +28,12 @@
   let { children }: { children: Snippet } = $props();
 
   let restoreRoute = $state(true);
+  let caps = $state<PlatformCapabilities | null>(null);
+  const isMac = $derived(
+    isMacosHost(caps) ||
+      (typeof navigator !== "undefined" &&
+        /Mac|iPhone|iPod|iPad/i.test(navigator.platform || navigator.userAgent))
+  );
 
   /** Запрос выхода с запущенными процессами StackPilot (говорит бэкенд). */
   let exitAsk = $state<ExitAskPayload | null>(null);
@@ -33,6 +41,11 @@
 
   onMount(() => {
     initTheme();
+    loadPlatformCapabilities()
+      .then((c) => {
+        caps = c;
+      })
+      .catch(() => {});
     getSettings()
       .then((s) => {
         restoreRoute = s.restore_last_route;
@@ -83,7 +96,7 @@
 </script>
 
 <div class="sp-app">
-  <header class="sp-topbar" data-tauri-drag-region onpointerdown={startDrag}>
+  <header class="sp-topbar" class:sp-topbar-macos={isMac} data-tauri-drag-region onpointerdown={startDrag}>
     <a href="/" class="sp-brand">
       <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo" />
     </a>
@@ -106,17 +119,19 @@
         onclick={() => reopenOnboarding()}
       />
       <IconButton icon="settings" label={i18n.t("nav.settings") as TranslationKey} href="/settings" />
-      <div class="sp-window-controls">
-        <button class="sp-window-control" onclick={minimizeWindow} aria-label="Minimize">
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 0,5 10,5" stroke="currentColor" stroke-width="1.5"/></svg>
-        </button>
-        <button class="sp-window-control" onclick={maximizeWindow} aria-label="Maximize">
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,1 9,9 1,9 Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-        </button>
-        <button class="sp-window-control sp-window-close" onclick={closeWindow} aria-label="Close">
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,9 M 1,9 9,1" stroke="currentColor" stroke-width="1.5"/></svg>
-        </button>
-      </div>
+      {#if !isMac}
+        <div class="sp-window-controls">
+          <button class="sp-window-control" onclick={minimizeWindow} aria-label="Minimize">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 0,5 10,5" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="sp-window-control" onclick={maximizeWindow} aria-label="Maximize">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,1 9,9 1,9 Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="sp-window-control sp-window-close" onclick={closeWindow} aria-label="Close">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,9 M 1,9 9,1" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+        </div>
+      {/if}
     </div>
   </header>
 
@@ -210,6 +225,10 @@
     border-bottom: none;
     box-shadow: none;
     z-index: 10;
+  }
+
+  .sp-topbar.sp-topbar-macos {
+    padding-left: 5.25rem;
   }
 
   .sp-brand {

@@ -75,7 +75,18 @@
     "sources": {
       "windows": [],
       "linux": [],
-      "macos": []
+      "macos": [
+        {
+          "kind": "Script",
+          "id": "brew-install",
+          "url": "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh",
+          "file_name": "install.sh",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "execution": "script"
+        }
+      ]
     },
     "size_mb": 400,
     "needs_admin": false,
@@ -114,7 +125,9 @@
       ],
       "known_paths": [
         "C:/Program Files/nodejs",
-        "%LOCALAPPDATA%/Programs/nodejs"
+        "%LOCALAPPDATA%/Programs/nodejs",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Node.js"
@@ -172,7 +185,9 @@
     "needs_admin": true,
     "path_entries": [
       "%ProgramFiles%\\nodejs",
-      "%LOCALAPPDATA%\\Programs\\nodejs"
+      "%LOCALAPPDATA%\\Programs\\nodejs",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -252,7 +267,10 @@
       ],
       "known_paths": [
         "C:/Program Files/Python3*",
-        "%LOCALAPPDATA%/Programs/Python/Python3*"
+        "%LOCALAPPDATA%/Programs/Python/Python3*",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Python\\PythonCore"
@@ -313,7 +331,9 @@
     "needs_admin": true,
     "path_entries": [
       "%LOCALAPPDATA%\\Programs\\Python\\Python313",
-      "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts"
+      "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -666,7 +686,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Go/bin"
+        "C:/Program Files/Go/bin",
+        "/usr/local/go/bin",
+        "/opt/homebrew/bin",
+        "$HOME/go/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Golang"
@@ -724,7 +747,10 @@
     "size_mb": 150,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Go\\bin"
+      "C:\\Program Files\\Go\\bin",
+      "/usr/local/go/bin",
+      "/opt/homebrew/bin",
+      "$HOME/go/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -752,7 +778,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Eclipse Adoptium/*/bin"
+        "C:/Program Files/Eclipse Adoptium/*/bin",
+        "/opt/homebrew/opt/openjdk/bin",
+        "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin",
+        "/usr/lib/jvm/*/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\JavaSoft\\JDK"
@@ -810,7 +839,9 @@
     "size_mb": 200,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Eclipse Adoptium\\*\\bin"
+      "C:\\Program Files\\Eclipse Adoptium\\*\\bin",
+      "/opt/homebrew/opt/openjdk/bin",
+      "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -838,7 +869,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/kotlin/*/bin"
+        "%LOCALAPPDATA%/Programs/kotlin/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -892,7 +925,9 @@
     "size_mb": 87,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\kotlin\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\kotlin\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "dependencies": [
@@ -1884,7 +1919,10 @@
       ],
       "known_paths": [
         "C:/Program Files/php",
-        "%LOCALAPPDATA%/Programs/php"
+        "%LOCALAPPDATA%/Programs/php",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -1936,7 +1974,9 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\php",
-      "%LOCALAPPDATA%\\Programs\\php"
+      "%LOCALAPPDATA%\\Programs\\php",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1964,7 +2004,9 @@
         ]
       ],
       "known_paths": [
-        "%APPDATA%/Composer/vendor/bin"
+        "%APPDATA%/Composer/vendor/bin",
+        "$HOME/.composer/vendor/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -2026,7 +2068,9 @@
     "needs_admin": false,
     "path_entries": [
       "%APPDATA%\\Composer",
-      "%APPDATA%\\Composer\\vendor\\bin"
+      "%APPDATA%\\Composer\\vendor\\bin",
+      "$HOME/.composer/vendor/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "dependencies": [
@@ -2507,7 +2551,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/maven/*/bin"
+        "%LOCALAPPDATA%/Programs/maven/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2556,7 +2602,9 @@
     "size_mb": 10,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\maven\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\maven\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2584,7 +2632,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/gradle/*/bin"
+        "%LOCALAPPDATA%/Programs/gradle/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2633,7 +2683,9 @@
     "size_mb": 140,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\gradle\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\gradle\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2661,7 +2713,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/PostgreSQL/*/bin"
+        "C:/Program Files/PostgreSQL/*/bin",
+        "/opt/homebrew/opt/postgresql@17/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/opt/postgresql@17/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\PostgreSQL\\Installations"
@@ -2732,7 +2787,9 @@
     "size_mb": 350,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\PostgreSQL\\*\\bin"
+      "C:\\Program Files\\PostgreSQL\\*\\bin",
+      "/opt/homebrew/opt/postgresql@17/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2765,7 +2822,9 @@
       ],
       "known_paths": [
         "C:/Program Files/Memurai",
-        "%LOCALAPPDATA%/Programs/redis/*"
+        "%LOCALAPPDATA%/Programs/redis/*",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2831,7 +2890,9 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\Memurai\\bin",
-      "%LOCALAPPDATA%\\Programs\\redis\\*"
+      "%LOCALAPPDATA%\\Programs\\redis\\*",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2864,7 +2925,9 @@
       ],
       "known_paths": [
         "C:/Program Files/MongoDB/Server/*/bin",
-        "%LOCALAPPDATA%/Programs/mongodb/*/bin"
+        "%LOCALAPPDATA%/Programs/mongodb/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2920,7 +2983,9 @@
     "needs_admin": true,
     "path_entries": [
       "C:\\Program Files\\MongoDB\\Server\\*\\bin",
-      "%LOCALAPPDATA%\\Programs\\mongodb\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\mongodb\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2952,7 +3017,9 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/MySQL/*/bin"
+        "C:/Program Files/MySQL/*/bin",
+        "/opt/homebrew/opt/mysql/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -3009,7 +3076,9 @@
     "size_mb": 300,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\MySQL\\*\\bin"
+      "C:\\Program Files\\MySQL\\*\\bin",
+      "/opt/homebrew/opt/mysql/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3081,7 +3150,11 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Docker/Docker/resources/bin"
+        "C:/Program Files/Docker/Docker/resources/bin",
+        "/Applications/Docker.app/Contents/Resources/bin",
+        "$HOME/Applications/Docker.app/Contents/Resources/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Docker Inc.\\DockerDesktop"
@@ -3140,7 +3213,10 @@
     "size_mb": 600,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Docker\\Docker\\resources\\bin"
+      "C:\\Program Files\\Docker\\Docker\\resources\\bin",
+      "/Applications/Docker.app/Contents/Resources/bin",
+      "$HOME/Applications/Docker.app/Contents/Resources/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3177,7 +3253,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Git/cmd"
+        "C:/Program Files/Git/cmd",
+        "/usr/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\GitForWindows"
@@ -3236,7 +3315,9 @@
     "size_mb": 70,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Git\\cmd"
+      "C:\\Program Files\\Git\\cmd",
+      "/usr/local/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3264,7 +3345,10 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/Microsoft VS Code/bin"
+        "%LOCALAPPDATA%/Programs/Microsoft VS Code/bin",
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+        "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": [
         "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{EA457B21-F73E-494c-ACAB-524DDEADCE5C}"
@@ -3313,7 +3397,9 @@
         {
           "kind": "PkgManager",
           "id": "visual-studio-code",
-          "args": [],
+          "args": [
+            "--cask"
+          ],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -3322,7 +3408,10 @@
     "size_mb": 100,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin"
+      "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin",
+      "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+      "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3350,7 +3439,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/CMake/bin"
+        "C:/Program Files/CMake/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/Applications/CMake.app/Contents/bin"
       ],
       "registry_keys": []
     },
@@ -3406,7 +3498,10 @@
     "size_mb": 30,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\CMake\\bin"
+      "C:\\Program Files\\CMake\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/Applications/CMake.app/Contents/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3434,7 +3529,9 @@
         ]
       ],
       "known_paths": [
-        "C:/Windows/System32/curl.exe"
+        "C:/Windows/System32/curl.exe",
+        "/usr/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -3476,7 +3573,9 @@
         ]
       ],
       "known_paths": [
-        "C:/Windows/System32/tar.exe"
+        "C:/Windows/System32/tar.exe",
+        "/usr/bin",
+        "/bin"
       ],
       "registry_keys": []
     },
@@ -3519,7 +3618,9 @@
       ],
       "known_paths": [
         "%LOCALAPPDATA%/Android/Sdk/platform-tools",
-        "C:/Program Files/Android/Android Studio"
+        "C:/Program Files/Android/Android Studio",
+        "$HOME/Library/Android/sdk/platform-tools",
+        "/Applications/Android Studio.app"
       ],
       "registry_keys": []
     },

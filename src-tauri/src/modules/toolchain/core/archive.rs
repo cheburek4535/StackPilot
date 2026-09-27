@@ -105,6 +105,64 @@ impl ArchiveListing {
     pub fn contains_symlinks(&self) -> bool {
         self.entries.iter().any(|e| e.starts_with(SYMLINK_MARK))
     }
+
+    /// Проверяет симлинки на безопасность (для Unix).
+    /// Отклоняет симлинки, указывающие на абсолютные пути, дисководы,
+    /// UNC, или выходящие за пределы архива через «..».
+    #[allow(dead_code)]
+    pub fn validate_symlinks_safe(&self) -> Result<(), String> {
+        for entry in &self.entries {
+            if let Some(rest) = entry.strip_prefix(SYMLINK_MARK) {
+                let (link_name, target) = if let Some((l, r)) = rest.split_once(" -> ") {
+                    (l.trim(), r.trim())
+                } else if let Some((l, r)) = rest.split_once(" link to ") {
+                    (l.trim(), r.trim())
+                } else {
+                    (rest.trim(), "")
+                };
+
+                validate_entry_name(link_name)
+                    .map_err(|e| format!("опасное имя симлинка {link_name:?}: {e}"))?;
+
+                if !target.is_empty() {
+                    if target.starts_with('/') || target.starts_with('\\') {
+                        return Err(format!("симлинк указывает на абсолютный путь: {rest:?}"));
+                    }
+                    if target.contains(':') {
+                        return Err(format!("симлинк содержит недопустимый префикс: {rest:?}"));
+                    }
+                    let mut depth: isize = 0;
+                    if let Some(parent) = std::path::Path::new(link_name).parent() {
+                        for comp in parent.components() {
+                            if let std::path::Component::Normal(_) = comp {
+                                depth += 1;
+                            }
+                        }
+                    }
+                    for comp in std::path::Path::new(target).components() {
+                        match comp {
+                            std::path::Component::ParentDir => {
+                                depth -= 1;
+                                if depth < 0 {
+                                    return Err(format!(
+                                        "симлинк выходит за пределы архива (path traversal): {rest:?}"
+                                    ));
+                                }
+                            }
+                            std::path::Component::Normal(_) => {
+                                depth += 1;
+                            }
+                            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                                return Err(format!("абсолютный таргет симлинка: {rest:?}"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 const SYMLINK_MARK: &str = "\u{1}symlink:";
@@ -183,12 +241,12 @@ try {{
 /// Unix-режим: S_ISLNK → запись-симлинк (политика запрещает).
 #[cfg(not(target_os = "windows"))]
 async fn capture_zip_listing(archive: &Path) -> Result<ArchiveListing, String> {
-    if which::which("python3").is_err() {
-        return Err(
-            "для проверки и распаковки zip-архивов нужен python3 (не найден в PATH)".to_string(),
-        );
-    }
-    let script = r#"import stat, sys, zipfile
+    let python_ok = which::which("python3")
+        .map(|p| !crate::platform::paths::is_macos_clt_stub(&p))
+        .unwrap_or(false);
+
+    if python_ok {
+        let script = r#"import stat, sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     for info in z.infolist():
         mode = info.external_attr >> 16
@@ -197,21 +255,49 @@ with zipfile.ZipFile(sys.argv[1]) as z:
         else:
             print(info.filename)
 "#;
-    let out = capture_output(
-        "python3",
-        &[
-            "-c".to_string(),
-            script.to_string(),
-            archive.to_string_lossy().into_owned(),
-        ],
-    )
-    .await?;
-    let entries = out
-        .lines()
-        .map(|l| l.trim_end_matches('\r').to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    Ok(ArchiveListing { entries })
+        let out = capture_output(
+            "python3",
+            &[
+                "-c".to_string(),
+                script.to_string(),
+                archive.to_string_lossy().into_owned(),
+            ],
+        )
+        .await?;
+        let entries = out
+            .lines()
+            .map(|l| l.trim_end_matches('\r').to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(ArchiveListing { entries })
+    } else if which::which("unzip").is_ok() {
+        let out = capture_output(
+            "unzip",
+            &["-l".to_string(), archive.to_string_lossy().into_owned()],
+        )
+        .await?;
+        let mut entries = Vec::new();
+        let mut in_files = false;
+        for line in out.lines() {
+            let line = line.trim_end();
+            if line.starts_with(" ----") || line.starts_with("----") {
+                in_files = !in_files;
+                continue;
+            }
+            if in_files {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    let name = line.splitn(4, char::is_whitespace).nth(3).unwrap_or("").trim();
+                    if !name.is_empty() {
+                        entries.push(name.to_string());
+                    }
+                }
+            }
+        }
+        Ok(ArchiveListing { entries })
+    } else {
+        Err("для проверки и распаковки zip-архивов нужен python3 или unzip (не найдены в PATH)".to_string())
+    }
 }
 
 /// Список записей tar/tgz: `tar -tvf` (подробный режим даёт тип записи:
@@ -231,14 +317,24 @@ async fn capture_tar_listing(archive: &Path) -> Result<ArchiveListing, String> {
         // Формат bsdtar/GNU tar: "<тип><права> owner/group size date time name"
         let mut chars = line.chars();
         let kind = chars.next().unwrap_or('-');
-        // Имя — последний столбец (в именах бывают пробелы).
-        let name = line.rsplit(' ').next().unwrap_or("").trim();
-        if name.is_empty() {
-            continue;
-        }
-        match kind {
-            'l' | 'h' => entries.push(format!("{SYMLINK_MARK}{name}")),
-            _ => entries.push(name.to_string()),
+        if kind == 'l' || kind == 'h' {
+            if let Some((left, right)) = line.split_once(" -> ") {
+                let name = left.split_whitespace().last().unwrap_or("").trim();
+                entries.push(format!("{SYMLINK_MARK}{name} -> {}", right.trim()));
+            } else if let Some((left, right)) = line.split_once(" link to ") {
+                let name = left.split_whitespace().last().unwrap_or("").trim();
+                entries.push(format!("{SYMLINK_MARK}{name} link to {}", right.trim()));
+            } else {
+                let name = line.rsplit(' ').next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    entries.push(format!("{SYMLINK_MARK}{name}"));
+                }
+            }
+        } else {
+            let name = line.rsplit(' ').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                entries.push(name.to_string());
+            }
         }
     }
     Ok(ArchiveListing { entries })
@@ -254,12 +350,15 @@ pub async fn prevalidate_archive(archive: &Path, is_zip: bool) -> Result<Archive
         capture_tar_listing(archive).await?
     };
     listing.validate()?;
+    #[cfg(target_os = "windows")]
     if listing.contains_symlinks() {
         return Err(
-            "архив содержит симлинки/жёсткие ссылки — политика безопасности запрещает их установку"
+            "архив содержит симлинки/жёсткие ссылки — политика безопасности Windows запрещает их установку"
                 .to_string(),
         );
     }
+    #[cfg(not(target_os = "windows"))]
+    listing.validate_symlinks_safe()?;
     Ok(listing)
 }
 
@@ -341,13 +440,12 @@ pub async fn extract_zip_safe(
     prevalidate_archive(archive, true)
         .await
         .map_err(|e| format!("Архив отклонён (безопасность): {e}"))?;
-    if which::which("python3").is_err() {
-        return Err(
-            "для распаковки zip-архивов нужен python3 (не найден в PATH)".to_string(),
-        );
-    }
+    let python_ok = which::which("python3")
+        .map(|p| !crate::platform::paths::is_macos_clt_stub(&p))
+        .unwrap_or(false);
 
-    let script = r#"import os, stat, sys, zipfile
+    if python_ok {
+        let script = r#"import os, stat, sys, zipfile
 
 archive, dest = sys.argv[1], sys.argv[2]
 os.makedirs(dest, exist_ok=True)
@@ -386,17 +484,35 @@ with zipfile.ZipFile(archive) as z:
             os.chmod(target, perm)
 print("tc:ok архив распакован: " + os.path.basename(archive))
 "#;
-    let args = vec![
-        "-c".to_string(),
-        script.to_string(),
-        archive.to_string_lossy().into_owned(),
-        dest.to_string_lossy().into_owned(),
-    ];
-    let res = console::piped_run(
-        "python3", &args, index, total, task_id, tool_id, session_id, sink, abort,
-    )
-    .await?;
-    finish_extract(res, archive)
+        let args = vec![
+            "-c".to_string(),
+            script.to_string(),
+            archive.to_string_lossy().into_owned(),
+            dest.to_string_lossy().into_owned(),
+        ];
+        let res = console::piped_run(
+            "python3", &args, index, total, task_id, tool_id, session_id, sink, abort,
+        )
+        .await?;
+        finish_extract(res, archive)
+    } else if which::which("unzip").is_ok() {
+        std::fs::create_dir_all(dest)
+            .map_err(|e| format!("Не удалось создать каталог распаковки {}: {e}", dest.display()))?;
+        let args = vec![
+            "-q".to_string(),
+            "-o".to_string(),
+            archive.to_string_lossy().into_owned(),
+            "-d".to_string(),
+            dest.to_string_lossy().into_owned(),
+        ];
+        let res = console::piped_run(
+            "unzip", &args, index, total, task_id, tool_id, session_id, sink, abort,
+        )
+        .await?;
+        finish_extract(res, archive)
+    } else {
+        Err("для распаковки zip-архивов нужен python3 или unzip (не найдены в PATH)".to_string())
+    }
 }
 
 /// Безопасно распаковывает tgz/tar: prevalidation → tar -xf.
@@ -572,6 +688,31 @@ mod tests {
             entries: vec!["plain.txt".to_string()],
         };
         assert!(!clean.contains_symlinks());
+    }
+
+    #[test]
+    fn safe_relative_symlinks_allowed_on_unix() {
+        let good_listing = ArchiveListing {
+            entries: vec![
+                format!("{SYMLINK_MARK}bin/npm -> ../lib/node_modules/npm/bin/npm-cli.js"),
+                "lib/node_modules/npm/bin/npm-cli.js".to_string(),
+            ],
+        };
+        assert!(good_listing.validate_symlinks_safe().is_ok());
+
+        let escaping_listing = ArchiveListing {
+            entries: vec![
+                format!("{SYMLINK_MARK}bin/evil -> ../../../etc/passwd"),
+            ],
+        };
+        assert!(escaping_listing.validate_symlinks_safe().is_err());
+
+        let absolute_listing = ArchiveListing {
+            entries: vec![
+                format!("{SYMLINK_MARK}bin/evil -> /etc/passwd"),
+            ],
+        };
+        assert!(absolute_listing.validate_symlinks_safe().is_err());
     }
 
     // ------------------------------------------------------------
