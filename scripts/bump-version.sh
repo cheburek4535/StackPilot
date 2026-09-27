@@ -3,7 +3,7 @@
 # Скрипт для обновления версии во всех файлах проекта
 
 if [ -z "$1" ]; then
-    echo "Использование: ./scripts/bump-version.sh 1.2.1"
+    echo "Использование: ./scripts/bump-version.sh 1.2.4"
     exit 1
 fi
 
@@ -22,14 +22,20 @@ rm -f src-tauri/Cargo.toml.bak
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     sed -i '' "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+    sed -i '' "s/APP_VERSION = \".*\"/APP_VERSION = \"$NEW_VERSION\"/" src/lib/core/app.ts
+    sed -i '' "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD
 else
     # Linux
     sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+    sed -i "s/APP_VERSION = \".*\"/APP_VERSION = \"$NEW_VERSION\"/" src/lib/core/app.ts
+    sed -i "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD
 fi
 
 echo "✓ package.json"
 echo "✓ src-tauri/Cargo.toml"
 echo "✓ src-tauri/tauri.conf.json"
+echo "✓ src/lib/core/app.ts"
+echo "✓ packaging/archlinux/PKGBUILD"
 echo ""
 echo "Версия обновлена до $NEW_VERSION"
 echo ""

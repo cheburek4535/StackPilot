@@ -1884,6 +1884,9 @@ export default {
   "roadmap.changelog.version": "Версия",
   "roadmap.changelog.date": "Дата",
   "roadmap.changelog.changes": "Изменения",
+  "roadmap.changelog.v124": "Секционирование и реорганизация Toolchain, расширенная поддержка macOS (Homebrew, Apple Silicon, dmg/pkg), аудит безопасности и защита путей, модульный рефакторинг генератора проектов.",
+  "roadmap.changelog.v123": "Toolchain скачивает новейшие версии ПО, интеграция с WSL2, режим новичка, улучшения UI/UX конструктора.",
+  "roadmap.changelog.v122": "Первая стабильная релизная версия с поддержкой Windows, Linux и macOS.",
   "roadmap.changelog.v050": "Первая версия приложения! История изменений будет добавляться с каждым обновлением.",
 
   // ------------------------------------------------------------

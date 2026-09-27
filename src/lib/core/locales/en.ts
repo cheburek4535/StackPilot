@@ -1882,6 +1882,9 @@ export default {
   "roadmap.changelog.version": "Version",
   "roadmap.changelog.date": "Date",
   "roadmap.changelog.changes": "Changes",
+  "roadmap.changelog.v124": "Toolchain sectioning & categorization, enhanced macOS support (Homebrew, Apple Silicon, dmg/pkg), security hardening & path protection, modular project creator refactoring.",
+  "roadmap.changelog.v123": "Toolchain auto-updates to latest upstream versions, WSL2 integration, beginner mode, UI/UX polish.",
+  "roadmap.changelog.v122": "First stable release with Windows, Linux and macOS support.",
   "roadmap.changelog.v050": "The app just launched! No changelog entries yet, but they will be added with each future update.",
 
   // ------------------------------------------------------------

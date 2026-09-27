@@ -65,6 +65,21 @@
 
   const changelog: ChangelogEntry[] = [
     {
+      version: "1.2.4",
+      date: "2026-09-27",
+      changesKey: "roadmap.changelog.v124"
+    },
+    {
+      version: "1.2.3",
+      date: "2026-09-21",
+      changesKey: "roadmap.changelog.v123"
+    },
+    {
+      version: "1.2.2",
+      date: "2026-09-12",
+      changesKey: "roadmap.changelog.v122"
+    },
+    {
       version: "1.2.1",
       date: "2026-08-28",
       changesKey: "roadmap.changelog.v050"
