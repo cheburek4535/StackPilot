@@ -516,6 +516,26 @@ fn draft_for(
 
             let sources = inputs.os_sources(def);
             if sources.is_empty() {
+                if let Some(host_id) = def.bundled_with.as_deref() {
+                    if let Some(host_def) = inputs.def(host_id) {
+                        let host_sources = inputs.os_sources(host_def);
+                        if !host_sources.is_empty() {
+                            return Ok(Some(Draft {
+                                tool_id: def.id.clone(),
+                                display: def.display.clone(),
+                                icon: def.icon.clone(),
+                                action: TaskAction::HealthCheck,
+                                source: None,
+                                size_mb: 0,
+                                needs_admin: false,
+                                depends_on_tools: vec![host_id.to_string()],
+                                path_entries: def.path_entries.clone(),
+                                install_options: vec![],
+                                execution_mode: ExecutionMode::Host,
+                            }));
+                        }
+                    }
+                }
                 return Err("нет источника установки для этой ОС".to_string());
             }
 
@@ -1141,6 +1161,26 @@ mod tests {
             "dependency edge resolved to task id"
         );
         assert!(!matches!(plan.tasks[node_idx].action, TaskAction::NoOp(_)));
+    }
+
+    #[tokio::test]
+    async fn bundled_tool_without_sources_auto_brings_parent() {
+        let mut pip = base_def("pip");
+        pip.bundled_with = Some("python".to_string());
+        let defs = vec![pip, win_def("python")];
+        let det = FakeDetector::default();
+        let plan = build_plan(&install_request(&["pip"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+
+        let py_idx = plan
+            .tasks
+            .iter()
+            .position(|t| t.tool_id == "python")
+            .expect("python auto-added for pip");
+        let pip_idx = plan.tasks.iter().position(|t| t.tool_id == "pip").unwrap();
+        assert!(py_idx < pip_idx, "python precedes pip");
+        assert!(matches!(plan.tasks[pip_idx].action, TaskAction::HealthCheck));
     }
 
     #[tokio::test]

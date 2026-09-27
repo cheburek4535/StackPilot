@@ -36,16 +36,25 @@
   } from "../format";
   import type { ExecutionMode, HealthState } from "../types";
   import { jobStatusIsTerminal } from "../types";
+  import ToolchainSection from "./ToolchainSection.svelte";
+  import {
+    TOOLCHAIN_SECTIONS,
+    getToolSectionId,
+    getToolPopularityRank,
+    type ToolchainSectionId,
+    type ToolchainSectionMeta,
+  } from "../sections";
 
   let {
     onplan,
     ondetails,
   }: {
-    onplan: (operation: MarketplacePlanOp, toolId: string) => void;
+    onplan: (operation: MarketplacePlanOp, toolId: string | string[]) => void;
     ondetails: (toolId: string) => void;
   } = $props();
 
   let railOpen = $state(false);
+  let selectedSectionId = $state<ToolchainSectionId | "all">("all");
 
   onMount(() => {
     void toolchain.ensureMarketplacePlatform();
@@ -86,6 +95,67 @@
       return a.def.display.localeCompare(b.def.display);
     })
   );
+
+  type MarketplaceSectionGroup = {
+    meta: ToolchainSectionMeta;
+    items: MarketplaceItem[];
+    installedCount: number;
+    availableCount: number;
+  };
+
+  const sectionGroups = $derived.by(() => {
+    const map = new Map<ToolchainSectionId, MarketplaceItem[]>();
+    for (const sec of TOOLCHAIN_SECTIONS) {
+      map.set(sec.id, []);
+    }
+
+    for (const item of visibleItems) {
+      const secId = getToolSectionId(item.def.id, item.def.category);
+      const list = map.get(secId);
+      if (list) {
+        list.push(item);
+      } else {
+        map.get("tooling")?.push(item);
+      }
+    }
+
+    const groups: MarketplaceSectionGroup[] = [];
+    for (const sec of TOOLCHAIN_SECTIONS) {
+      const rawItems = map.get(sec.id) ?? [];
+      if (rawItems.length === 0) continue;
+
+      const sorted = [...rawItems].sort((a, b) => {
+        const wa = sortWeight(a);
+        const wb = sortWeight(b);
+        const aInstalled = wa >= 3;
+        const bInstalled = wb >= 3;
+        if (aInstalled !== bInstalled) {
+          return aInstalled ? 1 : -1;
+        }
+        const ra = getToolPopularityRank(a.def.id);
+        const rb = getToolPopularityRank(b.def.id);
+        if (ra !== rb) return ra - rb;
+        return a.def.display.localeCompare(b.def.display);
+      });
+
+      const installedCount = sorted.filter((it) => sortWeight(it) >= 3).length;
+      groups.push({
+        meta: sec,
+        items: sorted,
+        installedCount,
+        availableCount: sorted.length - installedCount,
+      });
+    }
+
+    return groups;
+  });
+
+  const displayedGroups = $derived(
+    selectedSectionId === "all"
+      ? sectionGroups
+      : sectionGroups.filter((g) => g.meta.id === selectedSectionId),
+  );
+
 
 
   /** Идёт активная мутация по инструменту (карточка показывает занятость). */
@@ -345,6 +415,35 @@
         {/if}
       </p>
 
+      <!-- ===== Секционные вкладки / быстрые фильтры ===== -->
+      {#if sectionGroups.length > 1}
+        <div class="section-tabs" role="tablist" aria-label="Секции витрины">
+          <button
+            type="button"
+            role="tab"
+            class="section-tab"
+            class:section-tab-active={selectedSectionId === "all"}
+            onclick={() => (selectedSectionId = "all")}
+          >
+            <span>{i18n.t("tc.section.all") as TranslationKey}</span>
+            <span class="section-tab-count">{visibleItems.length}</span>
+          </button>
+          {#each sectionGroups as group (group.meta.id)}
+            <button
+              type="button"
+              role="tab"
+              class="section-tab"
+              class:section-tab-active={selectedSectionId === group.meta.id}
+              onclick={() => (selectedSectionId = group.meta.id)}
+            >
+              <Icon name={group.meta.icon} size={13} />
+              <span>{i18n.t(group.meta.titleKey as TranslationKey) || group.meta.defaultTitle}</span>
+              <span class="section-tab-count">{group.items.length}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       {#if toolchain.definitionsLoading}
         <LoadingState label={i18n.t("tc.market.loading_catalog") as TranslationKey} />
       {:else if toolchain.definitionsError && Object.keys(toolchain.definitions).length === 0}
@@ -385,25 +484,28 @@
           {/snippet}
         </EmptyState>
       {:else}
-        <div class="grid">
-          
-          {#each visibleItems as item, i (item.def.id)}
-            {#if i > 0 && sortWeight(visibleItems[i-1]) < 3 && sortWeight(item) >= 3}
-              <div class="marketplace-boundary" style="grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; margin: 1.5rem 0 0.5rem 0;">
-                <hr style="flex-grow: 1; border: none; border-top: 1px dashed var(--sp-border);" />
-                <span style="font-size: 0.85rem; color: var(--sp-text-3); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em;">{i18n.t("tc.ui.installed_tools") as TranslationKey}</span>
-                <hr style="flex-grow: 1; border: none; border-top: 1px dashed var(--sp-border);" />
-              </div>
-            {/if}
-            <MarketplaceCard
-
-              {item}
-              busy={busyIds.has(item.def.id)}
-              onplan={onplan}
-              ondetails={ondetails}
-            />
-          {/each}
-        </div>
+        {#each displayedGroups as group (group.meta.id)}
+          <ToolchainSection
+            id={"tc-market-" + group.meta.id}
+            title={i18n.t(group.meta.titleKey as TranslationKey) || group.meta.defaultTitle}
+            description={i18n.t(group.meta.descKey as TranslationKey) || group.meta.defaultDesc}
+            icon={group.meta.icon}
+            count={group.items.length}
+            badgeText={group.installedCount > 0 ? `${group.installedCount}/${group.items.length} ${i18n.t("tc.state.installed") as TranslationKey}` : `${group.items.length} ${i18n.t("tc.ui.tools") as TranslationKey}`}
+            badgeTone={group.installedCount === group.items.length ? "lime" : group.installedCount > 0 ? "cyan" : "neutral"}
+          >
+            <div class="grid">
+              {#each group.items as item (item.def.id)}
+                <MarketplaceCard
+                  {item}
+                  busy={busyIds.has(item.def.id)}
+                  onplan={onplan}
+                  ondetails={ondetails}
+                />
+              {/each}
+            </div>
+          </ToolchainSection>
+        {/each}
       {/if}
 
       {#if items.length > 0 && !snapshot}
@@ -601,6 +703,64 @@
     margin: 0;
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
+  }
+
+  .section-tabs {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    padding: 2px 0 var(--sp-2) 0;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .section-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--sp-radius-full, 999px);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-glass-bg);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+
+  .section-tab:hover {
+    background: var(--sp-surface-2);
+    color: var(--sp-text-1);
+    border-color: var(--sp-border-strong);
+  }
+
+  .section-tab-active {
+    background: var(--sp-accent, #6366f1);
+    color: #fff;
+    border-color: var(--sp-accent, #6366f1);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+  }
+
+  .section-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    padding: 0 4px;
+    border-radius: 999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    background: var(--sp-surface-3, rgba(255, 255, 255, 0.08));
+    color: var(--sp-text-3);
+  }
+
+  .section-tab-active .section-tab-count {
+    background: rgba(255, 255, 255, 0.25);
+    color: #fff;
   }
 
   .grid {

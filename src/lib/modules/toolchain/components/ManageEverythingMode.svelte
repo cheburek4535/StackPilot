@@ -28,6 +28,14 @@
     ExecutionMode,
     HealthState,
   } from "../types";
+  import ToolchainSection from "./ToolchainSection.svelte";
+  import {
+    TOOLCHAIN_SECTIONS,
+    getToolSectionId,
+    getToolPopularityRank,
+    type ToolchainSectionId,
+    type ToolchainSectionMeta,
+  } from "../sections";
 
   let {
     onplan,
@@ -40,6 +48,7 @@
   let sort = $state<CatalogSort>("status");
   let openMenu = $state<string | null>(null);
   let recheckingIds = $state<Set<string>>(new Set());
+  let selectedSectionId = $state<ToolchainSectionId | "updates" | "all">("all");
 
   const snapshot = $derived(toolchain.liveSnapshot);
   const categories = $derived(availableCategories(snapshot));
@@ -126,6 +135,103 @@
       }),
       sort,
     ),
+  );
+
+  const STATE_SEVERITY_ORDER: Record<string, number> = {
+    update_available: 0,
+    path_broken: 1,
+    installed_unhealthy: 2,
+    scan_failed: 3,
+    missing: 4,
+    installed_health_unknown: 5,
+    scan_pending: 6,
+    manual_install: 7,
+    docker_managed: 8,
+    unsupported_platform: 9,
+    built_in_system: 10,
+    installed_healthy: 11,
+  };
+
+  type ManageSectionGroup = {
+    meta: ToolchainSectionMeta;
+    items: typeof visibleTools;
+    installedCount: number;
+    updateCount: number;
+  };
+
+  const updateTools = $derived(
+    visibleTools.filter((t) => t.state.kind === "update_available"),
+  );
+
+  const sectionGroups = $derived.by(() => {
+    const map = new Map<ToolchainSectionId, typeof visibleTools>();
+    for (const sec of TOOLCHAIN_SECTIONS) {
+      map.set(sec.id, []);
+    }
+
+    for (const tool of visibleTools) {
+      const secId = getToolSectionId(tool.tool_id, tool.category);
+      const list = map.get(secId);
+      if (list) {
+        list.push(tool);
+      } else {
+        map.get("tooling")?.push(tool);
+      }
+    }
+
+    const groups: ManageSectionGroup[] = [];
+    for (const sec of TOOLCHAIN_SECTIONS) {
+      const rawItems = map.get(sec.id) ?? [];
+      if (rawItems.length === 0) continue;
+
+      const sorted = [...rawItems].sort((a, b) => {
+        if (sort === "name_asc") return a.display.localeCompare(b.display);
+        if (sort === "name_desc") return b.display.localeCompare(a.display);
+
+        // Инструменты с обновлением всегда идут первыми в секции
+        const aUpdate = a.state.kind === "update_available" ? 1 : 0;
+        const bUpdate = b.state.kind === "update_available" ? 1 : 0;
+        if (aUpdate !== bUpdate) return bUpdate - aUpdate;
+
+        if (sort === "status") {
+          const sa = STATE_SEVERITY_ORDER[a.state.kind] ?? 99;
+          const sb = STATE_SEVERITY_ORDER[b.state.kind] ?? 99;
+          if (sa !== sb) return sa - sb;
+        }
+
+        // По популярности
+        const ra = getToolPopularityRank(a.tool_id);
+        const rb = getToolPopularityRank(b.tool_id);
+        if (ra !== rb) return ra - rb;
+
+        return a.display.localeCompare(b.display);
+      });
+
+      const installedCount = sorted.filter(
+        (t) =>
+          t.state.kind !== "missing" &&
+          t.state.kind !== "scan_pending" &&
+          t.state.kind !== "scan_failed" &&
+          t.state.kind !== "unsupported_platform",
+      ).length;
+
+      const updateCount = sorted.filter((t) => t.state.kind === "update_available").length;
+
+      groups.push({
+        meta: sec,
+        items: sorted,
+        installedCount,
+        updateCount,
+      });
+    }
+
+    return groups;
+  });
+
+  const displayedGroups = $derived(
+    selectedSectionId === "all" || selectedSectionId === "updates"
+      ? sectionGroups
+      : sectionGroups.filter((g) => g.meta.id === selectedSectionId),
   );
 
   const totalTools = $derived(snapshot?.tools.length ?? 0);
@@ -595,6 +701,48 @@
       {/if}
     </p>
 
+    <!-- ===== Секционные вкладки / быстрые фильтры ===== -->
+    {#if sectionGroups.length > 1 || updateTools.length > 0}
+      <div class="section-tabs" role="tablist" aria-label="Секции инструментов">
+        <button
+          type="button"
+          role="tab"
+          class="section-tab"
+          class:section-tab-active={selectedSectionId === "all"}
+          onclick={() => (selectedSectionId = "all")}
+        >
+          <span>{i18n.t("tc.section.all") as TranslationKey}</span>
+          <span class="section-tab-count">{visibleTools.length}</span>
+        </button>
+        {#if updateTools.length > 0}
+          <button
+            type="button"
+            role="tab"
+            class="section-tab section-tab-update"
+            class:section-tab-active={selectedSectionId === "updates"}
+            onclick={() => (selectedSectionId = "updates")}
+          >
+            <Icon name="refresh" size={13} />
+            <span>{i18n.t("tc.section.updates") as TranslationKey}</span>
+            <span class="section-tab-count">{updateTools.length}</span>
+          </button>
+        {/if}
+        {#each sectionGroups as group (group.meta.id)}
+          <button
+            type="button"
+            role="tab"
+            class="section-tab"
+            class:section-tab-active={selectedSectionId === group.meta.id}
+            onclick={() => (selectedSectionId = group.meta.id)}
+          >
+            <Icon name={group.meta.icon} size={13} />
+            <span>{i18n.t(group.meta.titleKey as TranslationKey) || group.meta.defaultTitle}</span>
+            <span class="section-tab-count">{group.items.length}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     {#if toolchain.snapshotLoading && !snapshot}
       <LoadingState label={i18n.t("tc.ui.loading_env") as TranslationKey} />
     {:else if toolchain.snapshotError && !snapshot}
@@ -629,19 +777,61 @@
         {/snippet}
       </EmptyState>
     {:else}
-      <div class="list">
-        {#each visibleTools as tool (tool.tool_id)}
-          <ToolCard
-            {tool}
-            def={toolchain.definitionFor(tool.tool_id)}
-            busy={recheckingIds.has(tool.tool_id)}
-            ondetails={(id) => toolchain.selectTool(id)}
-            onplan={onplan}
-            onrecheck={handleRecheck}
-            onuninstall={(id) => toolchain.uninstallTool(id)}
-          />
+      <!-- Если выбрана вкладка "Обновления" или "Все" и есть инструменты с обновлениями, показываем их ПЕРВЫМИ! -->
+      {#if updateTools.length > 0 && (selectedSectionId === "all" || selectedSectionId === "updates") && !toolchain.filters.update_only}
+        <ToolchainSection
+          id="tc-manage-updates"
+          title={i18n.t("tc.section.updates") as TranslationKey}
+          description={i18n.t("tc.section.updates_desc") as TranslationKey}
+          icon="refresh"
+          count={updateTools.length}
+          badgeText={`${updateTools.length} ${i18n.t("tc.state.update") as TranslationKey}`}
+          badgeTone="amber"
+        >
+          <div class="list">
+            {#each updateTools as tool (tool.tool_id)}
+              <ToolCard
+                {tool}
+                def={toolchain.definitionFor(tool.tool_id)}
+                busy={recheckingIds.has(tool.tool_id)}
+                ondetails={(id) => toolchain.selectTool(id)}
+                onplan={onplan}
+                onrecheck={handleRecheck}
+                onuninstall={(id) => toolchain.uninstallTool(id)}
+              />
+            {/each}
+          </div>
+        </ToolchainSection>
+      {/if}
+
+      <!-- Секции инструментов (если не выбран фильтр только обновлений) -->
+      {#if selectedSectionId !== "updates"}
+        {#each displayedGroups as group (group.meta.id)}
+          <ToolchainSection
+            id={"tc-manage-" + group.meta.id}
+            title={i18n.t(group.meta.titleKey as TranslationKey) || group.meta.defaultTitle}
+            description={i18n.t(group.meta.descKey as TranslationKey) || group.meta.defaultDesc}
+            icon={group.meta.icon}
+            count={group.items.length}
+            badgeText={group.installedCount > 0 ? `${group.installedCount}/${group.items.length} ${i18n.t("tc.state.installed") as TranslationKey}` : `${group.items.length} ${i18n.t("tc.ui.tools") as TranslationKey}`}
+            badgeTone={group.installedCount === group.items.length ? "lime" : group.installedCount > 0 ? "cyan" : "neutral"}
+          >
+            <div class="list">
+              {#each group.items as tool (tool.tool_id)}
+                <ToolCard
+                  {tool}
+                  def={toolchain.definitionFor(tool.tool_id)}
+                  busy={recheckingIds.has(tool.tool_id)}
+                  ondetails={(id) => toolchain.selectTool(id)}
+                  onplan={onplan}
+                  onrecheck={handleRecheck}
+                  onuninstall={(id) => toolchain.uninstallTool(id)}
+                />
+              {/each}
+            </div>
+          </ToolchainSection>
         {/each}
-      </div>
+      {/if}
     {/if}
 
     {#if snapshot && snapshot.tools.some((t) => t.state.kind === "scan_pending")}
@@ -947,6 +1137,81 @@
     margin: 0;
     font-size: var(--sp-fs-xs);
     color: var(--sp-text-3);
+  }
+
+  .section-tabs {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    padding: 2px 0 var(--sp-2) 0;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .section-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--sp-radius-full, 999px);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-glass-bg);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+
+  .section-tab:hover {
+    background: var(--sp-surface-2);
+    color: var(--sp-text-1);
+    border-color: var(--sp-border-strong);
+  }
+
+  .section-tab-active {
+    background: var(--sp-accent, #6366f1);
+    color: #fff;
+    border-color: var(--sp-accent, #6366f1);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+  }
+
+  .section-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    padding: 0 4px;
+    border-radius: 999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    background: var(--sp-surface-3, rgba(255, 255, 255, 0.08));
+    color: var(--sp-text-3);
+  }
+
+  .section-tab-active .section-tab-count {
+    background: rgba(255, 255, 255, 0.25);
+    color: #fff;
+  }
+
+  .section-tab-update {
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #f59e0b;
+  }
+
+  .section-tab-update.section-tab-active {
+    background: #f59e0b;
+    color: #000;
+    border-color: #f59e0b;
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  }
+
+  .section-tab-update.section-tab-active .section-tab-count {
+    background: rgba(0, 0, 0, 0.2);
+    color: #000;
   }
 
   .list {

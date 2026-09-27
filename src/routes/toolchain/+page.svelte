@@ -318,7 +318,10 @@
   <div class="mode-pane" hidden={toolchain.mode !== "tool_marketplace"}>
     {#if MarketplaceMode}
       <MarketplaceMode
-        onplan={(op: string, id: string) => openPlan(op as CardPlanOp, [id])}
+        onplan={(op: string, id: string | string[]) => {
+          const ids = Array.isArray(id) ? id : [id];
+          openPlan(op as CardPlanOp, ids);
+        }}
         ondetails={(id: string) => openTool(id)}
       />
     {/if}
