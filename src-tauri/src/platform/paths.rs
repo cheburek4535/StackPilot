@@ -205,6 +205,65 @@ pub fn is_macos_clt_stub(path: &std::path::Path) -> bool {
     }
 }
 
+/// Register `stkpil.exe` in Windows App Paths so the CLI is discoverable
+/// without needing a system restart or manual PATH configuration.
+#[cfg(target_os = "windows")]
+pub fn register_stkpil_in_app_paths() -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            let stkpil_path = dir.join("stkpil.exe");
+            if stkpil_path.exists() {
+                let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+                if let Ok((key, _)) = hkcu.create_subkey(
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\stkpil.exe",
+                ) {
+                    let _ = key.set_value("", &stkpil_path.to_string_lossy().to_string());
+                    let _ = key.set_value("Path", &dir.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns the standard application data directory for StackPilot:
+/// - Windows: `%APPDATA%\com.cheburek4535.stackpilot`
+/// - macOS: `~/Library/Application Support/com.cheburek4535.stackpilot`
+/// - Linux: `$XDG_DATA_HOME/com.cheburek4535.stackpilot` or `~/.local/share/com.cheburek4535.stackpilot`
+pub fn get_app_data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("com.cheburek4535.stackpilot");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("com.cheburek4535.stackpilot");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+            return PathBuf::from(data_home).join("com.cheburek4535.stackpilot");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("com.cheburek4535.stackpilot");
+        }
+    }
+    std::env::temp_dir().join("com.cheburek4535.stackpilot")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

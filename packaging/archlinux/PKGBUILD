@@ -22,12 +22,14 @@ build() {
   # бинарник при запуске лезет на несуществующий Vite dev-сервер, показывая
   # страницу «connection refused» вместо интерфейса.
   npm run tauri -- build --no-bundle
+  cargo build --release --manifest-path src-tauri/Cargo.toml --bin stkpil
 }
 
 package() {
   cd "StackPilot-$pkgver"
 
   install -Dm755 "src-tauri/target/release/stackpilot" "$pkgdir/usr/bin/stackpilot"
+  install -Dm755 "src-tauri/target/release/stkpil" "$pkgdir/usr/bin/stkpil"
   install -Dm644 "packaging/archlinux/stackpilot.desktop" "$pkgdir/usr/share/applications/stackpilot.desktop"
   install -Dm644 "src-tauri/icons/icon.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/stackpilot.png"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

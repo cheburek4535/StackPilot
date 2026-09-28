@@ -1,7 +1,8 @@
-mod core;
-mod modules;
+pub mod core;
+pub mod modules;
 pub mod platform;
 pub mod ports;
+pub mod cli;
 
 use std::sync::Arc;
 use tauri::{Listener, Manager};
@@ -37,6 +38,11 @@ pub fn run() {
             tauri::async_runtime::block_on(async {
                 let _ = modules::toolchain::core::path_service::sync_process_path().await;
             });
+
+            #[cfg(target_os = "windows")]
+            {
+                let _ = platform::paths::register_stkpil_in_app_paths();
+            }
 
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 

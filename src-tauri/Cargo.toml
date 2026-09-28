@@ -22,6 +22,14 @@ tauri-build = { version = "2", features = [] }
 default = ["plugins"]
 plugins = []
 
+[[bin]]
+name = "stackpilot"
+path = "src/main.rs"
+
+[[bin]]
+name = "stkpil"
+path = "src/bin/stkpil.rs"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -42,6 +50,11 @@ log = "0.4"
 notify = "8.2"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+clap = { version = "4.5", features = ["derive"] }
+inquire = "0.7"
+indicatif = "0.17"
+colored = "2.1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+
