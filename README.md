@@ -32,13 +32,15 @@
 >
 > Добавление StackPilot в **winget** сейчас в процессе — автор активно занимается этим. Пока удобнее установить приложение со страницы Releases.
 
-## Что нового в 1.2.4
+## Что нового в 1.2.5
 
-- **Секционирование и реорганизация Toolchain** — каталог инструментов разбит на 6 наглядных категорий (Языки и рантаймы, Менеджеры пакетов и сборка, Контейнеризация и виртуализация, Базы данных и хранилища, CLI и системные утилиты, ИИ и аналитика). Добавлены быстрые фильтры, удобный поиск и групповые действия.
-- **Полноценная поддержка macOS** — нативная поддержка Homebrew (как для Apple Silicon `/opt/homebrew`, так и для Intel `/usr/local`), распаковка и установка через `.dmg` и `.pkg`, авто-определение сокета Docker Desktop в macOS, оптимизация интерфейса и заголовка окна под macOS.
-- **Усиленный аудит безопасности** — строгая защита от Path Traversal (`..`), валидация канонических путей, защита от рекурсивных симлинков, скрытие чувствительных файлов (`.env`, приватные SSH-ключи, `.git`) и авторизация сигналов завершения процессов.
-- **Модульная архитектура Project Creator** — движок генерации проектов разделён на независимые провайдеры (Backend, Frontend, Desktop, Mobile) и отдельные модули компоновщика, разметки и предпросмотра.
-- **Обновление интерфейса конструктора и DevLauncher** — декомпозиция интерфейса на компоненты Svelte 5, интерактивный экран анализа проектов с тонкой настройкой таймаутов, шагов и политик перезапуска.
+- **Масштабное расширение стека Project Creator** — добавлена поддержка множества новых языков, фреймворков и инструментов:
+  - **Бэкенд и языки**: Ruby on Rails (Ruby), Fiber и Echo (Go), Actix Web (Rust), Hono и AdonisJS (TypeScript/Node.js), Blazor (C# .NET), C с поддержкой компилятора GCC (MinGW-w64).
+  - **Фронтенд и сборщики**: Angular (со скаффолдингом через `@angular/cli`), Vite, Astro, Remix.
+  - **Инструменты и утилиты**: Biome (линтер и форматтер нового поколения), Vitest (быстрый тестовый фреймворк), Bun (альтернативный JS/TS рантайм и пакетный менеджер), Tailwind CSS.
+- **Нативный скаффолдинг без внешних зависимостей** — генерация каркасов проектов (Rails, Blazor, Echo, Fiber, Hono, AdonisJS) переведена на встроенный генератор файлов, что устраняет сбои из-за отсутствия глобально установленных утилит хоста.
+- **Поддержка формата JSONC** — парсер конфигураций и слияние `.vscode/` папок теперь полноценно поддерживают комментарии (`//`, `/* */`) и висячие запятые, исправляя ошибки слияния расширений (включая Angular CLI `extensions.json`).
+- **Исправление валидации и зависимостей инструментов** — скорректированы ограничения доступности инструментов мастера по типам проектов и платформенным зависимостям.
 
 Полная история версий — на странице [Releases](https://github.com/cheburek4535/StackPilot/releases).
 
@@ -54,7 +56,7 @@
 
 ## Содержание
 
-- [Что нового в 1.2.4](#что-нового-в-124)
+- [Что нового в 1.2.5](#что-нового-в-125)
 - [Установка и запуск](#установка-и-запуск)
 - [Как это работает](#как-это-работает)
 - [Основные возможности](#основные-возможности)
@@ -348,19 +350,19 @@ StackPilot — кроссплатформенное десктопное при�
 
 StackPilot поддерживает широкий спектр современных технологий:
 
-**Языки:** Python, Rust, Go, TypeScript, JavaScript, Java, C#, C++, Dart, Kotlin, PHP, Swift, Zig, Elixir, Gleam, HTML
+**Языки:** Python, Rust, Go, TypeScript, JavaScript, Java, C#, C++, C, Ruby, Dart, Kotlin, PHP, Swift, Zig, Elixir, Gleam, HTML
 
-**Backend фреймворки:** FastAPI, Django, Flask, Axum, Gin, NestJS, Express, Spring Boot, Laravel, Symfony, Phoenix, Ktor
+**Backend фреймворки:** FastAPI, Django, Flask, Axum, Gin, Actix Web, Echo, Fiber, Ruby on Rails, NestJS, Express, Hono, AdonisJS, Spring Boot, ASP.NET Core, Blazor, Laravel, Symfony, Phoenix, Ktor, Fastify
 
-**Frontend фреймворки:** React, Vue, Svelte, Next.js, Nuxt, SvelteKit, SolidStart
+**Frontend фреймворки:** React, Vue, Svelte, Angular, Next.js, Nuxt, SvelteKit, SolidStart, Vite, Astro, Remix
 
-**Мобильные и десктопные:** Flutter, React Native, Expo, Tauri, Electron, Qt, Jetpack Compose, SwiftUI
+**Мобильные и десктопные:** Flutter, React Native, Expo, Tauri, Electron, Qt, Jetpack Compose, SwiftUI, MAUI
 
-**Базы данных:** PostgreSQL, MongoDB, MySQL, SQLite, Redis/Memurai, ClickHouse
+**Базы данных и ORM:** PostgreSQL, MongoDB, MySQL, SQLite, Redis/Memurai, ClickHouse, Prisma, Drizzle, SQLAlchemy, Alembic
 
-**Инструменты:** Docker, Git, VS Code, Kafka, Airflow, dbt, Grafana, Firebase, Terraform
+**Инструменты и сборка:** Docker, Git, VS Code, Bun, GCC (MinGW-w64), Gradle, Maven, Kafka, Airflow, dbt, Grafana, Firebase, Terraform, Tailwind CSS, OpenTelemetry, Mailpit
 
-**Testing и quality:** Pytest, Ruff
+**Testing и quality:** Pytest, Ruff, Vitest, Biome
 
 Полный каталог находится в [`src-tauri/src/modules/project_creator/knowledge/wizard_tree.json`](src-tauri/src/modules/project_creator/knowledge/wizard_tree.json) и [`src-tauri/src/modules/toolchain/tools.json`](src-tauri/src/modules/toolchain/tools.json).
 
@@ -446,7 +448,7 @@ StackPilot — полностью локальное приложение:
 
 ## Безопасность
 
-В версии 1.2.4 реализован комплексный аудит и усиление защитных механизмов:
+В StackPilot реализован комплексный аудит и усиление защитных механизмов:
 
 1. **Защита от Path Traversal** — строгая проверка канонических путей (`validate_workspace_path`) исключает выход за пределы папки проекта через переходы `../` или манипуляции с относительными путями.
 2. **Защита от циклических симлинков** — обход файловой системы ограничен по глубине и проверяет циклические ссылки, предотвращая зависания и DoS.

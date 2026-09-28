@@ -15,7 +15,7 @@
   const roadmapItems: RoadmapItem[] = [
     { id: "ai_assistant", status: "in_progress", icon: "bot" },
     { id: "env_isolation", status: "planned", icon: "shield" },
-    { id: "tech_expansion", status: "in_progress", icon: "layers" },
+    { id: "tech_expansion", status: "done", icon: "layers" },
     { id: "localization", status: "planned", icon: "glob" },
     { id: "cli_service", status: "planned", icon: "terminal" },
     { id: "plugin_system", status: "planned", icon: "store" },
@@ -30,8 +30,8 @@
 
   const techList = [
     "C", "Ruby", "Angular", "Vite", "Rails", "Astro", "Hono",
-    "Actix Web", "Echo", "Blazor", "Remix", "AdonisJS", "Rails",
-    "Angular CLI", "GCC (MinGW-w64)"
+    "Actix Web", "Echo", "Fiber", "Blazor", "Remix", "AdonisJS",
+    "Biome", "Vitest", "Bun", "Tailwind CSS", "GCC (MinGW-w64)"
   ];
 
   const techListTranslated = $derived([
@@ -64,6 +64,11 @@
   };
 
   const changelog: ChangelogEntry[] = [
+    {
+      version: "1.2.5",
+      date: "2026-09-28",
+      changesKey: "roadmap.changelog.v125"
+    },
     {
       version: "1.2.4",
       date: "2026-09-27",

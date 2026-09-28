@@ -3,7 +3,7 @@
 # Скрипт для обновления версии во всех файлах проекта
 
 if [ -z "$1" ]; then
-    echo "Использование: ./scripts/bump-version.sh 1.2.4"
+    echo "Использование: ./scripts/bump-version.sh 1.2.5"
     exit 1
 fi
 
