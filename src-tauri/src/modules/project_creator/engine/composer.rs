@@ -366,6 +366,12 @@ pub fn compose_recipe(
     if context.frameworks.iter().any(|f| f == "gin") {
         dependencies.push(dep("get_gin", "go_mod_init"));
     }
+    if context.frameworks.iter().any(|f| f == "echo") {
+        dependencies.push(dep("get_echo", "go_mod_init"));
+    }
+    if context.frameworks.iter().any(|f| f == "fiber") {
+        dependencies.push(dep("get_fiber", "go_mod_init"));
+    }
     if context.frameworks.iter().any(|f| f == "cobra") {
         dependencies.push(dep("get_cobra", "go_mod_init"));
     }
@@ -471,6 +477,10 @@ pub fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
         // plasmo в devDependencies (проверка сканирует оба раздела).
         "react-native" => Some("react-native"),
         "plasmo" => Some("plasmo"),
+        "angular" => Some("@angular/core"),
+        "vite" => Some("vite"),
+        "astro" => Some("astro"),
+        "remix" => Some("@remix-run/react"),
         _ => None,
     }
 }
@@ -483,7 +493,10 @@ pub fn scaffold_step_id_for(fw: &str) -> Option<&'static str> {
         "nextjs" => Some("nextjs_create"),
         "nuxt" => Some("nuxt_create"),
         "sveltekit" => Some("sveltekit_create"),
-        "react" | "vue" | "svelte" => Some("vite_create"),
+        "react" | "vue" | "svelte" | "vite" => Some("vite_create"),
+        "angular" => Some("angular_create"),
+        "astro" => Some("astro_create"),
+        "remix" => Some("remix_create"),
         "electron" => Some("electron_init"),
         "expo" => Some("expo_init"),
         "solidjs" => Some("solid_init"),
@@ -1254,21 +1267,16 @@ def get_nosql_db():
                 &format!("dotnet new console -n {} --force", project_name)),
         ],
 
-        "c" | "cpp" => {
-            let ext = if lang == "cpp" { "cpp" } else { "c" };
+        "cpp" => {
             vec![
                 mkdir("create_src", "src"),
                 mkdir("create_include", "include"),
                 Step::WriteFile {
                     id: "main_source".into(),
-                    label: format!("Create main.{}", ext),
+                    label: "Create main.cpp".into(),
                     description: "Create main source file".into(),
-                    path: format!("src/main.{}", ext),
-                    content: if lang == "cpp" {
-                        format!("#include <iostream>\n\nint main() {{\n    std::cout << \"Hello from {}!\" << std::endl;\n    return 0;\n}}\n", project_name)
-                    } else {
-                        format!("#include <stdio.h>\n\nint main() {{\n    printf(\"Hello from {}!\\n\");\n    return 0;\n}}\n", project_name)
-                    },
+                    path: "src/main.cpp".into(),
+                    content: format!("#include <iostream>\n\nint main() {{\n    std::cout << \"Hello from {}!\" << std::endl;\n    return 0;\n}}\n", project_name),
                     overwrite: false,
                     policy: None,
                     condition: None,
@@ -1278,12 +1286,10 @@ def get_nosql_db():
                 Step::WriteFile {
                     id: "makefile".into(),
                     label: "Create Makefile".into(),
-                    description: "Create basic Makefile for C/C++".into(),
+                    description: "Create basic Makefile for C++".into(),
                     path: "Makefile".into(),
                     content: format!(
-                        "CC={}\nCFLAGS=-Iinclude -Wall -Wextra\nSRC=src/main.{}\nTARGET={}\n\nall: $(TARGET)\n\n$(TARGET): $(SRC)\n\t$(CC) $(CFLAGS) $(SRC) -o $(TARGET)\n\nclean:\n\trm -f $(TARGET)\n\nrun: all\n\t./$(TARGET)\n",
-                        if lang == "cpp" { "g++" } else { "gcc" },
-                        ext,
+                        "CXX=g++\nCXXFLAGS=-Iinclude -Wall -Wextra\nSRC=src/main.cpp\nTARGET={}\n\nall: $(TARGET)\n\n$(TARGET): $(SRC)\n\t$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET)\n\nclean:\n\trm -f $(TARGET)\n\nrun: all\n\t./$(TARGET)\n",
                         project_name
                     ),
                     overwrite: false,
@@ -1452,6 +1458,102 @@ body {
                 policy: None,
                 condition: None,
                 on_error: ErrorMode::Abort,
+            },
+        ],
+
+        "c" => vec![
+            mkdir("create_c_src", "src"),
+            Step::WriteFile {
+                id: "c_main".into(),
+                label: "Create src/main.c".into(),
+                description: "Create C entry point".into(),
+                path: "src/main.c".into(),
+                content: format!(
+                    r#"#include <stdio.h>
+
+int main(void) {{
+    printf("Hello from {}!\n");
+    return 0;
+}}
+"#,
+                    project_name
+                ),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+            Step::WriteFile {
+                id: "c_cmakelists".into(),
+                label: "Create CMakeLists.txt".into(),
+                description: "Initialize CMake configuration for C".into(),
+                path: "CMakeLists.txt".into(),
+                content: format!(
+                    r#"cmake_minimum_required(VERSION 3.15)
+project({} C)
+
+set(CMAKE_C_STANDARD 11)
+
+add_executable(app src/main.c)
+"#,
+                    project_name.replace('-', "_")
+                ),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+            Step::WriteFile {
+                id: "c_makefile".into(),
+                label: "Create Makefile".into(),
+                description: "Initialize Makefile for direct compilation".into(),
+                path: "Makefile".into(),
+                content: format!(
+                    "CC = gcc\nCFLAGS = -Wall -Wextra -O2\nSRC = src/main.c\nTARGET = {}\n\nall: $(TARGET)\n\n$(TARGET): $(SRC)\n\t$(CC) $(CFLAGS) -o $(TARGET) $(SRC)\n\nclean:\n\trm -f $(TARGET)\n",
+                    if cfg!(target_os = "windows") { "app.exe" } else { "app" }
+                ),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+        ],
+
+        "ruby" => vec![
+            mkdir("create_ruby_src", "src"),
+            Step::WriteFile {
+                id: "ruby_main".into(),
+                label: "Create src/main.rb".into(),
+                description: "Create Ruby entry point".into(),
+                path: "src/main.rb".into(),
+                content: format!(
+                    r#"# frozen_string_literal: true
+
+puts "Hello from {}!"
+"#,
+                    project_name
+                ),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
+            },
+            Step::WriteFile {
+                id: "ruby_gemfile".into(),
+                label: "Create Gemfile".into(),
+                description: "Initialize Ruby Gemfile".into(),
+                path: "Gemfile".into(),
+                content: r#"# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+# gem "rake"
+"#
+                .into(),
+                overwrite: false,
+                policy: None,
+                condition: None,
+                on_error: ErrorMode::Skip,
             },
         ],
 

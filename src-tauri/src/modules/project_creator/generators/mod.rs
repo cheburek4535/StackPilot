@@ -800,6 +800,27 @@ fn manifest_dependencies(kind: &str, content: &str) -> Result<Vec<String>, Strin
             }
             Ok(names)
         }
+        "gemfile" => {
+            let mut names: Vec<String> = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("gem ") || line.starts_with("gem\t") {
+                    let after = line["gem".len()..].trim();
+                    if let Some(quote) = after.chars().next() {
+                        if quote == '"' || quote == '\'' {
+                            let rest = &after[1..];
+                            if let Some(end) = rest.find(quote) {
+                                let name = &rest[..end];
+                                if !name.is_empty() && !names.contains(&name.to_string()) {
+                                    names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(names)
+        }
         _ => Err(format!("unsupported manifest kind '{kind}'")),
     }
 }
@@ -2592,14 +2613,42 @@ fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String>
             }
             let root_file = root_vscode.join(file);
             if root_file.exists() {
-                let root_value = read_json(&root_file)?;
-                let inner_value = read_json(&inner_file)?;
-                let merged = if file == "extensions.json" {
-                    merge_extensions(&inner_value, &root_value)
-                } else {
-                    merge_json(&inner_value, &root_value)
-                };
-                write_json(&root_file, &merged)?;
+                let root_value = read_json(&root_file);
+                let inner_value = read_json(&inner_file);
+                match (root_value, inner_value) {
+                    (Ok(rv), Ok(iv)) => {
+                        let merged = if file == "extensions.json" {
+                            merge_extensions(&iv, &rv)
+                        } else {
+                            merge_json(&iv, &rv)
+                        };
+                        write_json(&root_file, &merged)?;
+                    }
+                    (Ok(_), Err(e)) => {
+                        log::warn!(
+                            "VsCodeFoldersMergeGenerator: could not parse inner {}: {}, keeping root",
+                            inner_file.display(),
+                            e
+                        );
+                    }
+                    (Err(e), Ok(iv)) => {
+                        log::warn!(
+                            "VsCodeFoldersMergeGenerator: could not parse root {}: {}, replacing with inner",
+                            root_file.display(),
+                            e
+                        );
+                        let _ = write_json(&root_file, &iv);
+                    }
+                    (Err(e1), Err(e2)) => {
+                        log::warn!(
+                            "VsCodeFoldersMergeGenerator: failed to parse root {} ({}) and inner {} ({})",
+                            root_file.display(),
+                            e1,
+                            inner_file.display(),
+                            e2
+                        );
+                    }
+                }
             } else {
                 std::fs::copy(&inner_file, &root_file).map_err(|e| {
                     format!(
@@ -2611,6 +2660,29 @@ fn merge_vscode_folders(project_path: &Path) -> Result<GenerationReport, String>
                 })?;
             }
             merged_files.push(format!("{}/.vscode/{}", dir, file));
+        }
+
+        // Перенести любые другие файлы (launch.json, tasks.json и т.п.), которых ещё нет в корне
+        if let Ok(entries) = std::fs::read_dir(&inner) {
+            for entry in entries.flatten() {
+                let inner_path = entry.path();
+                if !inner_path.is_file() {
+                    continue;
+                }
+                let file_name = match inner_path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if file_name == "settings.json" || file_name == "extensions.json" {
+                    continue;
+                }
+                let root_file = root_vscode.join(&file_name);
+                if !root_file.exists() {
+                    if std::fs::copy(&inner_path, &root_file).is_ok() {
+                        merged_files.push(format!("{}/.vscode/{}", dir, file_name));
+                    }
+                }
+            }
         }
 
         std::fs::remove_dir_all(&inner).map_err(|e| {
@@ -2748,9 +2820,109 @@ fn merge_extensions(base: &serde_json::Value, extra: &serde_json::Value) -> serd
     out
 }
 
-/// Разобрать JSON-текст (наши generated-шаблоны и файлы на диске).
+/// Очистить JSONC: удалить комментарии (однострочные `//` и многострочные `/* ... */`)
+/// и висячие запятые перед `}` и `]`, сохраняя строковые литералы без изменений.
+pub(crate) fn strip_jsonc_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while i < len {
+        let ch = chars[i];
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            i += 1;
+        } else {
+            if ch == '"' {
+                in_string = true;
+                escaped = false;
+                out.push(ch);
+                i += 1;
+            } else if ch == '/' && i + 1 < len && chars[i + 1] == '/' {
+                i += 2;
+                while i < len && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if ch == '/' && i + 1 < len && chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                if i + 1 < len {
+                    i += 2;
+                } else {
+                    i = len;
+                }
+            } else {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+
+    strip_trailing_commas(&out)
+}
+
+fn strip_trailing_commas(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+
+    while i < len {
+        let ch = chars[i];
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            i += 1;
+        } else {
+            if ch == '"' {
+                in_string = true;
+                escaped = false;
+                out.push(ch);
+                i += 1;
+            } else if ch == ',' {
+                let mut j = i + 1;
+                while j < len && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < len && (chars[j] == '}' || chars[j] == ']') {
+                    i += 1;
+                } else {
+                    out.push(ch);
+                    i += 1;
+                }
+            } else {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Разобрать JSON-текст (наши generated-шаблоны и файлы на диске, включая JSONC с комментариями).
 fn parse_json(text: &str) -> Result<serde_json::Value, String> {
-    serde_json::from_str(text).map_err(|e| format!("invalid JSON: {}", e))
+    let clean = strip_jsonc_comments(text);
+    serde_json::from_str(&clean).map_err(|e| format!("invalid JSON: {}", e))
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value, String> {
@@ -4442,4 +4614,101 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn manifest_check_validates_gemfile() {
+        let gen = ManifestCheckGenerator;
+        let dir = temp_test_dir("manifest_gemfile");
+        std::fs::write(
+            dir.join("Gemfile"),
+            "source \"https://rubygems.org\"\ngem \"rails\", \"~> 7.1.0\"\ngem 'puma', '>= 5.0'\n",
+        )
+        .unwrap();
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(
+            &ctx,
+            &dir,
+            &serde_json::json!({
+                "path": "Gemfile",
+                "kind": "gemfile",
+                "required_dependencies": ["rails", "puma"],
+            }),
+        ))
+        .expect("Gemfile с rails и puma обязан пройти");
+        assert!(
+            report.modified_files.is_empty(),
+            "{:?}",
+            report.modified_files
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strip_jsonc_comments_removes_comments_and_trailing_commas() {
+        let input = r#"{
+            // Single-line comment with https://go.microsoft.com/fwlink/?linkid=827846
+            /* Multi-line
+               comment */
+            "url": "https://example.com/api//test",
+            "escaped": "quoted \"//\" string",
+            "items": [
+                "one",
+                "two",
+            ],
+            "nested": {
+                "key": "val",
+            },
+        }"#;
+        let cleaned = strip_jsonc_comments(input);
+        let val: serde_json::Value = serde_json::from_str(&cleaned).expect("должен быть валидный JSON");
+        assert_eq!(val["url"], "https://example.com/api//test");
+        assert_eq!(val["escaped"], "quoted \"//\" string");
+        assert_eq!(val["items"].as_array().unwrap().len(), 2);
+        assert_eq!(val["nested"]["key"], "val");
+    }
+
+    #[test]
+    fn vscode_folders_merge_handles_angular_jsonc_comments() {
+        let gen = VsCodeFoldersMergeGenerator;
+        let dir = temp_test_dir("vscode_folders_angular");
+        let root_vscode = dir.join(".vscode");
+        std::fs::create_dir_all(&root_vscode).unwrap();
+        std::fs::write(
+            root_vscode.join("extensions.json"),
+            r#"{ "recommendations": ["rust-lang.rust-analyzer"] }"#,
+        )
+        .unwrap();
+
+        // frontend/.vscode/extensions.json с комментариями как у Angular CLI
+        let front_vscode = dir.join("frontend").join(".vscode");
+        std::fs::create_dir_all(&front_vscode).unwrap();
+        std::fs::write(
+            front_vscode.join("extensions.json"),
+            r#"{
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=827846
+  "recommendations": [
+    "angular.ng-template",
+  ],
+}"#,
+        )
+        .unwrap();
+
+        let ctx = WizardContext::default();
+        let report = tokio_test_block_on(gen.generate(&ctx, &dir, &serde_json::json!({})))
+            .expect("merge должен пройти успешно даже с JSONC комментариями");
+
+        assert!(!front_vscode.exists(), "frontend/.vscode удаляется после слияния");
+        assert!(report.modified_files.contains(&"frontend/.vscode/extensions.json".to_string()));
+
+        let exts: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root_vscode.join("extensions.json")).unwrap(),
+        )
+        .unwrap();
+        let recs = exts["recommendations"].as_array().unwrap();
+        assert!(recs.iter().any(|r| r == "rust-lang.rust-analyzer"));
+        assert!(recs.iter().any(|r| r == "angular.ng-template"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+

@@ -81,7 +81,7 @@ import { setContext, getContext } from "svelte";
   import HelpHint from "$lib/components/ui/HelpHint.svelte";
 
 export type TooltipItem =
-  | { type: 'tool'; tool: ToolDef }
+  | { type: 'tool'; tool: ToolDef; conflictReason?: string | null }
   | {
       type: 'framework';
       fw: FrameworkDef;
@@ -1542,7 +1542,7 @@ export function createProjectStore() {
    *  опциональный тул ему в UI не место. */
   function availableTools(): ToolDef[] {
     if (!tree) return [];
-    return tree.tools.filter((t) => t.id !== "npm" && toolFitsStack(t));
+    return tree.tools.filter((t) => t.id !== "npm");
   }
   
   /** Максимум бейджей «рекомендуется» на карточках инструментов (2–5) */
@@ -1589,16 +1589,107 @@ export function createProjectStore() {
   function dockerEnabled(): boolean {
     return isDockerForced() || selectedTools.includes("docker");
   }
-  
+
+  /** Возвращает причину недоступности инструмента в текущей связке или null, если инструмент доступен. */
+  function toolConflictReason(toolId: string): string | null {
+    if (!tree) return null;
+    const tool = tree.tools.find((t) => t.id === toolId);
+    if (!tool) return null;
+
+    // 1. Конфликт с уже выбранными фреймворками
+    for (const fwId of selectedFrameworks) {
+      const fw = tree.frameworks.find((f) => f.id === fwId);
+      if (!fw) continue;
+      if (fw.tool_conflicts?.includes(toolId)) {
+        return i18n.t("create.tool_unavailable_with", { name: i18n.t(fw.label as TranslationKey) });
+      }
+    }
+
+    // 2. Инструмент привязан к конкретным фреймворкам (например, angular-cli только для angular)
+    if (tool.for_frameworks && tool.for_frameworks.length > 0) {
+      const hasMatchingFw = selectedFrameworks.some((fid) => tool.for_frameworks?.includes(fid));
+      if (!hasMatchingFw) {
+        if (selectedFrameworks.length > 0) {
+          const firstSelectedFw = tree.frameworks.find((f) => f.id === selectedFrameworks[0]);
+          const name = firstSelectedFw ? i18n.t(firstSelectedFw.label as TranslationKey) : selectedFrameworks[0];
+          return i18n.t("create.tool_unavailable_with", { name });
+        } else {
+          const targetLabels = tool.for_frameworks
+            .map((fid) => {
+              const f = tree!.frameworks.find((x) => x.id === fid);
+              return f ? i18n.t(f.label as TranslationKey) : fid;
+            })
+            .join(", ");
+          return i18n.t("create.tool_requires_framework", { name: targetLabels });
+        }
+      }
+    }
+
+    // 3. Требование по языкам (например, pytest требует Python, biome/vitest требуют TypeScript/JavaScript, gcc требует C/C++)
+    if (tool.for_languages && tool.for_languages.length > 0) {
+      const langs = allSelectedLangs();
+      const hasLang = tool.for_languages.some((l) => langs.includes(l));
+      if (!hasLang) {
+        const langNames = tool.for_languages
+          .map((lid) => {
+            const l = tree!.languages.find((x) => x.id === lid);
+            return l ? l.label : lid;
+          })
+          .join(" / ");
+        return i18n.t("create.tool_requires_lang", { name: langNames });
+      }
+    }
+
+    // 4. Ограничение по типу проекта
+    if (tool.for_project_types && tool.for_project_types.length > 0 && selectedType) {
+      if (!tool.for_project_types.includes(selectedType.id)) {
+        return i18n.t("create.tool_unsupported_project_type");
+      }
+    }
+
+    // 5. Конфликт с уже выбранными инструментами
+    for (const existingId of selectedTools) {
+      if (existingId === toolId) continue;
+      const existing = tree.tools.find((t) => t.id === existingId);
+      if (!existing) continue;
+
+      // 5a. Прямой взаимный конфликт в conflicts[]
+      if (tool.conflicts.includes(existingId) || existing.conflicts.includes(toolId)) {
+        return i18n.t("create.tool_unavailable_with", { name: i18n.t(existing.label as TranslationKey) });
+      }
+
+      // 5b. Пересечение ответственности с политикой exclusive (например, gradle и maven, postgresql и mysql, prisma и drizzle)
+      if (tool.responsibility && existing.responsibility && tool.responsibility === existing.responsibility) {
+        const policyA = tool.alternative_policy ?? "allow";
+        const policyB = existing.alternative_policy ?? "allow";
+        if (policyA === "exclusive" || policyB === "exclusive") {
+          return i18n.t("create.tool_unavailable_with", { name: i18n.t(existing.label as TranslationKey) });
+        }
+      }
+    }
+
+    // 6. Зависимость инструмента заблокирована
+    for (const reqId of tool.requires) {
+      const reqReason = toolConflictReason(reqId);
+      if (reqReason) {
+        return reqReason;
+      }
+    }
+
+    return null;
+  }
+
   function toggleTool(id: string) {
     const tool = tree?.tools.find((t) => t.id === id);
     if (!tool) return;
-  
+
     if (selectedTools.includes(id)) {
       const dependents = tree!.tools.filter((t) => t.requires.includes(id));
       const toRemove = new Set([id, ...dependents.map((d) => d.id)]);
       selectedTools = selectedTools.filter((t) => !toRemove.has(t));
     } else {
+      // Заблокированный конфликтом инструмент нельзя выбрать
+      if (toolConflictReason(id)) return;
       for (const conflictId of tool.conflicts) {
         if (selectedTools.includes(conflictId)) {
           selectedTools = selectedTools.filter((t) => t !== conflictId);
@@ -1635,6 +1726,7 @@ export function createProjectStore() {
     { id: "etl", label: i18n.t("create.tool_category.etl") },
     { id: "baas", label: i18n.t("create.tool_category.baas") },
     { id: "infra", label: i18n.t("create.tool_category.infrastructure") },
+    { id: "cli", label: i18n.t("create.tool_category.cli") },
   ];
   
   // ----------------------------------------------------------
@@ -2746,6 +2838,7 @@ export function createProjectStore() {
         get recommendedBadgeIds() { return recommendedBadgeIds; },
         get isDockerForced() { return isDockerForced; },
         get dockerEnabled() { return dockerEnabled; },
+        get toolConflictReason() { return toolConflictReason; },
         get toggleTool() { return toggleTool; },
         get applyPreset() { return applyPreset; },
         get applyAnalysis() { return applyAnalysis; },

@@ -91,6 +91,21 @@ impl ProviderRegistry {
         registry.register(Box::new(desktop::swiftui::SwiftuiProvider));
         registry.register(Box::new(desktop::tauri::TauriProvider));
 
+        // New Backend
+        registry.register(Box::new(backend::rails::RailsProvider));
+        registry.register(Box::new(backend::hono::HonoProvider));
+        registry.register(Box::new(backend::actix_web::ActixWebProvider));
+        registry.register(Box::new(backend::echo::EchoProvider));
+        registry.register(Box::new(backend::adonisjs::AdonisjsProvider));
+        registry.register(Box::new(backend::blazor::BlazorProvider));
+        registry.register(Box::new(backend::fiber::FiberProvider));
+
+        // New Frontend
+        registry.register(Box::new(frontend::angular::AngularProvider));
+        registry.register(Box::new(frontend::vite::ViteProvider));
+        registry.register(Box::new(frontend::astro::AstroProvider));
+        registry.register(Box::new(frontend::remix::RemixProvider));
+
         registry
     }
 

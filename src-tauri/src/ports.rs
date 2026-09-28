@@ -92,8 +92,10 @@ pub fn framework_default_port(fw: &str) -> Option<u16> {
     Some(match fw {
         // Node backends
         "express" | "fastify" | "hono" | "nest" | "nestjs" => 3000,
+        "adonis" | "adonisjs" => 3333,
         // Node full-stack / frontends
-        "nextjs" | "next" | "nuxt" | "nuxtjs" | "sveltekit" => 3000,
+        "nextjs" | "next" | "nuxt" | "nuxtjs" | "sveltekit" | "remix" => 3000,
+        "astro" => 4321,
         "vite" | "vite-react" | "vite-vue" | "vite-svelte" | "react" | "vue" | "svelte"
         | "solid" | "solidjs" | "plasmo" => 5173,
         "angular" => 4200,
@@ -107,10 +109,13 @@ pub fn framework_default_port(fw: &str) -> Option<u16> {
             { 5000 }
         },
         "django" => 8000,
-        // Go (the wizard's Gin scaffold binds :8080)
-        "gin" | "echo" | "fiber" | "chi" | "gorilla" => 8080,
+        // Go (the wizard's Gin scaffold binds :8080, Echo :1323, Fiber :3000)
+        "gin" | "chi" | "gorilla" => 8080,
+        "echo" => 1323,
+        "fiber" => 3000,
         // Rust
-        "axum" | "actix" | "actix-web" | "rocket" | "warp" => 3000,
+        "axum" | "rocket" | "warp" => 3000,
+        "actix" | "actix-web" => 8080,
         // JVM
         "spring-boot" | "spring" => 8080,
         "ktor" => 3000,
@@ -331,6 +336,13 @@ mod tests {
         assert_eq!(framework_default_port("phoenix"), Some(4000));
         assert_eq!(framework_default_port("nextjs"), Some(3000));
         assert_eq!(framework_default_port("react"), Some(5173));
+        assert_eq!(framework_default_port("adonisjs"), Some(3333));
+        assert_eq!(framework_default_port("astro"), Some(4321));
+        assert_eq!(framework_default_port("remix"), Some(3000));
+        assert_eq!(framework_default_port("echo"), Some(1323));
+        assert_eq!(framework_default_port("fiber"), Some(3000));
+        assert_eq!(framework_default_port("actix-web"), Some(8080));
+        assert_eq!(framework_default_port("angular"), Some(4200));
         assert_eq!(framework_default_port("unknown-fw"), None);
     }
 

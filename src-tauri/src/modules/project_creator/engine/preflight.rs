@@ -429,6 +429,7 @@ fn language_host_tool(lang: &str) -> Option<&'static str> {
         "swift" => Some("swift"),
         "elixir" => Some("mix"),
         "gleam" => Some("gleam"),
+        "ruby" => Some("ruby"),
         _ => None,
     }
 }

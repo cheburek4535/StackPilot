@@ -338,6 +338,30 @@ export function validateStack(
     }
   }
 
+  // Взаимные конфликты инструментов (tool.conflicts[])
+  for (let i = 0; i < selectedTools.length; i++) {
+    for (let j = i + 1; j < selectedTools.length; j++) {
+      const a = selectedTools[i];
+      const b = selectedTools[j];
+      if (a.responsibility && b.responsibility && a.responsibility === b.responsibility) {
+        const policyA = a.alternative_policy ?? "allow";
+        const policyB = b.alternative_policy ?? "allow";
+        if (policyA === "exclusive" || policyB === "exclusive") {
+          continue;
+        }
+      }
+      if (a.conflicts?.includes(b.id) || b.conflicts?.includes(a.id)) {
+        const args = { a: a.label, b: b.label };
+        issues.push({
+          severity: "Error",
+          message_key: "stack.tool.conflict",
+          args,
+          message: i18n.t("stack.tool.conflict", args),
+        });
+      }
+    }
+  }
+
   // 11. Связки фреймворк↔инструмент: tool_conflicts — жёсткая
   //     несовместимость (Error); tool_warnings — Warning с причиной и
   //     рекомендацией (показываются отдельной строкой из args).

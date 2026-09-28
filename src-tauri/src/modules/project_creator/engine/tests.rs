@@ -8758,3 +8758,103 @@ fn no_cancel() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
             "{err}"
         );
     }
+
+    #[test]
+    fn rails_standalone_recipe_generates_file_scaffold() {
+        let ctx = ctx_scenario(&["ruby"], &["rails"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("rails recipe must build");
+        let ids = plan_ids(&recipe);
+        assert!(ids.contains(&"rails_gemfile".to_string()), "{ids:?}");
+        assert!(ids.contains(&"rails_routes".to_string()), "{ids:?}");
+        assert!(ids.contains(&"rails_controller".to_string()), "{ids:?}");
+        assert!(ids.contains(&"rails_gemfile_check".to_string()), "{ids:?}");
+        assert!(!ids.contains(&"rails_new".to_string()), "rails should not invoke external rails CLI");
+
+        let gf = find_step(&recipe, "rails_gemfile");
+        if let Step::WriteFile { path, content, .. } = gf {
+            assert_eq!(path, "Gemfile");
+            assert!(content.contains("gem \"rails\""));
+        } else {
+            panic!("rails_gemfile must be WriteFile");
+        }
+    }
+
+    #[test]
+    fn rails_fullstack_recipe_has_no_double_segment() {
+        let ctx = ctx_scenario(&["ruby", "typescript"], &["rails", "react"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("rails+react recipe must build");
+        let gf = find_step(&recipe, "rails_gemfile");
+        if let Step::WriteFile { path, .. } = gf {
+            assert_eq!(path, "backend/Gemfile");
+        } else {
+            panic!("rails_gemfile must be WriteFile");
+        }
+        let rc = find_step(&recipe, "rails_controller");
+        if let Step::WriteFile { path, .. } = rc {
+            assert_eq!(path, "backend/app/controllers/application_controller.rb");
+        } else {
+            panic!("rails_controller must be WriteFile");
+        }
+    }
+
+    #[test]
+    fn new_backends_fullstack_no_double_segment() {
+        // Echo + React
+        let ctx = ctx_scenario(&["go", "typescript"], &["echo", "react"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("echo+react recipe must build");
+        let echo_main = find_step(&recipe, "echo_main");
+        if let Step::WriteFile { path, .. } = echo_main {
+            assert_eq!(path, "backend/cmd/main.go");
+        } else {
+            panic!("echo_main must be WriteFile");
+        }
+        let echo_cmd = find_step(&recipe, "get_echo");
+        if let Step::Command { working_dir, .. } = echo_cmd {
+            assert_eq!(working_dir.as_deref(), Some("backend"));
+        } else {
+            panic!("get_echo must be Command");
+        }
+
+        // Fiber + React
+        let ctx = ctx_scenario(&["go", "typescript"], &["fiber", "react"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("fiber+react recipe must build");
+        let fiber_main = find_step(&recipe, "fiber_main");
+        if let Step::WriteFile { path, .. } = fiber_main {
+            assert_eq!(path, "backend/cmd/main.go");
+        } else {
+            panic!("fiber_main must be WriteFile");
+        }
+        let fiber_cmd = find_step(&recipe, "get_fiber");
+        if let Step::Command { working_dir, .. } = fiber_cmd {
+            assert_eq!(working_dir.as_deref(), Some("backend"));
+        } else {
+            panic!("get_fiber must be Command");
+        }
+
+        // Actix Web + React
+        let ctx = ctx_scenario(&["rust", "typescript"], &["actix-web", "react"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("actix-web+react recipe must build");
+        let actix_main = find_step(&recipe, "actix_main");
+        if let Step::WriteFile { path, .. } = actix_main {
+            assert_eq!(path, "backend/src/main.rs");
+        } else {
+            panic!("actix_main must be WriteFile");
+        }
+        let actix_cmd = find_step(&recipe, "add_actix_deps");
+        if let Step::Command { working_dir, .. } = actix_cmd {
+            assert_eq!(working_dir.as_deref(), Some("backend"));
+        } else {
+            panic!("add_actix_deps must be Command");
+        }
+
+        // Hono + React
+        let ctx = ctx_scenario(&["typescript"], &["hono", "react"], &[]);
+        let recipe = recipe_for(&ctx, "myapp").expect("hono+react recipe must build");
+        let hono_idx = find_step(&recipe, "hono_index");
+        if let Step::WriteFile { path, .. } = hono_idx {
+            assert_eq!(path, "backend/src/index.ts");
+        } else {
+            panic!("hono_index must be WriteFile");
+        }
+    }
+

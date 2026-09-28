@@ -1581,6 +1581,72 @@ def get_db():
                     ));
                 }
             }
+            "tailwind" => {
+                let tw_js_dir = js_manifest_dir(context);
+                if let Some(dir) = &tw_js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "tailwind_deps",
+                        "Add Tailwind CSS dependencies",
+                        &pkg,
+                        serde_json::json!({
+                            "devDependencies": { "tailwindcss": "^3.4.0", "postcss": "^8.4.0", "autoprefixer": "^10.4.0" }
+                        })
+                        .to_string(),
+                    ));
+                    steps.push(preflight::manifest_check_step(
+                        "tailwind_deps_check",
+                        "Validate Tailwind dependencies",
+                        &pkg,
+                        "package_json",
+                        &["tailwindcss", "postcss", "autoprefixer"],
+                    ));
+
+                    let tw_cfg = if dir == "." { "tailwind.config.js".to_string() } else { format!("{}/tailwind.config.js", dir) };
+                    let pc_cfg = if dir == "." { "postcss.config.js".to_string() } else { format!("{}/postcss.config.js", dir) };
+                    let css_file = if dir == "." { "src/tailwind.css".to_string() } else { format!("{}/src/tailwind.css", dir) };
+
+                    steps.push(write_file(
+                        "tailwind_config",
+                        "Tailwind config",
+                        &tw_cfg,
+                        r#"/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx,vue,svelte}",
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+"#,
+                    ));
+                    steps.push(write_file(
+                        "postcss_config",
+                        "PostCSS config",
+                        &pc_cfg,
+                        r#"export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+"#,
+                    ));
+                    steps.push(write_file(
+                        "tailwind_css",
+                        "Tailwind CSS base",
+                        &css_file,
+                        r#"@tailwind base;
+@tailwind components;
+@tailwind utilities;
+"#,
+                    ));
+                }
+            }
             "drizzle" => {
                 // Конфиг лежит в каталоге JS-сегмента (backend/ в split-
                 // раскладке) рядом с package.json — schema/out-пути внутри
@@ -1611,6 +1677,22 @@ export default {
                 // пост-валидация подтверждает наличие после npm install.
                 let drizzle_js_dir = js_manifest_dir(context);
                 if let Some(dir) = &drizzle_js_dir {
+                    let schema_path = if dir == "." { "src/db/schema.ts".to_string() } else { format!("{}/src/db/schema.ts", dir) };
+                    steps.push(write_file(
+                        "drizzle_schema",
+                        "Drizzle schema",
+                        &schema_path,
+                        r#"import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+"#,
+                    ));
+                    
                     let pkg = package_json_rel_path(Some(dir.as_str()));
                     steps.push(preflight::manifest_patch_step(
                         "drizzle_deps",
@@ -1704,6 +1786,113 @@ quote-style = "double"
 indent-style = "space"
 "#,
                 ));
+            }
+            "biome" => {
+                let js_dir = js_manifest_dir(context);
+                if let Some(dir) = &js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "biome_deps",
+                        "Add Biome dependency",
+                        &pkg,
+                        serde_json::json!({
+                            "devDependencies": { "@biomejs/biome": "1.9.*" },
+                            "scripts": {
+                                "format": "biome format --write .",
+                                "lint": "biome lint ."
+                            }
+                        })
+                        .to_string(),
+                    ));
+                    steps.push(preflight::manifest_check_step(
+                        "biome_deps_check",
+                        "Validate Biome dependencies",
+                        &pkg,
+                        "package_json",
+                        &["@biomejs/biome"],
+                    ));
+
+                    let biome_cfg = if dir == "." { "biome.json".to_string() } else { format!("{}/biome.json", dir) };
+                    steps.push(write_file(
+                        "biome_config",
+                        "Biome config",
+                        &biome_cfg,
+                        r#"{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  }
+}
+"#,
+                    ));
+                }
+            }
+            "vitest" => {
+                let js_dir = js_manifest_dir(context);
+                if let Some(dir) = &js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "vitest_deps",
+                        "Add Vitest dependency",
+                        &pkg,
+                        serde_json::json!({
+                            "devDependencies": { "vitest": "^2.1.0" },
+                            "scripts": {
+                                "test": "vitest"
+                            }
+                        })
+                        .to_string(),
+                    ));
+                    steps.push(preflight::manifest_check_step(
+                        "vitest_deps_check",
+                        "Validate Vitest dependencies",
+                        &pkg,
+                        "package_json",
+                        &["vitest"],
+                    ));
+
+                    // Scaffold a basic test file so `vitest` doesn't exit with error code 1 ("No test files found")
+                    let test_file = if dir == "." { "test/smoke.test.ts".to_string() } else { format!("{}/test/smoke.test.ts", dir) };
+                    steps.push(write_file(
+                        "vitest_smoke_test",
+                        "Vitest smoke test",
+                        &test_file,
+                        r#"import { test, expect } from 'vitest';
+
+test('smoke test', () => {
+  expect(true).toBe(true);
+});
+"#,
+                    ));
+                    // Vite projects usually just use vite.config.ts, but a dedicated vitest.config.ts helps
+                    // if they are not using vite (e.g. Next.js, Express, Fastify).
+                    let cfg_file = if dir == "." { "vitest.config.ts".to_string() } else { format!("{}/vitest.config.ts", dir) };
+                    steps.push(write_file(
+                        "vitest_config",
+                        "Vitest config",
+                        &cfg_file,
+                        r#"import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    include: ['test/**/*.test.ts']
+  },
+});
+"#,
+                    ));
+                }
             }
             "airflow" => {
                 infra_envs.push(content::get_env_example("airflow"));
@@ -2125,8 +2314,30 @@ service firebase.storage {
                     &["hosting", "firestore"],
                 ));
             }
-            "npm" | "gradle" | "maven" => {
-                // Инструменты сборки — уже учтены в language/framework
+            "angular-cli" => {
+                let js_dir = js_manifest_dir(context);
+                if let Some(dir) = &js_dir {
+                    let pkg = package_json_rel_path(Some(dir.as_str()));
+                    steps.push(preflight::manifest_patch_step(
+                        "angular_cli_deps",
+                        "Add Angular CLI dependency",
+                        &pkg,
+                        serde_json::json!({
+                            "devDependencies": { "@angular/cli": "^18.0.0" }
+                        })
+                        .to_string(),
+                    ));
+                    steps.push(preflight::manifest_check_step(
+                        "angular_cli_deps_check",
+                        "Validate Angular CLI dependency",
+                        &pkg,
+                        "package_json",
+                        &["@angular/cli"],
+                    ));
+                }
+            }
+            "npm" | "gradle" | "maven" | "gcc" | "bun" => {
+                // Инструменты сборки и компиляторы хоста — уже учтены в language/framework
                 // Можно пропустить или добавить файлы конфигурации
             }
             "docker" => {

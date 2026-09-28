@@ -3753,5 +3753,321 @@
     "platform_availability": [
       "macos"
     ]
+  },
+  {
+    "id": "ruby",
+    "category": "language",
+    "display": "Ruby",
+    "description": "tool.ruby.desc",
+    "icon": "ruby.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "ruby",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "C:/Ruby*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "3.0",
+      "recommended": "3.3"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "ruby-installer",
+          "url": "https://github.com/oneclick/rubyinstaller2/releases/download/RubyInstaller-3.3.0-1/rubyinstaller-3.3.0-1-x64.exe",
+          "args": [
+            "/verysilent"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "PkgManager",
+          "id": "ruby",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "ruby",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": true,
+    "path_entries": [
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
+    ],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "ruby",
+        "command": [
+          "ruby",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "gcc",
+    "category": "compiler",
+    "display": "GCC (MinGW-w64)",
+    "description": "tool.gcc.desc",
+    "icon": "gcc.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "gcc",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "C:/MinGW/bin",
+        "C:/msys64/mingw64/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "9.0",
+      "recommended": "13.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "PkgManager",
+          "id": "msys2.msys2",
+          "args": [
+            "--silent"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "PkgManager",
+          "id": "gcc",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "gcc",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 100,
+    "needs_admin": true,
+    "path_entries": [
+      "C:/msys64/mingw64/bin",
+      "/opt/homebrew/bin",
+      "/usr/bin"
+    ],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "gcc",
+        "command": [
+          "gcc",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "angular-cli",
+    "category": "cli",
+    "display": "Angular CLI",
+    "description": "tool.angular_cli.desc",
+    "icon": "angular.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "ng",
+          "version"
+        ]
+      ],
+      "known_paths": [
+        "%APPDATA%/npm",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "15.0",
+      "recommended": "17.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "ng",
+        "command": [
+          "ng",
+          "version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "bun",
+    "category": "language",
+    "display": "Bun",
+    "description": "tool.bun.desc",
+    "icon": "bun.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "bun",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "%USERPROFILE%/.bun/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "1.0",
+      "recommended": "1.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "bun",
+        "command": [
+          "bun",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
   }
 ]

@@ -1101,6 +1101,48 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 "#
             ))
         }
+        "ruby" => {
+            let (port, start_cmd) = match framework {
+                Some("rails") => ("3000", r#"["rails", "server", "-b", "0.0.0.0"]"#),
+                _ => ("3000", r#"["ruby", "main.rb"]"#),
+            };
+            Some(format!(
+                r#"FROM ruby:3.3-alpine
+
+# Install build dependencies for gems and sqlite3
+RUN apk add --no-cache build-base sqlite-dev
+
+WORKDIR /app
+
+# Install bundler and gems if Gemfile exists
+COPY Gemfile* ./
+RUN if [ -f Gemfile ]; then bundle install; fi
+
+# Copy application code
+COPY . .
+
+EXPOSE {port}
+
+CMD {start_cmd}
+"#
+            ))
+        }
+        "c" => {
+            Some(format!(
+                r#"FROM alpine:3.21 AS builder
+RUN apk add --no-cache gcc g++ make musl-dev
+
+WORKDIR /app
+COPY . .
+RUN if [ -f Makefile ]; then make; else gcc -o app main.c; fi
+
+FROM alpine:3.21
+WORKDIR /app
+COPY --from=builder /app/app .
+CMD ["./app"]
+"#
+            ))
+        }
         _ => None, // Неизвестный язык — не генерируем Dockerfile
     }
 }

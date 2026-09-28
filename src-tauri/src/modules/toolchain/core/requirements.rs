@@ -76,6 +76,15 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
         "elixir" => &["erlang", "elixir"],
         // gleam компилируется в Erlang и требует erlc/erlang для сборки
         "gleam" => &["gleam", "erlang"],
+        "ruby" => &["ruby"],
+        "c" => {
+            #[cfg(target_os = "windows")]
+            { &["gcc"] }
+            #[cfg(target_os = "macos")]
+            { &["xcodebuild"] }
+            #[cfg(target_os = "linux")]
+            { &["gcc"] }
+        },
         // html — статика, отдельного рантайма нет
         _ => &[],
     }
@@ -111,6 +120,7 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         // если язык php не выбран в мастере явно (symfony/laravel —
         // standalone-фреймворки со своим scaffold'ом).
         "symfony" | "laravel" => &["php", "composer"],
+        "rails" => &["ruby"],
         // Android SDK нужен и для android, и для jetpack-compose.
         "android" | "jetpack-compose" => &["java", "android"],
         // JVM-фреймворки: spring boot и ktor требуют JDK, даже если
@@ -240,6 +250,9 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
         // «dotnet-cmd» замаплен на него для совместимости с мастером.
         "dotnet-cmd" | "csharprepl" => Some("csharprepl"),
         "msvc-build-tools" => Some("msvc-build-tools"),
+        "angular-cli" => Some("angular-cli"),
+        "gcc" => Some("gcc"),
+        "bun" => Some("bun"),
         _ => None,
     }
 }
@@ -465,7 +478,7 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
             // firebase-tools ставится через npm, CSharpRepl — через dotnet tool.
             // Рантайм обязан попасть в требования, даже если язык не выбран.
             match id {
-                "firebase" => push("node"),
+                "firebase" | "angular-cli" => push("node"),
                 "csharprepl" => push("dotnet"),
                 _ => {}
             }
@@ -1156,4 +1169,35 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn new_technologies_resolve_correct_requirements() {
+        // Ruby & Rails
+        let mut r = req();
+        r.languages = vec!["ruby".to_string()];
+        r.frameworks = vec!["rails".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"ruby".to_string()), "rails must require ruby: {ids:?}");
+
+        // C & GCC
+        let mut r = req();
+        r.languages = vec!["c".to_string()];
+        let ids = resolve(&r);
+        #[cfg(target_os = "windows")]
+        assert!(ids.contains(&"gcc".to_string()), "C on Windows must require gcc: {ids:?}");
+
+        // Angular-cli as optional tool
+        let mut r = req();
+        r.tools = vec!["angular-cli".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"angular-cli".to_string()), "angular-cli tool must resolve: {ids:?}");
+        assert!(ids.contains(&"node".to_string()), "angular-cli must pull node: {ids:?}");
+
+        // Bun tool
+        let mut r = req();
+        r.tools = vec!["bun".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"bun".to_string()), "bun tool must resolve: {ids:?}");
+    }
 }
+

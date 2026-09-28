@@ -557,7 +557,18 @@ const SERVICE_TOOLS: &[&str] = &[
 fn is_web_frontend(id: &str) -> bool {
     matches!(
         id,
-        "react" | "vue" | "svelte" | "nextjs" | "sveltekit" | "nuxt" | "solidjs" | "solidstart"
+        "react"
+            | "vue"
+            | "svelte"
+            | "nextjs"
+            | "sveltekit"
+            | "nuxt"
+            | "solidjs"
+            | "solidstart"
+            | "angular"
+            | "vite"
+            | "astro"
+            | "remix"
     )
 }
 
@@ -693,7 +704,9 @@ pub fn language_profile(id: &str) -> Option<LanguageProfile> {
         "java" => Some(lang_java()),
         "kotlin" => Some(lang_kotlin()),
         "csharp" => Some(lang_csharp()),
-        "cpp" | "c" => Some(lang_cpp()),
+        "cpp" => Some(lang_cpp()),
+        "c" => Some(lang_c()),
+        "ruby" => Some(lang_ruby()),
         "dart" => Some(lang_dart()),
         "php" => Some(lang_php()),
         "swift" => Some(lang_swift()),
@@ -836,6 +849,36 @@ fn lang_cpp() -> LanguageProfile {
         tips: &[
             "readme.lang.cpp.tip.0",
             "readme.lang.cpp.tip.1",
+        ],
+    }
+}
+
+fn lang_c() -> LanguageProfile {
+    LanguageProfile {
+        name: "C",
+        summary: "readme.lang.c.summary",
+        first_code: "readme.lang.c.first_code",
+        dev_cmd: "readme.lang.c.dev_cmd",
+        build_cmd: "readme.lang.c.build_cmd",
+        test_cmd: None,
+        tips: &[
+            "readme.lang.c.tip.0",
+            "readme.lang.c.tip.1",
+        ],
+    }
+}
+
+fn lang_ruby() -> LanguageProfile {
+    LanguageProfile {
+        name: "Ruby",
+        summary: "readme.lang.ruby.summary",
+        first_code: "readme.lang.ruby.first_code",
+        dev_cmd: "readme.lang.ruby.dev_cmd",
+        build_cmd: "readme.lang.ruby.build_cmd",
+        test_cmd: Some("readme.lang.ruby.test_cmd"),
+        tips: &[
+            "readme.lang.ruby.tip.0",
+            "readme.lang.ruby.tip.1",
         ],
     }
 }
@@ -989,6 +1032,17 @@ pub fn framework_profile(id: &str) -> Option<FrameworkProfile> {
         "react" => Some(fw_react()),
         "vue" => Some(fw_vue()),
         "svelte" => Some(fw_svelte()),
+        "angular" => Some(fw_angular()),
+        "vite" => Some(fw_vite()),
+        "rails" => Some(fw_rails()),
+        "astro" => Some(fw_astro()),
+        "remix" => Some(fw_remix()),
+        "hono" => Some(fw_hono()),
+        "actix-web" => Some(fw_actix_web()),
+        "echo" => Some(fw_echo()),
+        "fiber" => Some(fw_fiber()),
+        "blazor" => Some(fw_blazor()),
+        "adonisjs" => Some(fw_adonisjs()),
         _ => None,
     }
 }
@@ -1467,6 +1521,138 @@ fn fw_svelte() -> FrameworkProfile {
     }
 }
 
+fn fw_angular() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Angular",
+        what: "readme.fw.angular.what",
+        first_code: "readme.fw.angular.first_code",
+        entry: "readme.fw.angular.entry",
+        dev_cmd: "readme.fw.angular.dev_cmd",
+        build_cmd: "readme.fw.angular.build_cmd",
+        test_cmd: Some("readme.fw.angular.test_cmd"),
+    }
+}
+
+fn fw_vite() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Vite",
+        what: "readme.fw.vite.what",
+        first_code: "readme.fw.vite.first_code",
+        entry: "readme.fw.vite.entry",
+        dev_cmd: "readme.fw.vite.dev_cmd",
+        build_cmd: "readme.fw.vite.build_cmd",
+        test_cmd: Some("readme.fw.vite.test_cmd"),
+    }
+}
+
+fn fw_rails() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Ruby on Rails",
+        what: "readme.fw.rails.what",
+        first_code: "readme.fw.rails.first_code",
+        entry: "readme.fw.rails.entry",
+        dev_cmd: "readme.fw.rails.dev_cmd",
+        build_cmd: "readme.fw.rails.build_cmd",
+        test_cmd: Some("readme.fw.rails.test_cmd"),
+    }
+}
+
+fn fw_astro() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Astro",
+        what: "readme.fw.astro.what",
+        first_code: "readme.fw.astro.first_code",
+        entry: "readme.fw.astro.entry",
+        dev_cmd: "readme.fw.astro.dev_cmd",
+        build_cmd: "readme.fw.astro.build_cmd",
+        test_cmd: Some("readme.fw.astro.test_cmd"),
+    }
+}
+
+fn fw_remix() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Remix",
+        what: "readme.fw.remix.what",
+        first_code: "readme.fw.remix.first_code",
+        entry: "readme.fw.remix.entry",
+        dev_cmd: "readme.fw.remix.dev_cmd",
+        build_cmd: "readme.fw.remix.build_cmd",
+        test_cmd: Some("readme.fw.remix.test_cmd"),
+    }
+}
+
+fn fw_hono() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Hono",
+        what: "readme.fw.hono.what",
+        first_code: "readme.fw.hono.first_code",
+        entry: "readme.fw.hono.entry",
+        dev_cmd: "readme.fw.hono.dev_cmd",
+        build_cmd: "readme.fw.hono.build_cmd",
+        test_cmd: Some("readme.fw.hono.test_cmd"),
+    }
+}
+
+fn fw_actix_web() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Actix Web",
+        what: "readme.fw.actix_web.what",
+        first_code: "readme.fw.actix_web.first_code",
+        entry: "readme.fw.actix_web.entry",
+        dev_cmd: "readme.fw.actix_web.dev_cmd",
+        build_cmd: "readme.fw.actix_web.build_cmd",
+        test_cmd: Some("readme.fw.actix_web.test_cmd"),
+    }
+}
+
+fn fw_echo() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Echo",
+        what: "readme.fw.echo.what",
+        first_code: "readme.fw.echo.first_code",
+        entry: "readme.fw.echo.entry",
+        dev_cmd: "readme.fw.echo.dev_cmd",
+        build_cmd: "readme.fw.echo.build_cmd",
+        test_cmd: Some("readme.fw.echo.test_cmd"),
+    }
+}
+
+fn fw_fiber() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Fiber",
+        what: "readme.fw.fiber.what",
+        first_code: "readme.fw.fiber.first_code",
+        entry: "readme.fw.fiber.entry",
+        dev_cmd: "readme.fw.fiber.dev_cmd",
+        build_cmd: "readme.fw.fiber.build_cmd",
+        test_cmd: Some("readme.fw.fiber.test_cmd"),
+    }
+}
+
+fn fw_blazor() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Blazor",
+        what: "readme.fw.blazor.what",
+        first_code: "readme.fw.blazor.first_code",
+        entry: "readme.fw.blazor.entry",
+        dev_cmd: "readme.fw.blazor.dev_cmd",
+        build_cmd: "readme.fw.blazor.build_cmd",
+        test_cmd: Some("readme.fw.blazor.test_cmd"),
+    }
+}
+
+fn fw_adonisjs() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "AdonisJS",
+        what: "readme.fw.adonisjs.what",
+        first_code: "readme.fw.adonisjs.first_code",
+        entry: "readme.fw.adonisjs.entry",
+        dev_cmd: "readme.fw.adonisjs.dev_cmd",
+        build_cmd: "readme.fw.adonisjs.build_cmd",
+        test_cmd: Some("readme.fw.adonisjs.test_cmd"),
+    }
+}
+
 // ============================================================================
 // Провайдеры инструментов
 // ============================================================================
@@ -1497,6 +1683,12 @@ pub fn tool_profile(id: &str) -> Option<ToolProfile> {
         "npm" => Some(tool_npm()),
         "maven" => Some(tool_maven()),
         "gradle" => Some(tool_gradle()),
+        "angular-cli" => Some(tool_angular_cli()),
+        "biome" => Some(tool_biome()),
+        "vitest" => Some(tool_vitest()),
+        "gcc" => Some(tool_gcc()),
+        "bun" => Some(tool_bun()),
+        "tailwind" => Some(tool_tailwind()),
         _ => None,
     }
 }
@@ -1969,6 +2161,114 @@ fn tool_gradle() -> ToolProfile {
     }
 }
 
+fn tool_angular_cli() -> ToolProfile {
+    ToolProfile {
+        name: "Angular CLI",
+        what: "readme.tool.angular_cli.what",
+        config: "readme.tool.angular_cli.config",
+        start: "readme.tool.angular_cli.start",
+        credentials: "readme.tool.angular_cli.credentials",
+        verify: "readme.tool.angular_cli.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_biome() -> ToolProfile {
+    ToolProfile {
+        name: "Biome",
+        what: "readme.tool.biome.what",
+        config: "readme.tool.biome.config",
+        start: "readme.tool.biome.start",
+        credentials: "readme.tool.biome.credentials",
+        verify: "readme.tool.biome.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_vitest() -> ToolProfile {
+    ToolProfile {
+        name: "Vitest",
+        what: "readme.tool.vitest.what",
+        config: "readme.tool.vitest.config",
+        start: "readme.tool.vitest.start",
+        credentials: "readme.tool.vitest.credentials",
+        verify: "readme.tool.vitest.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_gcc() -> ToolProfile {
+    ToolProfile {
+        name: "GCC",
+        what: "readme.tool.gcc.what",
+        config: "readme.tool.gcc.config",
+        start: "readme.tool.gcc.start",
+        credentials: "readme.tool.gcc.credentials",
+        verify: "readme.tool.gcc.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_bun() -> ToolProfile {
+    ToolProfile {
+        name: "Bun",
+        what: "readme.tool.bun.what",
+        config: "readme.tool.bun.config",
+        start: "readme.tool.bun.start",
+        credentials: "readme.tool.bun.credentials",
+        verify: "readme.tool.bun.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_tailwind() -> ToolProfile {
+    ToolProfile {
+        name: "Tailwind CSS",
+        what: "readme.tool.tailwind.what",
+        config: "readme.tool.tailwind.config",
+        start: "readme.tool.tailwind.start",
+        credentials: "readme.tool.tailwind.credentials",
+        verify: "readme.tool.tailwind.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
 // ============================================================================
 // Композиция секций
 // ============================================================================
@@ -2094,13 +2394,14 @@ fn section_selected_stack(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if !langs.is_empty() {
         body.push_str(&format!("{}\n\n", ctx.t("readme.stack.languages")));
         for l in langs {
-            body.push_str(&format!(
-                "- **{}** — {}\n",
-                language_name(l),
-                language_profile(l)
-                    .map(|p| ctx.t(p.summary))
-                    .unwrap_or_default()
-            ));
+            let summary = language_profile(l)
+                .map(|p| ctx.t(p.summary))
+                .unwrap_or_default();
+            if summary.is_empty() {
+                body.push_str(&format!("- **{}**\n", language_name(l)));
+            } else {
+                body.push_str(&format!("- **{}** — {}\n", language_name(l), summary));
+            }
         }
         body.push('\n');
     }
@@ -2108,13 +2409,14 @@ fn section_selected_stack(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if !fws.is_empty() {
         body.push_str(&format!("{}\n\n", ctx.t("readme.stack.frameworks")));
         for f in fws {
-            body.push_str(&format!(
-                "- **{}** — {}\n",
-                framework_name(f),
-                framework_profile(f)
-                    .map(|p| ctx.t(p.what))
-                    .unwrap_or_default()
-            ));
+            let what = framework_profile(f)
+                .map(|p| ctx.t(p.what))
+                .unwrap_or_default();
+            if what.is_empty() {
+                body.push_str(&format!("- **{}**\n", framework_name(f)));
+            } else {
+                body.push_str(&format!("- **{}** — {}\n", framework_name(f), what));
+            }
         }
         body.push('\n');
     }
@@ -2269,6 +2571,9 @@ fn section_directory_map(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         }
         if has_language(ctx, "swift") {
             m.push(manifest_path("swift", "Package.swift"));
+        }
+        if has_language(ctx, "ruby") {
+            m.push(manifest_path("ruby", "Gemfile"));
         }
         m
     };
@@ -2677,7 +2982,9 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             "typescript" | "javascript" => "readme.prereq.node",
             "java" | "kotlin" => "readme.prereq.jdk",
             "csharp" => "readme.prereq.dotnet",
-            "cpp" | "c" => "readme.prereq.cpp",
+            "cpp" => "readme.prereq.cpp",
+            "c" => "readme.prereq.c",
+            "ruby" => "readme.prereq.ruby",
             "dart" => "readme.prereq.dart",
             "php" => "readme.prereq.php",
             "swift" => "readme.prereq.swift",
@@ -2696,7 +3003,7 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         let key = match fw {
             "tauri" | "electron" => "readme.prereq.desktop",
             "flutter" => "readme.prereq.flutter",
-            "maui" | "aspnetcore" | "csharp" => "readme.prereq.dotnet",
+            "maui" | "aspnetcore" | "csharp" | "blazor" => "readme.prereq.dotnet",
             "spring-boot" | "ktor" | "jetpack-compose" => "readme.prereq.jdk",
             "swiftui" | "vapor" => "readme.prereq.swift",
             "react-native" | "expo" => "readme.prereq.mobile",
@@ -2705,6 +3012,7 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             }
             "phoenix" => "readme.prereq.phoenix",
             "laravel" | "symfony" => "readme.prereq.php",
+            "rails" => "readme.prereq.ruby",
             "zig-cli" | "zap" => "readme.prereq.zig",
             _ => "",
         };
@@ -2724,6 +3032,8 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
                 "npm" => "readme.prereq.node",
                 "maven" | "gradle" => "readme.prereq.jdk",
                 "sqlite" => "readme.prereq.sqlite",
+                "gcc" => "readme.prereq.gcc",
+                "bun" => "readme.prereq.bun",
                 _ => "",
             },
             ToolMode::Unmanaged => "",
@@ -2840,6 +3150,12 @@ fn section_quick_start(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if has_language(ctx, "swift") {
         install_cmds.push(ctx.t("readme.quick.swift_install"));
     }
+    if has_language(ctx, "ruby") {
+        install_cmds.push(ctx.t("readme.quick.ruby_install"));
+    }
+    if has_language(ctx, "c") {
+        install_cmds.push(ctx.t("readme.quick.c_install"));
+    }
     if !install_cmds.is_empty() {
         steps.push(ctx.tf(
             "readme.quick.install_deps",
@@ -2940,6 +3256,12 @@ fn is_js_framework_id(fw: &str) -> bool {
             | "react-native"
             | "expo"
             | "plasmo"
+            | "angular"
+            | "vite"
+            | "astro"
+            | "remix"
+            | "hono"
+            | "adonisjs"
     )
 }
 
@@ -3080,6 +3402,13 @@ fn section_testing(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         let cmd = fill_python_paths(ctx, "{cd}{venv_seg} -m pytest");
         if !commands.iter().any(|(_, c)| c == &cmd) {
             commands.push(("Pytest".to_string(), cmd));
+        }
+    }
+    let has_vitest = ctx.context.tools.iter().any(|t| t == "vitest");
+    if has_vitest {
+        let cmd = "npx vitest";
+        if !commands.iter().any(|(_, c)| c == cmd) {
+            commands.push(("Vitest".to_string(), cmd.to_string()));
         }
     }
     let body = if commands.is_empty() {
@@ -3884,7 +4213,7 @@ mod tests {
     fn readme_has_no_untranslated_keys_across_stacks() {
         // Словари полные: ни в EN-, ни в RU-README не должно остаться
         // неразрешённых i18n-ключей (`readme.` — префикс ключей).
-        let stacks: [(&str, &[&str], &[&str], &[&str], &[&str], &[&str]); 8] = [
+        let stacks: [(&str, &[&str], &[&str], &[&str], &[&str], &[&str]); 12] = [
             (
                 "rest-api",
                 &["python", "typescript"],
@@ -3949,6 +4278,38 @@ mod tests {
                 &["qt", "vue"],
                 &["postgresql", "mailpit"],
             ),
+            (
+                "web-app",
+                &["ruby", "typescript"],
+                &["ruby"],
+                &["typescript"],
+                &["rails", "angular"],
+                &["redis", "postgresql", "angular-cli", "vitest", "biome", "tailwind"],
+            ),
+            (
+                "cli-tool",
+                &["c"],
+                &["c"],
+                &[],
+                &[],
+                &["gcc"],
+            ),
+            (
+                "web-app",
+                &["typescript"],
+                &[],
+                &["typescript"],
+                &["vite", "astro", "remix"],
+                &["npm", "bun", "vitest", "tailwind"],
+            ),
+            (
+                "rest-api",
+                &["rust", "go", "csharp"],
+                &["rust", "go", "csharp"],
+                &[],
+                &["actix-web", "echo", "fiber", "blazor", "hono", "adonisjs"],
+                &["postgresql", "redis", "sqlite"],
+            ),
         ];
         for (project_type, langs, back, front, fws, tools) in stacks {
             let mut ctx = ctx_with(
@@ -3967,6 +4328,10 @@ mod tests {
                 assert!(
                     !md.contains("readme."),
                     "{locale}/{project_type}: raw key leaked:\n{md}"
+                );
+                assert!(
+                    !md.contains(" — \n") && !md.contains(" — \r\n"),
+                    "{locale}/{project_type}: empty dash in:\n{md}"
                 );
             }
         }

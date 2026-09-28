@@ -182,6 +182,10 @@ pub struct NodeFeatures {
     pub svelte: bool,
     pub vue: bool,
     pub angular: bool,
+    pub astro: bool,
+    pub remix: bool,
+    pub adonis: bool,
+    pub hono: bool,
     pub electron: bool,
     pub api_framework: bool,
     pub swagger: bool,
@@ -212,6 +216,7 @@ pub struct CargoPackage {
     pub dir: PathBuf,
     pub manifest: PathBuf,
     pub has_tauri: bool,
+    pub has_actix: bool,
     pub is_workspace: bool,
 }
 
@@ -220,6 +225,8 @@ pub struct GoModule {
     pub dir: PathBuf,
     pub manifest: PathBuf,
     pub module: String,
+    pub is_echo: bool,
+    pub is_fiber: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +265,7 @@ pub struct MavenProject {
 pub struct DotnetProject {
     pub dir: PathBuf,
     pub manifest: PathBuf,
+    pub is_blazor: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +352,7 @@ pub struct ProjectModel {
     pub compose_files: Vec<ComposeFile>,
     pub dockerfiles: Vec<DockerfileEntry>,
     pub makefiles: Vec<PathBuf>,
+    pub cmake_files: Vec<PathBuf>,
     pub solution_files: Vec<PathBuf>,
     pub has_git: bool,
     pub layout: LayoutClass,
@@ -497,6 +506,9 @@ impl ProjectModel {
                 "Makefile" | "makefile" | "GNUmakefile" => {
                     model.makefiles.push(path);
                 }
+                "CMakeLists.txt" => {
+                    model.cmake_files.push(path);
+                }
                 "Dockerfile" | "dockerfile" | "Containerfile" => {
                     model.dockerfiles.push(DockerfileEntry {
                         path,
@@ -518,9 +530,17 @@ impl ProjectModel {
                 }
                 _ => {
                     if filename.ends_with(".csproj") && seen_dirs.insert(dir.clone()) {
+                        let is_blazor = fs::read_to_string(&path)
+                            .map(|s| {
+                                let lower = s.to_ascii_lowercase();
+                                lower.contains("blazor")
+                                    || lower.contains("microsoft.aspnetcore.components")
+                            })
+                            .unwrap_or(false);
                         model.dotnet_projects.push(DotnetProject {
                             dir,
                             manifest: path,
+                            is_blazor,
                         });
                     } else if filename.ends_with(".sln") {
                         model.solution_files.push(path);
@@ -655,6 +675,10 @@ fn parse_node_package(dir: &Path, manifest: &Path) -> Result<NodePackage, String
         svelte: has_dep("svelte") || has_dep("@sveltejs/kit"),
         vue: has_dep("vue") || has_dep("vue-router"),
         angular: has_dep("@angular/core"),
+        astro: has_dep("astro"),
+        remix: has_dep("@remix-run/react") || has_dep("@remix-run/dev") || has_dep("@remix-run/node"),
+        adonis: has_dep("@adonisjs/core"),
+        hono: has_dep("hono"),
         electron: has_dep("electron"),
         api_framework: [
             "express",
@@ -662,6 +686,7 @@ fn parse_node_package(dir: &Path, manifest: &Path) -> Result<NodePackage, String
             "hono",
             "@nestjs/core",
             "@fastify/cors",
+            "@adonisjs/core",
         ]
         .iter()
         .any(|p| has_dep(p)),
@@ -694,7 +719,7 @@ fn parse_node_package(dir: &Path, manifest: &Path) -> Result<NodePackage, String
         pick_npm_run_script(scripts_value).map(|s| format!("npm run {}", s))
     } else if features.nuxt {
         pick_npm_run_script(scripts_value).map(|s| format!("npm run {}", s))
-    } else if features.angular {
+    } else if features.angular || features.astro || features.remix {
         pick_npm_run_script(scripts_value).map(|s| format!("npm run {}", s))
     } else if features.api_framework {
         pick_npm_run_script(scripts_value).map(|s| format!("npm run {}", s))
@@ -720,6 +745,8 @@ fn parse_node_package(dir: &Path, manifest: &Path) -> Result<NodePackage, String
         || features.svelte
         || features.vue
         || features.angular
+        || features.astro
+        || features.remix
         || features.expo
         || features.react_native
         || features.electron
@@ -825,6 +852,12 @@ fn detect_node_port(
 
     let default_port = if features.expo || features.react_native {
         Some(8081)
+    } else if features.astro {
+        Some(4321)
+    } else if features.adonis {
+        Some(3333)
+    } else if features.remix {
+        Some(3000)
     } else if features.next || features.nuxt {
         Some(3000)
     } else if features.vite || features.svelte || features.vue {
@@ -930,28 +963,35 @@ fn parse_cargo_package(dir: &Path, manifest: &Path) -> CargoPackage {
         .get("dependencies")
         .and_then(|d| d.get("tauri"))
         .is_some();
+    let has_actix = value
+        .get("dependencies")
+        .and_then(|d| d.get("actix-web").or_else(|| d.get("actix")))
+        .is_some();
     let is_workspace = value.get("workspace").is_some();
     CargoPackage {
         dir: dir.to_path_buf(),
         manifest: manifest.to_path_buf(),
         has_tauri,
+        has_actix,
         is_workspace,
     }
 }
 
 fn parse_go_module(dir: &Path, manifest: &Path) -> GoModule {
-    let module = fs::read_to_string(manifest)
-        .ok()
-        .and_then(|c| {
-            c.lines()
-                .find(|l| l.starts_with("module "))
-                .map(|l| l.trim_start_matches("module ").trim().to_string())
-        })
+    let content = fs::read_to_string(manifest).unwrap_or_default();
+    let module = content
+        .lines()
+        .find(|l| l.starts_with("module "))
+        .map(|l| l.trim_start_matches("module ").trim().to_string())
         .unwrap_or_default();
+    let is_echo = content.contains("github.com/labstack/echo");
+    let is_fiber = content.contains("github.com/gofiber/fiber");
     GoModule {
         dir: dir.to_path_buf(),
         manifest: manifest.to_path_buf(),
         module,
+        is_echo,
+        is_fiber,
     }
 }
 
@@ -2024,10 +2064,17 @@ fn generate_steps(
     // --- 4. Backend services ---
     for go in &model.go_modules {
         let dir_label = rel_label(&go.dir, root);
-        let label = if dir_label == "root" {
-            "Run Go backend".to_string()
+        let framework_name = if go.is_echo {
+            "Echo backend"
+        } else if go.is_fiber {
+            "Fiber backend"
         } else {
-            format!("Run Go backend ({})", dir_label)
+            "Go backend"
+        };
+        let label = if dir_label == "root" {
+            format!("Run {}", framework_name)
+        } else {
+            format!("Run {} ({})", framework_name, dir_label)
         };
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
@@ -2041,11 +2088,18 @@ fn generate_steps(
         steps.push(step);
         // Go ports are rarely declared in the manifest; the hint is
         // source-aware (High for .env PORT / ListenAndServe, Medium for an
-        // address literal, Low for the 8080 fallback).
+        // address literal, Low for the default fallback).
+        let default_port = if go.is_echo {
+            1323
+        } else if go.is_fiber {
+            3000
+        } else {
+            8080
+        };
         let (port, port_confidence, port_source) =
-            go_port_hint(&go.dir).unwrap_or((8080, AnalysisConfidence::Low, "default".to_string()));
+            go_port_hint(&go.dir).unwrap_or((default_port, AnalysisConfidence::Low, "default".to_string()));
         let mut wait = PendingStep::wait_port("127.0.0.1", port, WAIT_PORT_TIMEOUT_SECS, &id);
-        wait.label = format!("Wait for Go backend port {}", port);
+        wait.label = format!("Wait for {} port {}", framework_name, port);
         wait = wait
             .with_metadata("confidence", port_confidence.as_str())
             .with_metadata("source", &port_source);
@@ -2068,15 +2122,17 @@ fn generate_steps(
             continue;
         }
         let dir_label = rel_label(&cargo.dir, root);
-        let (cmd, port, wait_label) = if cargo.has_tauri {
-            ("cargo tauri dev", Some(1420), "Wait for Tauri port")
+        let (cmd, port, wait_label, run_name) = if cargo.has_tauri {
+            ("cargo tauri dev", Some(1420), "Wait for Tauri port", "Run Tauri desktop")
+        } else if cargo.has_actix {
+            ("cargo run", Some(8080), "Wait for Actix Web port", "Run Actix Web backend")
         } else {
-            ("cargo run", Some(3000), "Wait for Rust port")
+            ("cargo run", Some(3000), "Wait for Rust port", "Run Rust project")
         };
         let label = if dir_label == "root" {
-            "Run Rust project".to_string()
+            run_name.to_string()
         } else {
-            format!("Run Rust project ({})", dir_label)
+            format!("{} ({})", run_name, dir_label)
         };
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
@@ -2282,10 +2338,15 @@ fn generate_steps(
 
     for dotnet in &model.dotnet_projects {
         let dir_label = rel_label(&dotnet.dir, root);
-        let label = if dir_label == "root" {
-            "Run .NET project".to_string()
+        let project_name = if dotnet.is_blazor {
+            "Blazor app"
         } else {
-            format!("Run .NET project ({})", dir_label)
+            ".NET project"
+        };
+        let label = if dir_label == "root" {
+            format!("Run {}", project_name)
+        } else {
+            format!("Run {} ({})", project_name, dir_label)
         };
         if !known.insert(("run".to_string(), label.clone())) {
             continue;
@@ -2297,7 +2358,7 @@ fn generate_steps(
         let id = format!("step_{:03}", steps.len() + 1);
         steps.push(step);
         let mut wait = PendingStep::wait_port("127.0.0.1", 5000, WAIT_PORT_TIMEOUT_SECS, &id);
-        wait.label = "Wait for .NET port 5000".to_string();
+        wait.label = format!("Wait for {} port 5000", project_name);
         wait = wait.with_metadata("confidence", "low");
         steps.push(wait);
     }
@@ -2389,6 +2450,10 @@ fn generate_steps(
         let dir_label = rel_label(&pkg.dir, root);
         let kind_label = if pkg.features.generic_node {
             "Node.js project"
+        } else if pkg.features.adonis {
+            "AdonisJS backend"
+        } else if pkg.features.hono {
+            "Hono backend"
         } else {
             "Node.js backend"
         };
@@ -2452,6 +2517,10 @@ fn generate_steps(
             "Nuxt"
         } else if pkg.features.angular {
             "Angular"
+        } else if pkg.features.astro {
+            "Astro"
+        } else if pkg.features.remix {
+            "Remix"
         } else if pkg.features.vite || pkg.features.svelte || pkg.features.vue {
             "Vite"
         } else if pkg.features.electron {
@@ -2549,6 +2618,31 @@ fn generate_steps(
             continue;
         }
         let mut step = PendingStep::run(&label, "make", Some(dir), root, false);
+        if let Some(cid) = &compose_id {
+            step.depends_on.push(cid.clone());
+        }
+        steps.push(step);
+    }
+
+    // --- 6b. CMake (C / C++ / Qt build) ---
+    for cmake in &model.cmake_files {
+        let dir = cmake.parent().unwrap_or(root);
+        let dir_label = rel_label(dir, root);
+        let label = if dir_label == "root" {
+            "Build CMake project".to_string()
+        } else {
+            format!("Build CMake project ({})", dir_label)
+        };
+        if !known.insert(("run".to_string(), label.clone())) {
+            continue;
+        }
+        let mut step = PendingStep::run(
+            &label,
+            "cmake -B build && cmake --build build",
+            Some(dir),
+            root,
+            false,
+        );
         if let Some(cid) = &compose_id {
             step.depends_on.push(cid.clone());
         }
@@ -4168,4 +4262,173 @@ mod tests {
             .any(|s| s.label.contains("Run Django server")));
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn astro_and_remix_detected_with_canonical_ports() {
+        let dir = temp_dir("astro_remix");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "apps/web/package.json",
+                    r#"{"name":"web","dependencies":{"astro":"^4.0"},"scripts":{"dev":"astro dev"}}"#,
+                ),
+                (
+                    "apps/portal/package.json",
+                    r#"{"name":"portal","dependencies":{"@remix-run/react":"^2.0"},"scripts":{"dev":"remix vite:dev"}}"#,
+                ),
+            ],
+        );
+        let draft = analyze(&dir);
+        let steps = &draft.profile.steps;
+
+        let astro_step = steps
+            .iter()
+            .find(|s| s.label.contains("Start Astro dev server"))
+            .expect("Astro step");
+        assert!(astro_step.label.contains("apps/web"));
+
+        let astro_wait = steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Astro port 4321"))
+            .expect("Astro wait port 4321");
+        assert_eq!(astro_wait.depends_on, vec![astro_step.id.clone()]);
+
+        let remix_step = steps
+            .iter()
+            .find(|s| s.label.contains("Start Remix dev server"))
+            .expect("Remix step");
+        assert!(remix_step.label.contains("apps/portal"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn adonisjs_backend_detected_with_port_3333() {
+        let dir = temp_dir("adonis");
+        write_tree(
+            &dir,
+            &[(
+                "package.json",
+                r#"{"name":"api","dependencies":{"@adonisjs/core":"^6.0"},"scripts":{"dev":"node ace serve --hmr"}}"#,
+            )],
+        );
+        let draft = analyze(&dir);
+        let steps = &draft.profile.steps;
+
+        let run = steps
+            .iter()
+            .find(|s| s.label.contains("Run AdonisJS backend"))
+            .expect("AdonisJS backend step");
+        let wait = steps
+            .iter()
+            .find(|s| s.label.contains("Wait for backend port 3333"))
+            .expect("AdonisJS wait port 3333");
+        assert_eq!(wait.depends_on, vec![run.id.clone()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn actix_web_cargo_detected_with_port_8080() {
+        let dir = temp_dir("actix");
+        write_tree(
+            &dir,
+            &[(
+                "Cargo.toml",
+                "[package]\nname = \"actix_app\"\nversion = \"0.1.0\"\n[dependencies]\nactix-web = \"4\"\n",
+            )],
+        );
+        let draft = analyze(&dir);
+        let steps = &draft.profile.steps;
+
+        let run = steps
+            .iter()
+            .find(|s| s.label.contains("Run Actix Web backend"))
+            .expect("Actix Web backend step");
+        let wait = steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Actix Web port"))
+            .expect("Actix Web wait port");
+        assert_eq!(wait.depends_on, vec![run.id.clone()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn echo_and_fiber_go_backends_detected() {
+        let dir_echo = temp_dir("echo");
+        write_tree(
+            &dir_echo,
+            &[(
+                "go.mod",
+                "module example.com/echo_app\n\ngo 1.22\n\nrequire github.com/labstack/echo/v4 v4.12.0\n",
+            )],
+        );
+        let draft_echo = analyze(&dir_echo);
+        let run_echo = draft_echo
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Run Echo backend"))
+            .expect("Echo backend step");
+        let wait_echo = draft_echo
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Echo backend port 1323"))
+            .expect("Echo wait port 1323");
+        assert_eq!(wait_echo.depends_on, vec![run_echo.id.clone()]);
+        let _ = fs::remove_dir_all(&dir_echo);
+
+        let dir_fiber = temp_dir("fiber");
+        write_tree(
+            &dir_fiber,
+            &[(
+                "go.mod",
+                "module example.com/fiber_app\n\ngo 1.22\n\nrequire github.com/gofiber/fiber/v2 v2.52.0\n",
+            )],
+        );
+        let draft_fiber = analyze(&dir_fiber);
+        let run_fiber = draft_fiber
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Run Fiber backend"))
+            .expect("Fiber backend step");
+        let wait_fiber = draft_fiber
+            .profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Fiber backend port 3000"))
+            .expect("Fiber wait port 3000");
+        assert_eq!(wait_fiber.depends_on, vec![run_fiber.id.clone()]);
+        let _ = fs::remove_dir_all(&dir_fiber);
+    }
+
+    #[test]
+    fn blazor_dotnet_and_cmake_detected() {
+        let dir = temp_dir("blazor_cmake");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "web/App.csproj",
+                    "<Project Sdk=\"Microsoft.NET.Sdk.BlazorWebAssembly\"></Project>",
+                ),
+                (
+                    "native/CMakeLists.txt",
+                    "cmake_minimum_required(VERSION 3.20)\nproject(app)\n",
+                ),
+            ],
+        );
+        let draft = analyze(&dir);
+        let steps = &draft.profile.steps;
+
+        assert!(steps.iter().any(|s| s.label.contains("Run Blazor app")));
+        assert!(steps.iter().any(|s| s.label.contains("Build CMake project")));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
+

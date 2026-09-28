@@ -144,3 +144,30 @@ fn test_clean_stack_no_errors() {
         issues
     );
 }
+
+#[test]
+fn test_gradle_and_maven_conflict() {
+    let tree = load_test_tree();
+    let issues = validate_stack(
+        &tree,
+        None,
+        &["java".to_string()],
+        &[],
+        &[],
+        &["spring-boot".to_string()],
+        &["gradle".to_string(), "maven".to_string()],
+        "windows",
+    );
+
+    let has_error = issues.iter().any(|issue| {
+        matches!(issue.severity, StackSeverity::Error)
+            && (issue.message_key.as_deref() == Some("stack.tool.exclusive_alternatives")
+                || issue.message_key.as_deref() == Some("stack.tool.conflict"))
+    });
+
+    assert!(
+        has_error,
+        "Should error when both gradle and maven are selected: {:?}",
+        issues
+    );
+}

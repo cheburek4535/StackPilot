@@ -622,34 +622,40 @@
                       </p>
                       <div class="tool-menu">
                         {#each catTools as tool}
+                          {@const conflictReason = store.toolConflictReason(tool.id)}
+                          {@const isBlocked = conflictReason !== null}
                           <button
                             class="tool-item"
                             class:selected={store.selectedTools.includes(tool.id)}
+                            class:blocked={isBlocked}
+                            disabled={isBlocked && !store.selectedTools.includes(tool.id)}
                             onclick={() => {
+                              if (isBlocked && !store.selectedTools.includes(tool.id)) return;
                               store.hideTooltip();
                               store.toggleTool(tool.id);
                             }}
-                            onmouseenter={(e) => store.showTooltip({ type: "tool", tool }, e)}
+                            onmouseenter={(e) => store.showTooltip({ type: "tool", tool, conflictReason }, e)}
                             onmouseleave={store.hideTooltip}
-                            onfocus={(e) => store.showTooltip({ type: "tool", tool }, e)}
+                            onfocus={(e) => store.showTooltip({ type: "tool", tool, conflictReason }, e)}
                             onblur={store.hideTooltip}
                           >
                             <TechIcon icon={tool.icon} alt={i18n.t(tool.label as TranslationKey)} size="md" />
                             <span class="tool-item-text">
                               <span class="tool-item-name">{i18n.t(tool.label as TranslationKey)}</span>
                               <span class="tool-item-desc">{i18n.t(tool.description as TranslationKey)}</span>
+                              {#if isBlocked}
+                                <span class="tool-conflict-inline" role="status">
+                                  <Icon name="alert" size={11} />
+                                  <span>{conflictReason}</span>
+                                </span>
+                              {/if}
                             </span>
                             <span class="tool-item-badges">
-                              {#if store.recommendedBadgeIds().includes(tool.id)}
+                              {#if store.recommendedBadgeIds().includes(tool.id) && !isBlocked}
                                 <span class="tool-item-badge rec">{i18n.t("create.recommended") as TranslationKey}</span>
                               {/if}
                               {#if tool.requires_docker}
                                 <span class="tool-item-badge docker"><TechIcon icon="docker.svg" alt="" size="xs" /> {i18n.t("create.docker_badge") as TranslationKey}</span>
-                              {/if}
-                              {#if tool.conflicts.length > 0}
-                                <span class="tool-item-badge conflict">
-                                  {i18n.t("create.conflicts_count", { n: tool.conflicts.length }) as TranslationKey}
-                                </span>
                               {/if}
                               {#if store.selectedTools.includes(tool.id)}
                                 <span class="tool-item-check">✓</span>
@@ -1019,11 +1025,18 @@
   >
     {#if store.tooltipData.item.type === "tool"}
       {@const tool = store.tooltipData.item.tool}
+      {@const conflictReason = store.tooltipData.item.conflictReason ?? store.toolConflictReason(tool.id)}
       <div class="tt-header">
         <TechIcon icon={tool.icon} alt="" size="sm" />
         <span class="tt-title">{i18n.t(tool.label as TranslationKey)}</span>
       </div>
       <p class="tt-desc">{i18n.t(tool.description as TranslationKey)}</p>
+
+      {#if conflictReason}
+        <div class="tt-row tt-conf">
+          <span class="tt-val" style="color: var(--sp-danger, #ef4444); font-weight: 500;">⚠ {conflictReason}</span>
+        </div>
+      {/if}
 
       {#if store.recommendedBadgeIds().includes(tool.id)}
         <div class="tt-badge-row">
@@ -1811,6 +1824,28 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
 }
 .tool-item:hover { border-color: rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.05); transform: translateY(-1px); }
 .tool-item.selected { border-color: var(--sp-accent); background: var(--sp-accent-soft); }
+.tool-item.blocked {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+  cursor: not-allowed;
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.03);
+}
+.tool-item.blocked:hover {
+  transform: none;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+}
+.tool-conflict-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--sp-danger, #ef4444);
+  font-weight: 600;
+  margin-top: 0.15rem;
+  line-height: 1.2;
+}
 .tool-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .tool-item-name { font-size: 0.88rem; font-weight: 600; }
 .tool-item-desc { font-size: 0.74rem; color: var(--sp-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

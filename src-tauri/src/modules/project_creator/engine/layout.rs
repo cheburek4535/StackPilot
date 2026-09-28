@@ -422,7 +422,15 @@ pub fn join_seg(wd: &str, seg: &str) -> String {
     if wd.is_empty() || wd == "." {
         seg.to_string()
     } else {
-        format!("{}/{}", wd.trim_end_matches(['/', '\\']), seg)
+        let trimmed = wd.trim_end_matches(['/', '\\']);
+        if trimmed == seg
+            || trimmed.ends_with(&format!("/{}", seg))
+            || trimmed.ends_with(&format!("\\{}", seg))
+        {
+            trimmed.to_string()
+        } else {
+            format!("{}/{}", trimmed, seg)
+        }
     }
 }
 
@@ -508,17 +516,27 @@ pub fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     policy,
                     condition,
                     on_error,
-                } => Step::WriteFile {
-                    id,
-                    label,
-                    description,
-                    path: format!("{}/{}", dir, path),
-                    content,
-                    overwrite,
-                    policy,
-                    condition,
-                    on_error,
-                },
+                } => {
+                    let seg_path = if path == dir
+                        || path.starts_with(&format!("{}/", dir))
+                        || path.starts_with(&format!("{}\\", dir))
+                    {
+                        path
+                    } else {
+                        format!("{}/{}", dir, path)
+                    };
+                    Step::WriteFile {
+                        id,
+                        label,
+                        description,
+                        path: seg_path,
+                        content,
+                        overwrite,
+                        policy,
+                        condition,
+                        on_error,
+                    }
+                }
                 Step::CreateDirectory {
                     id,
                     label,
@@ -526,14 +544,24 @@ pub fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     path,
                     condition,
                     on_error,
-                } => Step::CreateDirectory {
-                    id,
-                    label,
-                    description,
-                    path: format!("{}/{}", dir, path),
-                    condition,
-                    on_error,
-                },
+                } => {
+                    let seg_path = if path == dir
+                        || path.starts_with(&format!("{}/", dir))
+                        || path.starts_with(&format!("{}\\", dir))
+                    {
+                        path
+                    } else {
+                        format!("{}/{}", dir, path)
+                    };
+                    Step::CreateDirectory {
+                        id,
+                        label,
+                        description,
+                        path: seg_path,
+                        condition,
+                        on_error,
+                    }
+                }
                 // Scaffold-генератор (Step::Generate "scaffold") сам кладёт проект
                 // в target_dir: при сегментации каталогом становится сегмент.
                 // Шаги с явным каталогом, не зависящим от раскладки, не трогаем
@@ -557,6 +585,17 @@ pub fn into_segment(steps: Vec<Step>, dir: &str) -> Vec<Step> {
                     }
                     if generator_id == "spring-boot" {
                         generator_config["target_dir"] = serde_json::Value::String(dir.to_string());
+                    }
+                    if generator_id == "manifest-check" {
+                        if let Some(path) = generator_config.get("path").and_then(|p| p.as_str()) {
+                            if path != dir
+                                && !path.starts_with(&format!("{}/", dir))
+                                && !path.starts_with(&format!("{}\\", dir))
+                            {
+                                generator_config["path"] =
+                                    serde_json::Value::String(format!("{}/{}", dir, path));
+                            }
+                        }
                     }
                     Step::Generate {
                         id,
@@ -619,6 +658,10 @@ const PACKAGE_JSON_SCAFFOLDS: &[&str] = &[
     "plasmo",
     "tauri",
     "nest",
+    "angular",
+    "vite",
+    "astro",
+    "remix",
 ];
 
 /// Фреймворки, чей каркас создаёт ScaffoldGenerator (Step::Generate
@@ -643,6 +686,10 @@ pub const SCAFFOLD_GENERATOR_FRAMEWORKS: &[&str] = &[
     "symfony",
     "react-native",
     "plasmo",
+    "angular",
+    "vite",
+    "astro",
+    "remix",
 ];
 
 /// Каталог, куда ScaffoldGenerator кладёт проект: при сегментации — каталог
