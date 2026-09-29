@@ -129,15 +129,27 @@ jobs:
         include:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
+            cli_name: 'stkpil'
+            archive_name: 'stkpil-macos-aarch64.tar.gz'
             name: 'macOS (Apple Silicon)'
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin'
+            cli_name: 'stkpil'
+            archive_name: 'stkpil-macos-x86_64.tar.gz'
             name: 'macOS (Intel)'
           - platform: 'ubuntu-22.04'
             args: ''
+            target: ''
+            cli_name: 'stkpil'
+            archive_name: 'stkpil-linux-x86_64.tar.gz'
             name: 'Linux'
           - platform: 'windows-latest'
             args: ''
+            target: ''
+            cli_name: 'stkpil.exe'
+            archive_name: 'stkpil-windows-x64.zip'
             name: 'Windows'
 
     runs-on: ${{ matrix.platform }}
@@ -184,6 +196,63 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      - name: Build stkpil CLI binary
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release --bin stkpil --target ${{ matrix.target }}
+          else
+            cargo build --release --bin stkpil
+          fi
+        shell: bash
+        working-directory: ./src-tauri
+
+      - name: Package stkpil CLI
+        shell: bash
+        run: |
+          mkdir -p dist-cli
+          if [ -n "${{ matrix.target }}" ]; then
+            BIN="src-tauri/target/${{ matrix.target }}/release/${{ matrix.cli_name }}"
+          else
+            BIN="src-tauri/target/release/${{ matrix.cli_name }}"
+          fi
+
+          cp "$BIN" "dist-cli/${{ matrix.cli_name }}"
+
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            powershell -Command "Compress-Archive -Path dist-cli\${{ matrix.cli_name }} -DestinationPath ${{ matrix.archive_name }} -Force"
+          else
+            chmod +x "dist-cli/${{ matrix.cli_name }}"
+            tar -czf "${{ matrix.archive_name }}" -C dist-cli "${{ matrix.cli_name }}"
+          fi
+
+      - name: Upload stkpil CLI asset to Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const release_id = '${{ needs.create-release.outputs.release_id }}';
+            const archiveName = '${{ matrix.archive_name }}';
+            const filePath = path.resolve(archiveName);
+
+            if (fs.existsSync(filePath)) {
+              const fileData = fs.readFileSync(filePath);
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release_id,
+                name: archiveName,
+                data: fileData,
+                headers: {
+                  'content-type': 'application/octet-stream',
+                  'content-length': fileData.length
+                }
+              });
+              core.info(`Uploaded CLI asset: ${archiveName}`);
+            } else {
+              core.setFailed(`CLI archive not found: ${filePath}`);
+            }
 
   publish-release:
     needs: [create-release, build-tauri, quality]

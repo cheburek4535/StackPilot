@@ -1,5 +1,5 @@
 pkgname=stackpilot
-pkgver=1.2.5
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="Developer toolchain management and project workspace dashboard (Tauri desktop app)"
 arch=('x86_64')

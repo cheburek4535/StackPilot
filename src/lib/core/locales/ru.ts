@@ -1917,6 +1917,7 @@ export default {
   "roadmap.changelog.version": "Версия",
   "roadmap.changelog.date": "Дата",
   "roadmap.changelog.changes": "Изменения",
+  "roadmap.changelog.v130": "Полноценный CLI-инструмент stkpil: пошаговый мастер и однострочные команды создания проектов (create), аудит окружения doctor с интерактивной установкой, точечное управление ПО (install/update/status), консольный оркестратор запуска launch (dev) с цветными логами и ожиданием портов, глубокий анализ чужих и существующих проектов analyze.",
   "roadmap.changelog.v125": "Масштабное расширение стека технологий Project Creator: поддержка Ruby (Rails), Go (Fiber, Echo), Rust (Actix Web), TypeScript (Hono, AdonisJS, Angular, Vite, Astro, Remix), C# (Blazor), C (GCC), инструментов Biome, Vitest, Bun, Tailwind CSS, нативный скаффолдинг и поддержка JSONC.",
   "roadmap.changelog.v124": "Секционирование и реорганизация Toolchain, расширенная поддержка macOS (Homebrew, Apple Silicon, dmg/pkg), аудит безопасности и защита путей, модульный рефакторинг генератора проектов.",
   "roadmap.changelog.v123": "Toolchain скачивает новейшие версии ПО, интеграция с WSL2, режим новичка, улучшения UI/UX конструктора.",

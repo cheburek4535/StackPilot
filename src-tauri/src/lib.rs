@@ -39,10 +39,8 @@ pub fn run() {
                 let _ = modules::toolchain::core::path_service::sync_process_path().await;
             });
 
-            #[cfg(target_os = "windows")]
-            {
-                let _ = platform::paths::register_stkpil_in_app_paths();
-            }
+            // Register stkpil in App Paths / User PATH (Windows) or symlink into ~/.local/bin (Unix)
+            let _ = platform::paths::register_stkpil_in_app_paths();
 
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 

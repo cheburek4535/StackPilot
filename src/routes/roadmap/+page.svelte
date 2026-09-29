@@ -17,7 +17,7 @@
     { id: "env_isolation", status: "planned", icon: "shield" },
     { id: "tech_expansion", status: "done", icon: "layers" },
     { id: "localization", status: "planned", icon: "glob" },
-    { id: "cli_service", status: "planned", icon: "terminal" },
+    { id: "cli_service", status: "done", icon: "terminal" },
     { id: "plugin_system", status: "planned", icon: "store" },
     { id: "bug_fixes", status: "in_progress", icon: "refresh" },
   ];
@@ -64,6 +64,11 @@
   };
 
   const changelog: ChangelogEntry[] = [
+    {
+      version: "1.3.0",
+      date: "2026-09-29",
+      changesKey: "roadmap.changelog.v130"
+    },
     {
       version: "1.2.5",
       date: "2026-09-28",

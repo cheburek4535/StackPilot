@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "stkpil",
     author = "cheburek4535",
-    version = "1.2.5",
+    version = "1.3.0",
     about = "🚀 StackPilot CLI — Developer toolchain, project scaffold engine, and workspace manager",
     long_about = "StackPilot CLI gives you full terminal access to create projects with verified technology stacks, manage toolchains, and launch development environments."
 )]

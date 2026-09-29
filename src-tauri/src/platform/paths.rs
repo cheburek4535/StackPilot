@@ -205,27 +205,103 @@ pub fn is_macos_clt_stub(path: &std::path::Path) -> bool {
     }
 }
 
-/// Register `stkpil.exe` in Windows App Paths so the CLI is discoverable
-/// without needing a system restart or manual PATH configuration.
-#[cfg(target_os = "windows")]
+/// Register `stkpil` CLI across platforms:
+/// - Windows: Adds `stkpil.exe` to `App Paths` and user `PATH` environment variable.
+/// - Unix (Linux/macOS): Symlinks `stkpil` into `~/.local/bin/stkpil` (or `/usr/local/bin`).
 pub fn register_stkpil_in_app_paths() -> Result<(), String> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+        use winreg::RegKey;
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(dir) = exe_path.parent() {
-            let stkpil_path = dir.join("stkpil.exe");
-            if stkpil_path.exists() {
-                let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-                if let Ok((key, _)) = hkcu.create_subkey(
-                    "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\stkpil.exe",
-                ) {
-                    let _ = key.set_value("", &stkpil_path.to_string_lossy().to_string());
-                    let _ = key.set_value("Path", &dir.to_string_lossy().to_string());
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(dir) = exe_path.parent() {
+                let mut stkpil_path = dir.join("stkpil.exe");
+                if !stkpil_path.exists() {
+                    let in_resources = dir.join("resources").join("stkpil.exe");
+                    if in_resources.exists() {
+                        stkpil_path = in_resources;
+                    }
+                }
+
+                if stkpil_path.exists() {
+                    let stkpil_dir = stkpil_path.parent().unwrap_or(dir);
+                    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+                    // 1. App Paths registration (works in cmd, Win+R, ShellExecute)
+                    if let Ok((key, _)) = hkcu.create_subkey(
+                        "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\stkpil.exe",
+                    ) {
+                        let _ = key.set_value("", &stkpil_path.to_string_lossy().to_string());
+                        let _ = key.set_value("Path", &stkpil_dir.to_string_lossy().to_string());
+                    }
+
+                    // 2. User Environment PATH (works in PowerShell, Git Bash, VS Code terminal)
+                    if let Ok(env_key) = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE) {
+                        let current_path: String = env_key.get_value("Path").unwrap_or_default();
+                        let dir_str = stkpil_dir.to_string_lossy().to_string();
+                        let already_present = current_path
+                            .split(';')
+                            .any(|p| p.trim().eq_ignore_ascii_case(&dir_str));
+
+                        if !already_present {
+                            let new_path = if current_path.is_empty() {
+                                dir_str
+                            } else if current_path.ends_with(';') {
+                                format!("{}{}", current_path, dir_str)
+                            } else {
+                                format!("{};{}", current_path, dir_str)
+                            };
+                            let _ = env_key.set_value("Path", &new_path);
+                        }
+                    }
                 }
             }
         }
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(dir) = exe_path.parent() {
+                let candidates = [
+                    dir.join("stkpil"),
+                    dir.join("resources").join("stkpil"),
+                    dir.join("../Resources").join("stkpil"),
+                    dir.join("../MacOS").join("stkpil"),
+                ];
+
+                let found = candidates.into_iter().find(|p| p.exists());
+
+                if let Some(stkpil_binary) = found {
+                    if let Ok(home) = std::env::var("HOME") {
+                        let local_bin = PathBuf::from(home).join(".local").join("bin");
+                        let _ = std::fs::create_dir_all(&local_bin);
+                        let symlink_path = local_bin.join("stkpil");
+
+                        // Remove existing dead/outdated symlink if present
+                        if symlink_path.is_symlink() || symlink_path.exists() {
+                            let _ = std::fs::remove_file(&symlink_path);
+                        }
+
+                        #[cfg(unix)]
+                        {
+                            let _ = std::os::unix::fs::symlink(&stkpil_binary, &symlink_path);
+
+                            // Ensure executable permissions
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = std::fs::metadata(&stkpil_binary) {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o755);
+                                let _ = std::fs::set_permissions(&stkpil_binary, perms);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

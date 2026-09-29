@@ -2,7 +2,7 @@
 REM Скрипт для обновления версии во всех файлах проекта (Windows)
 
 if "%1"=="" (
-    echo Использование: scripts\bump-version.bat 1.2.5
+    echo Использование: scripts\bump-version.bat 1.3.0
     exit /b 1
 )
 
