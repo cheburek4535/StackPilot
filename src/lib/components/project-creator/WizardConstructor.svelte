@@ -33,7 +33,7 @@
 </script>
 
 {#snippet archBanner()}
-  {#if store.archMode}
+  {#if store.archMode && !store.archBannerDismissed}
     <div class="arch-banner arch-{store.archMode}" role="status">
       <div class="arch-body">
         <p class="arch-title">
@@ -52,6 +52,15 @@
             : (i18n.t("create.mode_decoupled_ex") as TranslationKey)}
         </p>
       </div>
+      <button
+        type="button"
+        class="arch-banner-close"
+        aria-label={i18n.t("help.hide") as TranslationKey}
+        title={i18n.t("help.hide") as TranslationKey}
+        onclick={store.dismissArchBanner}
+      >
+        <Icon name="x" size={13} />
+      </button>
     </div>
   {/if}
 {/snippet}
@@ -141,7 +150,18 @@
           {#if store.phase === 1}
             {@render archBanner()}
             {#if store.dropNotice}
-              <p class="notice-bar" role="status">{store.dropNotice}</p>
+              <div class="notice-bar-wrap" role="status">
+                <span class="notice-bar">{store.dropNotice}</span>
+                <button
+                  type="button"
+                  class="notice-bar-close"
+                  aria-label={i18n.t("help.hide") as TranslationKey}
+                  title={i18n.t("help.hide") as TranslationKey}
+                  onclick={() => (store.dropNotice = null)}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
             {/if}
 
             <store.HelpHint
@@ -705,24 +725,34 @@
               </span>
               <button
                 class="btn-primary"
-                class:sp-help-anchor={store.stackHintVisible && !store.stackError && !store.reviewLocked}
+                class:sp-help-anchor={store.stackHintVisible && !store.stackError}
                 onclick={() => (store.phase = 2)}
-                disabled={!!store.stackError || store.reviewLocked}
-                title={store.reviewLocked ? (i18n.t("create.scroll_lock_hint") as TranslationKey) : undefined}
+                disabled={!!store.stackError}
               >
                 {i18n.t("create.review_create") as TranslationKey}
               </button>
             </div>
 
-            {#if store.reviewLocked}
-              <button
-                type="button"
-                class="scroll-hint"
-                onclick={store.scrollToStackBottom}
-              >
-                <span class="scroll-hint-arrow" aria-hidden="true">↓</span>
-                <span>{i18n.t("create.scroll_lock_hint") as TranslationKey}</span>
-              </button>
+            {#if store.scrollHintVisible}
+              <div class="scroll-hint" role="status">
+                <button
+                  type="button"
+                  class="scroll-hint-btn"
+                  onclick={store.scrollToStackBottom}
+                >
+                  <span class="scroll-hint-arrow" aria-hidden="true">↓</span>
+                  <span>{i18n.t("create.scroll_lock_hint") as TranslationKey}</span>
+                </button>
+                <button
+                  type="button"
+                  class="scroll-hint-close"
+                  aria-label={i18n.t("help.hide") as TranslationKey}
+                  title={i18n.t("help.hide") as TranslationKey}
+                  onclick={store.dismissScrollHint}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
             {/if}
 
             <p class="grow-note">
@@ -2132,11 +2162,7 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.1), 0 0 0 3px var(--sp-accent-soft); 
   transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1), border-color 0.4s;
 }
-.dest-card-attention { animation: dest-pulse 1.6s ease-in-out 3; }
-@keyframes dest-pulse {
-  0%, 100% { box-shadow: var(--sp-shadow-1), 0 0 0 3px var(--sp-accent-soft); }
-  50% { box-shadow: var(--sp-shadow-1), 0 0 0 7px var(--sp-accent-soft); }
-}
+.dest-card-attention { border-color: var(--sp-border-strong); }
 .dest-head { display: flex; align-items: flex-start; gap: 0.7rem; margin-bottom: 0.9rem; }
 .dest-icon { font-size: 1.4rem; line-height: 1.2; }
 .dest-title { margin: 0; font-weight: 700; font-size: 1.05rem; color: var(--sp-text-1); }
@@ -2225,33 +2251,115 @@ details.territory > summary.territory-head:hover { filter: brightness(1.08); }
   opacity: 0.55;
 }
 
-/* ---- Подсказка «листайте дальше» для новичков (блокировка CTA) ---- */
+/* ---- Подсказка «листайте дальше» для новичков ---- */
 .scroll-hint {
   position: fixed;
   bottom: 84px;
   left: 50%;
   transform: translateX(-50%);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.35rem;
   z-index: 60;
   max-width: min(560px, calc(100vw - 2rem));
-  padding: 0.55rem 1rem;
-  background: var(--sp-glass-strong);
-  border: 1px solid var(--sp-accent-strong);
+  padding: 0.35rem 0.5rem 0.35rem 0.85rem;
+  background: var(--sp-bg-1);
+  border: 1px solid var(--sp-border-strong);
   border-radius: var(--sp-radius-full);
   color: var(--sp-text-1);
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: var(--sp-shadow-2), 0 4px 24px rgba(228, 87, 10, 0.28);
-  animation: scroll-hint-in 0.35s ease-out;
+  font-size: 0.8rem;
+  box-shadow: var(--sp-shadow-2);
+  backdrop-filter: blur(12px);
+  animation: scroll-hint-in 0.2s ease-out;
 }
-.scroll-hint:hover { background: var(--sp-bg-2); }
-.scroll-hint-arrow { color: var(--sp-accent-strong); font-weight: 700; }
+.scroll-hint-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--sp-text-1);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.scroll-hint-btn:hover { color: var(--sp-accent-strong); }
+.scroll-hint-arrow { color: var(--sp-accent-strong); font-weight: 700; font-size: 0.9rem; }
+.scroll-hint-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-left: 0.25rem;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sp-text-3);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.scroll-hint-close:hover {
+  background: var(--sp-bg-3);
+  color: var(--sp-text-1);
+}
 @keyframes scroll-hint-in {
-  from { opacity: 0; transform: translate(-50%, 10px); }
+  from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.notice-bar-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--sp-warning-soft);
+  border: 1px solid var(--sp-warning-border);
+  border-radius: var(--sp-radius-lg);
+  padding: 0.35rem 0.6rem 0.35rem 0.75rem;
+  margin-bottom: 0.8rem;
+}
+.notice-bar-wrap .notice-bar {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.notice-bar-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sp-warning);
+  cursor: pointer;
+  opacity: 0.8;
+}
+.notice-bar-close:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.arch-banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: var(--sp-radius-sm);
+  background: transparent;
+  color: var(--sp-text-3);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.arch-banner-close:hover {
+  background: var(--sp-bg-2);
+  color: var(--sp-text-1);
 }
 
 

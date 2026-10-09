@@ -164,29 +164,45 @@ export function createProjectStore() {
   );
   let stackError = $derived(firstError(stackIssues));
   
+  /** Reactive bridge for svelte stores into runes */
+  let curHelpProgress = $state(get(helpProgress));
+  let curHelpMode = $state(get(helpMode));
+  let curUserExperienced = $state(get(userExperienced));
+
+  helpProgress.subscribe((v) => { curHelpProgress = v; });
+  helpMode.subscribe((v) => { curHelpMode = v; });
+  userExperienced.subscribe((v) => { curUserExperienced = v; });
+
   /** Anchor highlights for beginner mode: the control the hint points at. */
   const stackHintVisible = $derived(
-    isHintVisible(get(helpProgress), get(helpMode), HINT_CREATE_STACK),
+    isHintVisible(curHelpProgress, curHelpMode, HINT_CREATE_STACK),
   );
   const toolsHintVisible = $derived(
-    isHintVisible(get(helpProgress), get(helpMode), HINT_CREATE_TOOLS),
+    isHintVisible(curHelpProgress, curHelpMode, HINT_CREATE_TOOLS),
   );
   const previewHintVisible = $derived(
-    isHintVisible(get(helpProgress), get(helpMode), HINT_CREATE_PREVIEW),
+    isHintVisible(curHelpProgress, curHelpMode, HINT_CREATE_PREVIEW),
   );
-  
-  /** Для новичков блокируем переход к сверке («Просмотр и создание»), пока
-   *  конструктор не досмотрен до низа хотя бы раз. Флаг «опытный» глобальный
-   *  (novice.ts) — после первого полного просмотра блокировка исчезает навсегда. */
+
+  /** Ненавязчивая подсказка о прокрутке для новичков. Никаких блокировок перехода:
+   *  кнопка перехода к созданию всегда активна при валидном стеке.
+   *  Подсказку можно закрыть [×] в любой момент или кликнуть для прокрутки. */
   let userSeenConstructor = $state(false);
-  let reviewLocked = $derived(phase === 1 && !get(userExperienced) && !userSeenConstructor);
+  let scrollHintDismissed = $state(false);
+  let archBannerDismissed = $state(false);
+
+  // CTA никогда не блокируется из-за подсказок
+  let reviewLocked = $derived(false);
+
+  // Мягкая подсказка показывается только пока новичок не видел низ и не закрыл её
+  let scrollHintVisible = $derived(
+    phase === 1 && !curUserExperienced && !userSeenConstructor && !scrollHintDismissed,
+  );
   let scrollEl = $state<HTMLElement | null>(null);
-  
-  /** Проверка «долистали ли почти до самого низа». Срабатывает на прокрутку
-   *  внутреннего скролл-контейнера приложения (.sp-content). Если страница не
-   *  прокручивается вовсе — смысла показывать ничего нет, считаем просмотренной. */
+
+  /** Проверка «долистали ли почти до самого низа». */
   function checkConstructorScroll() {
-    if (get(userExperienced) || userSeenConstructor) return;
+    if (curUserExperienced || userSeenConstructor || scrollHintDismissed) return;
     if (phase !== 1) return;
     const el = scrollEl ?? document.querySelector<HTMLElement>(".sp-content");
     if (!el) return;
@@ -198,17 +214,27 @@ export function createProjectStore() {
       markConstructorSeen();
     }
   }
-  
-  /** Первое полное долистывание: разблокируем CTA в этой сессии и глобально
-   *  помечаем пользователя «опытным» (переживает перезапуск, виден в модулях). */
+
+  /** Пометить конструктор просмотренным и скрыть подсказку прокрутки */
   function markConstructorSeen() {
     if (userSeenConstructor) return;
     userSeenConstructor = true;
+    scrollHintDismissed = true;
     markExperienced();
   }
-  
+
+  function dismissScrollHint() {
+    scrollHintDismissed = true;
+    markConstructorSeen();
+  }
+
+  function dismissArchBanner() {
+    archBannerDismissed = true;
+  }
+
   /** Плавный переход к последней секции стека по клику на подсказку. */
   function scrollToStackBottom() {
+    markConstructorSeen();
     const target =
       document.querySelector<HTMLElement>(".territory-tools") ??
       document.querySelector<HTMLElement>(".mega-footer");
@@ -1824,7 +1850,10 @@ export function createProjectStore() {
   // ----------------------------------------------------------
   
   function goPhase(p: number) {
-    if (p >= 0 && p <= 6) phase = p;
+    if (p >= 0 && p <= 6) {
+      phase = p;
+      if (p >= 2) markConstructorSeen();
+    }
   }
   
   function back() {
@@ -2649,7 +2678,10 @@ export function createProjectStore() {
     get mode() { return mode; },
         set mode(v) { mode = v; },
         get phase() { return phase; },
-    set phase(v) { phase = v; },
+    set phase(v) {
+      phase = v;
+      if (v >= 2) markConstructorSeen();
+    },
     get selectedType() { return selectedType; },
     set selectedType(v) { selectedType = v; },
     get backendLangs() { return backendLangs; },
@@ -2679,17 +2711,21 @@ export function createProjectStore() {
     get stackError() { return stackError; },
     set stackError(v) { stackError = v; },
     get stackHintVisible() { return stackHintVisible; },
-        get toolsHintVisible() { return toolsHintVisible; },
-        get previewHintVisible() { return previewHintVisible; },
-        get userSeenConstructor() { return userSeenConstructor; },
+    get toolsHintVisible() { return toolsHintVisible; },
+    get previewHintVisible() { return previewHintVisible; },
+    get userSeenConstructor() { return userSeenConstructor; },
     set userSeenConstructor(v) { userSeenConstructor = v; },
-    get reviewLocked() { return reviewLocked; },
-    set reviewLocked(v) { reviewLocked = v; },
+    get reviewLocked() { return false; },
+    set reviewLocked(_v) {},
+    get scrollHintVisible() { return scrollHintVisible; },
+    get dismissScrollHint() { return dismissScrollHint; },
+    get archBannerDismissed() { return archBannerDismissed; },
+    get dismissArchBanner() { return dismissArchBanner; },
     get scrollEl() { return scrollEl; },
     set scrollEl(v) { scrollEl = v; },
     get checkConstructorScroll() { return checkConstructorScroll; },
-        get markConstructorSeen() { return markConstructorSeen; },
-        get scrollToStackBottom() { return scrollToStackBottom; },
+    get markConstructorSeen() { return markConstructorSeen; },
+    get scrollToStackBottom() { return scrollToStackBottom; },
         get hasBackend() { return hasBackend; },
     set hasBackend(v) { hasBackend = v; },
     get archMode() { return archMode; },

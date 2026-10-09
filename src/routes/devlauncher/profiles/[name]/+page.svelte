@@ -1560,11 +1560,6 @@
     background: var(--sp-bg-1);
     border: 1px solid var(--sp-accent-border);
     border-radius: var(--sp-radius-md);
-    animation: hint-glow 2.6s ease-in-out infinite;
-  }
-  @keyframes hint-glow {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(98, 182, 98, 0); }
-    50% { box-shadow: 0 0 14px 1px rgba(98, 182, 98, 0.35); }
   }
 
   /* Action set editing */

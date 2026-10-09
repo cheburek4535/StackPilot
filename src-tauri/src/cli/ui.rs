@@ -58,7 +58,12 @@ pub fn print_project_summary(
     }
 
     println!("│  {}: {}", "Git Init".bold(), if ctx.git_init { "Yes".green() } else { "No".dimmed() });
-    println!("│  {}: {}", "Docker".bold(), if ctx.docker { "Yes".green() } else { "No".dimmed() });
+    let docker_label = if ctx.docker {
+        "Yes (Dockerfile & docker-compose.yml)".green()
+    } else {
+        "No".dimmed()
+    };
+    println!("│  {}: {}", "Docker".bold(), docker_label);
 
     if let Some(ide) = ide_to_open {
         println!("│  {}: {}", "Open in IDE".bold(), ide.bright_yellow());
@@ -120,5 +125,6 @@ pub fn print_success(project_name: &str, dest_path: &Path) {
     println!("   {} {}", "Location:".dimmed(), dest_path.display().to_string().cyan());
     println!("\n{}", "Next steps:".bold());
     println!("   {} {}", "$".dimmed(), format!("cd {}", dest_path.display()).bright_white());
+    println!("   {} {}", "$".dimmed(), "stkpil dev".bright_green());
     println!("   {} {}\n", "$".dimmed(), "code .".bright_white());
 }

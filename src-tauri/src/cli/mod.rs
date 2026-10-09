@@ -1,5 +1,6 @@
 pub mod args;
 pub mod commands;
+pub mod constraints;
 pub mod i18n;
 pub mod interactive;
 pub mod runner;

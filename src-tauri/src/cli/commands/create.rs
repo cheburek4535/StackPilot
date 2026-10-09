@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::cli::args::CreateArgs;
+use crate::cli::constraints::{
+    resolve_tool_stack, validate_strict_stack,
+};
 use crate::cli::interactive::wizard::run_interactive_wizard;
 use crate::cli::runner;
 use crate::cli::ui;
@@ -118,7 +121,17 @@ fn build_context_from_flags(
     tree: &crate::modules::project_creator::models::WizardTreeData,
     args: &CreateArgs,
 ) -> Result<(WizardContext, PathBuf, Option<String>), String> {
-    let dest_path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
+    // 1. Resolve destination and project name
+    let dest_path = match &args.path {
+        Some(p) => p.clone(),
+        None => {
+            if let Some(ref name) = args.name {
+                PathBuf::from(format!("./{}", name))
+            } else {
+                PathBuf::from("./my-project")
+            }
+        }
+    };
 
     let project_name = args.name.clone().unwrap_or_else(|| {
         if dest_path.as_os_str() == "." || dest_path.as_os_str().is_empty() {
@@ -184,6 +197,37 @@ fn build_context_from_flags(
     let mut languages = args.languages.clone();
     languages.extend(backend_languages.clone());
     languages.extend(frontend_languages.clone());
+    languages.dedup();
+
+    // 2. Automatically resolve tool dependencies (e.g. Alembic -> SQLAlchemy) and Docker
+    let resolution = resolve_tool_stack(tree, &args.tools, args.docker);
+    let tools = resolution.resolved_tools;
+    let docker_enabled = resolution.docker_enabled;
+
+    if docker_enabled && !args.docker && !resolution.docker_reasons.is_empty() {
+        println!(
+            "  {} Docker automatically enabled (required by: {})",
+            "🐳".cyan(),
+            resolution.docker_reasons.join(", ").yellow().bold()
+        );
+    }
+
+    for (dep, parent) in &resolution.added_dependencies {
+        println!(
+            "  {} Added required dependency: {} (needed by {})",
+            "ℹ".cyan(),
+            dep.bold(),
+            parent.bold()
+        );
+    }
+
+    // 3. Strict stack validation for CLI flags
+    if let Err(errors) = validate_strict_stack(tree, &frameworks, &tools, &languages) {
+        for err in &errors {
+            eprintln!("  {} {}", "✖ ERROR:".bold().red(), err);
+        }
+        return Err(format!("Stack configuration validation failed:\n  • {}", errors.join("\n  • ")));
+    }
 
     let ide_to_open = args.open.clone();
 
@@ -196,11 +240,11 @@ fn build_context_from_flags(
         backend_languages,
         frontend_languages,
         frameworks,
-        tools: args.tools.clone(),
+        tools,
         local_infra_tools: vec![],
         features: vec![],
         infrastructure: vec![],
-        docker: args.docker,
+        docker: docker_enabled,
         testing: false,
         ci: false,
         git_init: args.git,
@@ -255,6 +299,7 @@ mod tests {
         assert_eq!(ctx.project_name.as_deref(), Some("my-web-app"));
         assert_eq!(dest_path, PathBuf::from("scratch/my-web-app"));
         assert_eq!(open_ide.as_deref(), Some("code"));
+        assert!(ctx.docker, "Docker should be auto-enabled by postgresql/redis");
 
         let norm_errors = normalize_context(tree, &mut ctx);
         assert!(norm_errors.is_empty(), "Normalization failed: {:?}", norm_errors);
@@ -294,5 +339,81 @@ mod tests {
         let issues = validate_context(tree, &mut ctx, current_os());
         assert!(first_error(&issues).is_none());
     }
-}
 
+    #[test]
+    fn test_build_context_from_flags_rejects_django_sqlalchemy() {
+        let wizard = WizardEngine::new();
+        let tree = wizard.get_wizard_tree();
+
+        let args = CreateArgs {
+            path: None,
+            name: Some("bad-stack".into()),
+            project_type: None,
+            backend: Some("django".into()),
+            frontend: None,
+            tools: vec!["sqlalchemy".into()],
+            languages: vec![],
+            open: None,
+            git: true,
+            docker: false,
+            dry_run: true,
+            yes: true,
+            interactive: false,
+        };
+
+        let res = build_context_from_flags(tree, &args);
+        assert!(res.is_err(), "Must reject Django with SQLAlchemy");
+        let err = res.unwrap_err();
+        assert!(err.contains("built-in ORM"));
+    }
+
+    #[test]
+    fn test_build_context_from_flags_rejects_conflicting_databases() {
+        let wizard = WizardEngine::new();
+        let tree = wizard.get_wizard_tree();
+
+        let args = CreateArgs {
+            path: None,
+            name: Some("two-dbs".into()),
+            project_type: None,
+            backend: Some("fastapi".into()),
+            frontend: None,
+            tools: vec!["postgresql".into(), "mysql".into()],
+            languages: vec![],
+            open: None,
+            git: true,
+            docker: false,
+            dry_run: true,
+            yes: true,
+            interactive: false,
+        };
+
+        let res = build_context_from_flags(tree, &args);
+        assert!(res.is_err(), "Must reject PostgreSQL + MySQL");
+    }
+
+    #[test]
+    fn test_build_context_from_flags_auto_destination() {
+        let wizard = WizardEngine::new();
+        let tree = wizard.get_wizard_tree();
+
+        let args = CreateArgs {
+            path: None,
+            name: Some("my-cool-service".into()),
+            project_type: None,
+            backend: Some("fastapi".into()),
+            frontend: None,
+            tools: vec!["sqlite".into()],
+            languages: vec![],
+            open: None,
+            git: true,
+            docker: false,
+            dry_run: true,
+            yes: true,
+            interactive: false,
+        };
+
+        let (_ctx, dest_path, _open) = build_context_from_flags(tree, &args).unwrap();
+        assert_eq!(dest_path, PathBuf::from("./my-cool-service"));
+    }
+}
