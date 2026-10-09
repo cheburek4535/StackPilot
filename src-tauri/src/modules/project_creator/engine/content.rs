@@ -1861,12 +1861,13 @@ pub fn generate_vscode_settings_with_interpreter(
         .to_string(),
 
         "python" => {
-            let interpreter = python_interpreter
-                .unwrap_or("${workspaceFolder}/.venv/bin/python")
-                .to_string();
+            let default_path = "${workspaceFolder}/.venv/bin/python".to_string();
+            let interpreter = python_interpreter.unwrap_or(&default_path);
+            let escaped_interpreter = serde_json::to_string(interpreter)
+                .unwrap_or_else(|_| format!("\"{}\"", interpreter));
             format!(
                 r#"{{
-    "python.defaultInterpreterPath": "{interpreter}",
+    "python.defaultInterpreterPath": {escaped_interpreter},
     "python.analysis.typeCheckingMode": "basic",
     "[python]": {{
         "editor.formatOnSave": true,

@@ -28,7 +28,7 @@
   aria-hidden="true"
   focusable="false"
 >
-  {#each ICON_PATHS[name] as d}
+  {#each (ICON_PATHS[name] || []) as d}
     <path d={d} />
   {/each}
 </svg>

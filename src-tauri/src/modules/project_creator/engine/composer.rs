@@ -481,6 +481,7 @@ pub fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
         "vite" => Some("vite"),
         "astro" => Some("astro"),
         "remix" => Some("@remix-run/react"),
+        "adonisjs" => Some("@adonisjs/core"),
         _ => None,
     }
 }
@@ -489,6 +490,7 @@ pub fn framework_npm_dependency(fw: &str) -> Option<&'static str> {
 /// декларации зависимости `<fw>_pkg_check` после него).
 pub fn scaffold_step_id_for(fw: &str) -> Option<&'static str> {
     match fw {
+        "adonisjs" => Some("adonisjs_create"),
         "nest" => Some("nest_new"),
         "nextjs" => Some("nextjs_create"),
         "nuxt" => Some("nuxt_create"),

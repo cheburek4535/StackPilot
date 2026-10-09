@@ -16,7 +16,7 @@
     snapshot: EnvironmentSnapshot | null;
     freshness: "live" | "stale" | "none";
     scanning?: boolean;
-    onscan: () => void;
+    onscan?: () => void;
     onbuild: () => void;
     onupdates: () => void;
   } = $props();
@@ -91,18 +91,19 @@
     <div class="actions">
       {#if snapshot && updatesCount > 0}
         <Button variant="primary" size="sm" icon="refresh" onclick={onupdates}>
-          {i18n.t("tc.hero.update_all") as TranslationKey}
+          {i18n.t("tc.hero.update_all") as TranslationKey} ({updatesCount})
+        </Button>
+      {:else if !snapshot && onscan}
+        <Button
+          variant="primary"
+          size="sm"
+          icon="refresh"
+          loading={scanning}
+          onclick={onscan}
+        >
+          {i18n.t("tc.hero.scan_env") as TranslationKey}
         </Button>
       {/if}
-      <Button
-        variant={snapshot ? "outline" : "primary"}
-        size="sm"
-        icon="refresh"
-        loading={scanning}
-        onclick={onscan}
-      >
-        {i18n.t("tc.hero.scan_env") as TranslationKey}
-      </Button>
     </div>
   </div>
 </section>

@@ -593,8 +593,7 @@ impl Generator for ManifestCheckGenerator {
 fn manifest_dependencies(kind: &str, content: &str) -> Result<Vec<String>, String> {
     match kind {
         "package_json" | "composer_json" => {
-            let value: serde_json::Value =
-                serde_json::from_str(content).map_err(|e| format!("invalid JSON: {e}"))?;
+            let value: serde_json::Value = parse_json(content)?;
             let obj = value
                 .as_object()
                 .ok_or_else(|| "not a JSON object".to_string())?;
@@ -2460,13 +2459,11 @@ impl Generator for VsCodeMergeGenerator {
             })
             .unwrap_or_else(|| vec![".".to_string()]);
 
-        let settings_ours = if lang == "python" {
-            parse_json(&content::generate_vscode_settings_with_interpreter(
+        let settings_ours = {
+            let mut value = parse_json(&content::generate_vscode_settings_with_interpreter(
                 lang,
                 python_interpreter,
-            ))?
-        } else {
-            let mut value = parse_json(&content::generate_vscode_settings(lang))?;
+            ))?;
             if let Some(interpreter) = python_interpreter {
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert(
@@ -2823,6 +2820,7 @@ fn merge_extensions(base: &serde_json::Value, extra: &serde_json::Value) -> serd
 /// Очистить JSONC: удалить комментарии (однострочные `//` и многострочные `/* ... */`)
 /// и висячие запятые перед `}` и `]`, сохраняя строковые литералы без изменений.
 pub(crate) fn strip_jsonc_comments(text: &str) -> String {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
@@ -2920,8 +2918,11 @@ fn strip_trailing_commas(text: &str) -> String {
 }
 
 /// Разобрать JSON-текст (наши generated-шаблоны и файлы на диске, включая JSONC с комментариями).
-fn parse_json(text: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn parse_json(text: &str) -> Result<serde_json::Value, String> {
     let clean = strip_jsonc_comments(text);
+    if clean.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
     serde_json::from_str(&clean).map_err(|e| format!("invalid JSON: {}", e))
 }
 
@@ -4103,6 +4104,40 @@ mod tests {
         assert_eq!(settings["editor.formatOnSave"], true);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn vscode_merge_handles_windows_backslashes_in_python_interpreter() {
+        let gen = VsCodeMergeGenerator;
+        let dir = temp_test_dir("vscode_py_win");
+        let ctx = WizardContext::default();
+
+        let cfg = serde_json::json!({
+            "lang": "python",
+            "dirs": ["."],
+            "python_interpreter": "${workspaceFolder}\\venv\\Scripts\\python.exe",
+        });
+        tokio_test_block_on(gen.generate(&ctx, &dir, &cfg)).expect("merge должен пройти без ошибки invalid escape");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["python.defaultInterpreterPath"],
+            "${workspaceFolder}\\venv\\Scripts\\python.exe"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_json_handles_bom_and_empty() {
+        let bom_json = "\u{feff}{\"name\": \"app\", \"version\": \"1.0.0\"}";
+        let parsed = parse_json(bom_json).expect("BOM должен парситься");
+        assert_eq!(parsed["name"], "app");
+
+        let empty_json = "   // just comment\n  ";
+        let parsed_empty = parse_json(empty_json).expect("пустой JSON должен парситься в {}");
+        assert_eq!(parsed_empty, serde_json::json!({}));
     }
 
     #[test]

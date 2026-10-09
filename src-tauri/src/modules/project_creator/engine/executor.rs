@@ -675,13 +675,14 @@ fn merge_json_write(
 ) -> Result<StepStatus, String> {
     let existing_text = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed read existing file {}: {}", path.display(), e))?;
-    let existing: serde_json::Value = serde_json::from_str(&existing_text).map_err(|e| {
-        format!(
-            "MergeJson: existing file {} is not valid JSON: {}",
-            display_path, e
-        )
-    })?;
-    let incoming: serde_json::Value = serde_json::from_str(content).map_err(|e| {
+    let existing = crate::modules::project_creator::generators::parse_json(&existing_text)
+        .map_err(|e| {
+            format!(
+                "MergeJson: existing file {} is not valid JSON: {}",
+                display_path, e
+            )
+        })?;
+    let incoming = crate::modules::project_creator::generators::parse_json(content).map_err(|e| {
         format!(
             "MergeJson: content for {} is not valid JSON: {}",
             display_path, e

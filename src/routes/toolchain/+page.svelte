@@ -195,11 +195,6 @@
       <div class="header-actions">
         {#if snapshot}
           <Badge tone="neutral">{platformName(snapshot.os)} · {snapshot.arch}</Badge>
-          {#if freshness === "live"}
-            <Badge tone="cyan" dot>{i18n.t("tc.data_live") as TranslationKey}</Badge>
-          {:else if freshness === "stale"}
-            <Badge tone="amber" dot>{i18n.t("tc.data_stale") as TranslationKey} · {formatAgeSeconds(snapshot.age_seconds)}</Badge>
-          {/if}
         {:else}
           <Badge tone="neutral">{i18n.t("tc.no_data") as TranslationKey}</Badge>
         {/if}
@@ -372,7 +367,7 @@
   }
 
   .hero-block {
-    margin-bottom: var(--sp-4);
+    margin-bottom: var(--sp-3);
   }
 
   .active-op {
@@ -444,7 +439,7 @@
     justify-content: space-between;
     gap: var(--sp-3);
     flex-wrap: wrap;
-    margin-bottom: var(--sp-5);
+    margin-bottom: var(--sp-3);
   }
 
   .modes-hint {
