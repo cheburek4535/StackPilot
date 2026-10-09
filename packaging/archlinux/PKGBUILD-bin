@@ -1,0 +1,27 @@
+# Maintainer: Niperc (cheburek4535)
+pkgname=stackpilot-bin
+pkgver=1.3.0
+pkgrel=1
+pkgdesc="Developer toolchain management and project workspace dashboard (precompiled official binary)"
+arch=('x86_64')
+url="https://github.com/cheburek4535/StackPilot"
+license=('AGPL3')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'openssl')
+optdepends=(
+  'code: Visual Studio Code integration'
+  'docker: Docker and container workflow support'
+)
+provides=('stackpilot' 'stkpil')
+conflicts=('stackpilot')
+source=(
+  "https://github.com/cheburek4535/StackPilot/releases/download/v$pkgver/StackPilot_${pkgver}_amd64.deb"
+  "https://github.com/cheburek4535/StackPilot/releases/download/v$pkgver/stkpil-linux-x86_64.tar.gz"
+)
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+  # Распаковываем data.tar.* из официального релизного .deb пакета
+  bsdtar -xf data.tar.* -C "$pkgdir/"
+  # Устанавливаем CLI бинарник stkpil
+  install -Dm755 stkpil "$pkgdir/usr/bin/stkpil"
+}

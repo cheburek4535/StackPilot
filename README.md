@@ -653,19 +653,70 @@ npm run tauri build
 
 > **Важно:** production-бинарник нужно собирать именно через `npm run tauri build` (CLI), а не голым `cargo build --manifest-path src-tauri/Cargo.toml`. CLI добавляет cargo-флаг `--features tauri/custom-protocol`, который переключает вебвью со встроенных ассетов на dev-сервер (`devUrl`, `http://127.0.0.1:1420`). Без него релизный бинарник при запуске покажет окно с ошибкой `Could not connect to 127.0.0.1: Connection refused` вместо интерфейса. Если такой бинарник уже успели собрать напрямую через cargo, удалите `src-tauri/target` перед пересборкой через CLI — иначе в кэше могут остаться вперемешку артефакты обоих вариантов сборки, и поведение станет непредсказуемым от запуска к запуску.
 
-### Arch Linux
+### Установка на Linux
 
-`.deb`/`.rpm`/`.AppImage` из Releases на Arch напрямую не ставятся. Вместо этого в репозитории есть `PKGBUILD` для нативной установки через pacman:
+#### 1. Ubuntu, Debian, Linux Mint, Pop!_OS (`.deb`)
+Скачайте `.deb` файл из раздела [Releases](https://github.com/cheburek4535/StackPilot/releases) и установите через `apt` (он автоматически подтянет системные зависимости `webkit2gtk-4.1`):
+```bash
+sudo apt update
+sudo apt install ./StackPilot_*_amd64.deb
+```
 
+#### 2. Fedora, RHEL, openSUSE (`.rpm`)
+Скачайте `.rpm` пакет из [Releases](https://github.com/cheburek4535/StackPilot/releases) и установите через менеджер пакетов:
+```bash
+# Fedora / RHEL:
+sudo dnf install ./StackPilot-*.x86_64.rpm
+
+# openSUSE:
+sudo zypper install ./StackPilot-*.x86_64.rpm
+```
+
+#### 3. Универсальный запуск через AppImage (любой дистрибутив)
+1. Скачайте `StackPilot_*_amd64.AppImage` из Releases.
+2. Сделайте файл исполняемым и запустите:
+```bash
+chmod +x StackPilot_*_amd64.AppImage
+./StackPilot_*_amd64.AppImage
+```
+> **Примечание для Arch Linux / Ubuntu 24.04+:** современные дистрибутивы поставляются с `fuse3`. Если AppImage выдаёт ошибку `libfuse.so.2 not found`, установите `fuse2` (`sudo pacman -S fuse2` или `sudo apt install libfuse2`) либо запустите с параметром:
+> ```bash
+> ./StackPilot_*_amd64.AppImage --appimage-extract-and-run
+> ```
+
+#### 4. Arch Linux, Omarchy, Manjaro, EndeavourOS (нативная интеграция pacman)
+В репозитории есть готовые сценарии для интеграции с pacman:
+
+* **Быстрая бинарная установка (за 5 секунд, без Node/Rust):**
 ```bash
 git clone https://github.com/cheburek4535/StackPilot.git
 cd StackPilot
-./packaging/archlinux/install.sh
+./packaging/archlinux/install.sh --bin
 ```
 
-Скрипт упаковывает текущий checkout и собирает/устанавливает пакет через `makepkg -si` (спросит sudo для зависимостей и установки) — после этого `stackpilot` доступен как обычная pacman-пакетная программа, а `sudo pacman -R stackpilot` удаляет её без следов. Зависимости уровня сборки — `nodejs`, `npm`, `rust`, `cargo`; во время выполнения нужны `webkit2gtk-4.1` и `gtk3`, `makepkg` поставит их автоматически при необходимости.
+* **Сборка из локальных исходных кодов:**
+```bash
+# Требуются инструменты сборки: sudo pacman -S --needed base-devel nodejs npm rust
+./packaging/archlinux/install.sh --source
+```
 
-На связке NVIDIA (проприетарный драйвер) + AMD iGPU вебвью WebKitGTK может падать при старте с `Failed to create GBM buffer` или Wayland `Error 71` — DMA-BUF рендерер несовместим с драйвером NVIDIA. С версии, включающей этот фикс, StackPilot сам отключает DMA-BUF рендерер на Linux (`WEBKIT_DISABLE_DMABUF_RENDERER=1`), если переменная не задана явно, так что дополнительных действий обычно не требуется.
+* **Чистое удаление:**
+```bash
+sudo pacman -Rns stackpilot-bin # или stackpilot
+# либо скриптом: ./packaging/archlinux/uninstall.sh
+```
+
+---
+
+#### Аппаратное ускорение и масштабирование на Linux
+По умолчанию StackPilot на Linux использует полное аппаратное ускорение (GPU) через WebKitGTK DMA-BUF рендерер, обеспечивая высокую частоту кадров (60+ FPS) и минимальное потребление оперативной памяти (~30-60 МБ). Также поддерживается глобальный масштаб интерфейса (Zoom) под HiDPI / Wayland экраны в настройках или через горячие клавиши `Ctrl + +`, `Ctrl + -`, `Ctrl + 0`.
+
+Если на старых версиях проприетарного драйвера NVIDIA под Wayland (до версии 555) вебвью падает с ошибкой `Failed to create GBM buffer` или `Error 71`, запустите приложение с программным рендерингом:
+```bash
+stackpilot --disable-gpu
+# либо через переменную окружения:
+STACKPILOT_DISABLE_GPU=1 stackpilot
+```
 
 ### Только frontend (разработка UI)
 

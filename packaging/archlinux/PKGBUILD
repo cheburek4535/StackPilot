@@ -5,8 +5,8 @@ pkgdesc="Developer toolchain management and project workspace dashboard (Tauri d
 arch=('x86_64')
 url="https://github.com/cheburek4535/StackPilot"
 license=('AGPL3')
-depends=('webkit2gtk-4.1' 'gtk3')
-makedepends=('nodejs' 'npm' 'rust' 'cargo')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'openssl')
+makedepends=('nodejs' 'npm' 'rust' 'cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/cheburek4535/StackPilot/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

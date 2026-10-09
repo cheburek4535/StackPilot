@@ -132,6 +132,7 @@
       a.auto_save_profiles === b.auto_save_profiles &&
       a.auto_save === b.auto_save &&
       a.font_size === b.font_size &&
+      a.ui_scale === b.ui_scale &&
       a.reduced_motion === b.reduced_motion &&
       a.show_interface_hints === b.show_interface_hints &&
       a.accent_color === b.accent_color &&
@@ -229,6 +230,12 @@
   function setFontSize(size: string): void {
     if (!draft) return;
     draft.font_size = size;
+    onAnyChange();
+  }
+
+  function setUiScale(scale: string): void {
+    if (!draft) return;
+    draft.ui_scale = scale;
     onAnyChange();
   }
 
@@ -686,6 +693,27 @@
                     onclick={() => setFontSize(size)}
                   >
                     {i18n.t(`settings.display.font_size.${size}`)}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">{i18n.t("settings.display.ui_scale")}</span>
+              <span class="sp-hint field-desc">{i18n.t("settings.display.ui_scale_desc")}</span>
+            </div>
+            <div class="field-ctrl">
+              <div class="segmented">
+                {#each ["auto", "100%", "110%", "125%", "150%", "175%", "200%"] as scale}
+                  <button
+                    type="button"
+                    class="segmented-btn"
+                    class:segmented-active={(draft.ui_scale || "auto") === scale}
+                    onclick={() => setUiScale(scale)}
+                  >
+                    {scale === "auto" ? i18n.t("settings.display.ui_scale.auto") : scale}
                   </button>
                 {/each}
               </div>

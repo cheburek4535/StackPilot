@@ -43,6 +43,7 @@ export function initTauriMock() {
     auto_save_profiles: true,
     auto_save: true,
     font_size: "md",
+    ui_scale: "auto",
     reduced_motion: false,
     show_interface_hints: true,
     accent_color: "violet",

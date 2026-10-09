@@ -64,6 +64,7 @@ impl JsonSettingsService {
             auto_save_profiles: true,
             auto_save: true,
             font_size: "md".into(),
+            ui_scale: "auto".into(),
             reduced_motion: false,
             show_interface_hints: true,
             accent_color: "orange".into(),
@@ -103,6 +104,12 @@ impl JsonSettingsService {
         }
         if !matches!(s.font_size.as_str(), "sm" | "md" | "lg") {
             s.font_size = "md".into();
+        }
+        if !matches!(
+            s.ui_scale.as_str(),
+            "auto" | "100%" | "110%" | "120%" | "125%" | "135%" | "150%" | "175%" | "200%"
+        ) {
+            s.ui_scale = "auto".into();
         }
 
         let accent = s.accent_color.trim().to_string();

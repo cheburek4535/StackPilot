@@ -5,8 +5,9 @@
   import { page } from "$app/stores";
   import { APP_NAME, APP_VERSION } from "$lib/core/app";
   import { NAV_GROUPS, isNavItemActive, isNavGroupActive } from "$lib/core/navigation";
-  import { initTheme } from "$lib/core/theme";
-  import { getSettings } from "$lib/core/api";
+  import { initTheme, applyUiPrefs, getNextZoomLevel } from "$lib/core/theme";
+  import { getSettings, updateSettings } from "$lib/core/api";
+  import type { AppSettings } from "$lib/core/types";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
   import { helpMode, toggleHelpMode } from "$lib/core/help";
@@ -29,6 +30,7 @@
 
   let restoreRoute = $state(true);
   let caps = $state<PlatformCapabilities | null>(null);
+  let appSettings = $state<AppSettings | null>(null);
   const isMac = $derived(
     isMacosHost(caps) ||
       (typeof navigator !== "undefined" &&
@@ -39,8 +41,40 @@
   let exitAsk = $state<ExitAskPayload | null>(null);
   let unlistenExit: (() => void) | null = null;
 
+  async function adjustZoom(dir: "in" | "out" | "reset"): Promise<void> {
+    try {
+      const s = appSettings ?? (await getSettings());
+      if (dir === "reset") {
+        s.ui_scale = "auto";
+      } else {
+        s.ui_scale = getNextZoomLevel(s.ui_scale || "auto", dir);
+      }
+      appSettings = s;
+      applyUiPrefs(s);
+      await updateSettings(s);
+    } catch {}
+  }
+
+  function handleKeydown(e: KeyboardEvent): void {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        void adjustZoom("in");
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        void adjustZoom("out");
+      } else if (e.key === "0") {
+        e.preventDefault();
+        void adjustZoom("reset");
+      }
+    }
+  }
+
   onMount(() => {
     initTheme();
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", handleKeydown);
+    }
     loadPlatformCapabilities()
       .then((c) => {
         caps = c;
@@ -48,6 +82,7 @@
       .catch(() => {});
     getSettings()
       .then((s) => {
+        appSettings = s;
         restoreRoute = s.restore_last_route;
         // The backend is the single source of truth for the UI language.
         i18n.setLocale((s.language as Locale) || "ru");
@@ -66,6 +101,9 @@
   });
 
   onDestroy(() => {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("keydown", handleKeydown);
+    }
     if (unlistenExit) unlistenExit();
   });
 
@@ -515,6 +553,5 @@
       inset 0 0 0 1px rgba(255, 255, 255, 0.05);
     display: flex;
     flex-direction: column;
-    backdrop-filter: blur(24px) saturate(150%);
   }
 </style>
