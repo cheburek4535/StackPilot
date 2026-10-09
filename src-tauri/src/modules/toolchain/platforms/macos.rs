@@ -116,5 +116,21 @@ pub fn macos_system_path_dirs() -> Vec<String> {
         push(dir);
     }
 
+    // Пользовательские инструменты, которые GUI-процессы (Finder / Dock / launchd)
+    // не видят по умолчанию без интерактивного shell profile:
+    if let Ok(home) = std::env::var("HOME") {
+        for sub in [
+            ".cargo/bin",
+            ".local/bin",
+            ".orbstack/bin",
+            "Library/Application Support/JetBrains/Toolbox/scripts",
+        ] {
+            let user_dir = Path::new(&home).join(sub);
+            if user_dir.is_dir() {
+                push(&user_dir.to_string_lossy());
+            }
+        }
+    }
+
     dirs
 }

@@ -780,6 +780,7 @@
       "known_paths": [
         "C:/Program Files/Eclipse Adoptium/*/bin",
         "/opt/homebrew/opt/openjdk/bin",
+        "/usr/local/opt/openjdk/bin",
         "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin",
         "/usr/lib/jvm/*/bin"
       ],
@@ -841,6 +842,7 @@
     "path_entries": [
       "C:\\Program Files\\Eclipse Adoptium\\*\\bin",
       "/opt/homebrew/opt/openjdk/bin",
+      "/usr/local/opt/openjdk/bin",
       "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin"
     ],
     "bundled_with": null,
@@ -2789,6 +2791,7 @@
     "path_entries": [
       "C:\\Program Files\\PostgreSQL\\*\\bin",
       "/opt/homebrew/opt/postgresql@17/bin",
+      "/usr/local/opt/postgresql@17/bin",
       "/opt/homebrew/bin"
     ],
     "bundled_with": null,
@@ -3019,6 +3022,7 @@
       "known_paths": [
         "C:/Program Files/MySQL/*/bin",
         "/opt/homebrew/opt/mysql/bin",
+        "/usr/local/opt/mysql/bin",
         "/opt/homebrew/bin"
       ],
       "registry_keys": []
@@ -3078,6 +3082,7 @@
     "path_entries": [
       "C:\\Program Files\\MySQL\\*\\bin",
       "/opt/homebrew/opt/mysql/bin",
+      "/usr/local/opt/mysql/bin",
       "/opt/homebrew/bin"
     ],
     "bundled_with": null,

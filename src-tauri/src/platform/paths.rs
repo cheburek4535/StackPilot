@@ -297,6 +297,20 @@ pub fn register_stkpil_in_app_paths() -> Result<(), String> {
                             }
                         }
                     }
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        // On macOS, ~/.local/bin is often not in default PATH, while /usr/local/bin
+                        // usually is. If /usr/local/bin is writable, symlink stkpil there too.
+                        let usr_local_bin = std::path::PathBuf::from("/usr/local/bin");
+                        if usr_local_bin.is_dir() {
+                            let symlink_path = usr_local_bin.join("stkpil");
+                            if symlink_path.is_symlink() || symlink_path.exists() {
+                                let _ = std::fs::remove_file(&symlink_path);
+                            }
+                            let _ = std::os::unix::fs::symlink(&stkpil_binary, &symlink_path);
+                        }
+                    }
                 }
             }
         }

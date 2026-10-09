@@ -105,7 +105,10 @@ fn known_applications() -> Vec<KnownApp> {
         #[cfg(target_os = "windows")]
         registry_names: &["Cursor.exe"],
         #[cfg(target_os = "macos")]
-        app_bundles: &[("Cursor.app", "Contents/MacOS/Cursor")],
+        app_bundles: &[
+            ("Cursor.app", "Contents/Resources/app/bin/cursor"),
+            ("Cursor.app", "Contents/MacOS/Cursor"),
+        ],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[("cursor", "com.todesktop.230313mzl4w4u92")],
     });
@@ -117,7 +120,10 @@ fn known_applications() -> Vec<KnownApp> {
         #[cfg(target_os = "windows")]
         registry_names: &["Windsurf.exe"],
         #[cfg(target_os = "macos")]
-        app_bundles: &[("Windsurf.app", "Contents/MacOS/windsurf")],
+        app_bundles: &[
+            ("Windsurf.app", "Contents/Resources/app/bin/windsurf"),
+            ("Windsurf.app", "Contents/MacOS/windsurf"),
+        ],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[],
     });
