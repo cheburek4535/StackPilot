@@ -179,6 +179,42 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
         &self,
         project_path: &str,
     ) -> Result<Option<EnvironmentBinding>, String> {
+        let proj = Path::new(project_path);
+
+        // 1. Check primary .stackpilot/environment.json descriptor
+        let sp_dir_meta = proj.join(".stackpilot").join("environment.json");
+        if sp_dir_meta.is_file() {
+            if let Ok(content) = fs::read_to_string(&sp_dir_meta) {
+                if let Ok(file_binding) = serde_json::from_str::<EnvironmentBinding>(&content) {
+                    if let Ok(existing) = self.get(&file_binding.binding_id) {
+                        return Ok(Some(existing));
+                    } else {
+                        // Project was moved or cloned from another machine: restore into local registry
+                        let mut restored = file_binding;
+                        restored.bind_project(project_path);
+                        if let Ok(saved) = self.save(&restored) {
+                            return Ok(Some(saved));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check legacy .stackpilot.json specifying environment_id
+        let sp_meta = proj.join(".stackpilot.json");
+        if sp_meta.is_file() {
+            if let Ok(content) = fs::read_to_string(&sp_meta) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(env_id) = val.get("environment_id").and_then(|v| v.as_str()) {
+                        if let Ok(b) = self.get(env_id) {
+                            return Ok(Some(b));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Match against registered bound_projects or project_path
         let normalized = normalize_path(project_path);
         let bindings = self.list()?;
         for binding in bindings {
@@ -189,20 +225,6 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
             }
             if binding.bound_projects.iter().any(|p| normalize_path(p) == normalized) {
                 return Ok(Some(binding));
-            }
-        }
-
-        // Check if project folder has a .stackpilot.json specifying environment_id
-        let sp_meta = Path::new(project_path).join(".stackpilot.json");
-        if sp_meta.is_file() {
-            if let Ok(content) = fs::read_to_string(&sp_meta) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(env_id) = val.get("environment_id").and_then(|v| v.as_str()) {
-                        if let Ok(b) = self.get(env_id) {
-                            return Ok(Some(b));
-                        }
-                    }
-                }
             }
         }
 
@@ -224,9 +246,16 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
         binding.bind_project(project_path);
         let saved = self.save(&binding)?;
 
-        // Write or update .stackpilot.json marker in the project folder if accessible
+        // Write dual descriptor: .stackpilot/environment.json (full metadata) and .stackpilot.json (legacy)
         let proj = Path::new(project_path);
         if proj.is_dir() {
+            let sp_dir = proj.join(".stackpilot");
+            let _ = fs::create_dir_all(&sp_dir);
+            let sp_env_file = sp_dir.join("environment.json");
+            if let Ok(content) = serde_json::to_string_pretty(&saved) {
+                let _ = fs::write(sp_env_file, content);
+            }
+
             let sp_json_path = proj.join(".stackpilot.json");
             let mut obj = if sp_json_path.exists() {
                 fs::read_to_string(&sp_json_path)
@@ -239,6 +268,7 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
             };
             obj.insert("environment_id".to_string(), serde_json::Value::String(binding_id.to_string()));
             obj.insert("environment_name".to_string(), serde_json::Value::String(saved.name.clone().unwrap_or_default()));
+            obj.insert("isolation_mode".to_string(), serde_json::Value::String(if saved.is_isolated() { "isolated".to_string() } else { "global".to_string() }));
             let _ = fs::write(&sp_json_path, serde_json::to_string_pretty(&obj).unwrap_or_default());
         }
 

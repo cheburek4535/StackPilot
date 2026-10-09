@@ -84,7 +84,11 @@ import { setContext, getContext } from "svelte";
     getOrCreateDefaultEnvironment,
     bindProjectToEnvironment,
     configureVsCodeEnvironment,
+    resolveToolsForProject,
+    openEnvironmentTerminal,
   } from "$lib/modules/project_environment/api";
+  import type { EnvironmentBinding, ToolOverride } from "$lib/modules/project_environment/types";
+  import { openProject } from "$lib/core/integration";
 
 export type TooltipItem =
   | { type: 'tool'; tool: ToolDef; conflictReason?: string | null }
@@ -155,6 +159,7 @@ export function createProjectStore() {
   let git = $state(true);
   let vscode = $state(true);
   let envIsolationMode = $state<"isolated" | "global">("isolated");
+  let createdEnvBinding = $state<EnvironmentBinding | null>(null);
   
   // Живая валидация стека (зеркало бэкенда, rules.ts)
   let stackIssues = $derived<StackIssue[]>(
@@ -2462,10 +2467,33 @@ export function createProjectStore() {
         if (createdSuccessfully && execPlan?.project_path) {
           const pPath = execPlan.project_path;
           try {
+            // Collect all tools required for this project's chosen stack
+            const toolIdsToResolve = new Set<string>();
+            for (const tid of selectedTools) toolIdsToResolve.add(tid);
+            if (tree?.framework_tool_map) {
+              for (const fwId of selectedFrameworks) {
+                for (const tid of tree.framework_tool_map[fwId] ?? []) {
+                  toolIdsToResolve.add(tid);
+                }
+              }
+            }
+            if (envCheck?.requirements) {
+              for (const req of envCheck.requirements) {
+                toolIdsToResolve.add(req.tool_id);
+              }
+            }
+
+            let resolvedOverrides: Record<string, ToolOverride> = {};
+            try {
+              resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
+            } catch (err) {
+              console.warn("[ProjectCreator] Failed to resolve tools:", err);
+            }
+
             if (envIsolationMode === "isolated") {
               const envId = `env_${Date.now().toString(16)}`;
               const now = new Date().toISOString();
-              await saveEnvironment({
+              const saved = await saveEnvironment({
                 schema_version: 1,
                 binding_id: envId,
                 name: projectName || "Project Sandbox",
@@ -2477,7 +2505,7 @@ export function createProjectStore() {
                 project_path: pPath,
                 bound_projects: [pPath],
                 env_dir: null,
-                tool_overrides: {},
+                tool_overrides: resolvedOverrides,
                 managed_path_entries: [],
                 env_vars: {},
                 env_vars_remove: [],
@@ -2486,12 +2514,15 @@ export function createProjectStore() {
                 created_at: now,
                 updated_at: now,
               });
+              const bound = await bindProjectToEnvironment(envId, pPath);
+              createdEnvBinding = bound;
               if (vscode) {
                 await configureVsCodeEnvironment(envId, pPath);
               }
             } else {
               const defEnv = await getOrCreateDefaultEnvironment();
-              await bindProjectToEnvironment(defEnv.binding_id, pPath);
+              const bound = await bindProjectToEnvironment(defEnv.binding_id, pPath);
+              createdEnvBinding = bound;
               if (vscode) {
                 await configureVsCodeEnvironment(defEnv.binding_id, pPath);
               }
@@ -2541,6 +2572,29 @@ export function createProjectStore() {
       notifySuccess("VS Code", i18n.t("create.open_vscode") as TranslationKey);
     } catch (error) {
       notifyError(i18n.t("create.open_vscode") as TranslationKey, String(error));
+    }
+  }
+
+  async function openCreatedEnvTerminal() {
+    if (!createdEnvBinding) return;
+    try {
+      const pPath = (execPlan?.project_path || execProjectPath || effectiveProjectPath())?.toString().trim();
+      await openEnvironmentTerminal(createdEnvBinding.binding_id, pPath || undefined);
+      notifySuccess("Терминал", "Терминал окружения запущен");
+    } catch (e) {
+      notifyError("Ошибка терминала", String(e));
+    }
+  }
+
+  async function openInWorkspace() {
+    const targetPath = (execPlan?.project_path || execProjectPath || effectiveProjectPath())?.toString().trim();
+    if (targetPath) {
+      try {
+        await openProject(targetPath);
+        goto("/workspace");
+      } catch (e) {
+        notifyError("Workspace", String(e));
+      }
     }
   }
   
@@ -2617,6 +2671,7 @@ export function createProjectStore() {
     testing = true;
     git = true;
     vscode = true;
+    createdEnvBinding = null;
     tooltipData = null;
     execProjectPath = null;
     envCheck = null;
@@ -2986,6 +3041,9 @@ export function createProjectStore() {
         get HINT_CREATE_PREVIEW() { return HINT_CREATE_PREVIEW; },
         get HelpHint() { return HelpHint; },
         get resetAll() { return resetAll; },
+        get createdEnvBinding() { return createdEnvBinding; },
+        get openCreatedEnvTerminal() { return openCreatedEnvTerminal; },
+        get openInWorkspace() { return openInWorkspace; },
       };
 }
 

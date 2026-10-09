@@ -4,6 +4,8 @@
   import type { ExecutionPlan, StepStatus, ProjectFileCount } from "$lib/modules/project_creator/types";
   import { countProjectFiles } from "$lib/modules/project_creator/api";
   import { tStepLabel } from "$lib/modules/project_creator/stepI18n";
+  import Badge from "$lib/components/ui/Badge.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
 
   let {
     execPlan,
@@ -14,10 +16,13 @@
     execError,
     execLogs,
     devlProfileExists,
+    createdEnvBinding = null,
     oncancel,
     onreset,
     onopenvscode,
     onreopendevl,
+    onopenenvterminal,
+    onopenworkspace,
   }: {
     execPlan: ExecutionPlan | null;
     execProjectPath: string | null;
@@ -27,10 +32,13 @@
     execError: string | null;
     execLogs: string[];
     devlProfileExists: boolean;
+    createdEnvBinding?: import("$lib/modules/project_environment/types").EnvironmentBinding | null;
     oncancel: () => void;
     onreset: () => void;
     onopenvscode: () => void;
     onreopendevl: () => void;
+    onopenenvterminal?: () => void;
+    onopenworkspace?: () => void;
   } = $props();
 
   let aboutReadme = $derived.by<string | null>(() => {
@@ -240,6 +248,73 @@
     <p class="exec-plan-path">{i18n.t("create.location", { path: execPlan?.project_path ?? execProjectPath ?? "" }) as TranslationKey}</p>
   </div>
 
+  {#if createdEnvBinding}
+    <div class="sp-env-success-card">
+      <div class="sp-env-success-header">
+        <div class="sp-env-success-info">
+          <div class="sp-env-badge-icon" class:is-isolated={createdEnvBinding.isolation_mode === "isolated"}>
+            <Icon name={createdEnvBinding.isolation_mode === "isolated" ? "package" : "globe"} size={22} />
+          </div>
+          <div>
+            <div class="sp-env-title-line">
+              <span class="sp-env-card-title">{createdEnvBinding.name || "Окружение проекта"}</span>
+              {#if createdEnvBinding.isolation_mode === "isolated"}
+                <Badge tone="amber">Изолированное окружение</Badge>
+              {:else}
+                <Badge tone="cyan">Глобальное системное</Badge>
+              {/if}
+              <Badge tone="lime">Привязано к проекту ✓</Badge>
+            </div>
+            <p class="sp-env-card-desc">
+              {createdEnvBinding.description || "Инструменты и переменные зафиксированы в профиле StackPilot для этого проекта"}
+            </p>
+          </div>
+        </div>
+
+        <div class="sp-env-header-actions">
+          {#if onopenenvterminal}
+            <button
+              type="button"
+              class="sp-env-btn sp-btn-term"
+              onclick={onopenenvterminal}
+              title="Открыть терминал в изолированном окружении"
+            >
+              <Icon name="terminal" size={14} />
+              <span>Терминал среды</span>
+            </button>
+          {/if}
+          {#if onopenworkspace}
+            <button
+              type="button"
+              class="sp-env-btn sp-btn-ws"
+              onclick={onopenworkspace}
+              title="Перейти в Workspace проекта"
+            >
+              <Icon name="home" size={14} />
+              <span>Workspace →</span>
+            </button>
+          {/if}
+        </div>
+      </div>
+
+      {#if Object.keys(createdEnvBinding.tool_overrides || {}).length > 0}
+        <div class="sp-env-tools-strip">
+          <span class="sp-env-tools-strip-label">Зафиксированные инструменты:</span>
+          <div class="sp-env-tool-tags">
+            {#each Object.entries(createdEnvBinding.tool_overrides) as [toolId, tool]}
+              <span class="sp-env-tool-chip">
+                <span class="sp-tool-name">{toolId}</span>
+                {#if tool.version}
+                  <span class="sp-tool-ver">v{tool.version}</span>
+                {/if}
+              </span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <div class="about-project-section">
     <h4 class="about-title">{i18n.t("create.preview.about_title") as TranslationKey}</h4>
     {#if aboutReadme}
@@ -426,5 +501,135 @@
   }
   .btn-primary:active:not(:disabled) {
     transform: translateY(0);
+  }
+
+  /* Environment Success Card */
+  .sp-env-success-card {
+    margin: 1.25rem 0;
+    padding: 1.15rem;
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-lg, 10px);
+    box-shadow: var(--sp-shadow-1);
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+  .sp-env-success-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .sp-env-success-info {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    min-width: 0;
+  }
+  .sp-env-badge-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--sp-radius-md, 8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--sp-bg-2);
+    color: var(--sp-text-2);
+    flex-shrink: 0;
+  }
+  .sp-env-badge-icon.is-isolated {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  .sp-env-title-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .sp-env-card-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--sp-text-1);
+  }
+  .sp-env-card-desc {
+    font-size: 0.82rem;
+    color: var(--sp-text-3);
+    margin: 0.2rem 0 0;
+  }
+  .sp-env-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .sp-env-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border-radius: var(--sp-radius-md, 6px);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid var(--sp-border);
+  }
+  .sp-btn-term {
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
+  }
+  .sp-btn-term:hover {
+    background: var(--sp-bg-3, rgba(255, 255, 255, 0.08));
+    border-color: var(--sp-accent-strong);
+  }
+  .sp-btn-ws {
+    background: var(--sp-accent-strong);
+    color: #fff;
+    border-color: var(--sp-accent-border);
+  }
+  .sp-btn-ws:hover {
+    background: var(--sp-accent);
+    transform: translateY(-1px);
+  }
+  .sp-env-tools-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--sp-border);
+    flex-wrap: wrap;
+  }
+  .sp-env-tools-strip-label {
+    font-size: 0.78rem;
+    color: var(--sp-text-3);
+    font-weight: 600;
+  }
+  .sp-env-tool-tags {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .sp-env-tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-full, 999px);
+    font-size: 0.76rem;
+  }
+  .sp-tool-name {
+    font-weight: 600;
+    color: var(--sp-text-1);
+  }
+  .sp-tool-ver {
+    font-family: var(--sp-font-mono);
+    color: var(--sp-text-3);
+    font-size: 0.72rem;
   }
 </style>

@@ -17,7 +17,14 @@ impl EnvironmentFsManager {
         let bin_dir = env_dir.join("bin");
 
         fs::create_dir_all(&bin_dir)
-            .map_err(|e| format!("Failed to create environment sandbox dir: {}", e))?;
+            .map_err(|e| format!("Failed to create environment sandbox bin dir: {}", e))?;
+
+        // Create isolated package directories for package managers
+        let _ = fs::create_dir_all(env_dir.join("npm"));
+        let _ = fs::create_dir_all(env_dir.join("cargo").join("bin"));
+        let _ = fs::create_dir_all(env_dir.join("go").join("bin"));
+        let _ = fs::create_dir_all(env_dir.join("python_pkgs"));
+        let _ = fs::create_dir_all(env_dir.join("cache"));
 
         // 1. Write environment metadata descriptor
         let meta_file = env_dir.join(".stackpilot-env.json");
@@ -39,10 +46,7 @@ impl EnvironmentFsManager {
         Ok(env_dir)
     }
 
-    /// Create an executable shim in the environment's bin folder.
-    ///
-    /// On Windows: generates a `.cmd` batch shim that invokes the target binary.
-    /// On Unix: generates a standard executable shell script wrapper.
+    /// Create executable shims (.cmd + .ps1 on Windows, shell scripts on Unix) in the environment's bin folder.
     pub fn create_tool_shim(bin_dir: &Path, tool_id: &str, target_exe: &Path) -> Result<(), String> {
         let stem = target_exe
             .file_stem()
@@ -53,18 +57,28 @@ impl EnvironmentFsManager {
 
         #[cfg(target_os = "windows")]
         {
-            // Windows: create a .cmd shim
+            let is_batch = target_str.ends_with(".cmd") || target_str.ends_with(".bat");
+            let call_prefix = if is_batch { "call " } else { "" };
+
+            // 1. Windows .cmd shim
             let shim_path = bin_dir.join(format!("{}.cmd", stem));
-            let content = format!("@\"{}\" %*\r\n", target_str);
+            let content = format!("@{}\"{}\" %*\r\n", call_prefix, target_str);
             fs::write(&shim_path, content)
                 .map_err(|e| format!("Failed to create Windows shim {}: {}", shim_path.display(), e))?;
 
+            // 2. Windows PowerShell .ps1 shim
+            let ps1_path = bin_dir.join(format!("{}.ps1", stem));
+            let ps1_content = format!("& \"{}\" $args\r\nexit $LASTEXITCODE\r\n", target_str);
+            let _ = fs::write(&ps1_path, ps1_content);
+
             // If the tool ID is different from the file stem (e.g. "nodejs" vs "node"),
-            // also create a shim for the tool_id.
+            // also create shims for the tool_id.
             if !tool_id.eq_ignore_ascii_case(stem) {
-                let alias_path = bin_dir.join(format!("{}.cmd", tool_id));
-                let alias_content = format!("@\"{}\" %*\r\n", target_str);
-                let _ = fs::write(alias_path, alias_content);
+                let alias_cmd = bin_dir.join(format!("{}.cmd", tool_id));
+                let _ = fs::write(alias_cmd, format!("@{}\"{}\" %*\r\n", call_prefix, target_str));
+
+                let alias_ps1 = bin_dir.join(format!("{}.ps1", tool_id));
+                let _ = fs::write(alias_ps1, format!("& \"{}\" $args\r\nexit $LASTEXITCODE\r\n", target_str));
             }
         }
 
@@ -80,6 +94,16 @@ impl EnvironmentFsManager {
                 .permissions();
             perms.set_mode(0o755);
             let _ = fs::set_permissions(&shim_path, perms);
+
+            if !tool_id.eq_ignore_ascii_case(stem) {
+                let alias_path = bin_dir.join(tool_id);
+                let _ = fs::write(&alias_path, format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", target_str));
+                let mut alias_perms = fs::metadata(&alias_path)
+                    .map_err(|e| format!("Failed to read metadata: {}", e))?
+                    .permissions();
+                alias_perms.set_mode(0o755);
+                let _ = fs::set_permissions(&alias_path, alias_perms);
+            }
         }
 
         Ok(())

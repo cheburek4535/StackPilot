@@ -5,6 +5,7 @@ import type {
   ResolvedOverlay,
   StandaloneExportResult,
   EnvironmentDiskUsage,
+  ToolOverride,
 } from "./types";
 
 export async function listEnvironments(): Promise<EnvironmentBinding[]> {
@@ -117,6 +118,14 @@ export async function cleanupSandbox(
   bindingId: string,
 ): Promise<EnvironmentDiskUsage> {
   return invoke<EnvironmentDiskUsage>("pe_cleanup_sandbox", { bindingId });
+}
+
+export async function resolveToolsForProject(
+  toolIds: string[],
+): Promise<Record<string, ToolOverride>> {
+  return invoke<Record<string, ToolOverride>>("pe_resolve_tools_for_project", {
+    toolIds,
+  });
 }
 
 

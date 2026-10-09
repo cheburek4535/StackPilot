@@ -287,6 +287,7 @@ pub async fn execute_action(
             ActionType::RunCommand { working_dir, .. } => working_dir.clone(),
             _ => None,
         }
+        .or_else(|| profile_project_path.clone())
         .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
 
         if let Some(ref p) = p_candidate {
@@ -748,13 +749,62 @@ pub fn validate_profile_v2(profile: LaunchProfileV2) -> Result<serde_json::Value
 #[tauri::command]
 pub fn create_run(
     state: State<'_, DevLauncherState>,
+    workspace: State<'_, WorkspaceState>,
     settings: State<'_, SettingsState>,
     profile: LaunchProfileV2,
 ) -> Result<LaunchRun, String> {
     let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
+
+    // Resolve environment overlay from profile binding or project path
+    let overlay = if let Some(ref binding_id) = profile.environment_binding_id {
+        if let Some(ref svc) = state.binding_service {
+            match svc.get(binding_id) {
+                Ok(binding) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Warning: environment binding '{}' not found: {}. Using host environment.",
+                        binding_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = profile
+            .project_root
+            .clone()
+            .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let session_id = workspace.session.get_session().map(|s| s.started_at.clone());
+
     state
         .orchestrator
-        .create_run_with_browser(profile, browser_path)
+        .create_run_with_browser_and_overlay(profile, session_id, overlay, browser_path)
         .map_err(|validation| {
             let msgs: Vec<String> = validation
                 .diagnostics

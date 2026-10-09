@@ -22,11 +22,13 @@
     exportStandaloneEnvironment,
     calculateDiskUsage,
     cleanupSandbox,
+    resolveToolsForProject,
   } from "$lib/modules/project_environment/api";
   import type {
     EnvironmentBinding,
     IsolationMode,
     EnvironmentDiskUsage,
+    ToolOverride,
   } from "$lib/modules/project_environment/types";
   import { openProject } from "$lib/core/integration";
   import { selectFolder } from "$lib/modules/project_creator/api";
@@ -45,6 +47,8 @@
   let modalDescription = $state("");
   let modalIsolationMode = $state<IsolationMode>("isolated");
   let modalEnvVars = $state<{ key: string; value: string }[]>([]);
+  let modalTools = $state<{ id: string; executable_path: string; version: string }[]>([]);
+  let detectingTools = $state(false);
   let saving = $state(false);
 
   // Filtered environments
@@ -128,6 +132,7 @@
     modalDescription = "";
     modalIsolationMode = "isolated";
     modalEnvVars = [];
+    modalTools = [];
     showModal = true;
   }
 
@@ -137,7 +142,46 @@
     modalDescription = env.description || "";
     modalIsolationMode = env.isolation_mode;
     modalEnvVars = Object.entries(env.env_vars || {}).map(([key, value]) => ({ key, value }));
+    modalTools = Object.entries(env.tool_overrides || {}).map(([id, t]) => ({
+      id,
+      executable_path: t.executable_path || "",
+      version: t.version || "",
+    }));
     showModal = true;
+  }
+
+  function addToolRow() {
+    modalTools = [...modalTools, { id: "", executable_path: "", version: "" }];
+  }
+
+  function removeToolRow(index: number) {
+    modalTools = modalTools.filter((_, i) => i !== index);
+  }
+
+  async function handleAutoDetectTools() {
+    detectingTools = true;
+    try {
+      const candidates = ["node", "python", "cargo", "go", "git", "deno", "bun", "pnpm", "yarn"];
+      const resolved = await resolveToolsForProject(candidates);
+      const rows: { id: string; executable_path: string; version: string }[] = [];
+      for (const [id, t] of Object.entries(resolved)) {
+        rows.push({
+          id,
+          executable_path: t.executable_path || "",
+          version: t.version || "",
+        });
+      }
+      if (rows.length > 0) {
+        modalTools = rows;
+        notifySuccess("Инструменты обнаружены", `Найдено ${rows.length} инструментов в системе`);
+      } else {
+        notifyError("Не найдено", "Системные инструменты не обнаружены в стандартных путях");
+      }
+    } catch (e) {
+      notifyError("Ошибка обнаружения", String(e));
+    } finally {
+      detectingTools = false;
+    }
   }
 
   function addEnvVarRow() {
@@ -189,6 +233,20 @@
       bindingToSave.name = modalName.trim();
       bindingToSave.description = modalDescription.trim() || null;
       bindingToSave.isolation_mode = modalIsolationMode;
+
+      const toolMap: Record<string, ToolOverride> = {};
+      for (const t of modalTools) {
+        const idTrim = t.id.trim().toLowerCase();
+        if (idTrim) {
+          toolMap[idTrim] = {
+            executable_path: t.executable_path.trim() || null,
+            version: t.version.trim() || null,
+            path_entries: [],
+            env_vars: {},
+          };
+        }
+      }
+      bindingToSave.tool_overrides = toolMap;
 
       const envMap: Record<string, string> = {};
       for (const row of modalEnvVars) {
@@ -315,6 +373,19 @@
       </Button>
     {/snippet}
   </PageHeader>
+
+  <!-- Paradigm Explainer Banner -->
+  <div class="sp-env-paradigm-banner">
+    <div class="sp-banner-icon">
+      <Icon name="package" size={22} />
+    </div>
+    <div class="sp-banner-content">
+      <div class="sp-banner-title">Быстрые изолированные песочницы StackPilot</div>
+      <div class="sp-banner-desc">
+        Каждое окружение изолирует глобальные пакеты (<code>npm -g</code>, <code>pip</code>, <code>cargo</code>) и генерирует локальные системные шиммы (<code>.cmd</code>, <code>.ps1</code>), не засоряя глобальную ОС. Никакого Docker или виртуализации — мгновенный запуск и прямая совместимость с IDE и терминалом.
+      </div>
+    </div>
+  </div>
 
   <!-- Statistics strip -->
   <div class="sp-env-metrics-grid">
@@ -677,6 +748,67 @@
             </div>
           </label>
         </div>
+      </div>
+
+      <!-- Tools and Runtimes Section -->
+      <div class="sp-form-group">
+        <div class="sp-envvars-header">
+          <div>
+            <span class="sp-form-label">Инструменты и рантаймы</span>
+            <span class="sp-form-hint">Инструменты, для которых окружение создаст локальные шиммы и изолирует пакеты</span>
+          </div>
+          <div class="sp-envvars-header-actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="sparkles"
+              loading={detectingTools}
+              onclick={handleAutoDetectTools}
+            >
+              Автоопределение
+            </Button>
+            <Button variant="ghost" size="sm" icon="plus" onclick={addToolRow}>
+              Добавить
+            </Button>
+          </div>
+        </div>
+
+        {#if modalTools.length === 0}
+          <p class="sp-muted-text">Инструменты не заданы. Нажмите «Автоопределение», чтобы обнаружить Node, Python, Cargo, Go и др. в системе.</p>
+        {:else}
+          <div class="sp-tools-modal-table">
+            {#each modalTools as row, i}
+              <div class="sp-tool-modal-row">
+                <input
+                  type="text"
+                  placeholder="ID (node, python...)"
+                  bind:value={row.id}
+                  class="sp-form-input tool-id-input"
+                />
+                <input
+                  type="text"
+                  placeholder="Путь к exe (пусто = системный из PATH)"
+                  bind:value={row.executable_path}
+                  class="sp-form-input tool-path-input"
+                />
+                <input
+                  type="text"
+                  placeholder="Версия (20.x)"
+                  bind:value={row.version}
+                  class="sp-form-input tool-ver-input"
+                />
+                <button
+                  type="button"
+                  class="sp-row-del-btn"
+                  onclick={() => removeToolRow(i)}
+                  title="Удалить инструмент"
+                >
+                  ✕
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <!-- Extra Environment Variables -->
@@ -1210,5 +1342,101 @@
 
   .sp-row-del-btn:hover {
     color: #ef4444;
+  }
+
+  /* Paradigm Explainer Banner */
+  .sp-env-paradigm-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5);
+    border-radius: var(--sp-radius-lg);
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(99, 102, 241, 0.06) 100%);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    margin-bottom: var(--sp-5);
+  }
+
+  .sp-banner-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: var(--sp-radius-md);
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    flex-shrink: 0;
+  }
+
+  .sp-banner-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .sp-banner-title {
+    font-weight: var(--sp-fw-semibold);
+    font-size: var(--sp-fs-md);
+    color: var(--sp-text-1);
+  }
+
+  .sp-banner-desc {
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-2);
+    line-height: 1.5;
+  }
+
+  .sp-banner-desc code {
+    background: var(--sp-bg-2);
+    padding: 1px 5px;
+    border-radius: var(--sp-radius-xs);
+    font-family: var(--sp-font-mono);
+    color: var(--sp-text-1);
+  }
+
+  /* Modal Tools Table */
+  .sp-form-hint {
+    display: block;
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    margin-top: 2px;
+  }
+
+  .sp-envvars-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-tools-modal-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sp-tool-modal-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .tool-id-input {
+    width: 130px;
+    font-family: var(--sp-font-mono);
+    font-size: 13px;
+    font-weight: var(--sp-fw-medium);
+  }
+
+  .tool-path-input {
+    flex: 2;
+    font-family: var(--sp-font-mono);
+    font-size: 12px;
+  }
+
+  .tool-ver-input {
+    width: 100px;
+    font-family: var(--sp-font-mono);
+    font-size: 12px;
+    color: var(--sp-amber-fg, #f59e0b);
   }
 </style>

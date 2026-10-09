@@ -26,6 +26,7 @@ pub mod fs_manager;
 pub mod models;
 pub mod resolver;
 pub mod service;
+pub mod tool_resolver;
 
 use service::{EnvironmentBindingService, JsonEnvironmentBindingService};
 use std::path::PathBuf;

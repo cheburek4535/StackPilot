@@ -20,12 +20,36 @@ use super::models::EnvironmentBinding;
 pub fn resolve_binding_overlay(binding: &EnvironmentBinding) -> EnvironmentOverlay {
     let mut overlay = EnvironmentOverlay::new();
 
-    // 0. Prepend environment bin directory if present
+    // 0. Prepend environment bin directory and isolated package directories if present
     if let Some(ref env_dir) = binding.env_dir {
-        let bin_dir = Path::new(env_dir).join("bin");
+        let env_path = Path::new(env_dir);
+        let bin_dir = env_path.join("bin");
         let bin_str = bin_dir.to_string_lossy().into_owned();
         if is_absolute_path(&bin_str) && bin_dir.exists() {
             overlay = overlay.prepend_path(bin_str);
+        }
+
+        // Prepend isolated package bin directories if they exist
+        #[cfg(target_os = "windows")]
+        let pkg_bins = [
+            env_path.join("npm"),
+            env_path.join("cargo").join("bin"),
+            env_path.join("go").join("bin"),
+            env_path.join("python_pkgs").join("Scripts"),
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let pkg_bins = [
+            env_path.join("npm").join("bin"),
+            env_path.join("cargo").join("bin"),
+            env_path.join("go").join("bin"),
+            env_path.join("python_pkgs").join("bin"),
+        ];
+
+        for pkg_bin in pkg_bins {
+            if pkg_bin.exists() {
+                let pkg_str = pkg_bin.to_string_lossy().into_owned();
+                overlay = overlay.prepend_path(pkg_str);
+            }
         }
     }
 
@@ -65,16 +89,51 @@ pub fn resolve_binding_overlay(binding: &EnvironmentBinding) -> EnvironmentOverl
     // 4. Default isolated variables for pure environment sandbox
     if binding.is_isolated() {
         if let Some(ref env_dir) = binding.env_dir {
+            let env_path = Path::new(env_dir);
+
             // Isolate global npm installs into the environment directory
-            if binding.tool_overrides.contains_key("node") && !binding.env_vars.contains_key("npm_config_prefix") {
-                let npm_prefix = Path::new(env_dir).join("npm").to_string_lossy().into_owned();
+            if (binding.tool_overrides.contains_key("node") || binding.tool_overrides.contains_key("nodejs") || binding.tool_overrides.contains_key("npm"))
+                && !binding.env_vars.contains_key("npm_config_prefix")
+            {
+                let npm_prefix = env_path.join("npm").to_string_lossy().into_owned();
                 overlay = overlay.set_var("npm_config_prefix", npm_prefix);
+                let npm_cache = env_path.join("cache").join("npm").to_string_lossy().into_owned();
+                overlay = overlay.set_var("npm_config_cache", npm_cache);
             }
+
             // Prevent Python from picking up user-level global site-packages
-            if binding.tool_overrides.contains_key("python") && !binding.env_vars.contains_key("PYTHONNOUSERSITE") {
+            if (binding.tool_overrides.contains_key("python") || binding.tool_overrides.contains_key("python3") || binding.tool_overrides.contains_key("pip"))
+                && !binding.env_vars.contains_key("PYTHONNOUSERSITE")
+            {
                 overlay = overlay.set_var("PYTHONNOUSERSITE", "1");
+                let pip_cache = env_path.join("cache").join("pip").to_string_lossy().into_owned();
+                overlay = overlay.set_var("PIP_CACHE_DIR", pip_cache);
+            }
+
+            // Isolate Cargo / Rust home
+            if (binding.tool_overrides.contains_key("rust") || binding.tool_overrides.contains_key("cargo"))
+                && !binding.env_vars.contains_key("CARGO_HOME")
+            {
+                let cargo_home = env_path.join("cargo").to_string_lossy().into_owned();
+                overlay = overlay.set_var("CARGO_HOME", cargo_home);
+            }
+
+            // Isolate Go path
+            if (binding.tool_overrides.contains_key("go") || binding.tool_overrides.contains_key("golang"))
+                && !binding.env_vars.contains_key("GOPATH")
+            {
+                let gopath = env_path.join("go").to_string_lossy().into_owned();
+                overlay = overlay.set_var("GOPATH", gopath);
             }
         }
+    }
+
+    // Ambient StackPilot environment indicators (set when environment is configured)
+    if binding.env_dir.is_some() || !binding.tool_overrides.is_empty() || !binding.env_vars.is_empty() {
+        let env_name = binding.name.as_deref().unwrap_or(&binding.binding_id);
+        overlay = overlay.set_var("_STACKPILOT_ENV", env_name);
+        overlay = overlay.set_var("_STACKPILOT_ENV_ID", &binding.binding_id);
+        overlay = overlay.set_var("_STACKPILOT_ENV_ISOLATED", if binding.is_isolated() { "1" } else { "0" });
     }
 
     // 5. Set environment variables

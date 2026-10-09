@@ -136,6 +136,9 @@
               execError={store.execError}
               execLogs={store.execLogs}
               devlProfileExists={store.devlProfileExists}
+              createdEnvBinding={store.createdEnvBinding}
+              onopenenvterminal={store.openCreatedEnvTerminal}
+              onopenworkspace={store.openInWorkspace}
               oncancel={store.cancelExecution}
               onreset={store.resetAll}
               onopenvscode={store.openInVSCode}

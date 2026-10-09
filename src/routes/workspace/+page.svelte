@@ -31,6 +31,8 @@
     unbindProjectFromEnvironment,
     configureVsCodeEnvironment,
     exportStandaloneEnvironment,
+    saveEnvironment,
+    resolveToolsForProject,
   } from "$lib/modules/project_environment/api";
   import type { EnvironmentBinding } from "$lib/modules/project_environment/types";
   import type { TrackedProcess, SessionInfo } from "$lib/modules/workspace/types";
@@ -276,6 +278,95 @@
       notifySuccess("VS Code", `Конфигурация .vscode/settings.json обновлена для «${projectEnv.name}»`);
     } catch (e) {
       notifyError("Ошибка настройки VS Code", String(e));
+    }
+  }
+
+  let creatingEnv = $state(false);
+  async function handleCreateIsolatedEnvForProject() {
+    if (!project?.project_path) return;
+    creatingEnv = true;
+    try {
+      const now = new Date().toISOString();
+      const envName = `${project.profile_name || 'Проект'} (Песочница)`;
+
+      const toolCandidates = new Set<string>(["git"]);
+      for (const tech of (project.stack || [])) {
+        const lower = tech.toLowerCase();
+        if (
+          lower.includes("node") ||
+          lower.includes("js") ||
+          lower.includes("ts") ||
+          lower.includes("react") ||
+          lower.includes("vue") ||
+          lower.includes("svelte") ||
+          lower.includes("next") ||
+          lower.includes("vite")
+        ) {
+          toolCandidates.add("node");
+          toolCandidates.add("npm");
+        }
+        if (
+          lower.includes("python") ||
+          lower.includes("django") ||
+          lower.includes("fastapi") ||
+          lower.includes("flask")
+        ) {
+          toolCandidates.add("python");
+          toolCandidates.add("pip");
+        }
+        if (
+          lower.includes("rust") ||
+          lower.includes("cargo") ||
+          lower.includes("tauri") ||
+          lower.includes("actix")
+        ) {
+          toolCandidates.add("cargo");
+          toolCandidates.add("rustc");
+        }
+        if (lower.includes("go") || lower.includes("golang")) {
+          toolCandidates.add("go");
+        }
+      }
+
+      let toolOverrides = {};
+      try {
+        toolOverrides = await resolveToolsForProject(Array.from(toolCandidates));
+      } catch (err) {
+        console.warn("Could not auto-resolve tools:", err);
+      }
+
+      const newBinding: EnvironmentBinding = {
+        schema_version: 1,
+        binding_id: `env_${Date.now().toString(16)}`,
+        name: envName,
+        isolation_mode: "isolated",
+        is_default: false,
+        description: `Изолированное окружение для ${project.profile_name || 'проекта'}`,
+        icon: "box",
+        color: "amber",
+        project_path: project.project_path,
+        bound_projects: [project.project_path],
+        env_dir: null,
+        tool_overrides: toolOverrides,
+        managed_path_entries: [],
+        env_vars: {},
+        env_vars_remove: [],
+        preferred_ide: null,
+        preferred_ide_args: null,
+        created_at: now,
+        updated_at: now,
+      };
+
+      const saved = await saveEnvironment(newBinding);
+      const bound = await bindProjectToEnvironment(saved.binding_id, project.project_path);
+      projectEnv = bound;
+      allEnvironments = await listEnvironments();
+      notifySuccess("Песочница создана", `Среда «${envName}» привязана к проекту`);
+      showEnvSwitcherModal = false;
+    } catch (e) {
+      notifyError("Ошибка создания среды", String(e));
+    } finally {
+      creatingEnv = false;
     }
   }
 
@@ -750,6 +841,24 @@
               {/each}
             </div>
           {/if}
+          {#if projectEnv && Object.keys(projectEnv.tool_overrides || {}).length > 0}
+            <div class="sp-hero-env-tools">
+              <span class="sp-hero-env-label">
+                <Icon name="wrench" size={12} />
+                Инструменты среды:
+              </span>
+              <div class="sp-hero-tool-chips">
+                {#each Object.entries(projectEnv.tool_overrides) as [tId, tOverride]}
+                  <span class="sp-hero-tool-chip" title={tOverride.executable_path || "Системный"}>
+                    <span class="sp-tool-name">{tId}</span>
+                    {#if tOverride.version}
+                      <span class="sp-tool-ver">v{tOverride.version}</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            </div>
+          {/if}
           <p class="sp-hero-opened">
             {i18n.t("ws.opened", { when: formatDateTime(project.opened_at) }) as TranslationKey}
           </p>
@@ -1148,6 +1257,11 @@
     {#if loadingEnvs}
       <LoadingState label="Загрузка доступных сред…" />
     {:else}
+      <div class="sp-env-notice">
+        <Icon name="info" size={14} />
+        <span>Песочница изолирует установку пакетов (<code>npm -g</code>, <code>pip</code>, <code>cargo</code>) и пути инструментов. Мгновенный запуск через системные шиммы без виртуальных машин.</span>
+      </div>
+
       <div class="sp-env-switcher-list">
         {#each allEnvironments as env}
           {@const isActive = projectEnv?.binding_id === env.binding_id}
@@ -1176,12 +1290,39 @@
                 {#if env.description}
                   <div class="sp-env-switcher-desc">{env.description}</div>
                 {/if}
+                {#if env.tool_overrides && Object.keys(env.tool_overrides).length > 0}
+                  <div class="sp-env-switcher-tools">
+                    {#each Object.entries(env.tool_overrides) as [tId, tOverride]}
+                      <span class="sp-tool-micro-chip">
+                        {tId}{tOverride.version ? `@${tOverride.version}` : ''}
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
               </div>
             </div>
             <Icon name={isActive ? "check" : "chevronRight"} size={16} />
           </button>
         {/each}
       </div>
+
+      {#if !projectEnv || projectEnv.isolation_mode !== "isolated"}
+        <div class="sp-env-switcher-create-banner">
+          <div class="sp-create-banner-info">
+            <span class="sp-create-banner-title">Нужна чистая песочница для проекта?</span>
+            <span class="sp-create-banner-sub">Создаст изолированное окружение с локальными шиммами (.cmd/.ps1) и привяжет к проекту.</span>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            icon="plus"
+            loading={creatingEnv}
+            onclick={handleCreateIsolatedEnvForProject}
+          >
+            Создать песочницу
+          </Button>
+        </div>
+      {/if}
 
       <div class="sp-env-switcher-footer">
         <div class="sp-env-switcher-actions-left">
@@ -2063,5 +2204,107 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+  }
+
+  .sp-hero-env-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+    font-size: var(--sp-fs-xs);
+  }
+  .sp-hero-env-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--sp-text-3);
+    font-weight: var(--sp-fw-medium);
+  }
+  .sp-hero-tool-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .sp-hero-tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+  }
+  .sp-hero-tool-chip .sp-tool-name {
+    color: var(--sp-text-1);
+    font-weight: var(--sp-fw-medium);
+  }
+  .sp-hero-tool-chip .sp-tool-ver {
+    color: var(--sp-amber-fg, #f59e0b);
+  }
+
+  .sp-env-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    line-height: 1.45;
+    margin-bottom: var(--sp-3);
+  }
+  .sp-env-notice code {
+    background: var(--sp-bg-3);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--sp-font-mono);
+  }
+
+  .sp-env-switcher-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .sp-tool-micro-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    background: var(--sp-bg-3);
+    border-radius: var(--sp-radius-xs);
+    font-size: 11px;
+    font-family: var(--sp-font-mono);
+    color: var(--sp-text-2);
+  }
+
+  .sp-env-switcher-create-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-primary-subtle, rgba(99, 102, 241, 0.08));
+    border: 1px dashed var(--sp-primary);
+    margin-bottom: var(--sp-3);
+  }
+  .sp-create-banner-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .sp-create-banner-title {
+    font-weight: var(--sp-fw-medium);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+  }
+  .sp-create-banner-sub {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
   }
 </style>

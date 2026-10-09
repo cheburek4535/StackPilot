@@ -26,9 +26,28 @@ pub fn pe_get_binding(
 #[tauri::command]
 pub fn pe_save_binding(
     state: State<'_, ProjectEnvironmentState>,
-    binding: EnvironmentBinding,
+    mut binding: EnvironmentBinding,
 ) -> Result<EnvironmentBinding, String> {
+    // If any tool overrides have missing executable paths, attempt to auto-resolve them
+    for (tool_id, tool_override) in &mut binding.tool_overrides {
+        if tool_override.executable_path.is_none() {
+            if let Some(resolved) = crate::modules::project_environment::tool_resolver::resolve_tool(tool_id) {
+                tool_override.executable_path = resolved.executable_path;
+                if tool_override.version.is_none() {
+                    tool_override.version = resolved.version;
+                }
+            }
+        }
+    }
     state.binding_service.save(&binding)
+}
+
+/// Resolve a list of tool IDs into concrete ToolOverrides with executable paths and versions.
+#[tauri::command]
+pub fn pe_resolve_tools_for_project(
+    tool_ids: Vec<String>,
+) -> Result<HashMap<String, ToolOverride>, String> {
+    Ok(crate::modules::project_environment::tool_resolver::resolve_tools_for_environment(&tool_ids))
 }
 
 /// Delete an environment binding by ID.

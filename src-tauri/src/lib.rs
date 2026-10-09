@@ -342,6 +342,7 @@ pub fn run() {
             modules::project_environment::commands::pe_cleanup_sandbox,
             modules::project_environment::commands::pe_open_terminal,
             modules::project_environment::commands::pe_configure_vscode_environment,
+            modules::project_environment::commands::pe_resolve_tools_for_project,
             // Plugin commands
             #[cfg(feature = "plugins")]
             mini_ide::commands::get_completions,
