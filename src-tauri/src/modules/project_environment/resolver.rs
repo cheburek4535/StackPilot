@@ -20,6 +20,15 @@ use super::models::EnvironmentBinding;
 pub fn resolve_binding_overlay(binding: &EnvironmentBinding) -> EnvironmentOverlay {
     let mut overlay = EnvironmentOverlay::new();
 
+    // 0. Prepend environment bin directory if present
+    if let Some(ref env_dir) = binding.env_dir {
+        let bin_dir = Path::new(env_dir).join("bin");
+        let bin_str = bin_dir.to_string_lossy().into_owned();
+        if is_absolute_path(&bin_str) && bin_dir.exists() {
+            overlay = overlay.prepend_path(bin_str);
+        }
+    }
+
     // 1. Collect tool-specific paths
     let mut tool_paths: Vec<String> = Vec::new();
 
@@ -53,12 +62,27 @@ pub fn resolve_binding_overlay(binding: &EnvironmentBinding) -> EnvironmentOverl
         overlay = overlay.prepend_path(path);
     }
 
-    // 4. Set environment variables
+    // 4. Default isolated variables for pure environment sandbox
+    if binding.is_isolated() {
+        if let Some(ref env_dir) = binding.env_dir {
+            // Isolate global npm installs into the environment directory
+            if binding.tool_overrides.contains_key("node") && !binding.env_vars.contains_key("npm_config_prefix") {
+                let npm_prefix = Path::new(env_dir).join("npm").to_string_lossy().into_owned();
+                overlay = overlay.set_var("npm_config_prefix", npm_prefix);
+            }
+            // Prevent Python from picking up user-level global site-packages
+            if binding.tool_overrides.contains_key("python") && !binding.env_vars.contains_key("PYTHONNOUSERSITE") {
+                overlay = overlay.set_var("PYTHONNOUSERSITE", "1");
+            }
+        }
+    }
+
+    // 5. Set environment variables
     for (key, value) in &binding.env_vars {
         overlay = overlay.set_var(key, value);
     }
 
-    // 5. Remove environment variables
+    // 6. Remove environment variables
     for key in &binding.env_vars_remove {
         overlay = overlay.remove_var(key);
     }
@@ -125,20 +149,9 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_binding() -> EnvironmentBinding {
-        EnvironmentBinding {
-            schema_version: 1,
-            binding_id: "env_test".into(),
-            name: Some("Test".into()),
-            project_path: None,
-            tool_overrides: HashMap::new(),
-            managed_path_entries: Vec::new(),
-            env_vars: HashMap::new(),
-            env_vars_remove: Vec::new(),
-            preferred_ide: None,
-            preferred_ide_args: None,
-            created_at: String::new(),
-            updated_at: String::new(),
-        }
+        let mut b = EnvironmentBinding::new(Some("Test".into()), None);
+        b.binding_id = "env_test".into();
+        b
     }
 
     /// Convert a Unix-style absolute path into a platform-appropriate absolute

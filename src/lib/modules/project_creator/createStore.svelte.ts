@@ -79,6 +79,12 @@ import { setContext, getContext } from "svelte";
     HINT_CREATE_PREVIEW,
   } from "$lib/core/help";
   import HelpHint from "$lib/components/ui/HelpHint.svelte";
+  import {
+    saveEnvironment,
+    getOrCreateDefaultEnvironment,
+    bindProjectToEnvironment,
+    configureVsCodeEnvironment,
+  } from "$lib/modules/project_environment/api";
 
 export type TooltipItem =
   | { type: 'tool'; tool: ToolDef; conflictReason?: string | null }
@@ -148,6 +154,7 @@ export function createProjectStore() {
   let testing = $state(true);
   let git = $state(true);
   let vscode = $state(true);
+  let envIsolationMode = $state<"isolated" | "global">("isolated");
   
   // Живая валидация стека (зеркало бэкенда, rules.ts)
   let stackIssues = $derived<StackIssue[]>(
@@ -526,6 +533,7 @@ export function createProjectStore() {
       removedStepIds,
       envLocalInfra: [...envLocalInfra],
       envSelectedIds: [...envSelectedIds],
+      envIsolationMode,
       envInstalling,
       envInstallDone,
       execOverallStatus,
@@ -572,6 +580,9 @@ export function createProjectStore() {
     testing = bool(s.testing);
     git = bool(s.git);
     vscode = bool(s.vscode);
+    if (s.envIsolationMode === "global" || s.envIsolationMode === "isolated") {
+      envIsolationMode = s.envIsolationMode;
+    }
     const restoredReadmeLocale = str(s.readmeLocale) as Locale;
     if ((availableLocales.map((l) => l.id) as string[]).includes(restoredReadmeLocale)) {
       readmeLocale = restoredReadmeLocale;
@@ -2419,6 +2430,47 @@ export function createProjectStore() {
         // уже показанное/закрытое окно заново.
         const createdSuccessfully = a?.result?.overall === "Success";
         if (createdSuccessfully) markHelpGraduated();
+        if (createdSuccessfully && execPlan?.project_path) {
+          const pPath = execPlan.project_path;
+          try {
+            if (envIsolationMode === "isolated") {
+              const envId = `env_${Date.now().toString(16)}`;
+              const now = new Date().toISOString();
+              await saveEnvironment({
+                schema_version: 1,
+                binding_id: envId,
+                name: projectName || "Project Sandbox",
+                isolation_mode: "isolated",
+                is_default: false,
+                description: `Изолированное окружение для ${projectName || pPath}`,
+                icon: "package",
+                color: "amber",
+                project_path: pPath,
+                bound_projects: [pPath],
+                env_dir: null,
+                tool_overrides: {},
+                managed_path_entries: [],
+                env_vars: {},
+                env_vars_remove: [],
+                preferred_ide: null,
+                preferred_ide_args: null,
+                created_at: now,
+                updated_at: now,
+              });
+              if (vscode) {
+                await configureVsCodeEnvironment(envId, pPath);
+              }
+            } else {
+              const defEnv = await getOrCreateDefaultEnvironment();
+              await bindProjectToEnvironment(defEnv.binding_id, pPath);
+              if (vscode) {
+                await configureVsCodeEnvironment(defEnv.binding_id, pPath);
+              }
+            }
+          } catch (envErr) {
+            console.warn("[ProjectCreator] Failed to bind environment:", envErr);
+          }
+        }
         if (createdSuccessfully && !devlAutoPopupShown && execPlan?.context) {
           const ctx = { ...execPlan.context, project_path: execPlan.project_path };
           try {
@@ -2620,6 +2672,8 @@ export function createProjectStore() {
     set git(v) { git = v; },
     get vscode() { return vscode; },
     set vscode(v) { vscode = v; },
+    get envIsolationMode() { return envIsolationMode; },
+    set envIsolationMode(v) { envIsolationMode = v; },
     get stackIssues() { return stackIssues; },
     set stackIssues(v) { stackIssues = v; },
     get stackError() { return stackError; },

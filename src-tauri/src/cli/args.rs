@@ -51,6 +51,10 @@ pub enum Commands {
     /// Open a project directory in your configured editor (VS Code, Cursor, etc.)
     Open(OpenArgs),
 
+    /// Manage, list, and run commands in isolated project environments
+    #[command(alias = "e")]
+    Env(EnvArgs),
+
     /// Print version information
     #[command(alias = "-version", alias = "--version", alias = "-v")]
     Version,
@@ -236,4 +240,74 @@ pub struct AnalyzeArgs {
     /// Output analysis details as JSON
     #[arg(long = "json")]
     pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EnvArgs {
+    #[command(subcommand)]
+    pub action: EnvSubcommands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum EnvSubcommands {
+    /// List all configured project environments
+    #[command(alias = "ls")]
+    List,
+
+    /// Run a command inside an isolated project environment
+    Run(EnvRunArgs),
+
+    /// Open an interactive shell inside an environment
+    #[command(alias = "sh")]
+    Shell(EnvShellArgs),
+
+    /// Export standalone activation scripts (activate.bat, activate.sh)
+    Export(EnvExportArgs),
+
+    /// Bind a project directory to an environment
+    Bind(EnvBindArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EnvRunArgs {
+    /// Environment ID or name (defaults to environment bound to current directory)
+    #[arg(short = 'e', long = "env", value_name = "ENV")]
+    pub env: Option<String>,
+
+    /// Command to execute
+    #[arg(value_name = "COMMAND", required = true)]
+    pub command: String,
+
+    /// Arguments for the command
+    #[arg(value_name = "ARGS", trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EnvShellArgs {
+    /// Environment ID or name (defaults to environment bound to current directory)
+    #[arg(short = 'e', long = "env", value_name = "ENV")]
+    pub env: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EnvExportArgs {
+    /// Environment ID or name (defaults to environment bound to current directory)
+    #[arg(short = 'e', long = "env", value_name = "ENV")]
+    pub env: Option<String>,
+
+    /// Destination directory (defaults to current directory)
+    #[arg(short = 'd', long = "dir", value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EnvBindArgs {
+    /// Environment ID or name to bind to
+    #[arg(value_name = "ENV")]
+    pub env: String,
+
+    /// Project directory path (defaults to current directory)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
 }

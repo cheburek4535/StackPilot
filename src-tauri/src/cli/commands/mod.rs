@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod create;
 pub mod doctor;
+pub mod env;
 pub mod launch;
 pub mod list;
 pub mod open;

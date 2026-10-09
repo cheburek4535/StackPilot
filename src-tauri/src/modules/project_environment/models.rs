@@ -11,6 +11,45 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 /// environment variables, PATH entries, and an optional preferred IDE.
 ///
 /// Old JSON files without new fields load correctly via `#[serde(default)]`.
+/// Mode of isolation for an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationMode {
+    /// Global host environment: uses system tools directly, no sandboxing.
+    Global,
+    /// Isolated environment: tools and shims are scoped to an environment directory.
+    Isolated,
+}
+
+/// Result of exporting standalone activation scripts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandaloneExportResult {
+    pub target_dir: String,
+    pub created_files: Vec<String>,
+}
+
+/// Disk usage statistics for an environment sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentDiskUsage {
+    pub binding_id: String,
+    pub size_bytes: u64,
+    pub size_display: String,
+    pub path: Option<String>,
+}
+
+impl Default for IsolationMode {
+    fn default() -> Self {
+        IsolationMode::Isolated
+    }
+}
+
+/// Persisted project environment binding.
+///
+/// Stored under `app_data_dir/project_environments/<binding_id>.json`.
+/// A binding associates a project (by optional path) with tool overrides,
+/// environment variables, PATH entries, and an optional preferred IDE.
+///
+/// Old JSON files without new fields load correctly via `#[serde(default)]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentBinding {
     /// Schema version for migration. Default 1.
@@ -24,10 +63,37 @@ pub struct EnvironmentBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
-    /// Optional project path this binding is associated with.
-    /// When set, the binding can be auto-selected for that project.
+    /// Mode of isolation: Global or Isolated.
+    #[serde(default)]
+    pub isolation_mode: IsolationMode,
+
+    /// Whether this is the default global environment profile.
+    #[serde(default)]
+    pub is_default: bool,
+
+    /// Optional human-readable description of what this environment is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Optional icon name for UI display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+
+    /// Optional accent color for UI display (e.g. "orange", "blue", "emerald").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+
+    /// Optional project path this binding is associated with (legacy/single link).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+
+    /// List of project paths bound to this environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_projects: Vec<String>,
+
+    /// Optional path to the environment sandbox directory containing shims/bin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_dir: Option<String>,
 
     /// Tool overrides keyed by tool ID (e.g. "python", "node", "cargo").
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -107,14 +173,27 @@ pub struct BindingWarning {
 }
 
 impl EnvironmentBinding {
-    /// Create a new binding with a generated ID and timestamps.
+    /// Create a new isolated binding with a generated ID and timestamps.
     pub fn new(name: Option<String>, project_path: Option<String>) -> Self {
         let now = chrono_now();
+        let mut bound_projects = Vec::new();
+        if let Some(ref p) = project_path {
+            if !p.trim().is_empty() {
+                bound_projects.push(p.trim().to_string());
+            }
+        }
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             binding_id: generate_binding_id(),
             name,
+            isolation_mode: IsolationMode::Isolated,
+            is_default: false,
+            description: None,
+            icon: Some("box".to_string()),
+            color: Some("orange".to_string()),
             project_path,
+            bound_projects,
+            env_dir: None,
             tool_overrides: HashMap::new(),
             managed_path_entries: Vec::new(),
             env_vars: HashMap::new(),
@@ -124,6 +203,89 @@ impl EnvironmentBinding {
             created_at: now.clone(),
             updated_at: now,
         }
+    }
+
+    /// Create the canonical global host default environment.
+    pub fn new_global_default() -> Self {
+        let now = chrono_now();
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            binding_id: "default".to_string(),
+            name: Some("Глобальное окружение (Система)".to_string()),
+            isolation_mode: IsolationMode::Global,
+            is_default: true,
+            description: Some("Стандартное системное окружение. Инструменты используются глобально из вашей операционной системы без изоляции.".to_string()),
+            icon: Some("globe".to_string()),
+            color: Some("blue".to_string()),
+            project_path: None,
+            bound_projects: Vec::new(),
+            env_dir: None,
+            tool_overrides: HashMap::new(),
+            managed_path_entries: Vec::new(),
+            env_vars: HashMap::new(),
+            env_vars_remove: Vec::new(),
+            preferred_ide: None,
+            preferred_ide_args: None,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// Check if this environment is in isolated mode.
+    pub fn is_isolated(&self) -> bool {
+        self.isolation_mode == IsolationMode::Isolated
+    }
+
+    /// Bind a project path to this environment if not already bound.
+    pub fn bind_project(&mut self, path: &str) -> bool {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let already_bound = self.bound_projects.iter().any(|p| {
+            if cfg!(target_os = "linux") {
+                p == trimmed
+            } else {
+                p.eq_ignore_ascii_case(trimmed)
+            }
+        });
+        if !already_bound {
+            self.bound_projects.push(trimmed.to_string());
+            if self.project_path.is_none() {
+                self.project_path = Some(trimmed.to_string());
+            }
+            self.touch();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Unbind a project path from this environment.
+    pub fn unbind_project(&mut self, path: &str) -> bool {
+        let trimmed = path.trim();
+        let len_before = self.bound_projects.len();
+        self.bound_projects.retain(|p| {
+            if cfg!(target_os = "linux") {
+                p != trimmed
+            } else {
+                !p.eq_ignore_ascii_case(trimmed)
+            }
+        });
+        if self.project_path.as_deref().is_some_and(|p| {
+            if cfg!(target_os = "linux") {
+                p == trimmed
+            } else {
+                p.eq_ignore_ascii_case(trimmed)
+            }
+        }) {
+            self.project_path = self.bound_projects.first().cloned();
+        }
+        let changed = self.bound_projects.len() != len_before;
+        if changed {
+            self.touch();
+        }
+        changed
     }
 
     /// Touch the updated_at timestamp.

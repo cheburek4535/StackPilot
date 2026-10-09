@@ -216,6 +216,7 @@ struct StreamOutcome {
     error_line: Option<String>,
     /// Последняя непустая строка потока (для curl/dpkg-ошибок,
     /// которые не помечены tc:error).
+    #[allow(dead_code)]
     last_line: Option<String>,
 }
 

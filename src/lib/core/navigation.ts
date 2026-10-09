@@ -52,11 +52,18 @@ export const NAV_GROUPS: NavGroup[] = [
         match: exact(["/"]),
       },
       {
+        id: "environments",
+        label: "nav.environments",
+        href: "/environments",
+        icon: "box",
+        match: exact(["/environments", "/environment"]),
+      },
+      {
         id: "toolchain",
         label: "nav.toolchain",
         href: "/toolchain",
         icon: "wrench",
-        match: exact(["/toolchain", "/environment"]),
+        match: exact(["/toolchain"]),
       },
       {
         id: "project-creator",

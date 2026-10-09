@@ -88,6 +88,201 @@ pub fn pe_create_binding(
     state.binding_service.save(&binding)
 }
 
+/// Get or create the canonical default global environment.
+#[tauri::command]
+pub fn pe_get_or_create_default(
+    state: State<'_, ProjectEnvironmentState>,
+) -> Result<EnvironmentBinding, String> {
+    state.binding_service.get_or_create_default()
+}
+
+/// Bind a project path to an environment.
+#[tauri::command]
+pub fn pe_bind_project(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+    project_path: String,
+) -> Result<EnvironmentBinding, String> {
+    state.binding_service.bind_project(&binding_id, &project_path)
+}
+
+/// Unbind a project path from an environment.
+#[tauri::command]
+pub fn pe_unbind_project(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+    project_path: String,
+) -> Result<EnvironmentBinding, String> {
+    state.binding_service.unbind_project(&binding_id, &project_path)
+}
+
+/// Export standalone activation scripts into the target project directory.
+#[tauri::command]
+pub fn pe_export_standalone(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+    target_dir: Option<String>,
+) -> Result<StandaloneExportResult, String> {
+    state.binding_service.export_standalone(&binding_id, target_dir.as_deref())
+}
+
+/// Calculate disk usage for an environment sandbox.
+#[tauri::command]
+pub fn pe_calculate_disk_usage(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+) -> Result<EnvironmentDiskUsage, String> {
+    state.binding_service.calculate_disk_usage(&binding_id)
+}
+
+/// Clean up temporary sandbox cache and rebuild fresh shims.
+#[tauri::command]
+pub fn pe_cleanup_sandbox(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+) -> Result<EnvironmentDiskUsage, String> {
+    state.binding_service.cleanup_sandbox(&binding_id)
+}
+
+/// Spawn a visible native terminal preloaded with this environment overlay.
+#[tauri::command]
+pub async fn pe_open_terminal(
+    state: State<'_, ProjectEnvironmentState>,
+    workspace: State<'_, crate::modules::workspace::WorkspaceState>,
+    binding_id: String,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    let binding = state.binding_service.get(&binding_id)?;
+    let (overlay, _) = resolve_with_diagnostics(&binding);
+
+    let working_dir = project_path
+        .or_else(|| binding.project_path.clone())
+        .or_else(|| binding.bound_projects.first().cloned());
+
+    let session_id = crate::modules::workspace::session::ensure_session(&workspace);
+    let manager = std::sync::Arc::clone(&workspace.process_manager);
+
+    let title = format!(
+        "StackPilot [{}]",
+        binding.name.as_deref().unwrap_or(&binding.binding_id)
+    );
+
+    #[cfg(target_os = "windows")]
+    let (cmd, args) = (
+        "cmd.exe".to_string(),
+        vec!["/k".to_string(), format!("title {}", title)],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (cmd, args) = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") {
+                "/bin/zsh".to_string()
+            } else {
+                "/bin/bash".to_string()
+            }
+        });
+        (shell, vec![])
+    };
+
+    let args_refs: Vec<String> = args;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let args_str_refs: Vec<&str> = args_refs.iter().map(|s| s.as_str()).collect();
+        manager.spawn_visible(
+            &cmd,
+            &args_str_refs,
+            working_dir.as_deref(),
+            &title,
+            session_id,
+            Some(&overlay),
+        )
+    })
+    .await
+    .map_err(|e| format!("Spawn terminal failed: {e}"))??;
+
+    Ok(())
+}
+
+/// Configure .vscode/settings.json in project_path for this environment.
+#[tauri::command]
+pub fn pe_configure_vscode_environment(
+    state: State<'_, ProjectEnvironmentState>,
+    binding_id: String,
+    project_path: String,
+) -> Result<(), String> {
+    let binding = state.binding_service.get(&binding_id)?;
+    let (overlay, _) = resolve_with_diagnostics(&binding);
+
+    let proj = std::path::Path::new(&project_path);
+    if !proj.is_dir() {
+        return Err(format!("Project directory '{}' does not exist", project_path));
+    }
+    let vscode_dir = proj.join(".vscode");
+    let _ = std::fs::create_dir_all(&vscode_dir);
+    let settings_path = vscode_dir.join("settings.json");
+
+    let mut settings: serde_json::Map<String, serde_json::Value> = if settings_path.exists() {
+        std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+
+    if !overlay.path_prepend.is_empty() || !overlay.vars_set.is_empty() {
+        let (env_key, path_val) = match crate::platform::host::current_os() {
+            crate::platform::host::HostOs::Windows => {
+                let s = overlay.path_prepend.join(";");
+                ("terminal.integrated.env.windows", format!("{};${{env:PATH}}", s))
+            }
+            crate::platform::host::HostOs::Macos => {
+                let s = overlay.path_prepend.iter().map(|p| p.replace('\\', "/")).collect::<Vec<_>>().join(":");
+                ("terminal.integrated.env.osx", format!("{}:${{env:PATH}}", s))
+            }
+            crate::platform::host::HostOs::Linux => {
+                let s = overlay.path_prepend.iter().map(|p| p.replace('\\', "/")).collect::<Vec<_>>().join(":");
+                ("terminal.integrated.env.linux", format!("{}:${{env:PATH}}", s))
+            }
+        };
+
+        let mut term_env = settings
+            .get(env_key)
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
+        if !overlay.path_prepend.is_empty() {
+            term_env.insert("PATH".to_string(), serde_json::Value::String(path_val));
+        }
+
+        for (k, v) in &overlay.vars_set {
+            term_env.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
+
+        settings.insert(
+            env_key.to_string(),
+            serde_json::Value::Object(term_env),
+        );
+    }
+
+    if let Some(tool) = binding.tool_overrides.get("python") {
+        if let Some(ref exe) = tool.executable_path {
+            settings.insert(
+                "python.defaultInterpreterPath".to_string(),
+                serde_json::Value::String(exe.clone()),
+            );
+        }
+    }
+
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    )
+    .map_err(|e| format!("Failed to write .vscode/settings.json: {e}"))?;
+
+    Ok(())
+}
+
 /// Response payload for pe_resolve_overlay.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedOverlay {

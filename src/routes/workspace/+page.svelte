@@ -11,6 +11,7 @@
   import LoadingState from "$lib/components/ui/LoadingState.svelte";
   import ErrorState from "$lib/components/ui/ErrorState.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
   import {
     workspaceContext,
     reloadWorkspaceContext,
@@ -22,6 +23,16 @@
     setCurrentProject,
     openInVSCode,
   } from "$lib/modules/workspace/api";
+  import {
+    findEnvironmentForProject,
+    openEnvironmentTerminal,
+    listEnvironments,
+    bindProjectToEnvironment,
+    unbindProjectFromEnvironment,
+    configureVsCodeEnvironment,
+    exportStandaloneEnvironment,
+  } from "$lib/modules/project_environment/api";
+  import type { EnvironmentBinding } from "$lib/modules/project_environment/types";
   import type { TrackedProcess, SessionInfo } from "$lib/modules/workspace/types";
   import {
     statusTone,
@@ -183,6 +194,90 @@
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
   const wsError = $derived($workspaceContext.error);
+
+  let projectEnv = $state<EnvironmentBinding | null>(null);
+
+  $effect(() => {
+    const pPath = project?.project_path;
+    if (pPath) {
+      findEnvironmentForProject(pPath)
+        .then((env: EnvironmentBinding | null) => {
+          projectEnv = env;
+        })
+        .catch(() => {
+          projectEnv = null;
+        });
+    } else {
+      projectEnv = null;
+    }
+  });
+
+  async function openEnvTerminalSafe(bindingId: string) {
+    try {
+      await openEnvironmentTerminal(bindingId);
+      notifySuccess("Терминал", "Терминал окружения запущен");
+    } catch (e) {
+      notifyError("Ошибка терминала", String(e));
+    }
+  }
+
+  let showEnvSwitcherModal = $state(false);
+  let allEnvironments = $state<EnvironmentBinding[]>([]);
+  let loadingEnvs = $state(false);
+  let switchingEnv = $state(false);
+
+  async function openEnvSwitcher() {
+    showEnvSwitcherModal = true;
+    loadingEnvs = true;
+    try {
+      allEnvironments = await listEnvironments();
+    } catch (e) {
+      notifyError("Ошибка загрузки сред", String(e));
+    } finally {
+      loadingEnvs = false;
+    }
+  }
+
+  async function handleSwitchEnvironment(targetEnv: EnvironmentBinding) {
+    if (!project?.project_path) return;
+    switchingEnv = true;
+    try {
+      if (projectEnv && projectEnv.binding_id !== targetEnv.binding_id) {
+        await unbindProjectFromEnvironment(projectEnv.binding_id, project.project_path);
+      }
+      const updated = await bindProjectToEnvironment(targetEnv.binding_id, project.project_path);
+      projectEnv = updated;
+      notifySuccess("Окружение переключено", `Проект использует среду «${targetEnv.name || targetEnv.binding_id}»`);
+      showEnvSwitcherModal = false;
+    } catch (e) {
+      notifyError("Ошибка переключения среды", String(e));
+    } finally {
+      switchingEnv = false;
+    }
+  }
+
+  async function handleExportStandaloneFromWorkspace() {
+    if (!project?.project_path || !projectEnv) return;
+    try {
+      const res = await exportStandaloneEnvironment(projectEnv.binding_id, project.project_path);
+      notifySuccess(
+        "Standalone скрипты экспортированы",
+        `Созданы ${res.created_files.join(", ")} в папке проекта`
+      );
+    } catch (e) {
+      notifyError("Ошибка экспорта", String(e));
+    }
+  }
+
+  async function handleConfigureVsCodeFromWorkspace() {
+    if (!project?.project_path || !projectEnv) return;
+    try {
+      await configureVsCodeEnvironment(projectEnv.binding_id, project.project_path);
+      notifySuccess("VS Code", `Конфигурация .vscode/settings.json обновлена для «${projectEnv.name}»`);
+    } catch (e) {
+      notifyError("Ошибка настройки VS Code", String(e));
+    }
+  }
 
   const runningProcs = $derived(processes.filter((p) => isProcessRunning(p.status)));
   const runningCount = $derived(runningProcs.length);
@@ -618,6 +713,29 @@
           <div class="sp-hero-head">
             <h2 class="sp-hero-name">{project.profile_name}</h2>
             <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
+            {#if projectEnv}
+              <button
+                type="button"
+                class="sp-env-switcher-badge"
+                onclick={openEnvSwitcher}
+                title="Нажмите для переключения или настройки среды проекта"
+              >
+                {#if projectEnv.isolation_mode === "isolated"}
+                  <Badge tone="amber">{projectEnv.name || "Изолированная среда"} ▾</Badge>
+                {:else}
+                  <Badge tone="neutral">{projectEnv.name || "Глобальная среда"} ▾</Badge>
+                {/if}
+              </button>
+            {:else if project.project_path}
+              <button
+                type="button"
+                class="sp-env-switcher-badge"
+                onclick={openEnvSwitcher}
+                title="Выбрать или привязать среду для проекта"
+              >
+                <Badge tone="neutral">Среда: не привязана ▾</Badge>
+              </button>
+            {/if}
           </div>
           {#if project.description}
             <p class="sp-hero-desc">{project.description}</p>
@@ -645,6 +763,24 @@
             {i18n.t("ws.open_in_devlauncher") as TranslationKey}
           </Button>
           {#if project.project_path}
+            {#if projectEnv}
+              <Button
+                variant="secondary"
+                icon="terminal"
+                onclick={() => openEnvTerminalSafe(projectEnv!.binding_id)}
+                label="Терминал среды"
+              >
+                Терминал среды
+              </Button>
+              <Button
+                variant="secondary"
+                icon="download"
+                onclick={handleExportStandaloneFromWorkspace}
+                label="Экспортировать автономные скрипты активации (activate.bat, activate.sh)"
+              >
+                Экспорт среды
+              </Button>
+            {/if}
             <Button
               variant="secondary"
               icon="external"
@@ -1000,6 +1136,90 @@
     </section>
   {/if}
 </PageContainer>
+
+{#if showEnvSwitcherModal}
+  <Modal
+    open={showEnvSwitcherModal}
+    onclose={() => showEnvSwitcherModal = false}
+    title="Окружение проекта"
+    description="Выберите среду выполнения для текущего проекта. Инструменты и переменные будут применены автоматически."
+    size="md"
+  >
+    {#if loadingEnvs}
+      <LoadingState label="Загрузка доступных сред…" />
+    {:else}
+      <div class="sp-env-switcher-list">
+        {#each allEnvironments as env}
+          {@const isActive = projectEnv?.binding_id === env.binding_id}
+          <button
+            type="button"
+            class="sp-env-switcher-item {isActive ? 'is-active' : ''}"
+            onclick={() => handleSwitchEnvironment(env)}
+            disabled={switchingEnv}
+          >
+            <div class="sp-env-switcher-item-left">
+              <div class="sp-env-switcher-icon">
+                <Icon name={env.isolation_mode === "isolated" ? "package" : "globe"} size={20} />
+              </div>
+              <div class="sp-env-switcher-item-info">
+                <div class="sp-env-switcher-name">
+                  <span>{env.name || env.binding_id}</span>
+                  {#if env.is_default}
+                    <Badge tone="cyan">Система</Badge>
+                  {:else if env.isolation_mode === "isolated"}
+                    <Badge tone="amber">Изолированная</Badge>
+                  {/if}
+                  {#if isActive}
+                    <Badge tone="lime">Активно ✓</Badge>
+                  {/if}
+                </div>
+                {#if env.description}
+                  <div class="sp-env-switcher-desc">{env.description}</div>
+                {/if}
+              </div>
+            </div>
+            <Icon name={isActive ? "check" : "chevronRight"} size={16} />
+          </button>
+        {/each}
+      </div>
+
+      <div class="sp-env-switcher-footer">
+        <div class="sp-env-switcher-actions-left">
+          {#if projectEnv}
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="terminal"
+              onclick={handleConfigureVsCodeFromWorkspace}
+              label="Обновить .vscode/settings.json"
+            >
+              VS Code
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="download"
+              onclick={handleExportStandaloneFromWorkspace}
+              label="Экспортировать автономные скрипты"
+            >
+              Экспорт
+            </Button>
+          {/if}
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => {
+            showEnvSwitcherModal = false;
+            goto("/environments");
+          }}
+        >
+          Все окружения →
+        </Button>
+      </div>
+    {/if}
+  </Modal>
+{/if}
 
 {#if showWslModal && isWindows}
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
@@ -1751,4 +1971,97 @@
     to { transform: rotate(360deg); }
   }
   .wsl-error { color: var(--sp-danger); }
+
+  /* Project Environment Switcher */
+  .sp-env-switcher-badge {
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--sp-radius-sm);
+    transition: transform var(--sp-duration-fast) ease, opacity var(--sp-duration-fast) ease;
+  }
+  .sp-env-switcher-badge:hover {
+    transform: translateY(-1px);
+    opacity: 0.85;
+  }
+  .sp-env-switcher-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    max-height: 380px;
+    overflow-y: auto;
+    margin-bottom: var(--sp-4);
+  }
+  .sp-env-switcher-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-bg-1);
+    cursor: pointer;
+    text-align: left;
+    transition: all var(--sp-duration-fast) ease;
+    width: 100%;
+  }
+  .sp-env-switcher-item:hover:not(:disabled) {
+    background: var(--sp-bg-2);
+    border-color: var(--sp-primary);
+  }
+  .sp-env-switcher-item.is-active {
+    border-color: var(--sp-primary);
+    background: var(--sp-primary-subtle, rgba(99, 102, 241, 0.08));
+  }
+  .sp-env-switcher-item-left {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+  .sp-env-switcher-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    flex-shrink: 0;
+  }
+  .sp-env-switcher-item-info {
+    min-width: 0;
+  }
+  .sp-env-switcher-name {
+    font-weight: var(--sp-fw-medium);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .sp-env-switcher-desc {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sp-env-switcher-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--sp-border);
+    gap: var(--sp-2);
+  }
+  .sp-env-switcher-actions-left {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
 </style>

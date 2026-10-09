@@ -400,6 +400,16 @@ fn resolve_macos(cli: &str) -> Option<String> {
         base_dirs.push(std::path::PathBuf::from(h).join("Applications"));
     }
 
+    // JetBrains Toolbox scripts on macOS
+    if let Some(h) = &home {
+        let jb_scripts = std::path::PathBuf::from(h)
+            .join("Library/Application Support/JetBrains/Toolbox/scripts")
+            .join(cli);
+        if jb_scripts.is_file() {
+            return Some(jb_scripts.to_string_lossy().into_owned());
+        }
+    }
+
     // Bundle lookup map: cli name → app bundle and inner binary path.
     let bundles: &[(&str, &str, &str)] = &[
         (
@@ -414,14 +424,25 @@ fn resolve_macos(cli: &str) -> Option<String> {
         ),
         ("cursor", "Cursor.app", "Contents/MacOS/Cursor"),
         ("windsurf", "Windsurf.app", "Contents/MacOS/windsurf"),
+        ("zed", "Zed.app", "Contents/MacOS/cli"),
+        ("zed", "Zed.app", "Contents/MacOS/Zed"),
+        ("subl", "Sublime Text.app", "Contents/SharedSupport/bin/subl"),
         ("pycharm", "PyCharm.app", "Contents/MacOS/pycharm"),
+        ("pycharm", "PyCharm CE.app", "Contents/MacOS/pycharm"),
+        ("pycharm", "PyCharm Professional.app", "Contents/MacOS/pycharm"),
         ("goland", "GoLand.app", "Contents/MacOS/goland"),
         ("idea", "IntelliJ IDEA.app", "Contents/MacOS/idea"),
+        ("idea", "IntelliJ IDEA CE.app", "Contents/MacOS/idea"),
+        ("idea", "IntelliJ IDEA Community Edition.app", "Contents/MacOS/idea"),
+        ("idea", "IntelliJ IDEA Ultimate.app", "Contents/MacOS/idea"),
         ("webstorm", "WebStorm.app", "Contents/MacOS/webstorm"),
         ("clion", "CLion.app", "Contents/MacOS/clion"),
         ("phpstorm", "PhpStorm.app", "Contents/MacOS/phpstorm"),
         ("rubymine", "RubyMine.app", "Contents/MacOS/rubymine"),
         ("rider", "Rider.app", "Contents/MacOS/rider"),
+        ("rustrover", "RustRover.app", "Contents/MacOS/rustrover"),
+        ("datagrip", "DataGrip.app", "Contents/MacOS/datagrip"),
+        ("studio", "Android Studio.app", "Contents/MacOS/studio"),
     ];
     let lower = cli.to_ascii_lowercase();
     for (name, bundle, bin) in bundles {
@@ -462,6 +483,7 @@ fn resolve_linux(cli: &str) -> Option<String> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(h) = &home {
         dirs.push(std::path::PathBuf::from(h).join(".local").join("bin"));
+        dirs.push(std::path::PathBuf::from(h).join(".local/share/JetBrains/Toolbox/scripts"));
     }
     dirs.push(std::path::PathBuf::from("/usr/local/bin"));
     dirs.push(std::path::PathBuf::from("/usr/bin"));
@@ -477,13 +499,18 @@ fn resolve_linux(cli: &str) -> Option<String> {
         }
     }
 
-    // Flatpak: `flatpak run com.visualstudio.code` style.
+    // Flatpak: `flatpak run <id>` style.
     let flatpak_ids: &[(&str, &str)] = &[
         ("code", "com.visualstudio.code"),
         ("cursor", "com.todesktop.230313mzl4w4u92"),
+        ("zed", "dev.zed.Zed"),
+        ("subl", "com.sublimetext.three"),
         ("pycharm", "com.jetbrains.PyCharm-Community"),
         ("idea", "com.jetbrains.IntelliJ-IDEA-Community"),
         ("goland", "com.jetbrains.GoLand"),
+        ("clion", "com.jetbrains.CLion"),
+        ("rustrover", "com.jetbrains.RustRover"),
+        ("webstorm", "com.jetbrains.WebStorm"),
     ];
     let lower = cli.to_ascii_lowercase();
     for (name, id) in flatpak_ids {

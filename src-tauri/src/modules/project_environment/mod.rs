@@ -22,6 +22,7 @@
 //! language-runtime provisioning.
 
 pub mod commands;
+pub mod fs_manager;
 pub mod models;
 pub mod resolver;
 pub mod service;
@@ -39,6 +40,15 @@ impl ProjectEnvironmentState {
     pub fn new(bindings_dir: PathBuf) -> Self {
         Self {
             binding_service: Arc::new(JsonEnvironmentBindingService::new(bindings_dir)),
+        }
+    }
+
+    pub fn with_environments_dir(bindings_dir: PathBuf, environments_dir: PathBuf) -> Self {
+        Self {
+            binding_service: Arc::new(JsonEnvironmentBindingService::with_environments_dir(
+                bindings_dir,
+                environments_dir,
+            )),
         }
     }
 }

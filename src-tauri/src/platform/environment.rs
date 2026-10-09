@@ -175,35 +175,28 @@ pub fn build_overlay_path_with_inherited(
     os: HostOs,
 ) -> String {
     let separator = path_separator(os);
-    let mut existing_entries: Vec<String> = inherited
+    let existing_entries: Vec<String> = inherited
         .split(separator)
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect();
 
-    let mut new_path = String::new();
-
+    let mut prepended_entries: Vec<String> = Vec::new();
     for entry in prepend {
-        let dominated = existing_entries
+        let already_in_existing = existing_entries
             .iter()
             .any(|existing| path_entry_eq(existing, entry, os));
-        if !dominated {
-            if !new_path.is_empty() {
-                new_path.push(separator);
-            }
-            new_path.push_str(entry);
-            existing_entries.push(entry.clone());
+        let already_prepended = prepended_entries
+            .iter()
+            .any(|p| path_entry_eq(p, entry, os));
+        if !already_in_existing && !already_prepended {
+            prepended_entries.push(entry.clone());
         }
     }
 
-    for entry in &existing_entries {
-        if !new_path.is_empty() {
-            new_path.push(separator);
-        }
-        new_path.push_str(entry);
-    }
-
-    new_path
+    let mut result_entries = prepended_entries;
+    result_entries.extend(existing_entries);
+    result_entries.join(&separator.to_string())
 }
 
 /// Platform-specific path separator character.
@@ -217,15 +210,27 @@ pub fn path_separator(os: HostOs) -> char {
 /// Platform-aware path entry equality.
 ///
 /// On Windows, comparison is case-insensitive and normalizes forward slashes
-/// to backslashes. On Unix, comparison is case-sensitive and literal.
+/// to backslashes. On macOS, comparison is case-insensitive (APFS default).
+/// On Linux, comparison is case-sensitive. Trailing slashes are normalized across all platforms.
 pub fn path_entry_eq(a: &str, b: &str, os: HostOs) -> bool {
     match os {
         HostOs::Windows => {
-            let a_norm = a.replace('/', "\\").to_lowercase();
-            let b_norm = b.replace('/', "\\").to_lowercase();
+            let a_norm = a.replace('/', "\\");
+            let a_norm = a_norm.trim_end_matches('\\').to_lowercase();
+            let b_norm = b.replace('/', "\\");
+            let b_norm = b_norm.trim_end_matches('\\').to_lowercase();
             a_norm == b_norm
         }
-        HostOs::Linux | HostOs::Macos => a == b,
+        HostOs::Macos => {
+            let a_norm = a.trim_end_matches('/').to_lowercase();
+            let b_norm = b.trim_end_matches('/').to_lowercase();
+            a_norm == b_norm
+        }
+        HostOs::Linux => {
+            let a_norm = a.trim_end_matches('/');
+            let b_norm = b.trim_end_matches('/');
+            a_norm == b_norm
+        }
     }
 }
 

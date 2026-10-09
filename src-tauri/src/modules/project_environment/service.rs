@@ -1,7 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::models::{BindingDiagnostics, BindingWarning, EnvironmentBinding};
+use super::fs_manager::EnvironmentFsManager;
+use super::models::{
+    BindingDiagnostics, BindingWarning, EnvironmentBinding, EnvironmentDiskUsage,
+    StandaloneExportResult,
+};
 
 /// CRUD service for project environment bindings.
 ///
@@ -17,7 +21,7 @@ pub trait EnvironmentBindingService: Send + Sync {
     /// Save (create or update) a binding. Returns the saved binding.
     fn save(&self, binding: &EnvironmentBinding) -> Result<EnvironmentBinding, String>;
 
-    /// Delete a binding by ID.
+    /// Delete a binding by ID and removes its sandbox directory.
     fn delete(&self, binding_id: &str) -> Result<(), String>;
 
     /// Find a binding associated with a project path.
@@ -28,15 +32,52 @@ pub trait EnvironmentBindingService: Send + Sync {
 
     /// Validate a binding and return diagnostics.
     fn validate(&self, binding: &EnvironmentBinding) -> Result<BindingDiagnostics, String>;
+
+    /// Get or create the default global environment.
+    fn get_or_create_default(&self) -> Result<EnvironmentBinding, String>;
+
+    /// Bind a project path to an environment and persist the association.
+    fn bind_project(&self, binding_id: &str, project_path: &str) -> Result<EnvironmentBinding, String>;
+
+    /// Unbind a project path from an environment.
+    fn unbind_project(&self, binding_id: &str, project_path: &str) -> Result<EnvironmentBinding, String>;
+
+    /// Export standalone activation scripts for an environment into a target folder.
+    fn export_standalone(
+        &self,
+        binding_id: &str,
+        target_dir: Option<&str>,
+    ) -> Result<StandaloneExportResult, String>;
+
+    /// Calculate disk usage for an environment sandbox.
+    fn calculate_disk_usage(&self, binding_id: &str) -> Result<EnvironmentDiskUsage, String>;
+
+    /// Clean up temporary sandbox cache and rebuild fresh shims.
+    fn cleanup_sandbox(&self, binding_id: &str) -> Result<EnvironmentDiskUsage, String>;
 }
 
 pub struct JsonEnvironmentBindingService {
     bindings_dir: PathBuf,
+    environments_dir: PathBuf,
 }
 
 impl JsonEnvironmentBindingService {
     pub fn new(bindings_dir: PathBuf) -> Self {
-        Self { bindings_dir }
+        let environments_dir = bindings_dir
+            .parent()
+            .unwrap_or(&bindings_dir)
+            .join("environments");
+        Self {
+            bindings_dir,
+            environments_dir,
+        }
+    }
+
+    pub fn with_environments_dir(bindings_dir: PathBuf, environments_dir: PathBuf) -> Self {
+        Self {
+            bindings_dir,
+            environments_dir,
+        }
     }
 
     fn binding_path(&self, binding_id: &str) -> PathBuf {
@@ -93,20 +134,34 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
         fs::create_dir_all(&self.bindings_dir)
             .map_err(|e| format!("Failed to create bindings dir: {}", e))?;
 
-        let path = self.binding_path(&binding.binding_id);
-        let content = serde_json::to_string_pretty(binding)
+        let mut to_save = binding.clone();
+
+        // If isolated, ensure environment sandbox directory and tool shims exist
+        if to_save.is_isolated() {
+            match EnvironmentFsManager::ensure_sandbox(&self.environments_dir, &to_save) {
+                Ok(env_dir) => {
+                    to_save.env_dir = Some(env_dir.to_string_lossy().into_owned());
+                }
+                Err(err) => {
+                    log::warn!("Failed to setup sandbox for {}: {}", to_save.binding_id, err);
+                }
+            }
+        }
+
+        let path = self.binding_path(&to_save.binding_id);
+        let content = serde_json::to_string_pretty(&to_save)
             .map_err(|e| format!("Failed to serialize binding: {}", e))?;
 
         // Atomic write: temp file + rename
         let parent = path
             .parent()
             .ok_or_else(|| "Binding path has no parent directory".to_string())?;
-        let tmp = parent.join(format!("{}.tmp", binding.binding_id));
+        let tmp = parent.join(format!("{}.tmp", to_save.binding_id));
         fs::write(&tmp, &content)
             .map_err(|e| format!("Failed to write binding temp file: {}", e))?;
         fs::rename(&tmp, &path).map_err(|e| format!("Failed to commit binding: {}", e))?;
 
-        Ok(binding.clone())
+        Ok(to_save)
     }
 
     fn delete(&self, binding_id: &str) -> Result<(), String> {
@@ -114,8 +169,10 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
         if !path.exists() {
             return Err(format!("Binding '{}' not found", binding_id));
         }
-        fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete binding '{}': {}", binding_id, e))
+        let _ = fs::remove_file(&path);
+        // Clean up sandbox shims directory
+        let _ = EnvironmentFsManager::remove_sandbox(&self.environments_dir, binding_id);
+        Ok(())
     }
 
     fn find_by_project_path(
@@ -130,8 +187,147 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
                     return Ok(Some(binding));
                 }
             }
+            if binding.bound_projects.iter().any(|p| normalize_path(p) == normalized) {
+                return Ok(Some(binding));
+            }
         }
+
+        // Check if project folder has a .stackpilot.json specifying environment_id
+        let sp_meta = Path::new(project_path).join(".stackpilot.json");
+        if sp_meta.is_file() {
+            if let Ok(content) = fs::read_to_string(&sp_meta) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(env_id) = val.get("environment_id").and_then(|v| v.as_str()) {
+                        if let Ok(b) = self.get(env_id) {
+                            return Ok(Some(b));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(None)
+    }
+
+    fn get_or_create_default(&self) -> Result<EnvironmentBinding, String> {
+        match self.get("default") {
+            Ok(default_env) => Ok(default_env),
+            Err(_) => {
+                let default_env = EnvironmentBinding::new_global_default();
+                self.save(&default_env)
+            }
+        }
+    }
+
+    fn bind_project(&self, binding_id: &str, project_path: &str) -> Result<EnvironmentBinding, String> {
+        let mut binding = self.get(binding_id)?;
+        binding.bind_project(project_path);
+        let saved = self.save(&binding)?;
+
+        // Write or update .stackpilot.json marker in the project folder if accessible
+        let proj = Path::new(project_path);
+        if proj.is_dir() {
+            let sp_json_path = proj.join(".stackpilot.json");
+            let mut obj = if sp_json_path.exists() {
+                fs::read_to_string(&sp_json_path)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.as_object().cloned())
+                    .unwrap_or_default()
+            } else {
+                serde_json::Map::new()
+            };
+            obj.insert("environment_id".to_string(), serde_json::Value::String(binding_id.to_string()));
+            obj.insert("environment_name".to_string(), serde_json::Value::String(saved.name.clone().unwrap_or_default()));
+            let _ = fs::write(&sp_json_path, serde_json::to_string_pretty(&obj).unwrap_or_default());
+        }
+
+        Ok(saved)
+    }
+
+    fn unbind_project(&self, binding_id: &str, project_path: &str) -> Result<EnvironmentBinding, String> {
+        let mut binding = self.get(binding_id)?;
+        binding.unbind_project(project_path);
+        self.save(&binding)
+    }
+
+    fn export_standalone(
+        &self,
+        binding_id: &str,
+        target_dir: Option<&str>,
+    ) -> Result<StandaloneExportResult, String> {
+        let binding = self.get(binding_id)?;
+        let resolved_target = match target_dir.filter(|s| !s.trim().is_empty()) {
+            Some(dir) => PathBuf::from(dir),
+            None => {
+                if let Some(ref pp) = binding.project_path {
+                    PathBuf::from(pp)
+                } else if let Some(first) = binding.bound_projects.first() {
+                    PathBuf::from(first)
+                } else {
+                    return Err(format!(
+                        "Environment '{}' has no associated project path. Please specify a target directory.",
+                        binding_id
+                    ));
+                }
+            }
+        };
+
+        if !resolved_target.exists() {
+            fs::create_dir_all(&resolved_target).map_err(|e| {
+                format!(
+                    "Failed to create target export directory '{}': {}",
+                    resolved_target.display(),
+                    e
+                )
+            })?;
+        }
+
+        let (overlay, _) = super::resolver::resolve_with_diagnostics(&binding);
+        let created_files = EnvironmentFsManager::export_standalone(&resolved_target, &binding, &overlay)?;
+
+        Ok(StandaloneExportResult {
+            target_dir: resolved_target.to_string_lossy().into_owned(),
+            created_files,
+        })
+    }
+
+    fn calculate_disk_usage(&self, binding_id: &str) -> Result<EnvironmentDiskUsage, String> {
+        let binding = self.get(binding_id)?;
+        let env_path = self.environments_dir.join(&binding.binding_id);
+
+        if !env_path.exists() {
+            return Ok(EnvironmentDiskUsage {
+                binding_id: binding.binding_id,
+                size_bytes: 0,
+                size_display: "0 B".to_string(),
+                path: None,
+            });
+        }
+
+        let bytes = dir_size(&env_path);
+        Ok(EnvironmentDiskUsage {
+            binding_id: binding.binding_id,
+            size_bytes: bytes,
+            size_display: format_bytes(bytes),
+            path: Some(env_path.to_string_lossy().into_owned()),
+        })
+    }
+
+    fn cleanup_sandbox(&self, binding_id: &str) -> Result<EnvironmentDiskUsage, String> {
+        let binding = self.get(binding_id)?;
+        let env_path = self.environments_dir.join(&binding.binding_id);
+
+        if env_path.exists() {
+            let _ = fs::remove_dir_all(&env_path);
+        }
+
+        // Re-create fresh sandbox shims if isolated
+        if binding.is_isolated() {
+            let _ = EnvironmentFsManager::ensure_sandbox(&self.environments_dir, &binding);
+        }
+
+        self.calculate_disk_usage(binding_id)
     }
 
     fn validate(&self, binding: &EnvironmentBinding) -> Result<BindingDiagnostics, String> {
@@ -173,11 +369,15 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
 fn normalize_path(path: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        path.replace('/', "\\").to_lowercase()
+        path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        path.to_string()
+        path.trim_end_matches('/').to_lowercase()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        path.trim_end_matches('/').to_string()
     }
 }
 
@@ -195,6 +395,40 @@ fn is_absolute_path(path: &str) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         path.starts_with('/')
+    }
+}
+
+/// Recursively calculate directory size in bytes.
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    total += dir_size(&entry.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Format bytes into a human-readable string (KB, MB, GB).
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
     }
 }
 
@@ -400,5 +634,67 @@ mod tests {
         assert!(!tmp_exists);
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_export_standalone_generates_scripts() {
+        let base_dir = temp_dir("export_standalone_svc");
+        let export_target = base_dir.join("my_project");
+        let svc = JsonEnvironmentBindingService::new(base_dir.clone());
+
+        let mut b = EnvironmentBinding::new(Some("ExportEnv".into()), Some(export_target.to_string_lossy().into_owned()));
+        b.env_vars.insert("CUSTOM_KEY".into(), "CUSTOM_VAL".into());
+        let saved = svc.save(&b).unwrap();
+
+        let result = svc.export_standalone(&saved.binding_id, None).unwrap();
+        assert_eq!(result.target_dir, export_target.to_string_lossy());
+        assert!(result.created_files.contains(&"activate.bat".to_string()));
+        assert!(result.created_files.contains(&"deactivate.bat".to_string()));
+        assert!(result.created_files.contains(&"activate.ps1".to_string()));
+        assert!(result.created_files.contains(&"activate.sh".to_string()));
+
+        assert!(export_target.join("activate.bat").exists());
+        assert!(export_target.join("deactivate.bat").exists());
+        assert!(export_target.join("activate.ps1").exists());
+        assert!(export_target.join("activate.sh").exists());
+
+        let bat_text = fs::read_to_string(export_target.join("activate.bat")).unwrap();
+        assert!(bat_text.contains("CUSTOM_KEY=CUSTOM_VAL"));
+        assert!(bat_text.contains("ExportEnv"));
+
+        let sh_text = fs::read_to_string(export_target.join("activate.sh")).unwrap();
+        assert!(sh_text.contains("CUSTOM_KEY=\"CUSTOM_VAL\""));
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn test_calculate_disk_usage_and_cleanup() {
+        let base_dir = temp_dir("disk_usage_svc");
+        let svc = JsonEnvironmentBindingService::new(base_dir.clone());
+
+        let b = EnvironmentBinding::new(Some("UsageEnv".into()), None);
+        let saved = svc.save(&b).unwrap();
+
+        // 1. Calculate usage on newly created sandbox
+        let usage = svc.calculate_disk_usage(&saved.binding_id).unwrap();
+        assert_eq!(usage.binding_id, saved.binding_id);
+        // It has .stackpilot-env.json metadata file created
+        assert!(usage.size_bytes > 0);
+
+        // 2. Put some dummy cache files into the sandbox
+        let env_dir = base_dir.parent().unwrap().join("environments").join(&saved.binding_id);
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::write(env_dir.join("test_cache.tmp"), vec![0u8; 10000]).unwrap();
+
+        let updated_usage = svc.calculate_disk_usage(&saved.binding_id).unwrap();
+        assert!(updated_usage.size_bytes >= 10000);
+
+        // 3. Cleanup sandbox
+        let clean_usage = svc.cleanup_sandbox(&saved.binding_id).unwrap();
+        assert!(!env_dir.join("test_cache.tmp").exists());
+        assert!(clean_usage.size_bytes < 10000);
+
+        let _ = fs::remove_dir_all(base_dir);
     }
 }

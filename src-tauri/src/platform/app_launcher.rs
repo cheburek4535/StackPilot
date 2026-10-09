@@ -122,6 +122,33 @@ fn known_applications() -> Vec<KnownApp> {
         flatpak_ids: &[],
     });
 
+    // Zed
+    apps.push(KnownApp {
+        name: "Zed",
+        cli_names: &["zed"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["Zed.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[
+            ("Zed.app", "Contents/MacOS/cli"),
+            ("Zed.app", "Contents/MacOS/Zed"),
+        ],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("zed", "dev.zed.Zed")],
+    });
+
+    // Sublime Text
+    apps.push(KnownApp {
+        name: "Sublime Text",
+        cli_names: &["subl", "sublime", "sublime_text"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["sublime_text.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Sublime Text.app", "Contents/SharedSupport/bin/subl")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("subl", "com.sublimetext.three")],
+    });
+
     // PyCharm
     apps.push(KnownApp {
         name: "PyCharm",
@@ -303,6 +330,21 @@ fn known_applications() -> Vec<KnownApp> {
         app_bundles: &[("Chromium.app", "Contents/MacOS/Chromium")],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[("chromium", "org.chromium.Chromium")],
+    });
+
+    // Safari (macOS native browser)
+    apps.push(KnownApp {
+        name: "Safari",
+        cli_names: &["safari"],
+        #[cfg(target_os = "windows")]
+        registry_names: &[],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[
+            ("Safari.app", "Contents/MacOS/Safari"),
+            ("../System/Applications/Safari.app", "Contents/MacOS/Safari"),
+        ],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
     });
 
     // Database viewers
@@ -537,6 +579,7 @@ pub fn browser_candidates() -> &'static [(&'static str, &'static str)] {
         ("opera", "Opera"),
         ("yandex", "Yandex Browser"),
         ("chromium", "Chromium"),
+        ("safari", "Safari"),
     ]
 }
 

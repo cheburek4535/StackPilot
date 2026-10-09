@@ -8,11 +8,8 @@
 // Добавление новой ОС = новый адаптер в этой папке,
 // бизнес-логика при этом не меняется.
 
-#[cfg(target_os = "linux")]
 pub mod linux;
-#[cfg(target_os = "macos")]
 pub mod macos;
-#[cfg(unix)]
 pub mod unix_rc;
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -99,15 +96,7 @@ pub fn resolve_command(program: &str, args: &[String]) -> (String, Vec<String>) 
 /// именами. Таблица — best-effort: неизвестный пакет возвращается
 /// без изменений. На не-Linux ОС функция не применяется (identity).
 pub fn linux_package_alias(manager: &str, package: &str) -> String {
-    #[cfg(target_os = "linux")]
-    {
-        linux::package_alias(manager, package)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = manager;
-        package.to_string()
-    }
+    linux::package_alias(manager, package)
 }
 
 /// Адаптер для неподдерживаемых ОС — ничего не умеет, но не падает.

@@ -108,9 +108,12 @@ pub fn run() {
                 .set_app_handle(app.handle().clone());
 
             // === ProjectEnvironment module ===
-            let project_env_state = modules::project_environment::ProjectEnvironmentState::new(
+            let project_env_state = modules::project_environment::ProjectEnvironmentState::with_environments_dir(
                 data_dir.join("project_environments"),
+                data_dir.join("environments"),
             );
+            // Ensure default global environment profile is initialized
+            let _ = project_env_state.binding_service.get_or_create_default();
 
             // Wire up binding service to DevLauncher
             let devlauncher_state =
@@ -331,6 +334,14 @@ pub fn run() {
             modules::project_environment::commands::pe_validate_binding,
             modules::project_environment::commands::pe_resolve_overlay,
             modules::project_environment::commands::pe_create_binding,
+            modules::project_environment::commands::pe_get_or_create_default,
+            modules::project_environment::commands::pe_bind_project,
+            modules::project_environment::commands::pe_unbind_project,
+            modules::project_environment::commands::pe_export_standalone,
+            modules::project_environment::commands::pe_calculate_disk_usage,
+            modules::project_environment::commands::pe_cleanup_sandbox,
+            modules::project_environment::commands::pe_open_terminal,
+            modules::project_environment::commands::pe_configure_vscode_environment,
             // Plugin commands
             #[cfg(feature = "plugins")]
             mini_ide::commands::get_completions,

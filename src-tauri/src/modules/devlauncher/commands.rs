@@ -282,6 +282,27 @@ pub async fn execute_action(
         } else {
             None
         }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = match &action.action_type {
+            ActionType::RunCommand { working_dir, .. } => working_dir.clone(),
+            _ => None,
+        }
+        .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -508,6 +529,25 @@ pub async fn run_profile(
                     );
                     None
                 }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = profile
+            .project_path
+            .clone()
+            .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
             }
         } else {
             None
@@ -799,6 +839,21 @@ pub async fn run_profile_v2(
                     );
                     None
                 }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        if let Some(ref p) = profile.project_root {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
             }
         } else {
             None

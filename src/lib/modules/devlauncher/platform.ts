@@ -38,6 +38,11 @@ export function isMacosHost(caps: PlatformCapabilities | null): boolean {
   return caps?.os === "macos";
 }
 
+/** Linux host check. `false` until the probe resolves. */
+export function isLinuxHost(caps: PlatformCapabilities | null): boolean {
+  return caps?.os === "linux";
+}
+
 /** Whether Docker Desktop may show its own first-run prompts (sign-in,
  *  terms). Only meaningful where Docker Desktop is the container runtime. */
 export function usesDockerDesktop(caps: PlatformCapabilities | null): boolean {

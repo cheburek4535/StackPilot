@@ -46,6 +46,7 @@ const LIGHT_FIELDS = new Set<string>([
   "devlAutoPopupShown",
   "envLocalInfra",
   "envSelectedIds",
+  "envIsolationMode",
   "envInstalling",
   "envInstallDone",
   "execOverallStatus",

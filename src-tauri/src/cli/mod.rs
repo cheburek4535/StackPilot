@@ -26,6 +26,7 @@ pub async fn run() {
         Some(args::Commands::Launch(args)) => commands::launch::execute(args).await,
         Some(args::Commands::Analyze(args)) => commands::analyze::execute(args),
         Some(args::Commands::Open(args)) => commands::open::execute(args),
+        Some(args::Commands::Env(args)) => commands::env::execute(args).await,
         Some(args::Commands::Version) => {
             println!("stkpil {}", env!("CARGO_PKG_VERSION"));
             Ok(())

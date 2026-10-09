@@ -105,6 +105,8 @@
               newSecrets={store.newSecrets}
               secretCopied={store.secretCopied}
               installedTools={store.installedTools}
+              envIsolationMode={store.envIsolationMode}
+              onchangeIsolationMode={(m: "isolated" | "global") => (store.envIsolationMode = m)}
               ontoggleEnvTool={store.toggleEnvTool}
               onselectAll={store.selectAllEnvTools}
               onoptInLocalInfra={store.optInLocalInfra}

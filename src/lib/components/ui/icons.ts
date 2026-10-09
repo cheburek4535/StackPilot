@@ -143,6 +143,11 @@ export const ICON_PATHS = {
     "M6 7h.01",
     "M6 17h.01",
   ],
+  download: [
+    "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+    "M7 10l5 5 5-5",
+    "M12 15V3",
+  ],
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;
