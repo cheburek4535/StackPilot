@@ -3,7 +3,7 @@
 # Скрипт для обновления версии во всех файлах проекта
 
 if [ -z "$1" ]; then
-    echo "Использование: ./scripts/bump-version.sh 1.3.0"
+    echo "Использование: ./scripts/bump-version.sh 1.4.0"
     exit 1
 fi
 
@@ -18,24 +18,33 @@ npm version $NEW_VERSION --no-git-tag-version
 sed -i.bak "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
 rm -f src-tauri/Cargo.toml.bak
 
-# Обновляем tauri.conf.json
+# Обновляем tauri.conf.json, args.rs, app.ts, PKGBUILD, docs/index.html
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     sed -i '' "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+    sed -i '' "s/version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/src/cli/args.rs
     sed -i '' "s/APP_VERSION = \".*\"/APP_VERSION = \"$NEW_VERSION\"/" src/lib/core/app.ts
     sed -i '' "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD
+    sed -i '' "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD-bin
+    sed -i '' "s/Вышла версия v[0-9\.]*/Вышла версия v$NEW_VERSION/" docs/index.html
 else
     # Linux
     sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+    sed -i "s/version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/src/cli/args.rs
     sed -i "s/APP_VERSION = \".*\"/APP_VERSION = \"$NEW_VERSION\"/" src/lib/core/app.ts
     sed -i "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD
+    sed -i "s/pkgver=.*/pkgver=$NEW_VERSION/" packaging/archlinux/PKGBUILD-bin
+    sed -i "s/Вышла версия v[0-9\.]*/Вышла версия v$NEW_VERSION/" docs/index.html
 fi
 
 echo "✓ package.json"
 echo "✓ src-tauri/Cargo.toml"
 echo "✓ src-tauri/tauri.conf.json"
+echo "✓ src-tauri/src/cli/args.rs"
 echo "✓ src/lib/core/app.ts"
 echo "✓ packaging/archlinux/PKGBUILD"
+echo "✓ packaging/archlinux/PKGBUILD-bin"
+echo "✓ docs/index.html"
 echo ""
 echo "Версия обновлена до $NEW_VERSION"
 echo ""

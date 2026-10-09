@@ -14,7 +14,7 @@
 
   const roadmapItems: RoadmapItem[] = [
     { id: "ai_assistant", status: "in_progress", icon: "bot" },
-    { id: "env_isolation", status: "planned", icon: "shield" },
+    { id: "env_isolation", status: "done", icon: "shield" },
     { id: "tech_expansion", status: "done", icon: "layers" },
     { id: "localization", status: "planned", icon: "glob" },
     { id: "cli_service", status: "done", icon: "terminal" },
@@ -64,6 +64,11 @@
   };
 
   const changelog: ChangelogEntry[] = [
+    {
+      version: "1.4.0",
+      date: "2026-10-09",
+      changesKey: "roadmap.changelog.v140"
+    },
     {
       version: "1.3.0",
       date: "2026-09-29",

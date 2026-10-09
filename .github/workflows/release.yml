@@ -93,6 +93,15 @@ jobs:
         with:
           script: |
             const version = '${{ steps.get-version.outputs.version }}';
+            const fs = require('fs');
+            let body = 'Автоматически созданный релиз';
+            try {
+              if (fs.existsSync('RELEASE_NOTES.md')) {
+                body = fs.readFileSync('RELEASE_NOTES.md', 'utf8');
+              }
+            } catch (e) {
+              core.warning(`Не удалось прочитать RELEASE_NOTES.md: ${e.message}`);
+            }
 
             // Если релиз с таким тегом уже существует (в том числе черновик) —
             // переиспользуем его, чтобы пересобрать сборки без создания новой
@@ -105,6 +114,12 @@ jobs:
             const existing = releases.find((r) => r.tag_name === version);
             if (existing) {
               core.info(`Переиспользую существующий релиз ${version} (id ${existing.id})`);
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: existing.id,
+                body: body
+              });
               return existing.id;
             }
 
@@ -113,7 +128,7 @@ jobs:
               repo: context.repo.repo,
               tag_name: version,
               name: `StackPilot ${version}`,
-              body: 'Автоматически созданный релиз',
+              body: body,
               draft: true,
               prerelease: false
             });
