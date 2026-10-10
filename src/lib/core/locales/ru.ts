@@ -2152,4 +2152,8 @@ export default {
   "step.tmpl.fix_package_name": "Исправить имя пакета для {fw}",
   "step.tmpl.create_app": "Создать приложение {fw}",
   "step.tmpl.create_path": "Создать {path}",
+
+  "update.banner_text": "Доступна новая версия StackPilot: {version}",
+  "update.view_release": "Посмотреть релиз",
+  "update.dismiss": "Закрыть уведомление",
 };

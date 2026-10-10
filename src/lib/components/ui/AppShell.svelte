@@ -25,6 +25,8 @@
   import ToastRegion from "./ToastRegion.svelte";
   import OnboardingOverlay from "./OnboardingOverlay.svelte";
   import ExitDialog from "./ExitDialog.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
+  import { updater } from "$lib/core/updater.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -98,6 +100,8 @@
       // Exit-диалог недоступен (например, браузерные dev-сборки без Tauri) —
       // закрытие окна обрабатывает бэкенд штатным образом.
     });
+    // Check GitHub releases in background upon application launch.
+    void updater.check();
   });
 
   onDestroy(() => {
@@ -172,6 +176,8 @@
       {/if}
     </div>
   </header>
+
+  <UpdateBanner />
 
   <div class="sp-body">
     <aside class="sp-sidebar">

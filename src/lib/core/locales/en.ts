@@ -2150,4 +2150,8 @@ export default {
   "step.tmpl.fix_package_name": "Fix package.json name for {fw}",
   "step.tmpl.create_app": "Create {fw} app",
   "step.tmpl.create_path": "Create {path}",
+
+  "update.banner_text": "A new version of StackPilot is available: {version}",
+  "update.view_release": "View release",
+  "update.dismiss": "Dismiss notification",
 };

@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:1420 http://localhost:1420;"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:1420 http://localhost:1420 https://api.github.com;"
     }
   },
   "bundle": {
