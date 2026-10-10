@@ -434,103 +434,101 @@
     <div class="sp-env-grid">
       {#each filteredEnvironments as env (env.binding_id)}
         <div class="sp-env-card" class:is-default={env.is_default}>
-          <!-- Card Header -->
-          <div class="sp-env-card-header">
-            <div class="sp-env-title-block">
+          <!-- Card Header: Title + Pills + Quick Icon Actions -->
+          <div class="sp-env-head">
+            <div class="sp-env-lead">
               <div class="sp-env-avatar" class:default-avatar={env.is_default}>
-                <Icon name={env.is_default ? "globe" : "package"} size={20} />
+                <Icon name={env.is_default ? "globe" : "package"} size={18} />
               </div>
-              <div>
+              <div class="sp-env-title-col">
                 <div class="sp-env-name-row">
-                  <h3 class="sp-env-name">{env.name || env.binding_id}</h3>
+                  <h3 class="sp-env-name" title={env.name || env.binding_id}>{env.name || env.binding_id}</h3>
                   {#if env.is_default}
-                    <Badge tone="cyan">По умолчанию (Система)</Badge>
+                    <span class="sp-pill pill-cyan">Система</span>
                   {:else}
-                    <Badge tone="amber">Изолированное</Badge>
+                    <span class="sp-pill pill-amber">Sandbox</span>
                     {#if diskUsages[env.binding_id]}
-                      <Badge tone="neutral">
-                        <Icon name="database" size={12} class="mr-1" />
+                      <span class="sp-pill pill-neutral" title="Размер песочницы на диске">
+                        <Icon name="database" size={10} />
                         {diskUsages[env.binding_id].size_display}
-                      </Badge>
+                      </span>
                     {/if}
                   {/if}
                 </div>
                 {#if env.description}
-                  <p class="sp-env-desc">{env.description}</p>
+                  <p class="sp-env-desc" title={env.description}>{env.description}</p>
                 {/if}
               </div>
             </div>
 
-            <!-- Quick Card Actions -->
-            <div class="sp-env-actions">
-              <Button
-                variant="ghost"
-                size="sm"
-                icon="terminal"
+            <!-- Compact Icon Action Toolbar -->
+            <div class="sp-env-toolbar">
+              <button
+                type="button"
+                class="sp-tool-btn"
                 onclick={() => handleOpenTerminal(env)}
-                label="Открыть консоль с окружением этой среды"
+                title="Терминал в этой среде"
               >
-                Терминал
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon="download"
+                <Icon name="terminal" size={14} />
+              </button>
+              <button
+                type="button"
+                class="sp-tool-btn"
                 onclick={() => handleExportStandalone(env)}
-                label="Экспортировать автономные скрипты (activate.bat, activate.sh)"
+                title="Экспорт скриптов (activate.bat / activate.sh)"
               >
-                Экспорт
-              </Button>
+                <Icon name="download" size={14} />
+              </button>
               {#if env.isolation_mode === "isolated"}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  icon="trash"
+                <button
+                  type="button"
+                  class="sp-tool-btn"
                   onclick={() => handleCleanupSandbox(env)}
-                  label="Очистить временный кэш песочницы"
+                  title="Очистить временный кэш песочницы"
                 >
-                  Очистить кэш
-                </Button>
+                  <Icon name="refresh" size={14} />
+                </button>
               {/if}
-              <Button
-                variant="ghost"
-                size="sm"
-                icon="settings"
+              <button
+                type="button"
+                class="sp-tool-btn"
                 onclick={() => openEditModal(env)}
-                label="Настроить окружение"
+                title="Настроить окружение"
               >
-                Настроить
-              </Button>
+                <Icon name="settings" size={14} />
+              </button>
               {#if !env.is_default}
                 <button
                   type="button"
-                  class="sp-icon-delete-btn"
+                  class="sp-tool-btn btn-danger"
                   onclick={() => handleDelete(env)}
                   title="Удалить окружение"
                 >
-                  <Icon name="trash" size={15} />
+                  <Icon name="trash" size={14} />
                 </button>
               {/if}
             </div>
           </div>
 
           <!-- Tools Section -->
-          <div class="sp-env-section">
-            <div class="sp-section-title">
-              <Icon name="wrench" size={13} />
-              <span>Инструменты и рантаймы</span>
+          <div class="sp-env-block">
+            <div class="sp-block-head">
+              <div class="sp-block-title">
+                <Icon name="wrench" size={12} />
+                <span>Инструменты</span>
+              </div>
             </div>
 
             {#if Object.keys(env.tool_overrides || {}).length === 0}
-              <div class="sp-env-tools-empty">
+              <div class="sp-block-empty">
                 {env.is_default
-                  ? "Использует системные глобальные версии из PATH хоста"
-                  : "Инструменты не переопределены (наследуются из хоста или песочницы)"}
+                  ? "Системные версии из PATH хоста"
+                  : "Не переопределены (наследуются из хоста)"}
               </div>
             {:else}
               <div class="sp-tools-tags">
                 {#each Object.entries(env.tool_overrides) as [toolId, tool]}
-                  <span class="sp-tool-tag">
+                  <span class="sp-tool-tag" title={tool.executable_path || "PATH"}>
                     <span class="tool-name">{toolId}</span>
                     {#if tool.version}
                       <span class="tool-ver">v{tool.version}</span>
@@ -543,84 +541,85 @@
 
           <!-- Environment variables section -->
           {#if Object.keys(env.env_vars || {}).length > 0}
-            <div class="sp-env-section">
-              <div class="sp-section-title">
-                <Icon name="layers" size={13} />
-                <span>Переменные среды ({Object.keys(env.env_vars).length})</span>
+            <div class="sp-env-block">
+              <div class="sp-block-head">
+                <div class="sp-block-title">
+                  <Icon name="layers" size={12} />
+                  <span>Переменные ({Object.keys(env.env_vars).length})</span>
+                </div>
               </div>
               <div class="sp-envvars-preview">
                 {#each Object.entries(env.env_vars).slice(0, 3) as [k, v]}
-                  <span class="sp-envvar-pill"><code>{k}</code> = {v}</span>
+                  <span class="sp-envvar-pill" title="{k}={v}"><code>{k}</code>={v}</span>
                 {/each}
                 {#if Object.keys(env.env_vars).length > 3}
-                  <span class="sp-envvar-more">+{Object.keys(env.env_vars).length - 3} ещё</span>
+                  <span class="sp-envvar-more">+{Object.keys(env.env_vars).length - 3}</span>
                 {/if}
               </div>
             </div>
           {/if}
 
           <!-- Bound Projects Section -->
-          <div class="sp-env-section sp-env-projects-section">
-            <div class="sp-section-header">
-              <div class="sp-section-title">
-                <Icon name="folder" size={13} />
-                <span>Привязанные проекты ({(env.bound_projects || []).length})</span>
+          <div class="sp-env-block sp-projects-block">
+            <div class="sp-block-head">
+              <div class="sp-block-title">
+                <Icon name="folder" size={12} />
+                <span>Проекты ({(env.bound_projects || []).length})</span>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon="plus"
+              <button
+                type="button"
+                class="sp-mini-link-btn"
                 onclick={() => handleBindProject(env)}
+                title="Привязать существующую папку проекта"
               >
-                Привязать папку
-              </Button>
+                <Icon name="plus" size={11} />
+                <span>Привязать</span>
+              </button>
             </div>
 
             {#if !env.bound_projects || env.bound_projects.length === 0}
-              <div class="sp-empty-projects">
-                Нет привязанных проектов. Создайте проект через Wizard или привяжите существующую папку.
+              <div class="sp-block-empty">
+                Нет привязанных проектов
               </div>
             {:else}
               <div class="sp-projects-list">
                 {#each env.bound_projects as projPath}
-                  <div class="sp-project-item">
-                    <div class="sp-project-path-wrap">
-                      <Icon name="folder" size={14} />
-                      <span class="sp-project-path" title={projPath}>{projPath}</span>
+                  <div class="sp-project-row">
+                    <div class="sp-project-label" title={projPath}>
+                      <Icon name="folder" size={13} />
+                      <span class="sp-proj-name">{projPath.split(/[\\/]/).filter(Boolean).pop() || projPath}</span>
+                      <span class="sp-proj-sub">{projPath}</span>
                     </div>
-                    <div class="sp-project-actions">
+                    <div class="sp-proj-btn-group">
                       <button
                         type="button"
-                        class="sp-proj-btn"
+                        class="sp-sub-btn"
                         onclick={() => handleOpenInWorkspace(projPath, env)}
                         title="Открыть в Workspace"
                       >
-                        <Icon name="play" size={12} />
-                        <span>Открыть</span>
+                        <Icon name="play" size={11} />
                       </button>
                       <button
                         type="button"
-                        class="sp-proj-btn"
+                        class="sp-sub-btn"
                         onclick={() => handleConfigureVsCode(env, projPath)}
-                        title="Настроить .vscode под эту среду"
+                        title="Сконфигурировать VS Code (.vscode)"
                       >
-                        <Icon name="terminal" size={12} />
-                        <span>VS Code</span>
+                        <Icon name="terminal" size={11} />
                       </button>
                       <button
                         type="button"
-                        class="sp-proj-btn"
+                        class="sp-sub-btn"
                         onclick={() => handleExportStandalone(env, projPath)}
-                        title="Экспортировать автономные скрипты активации (activate.bat, activate.sh)"
+                        title="Экспорт скриптов активации"
                       >
-                        <Icon name="download" size={12} />
-                        <span>Экспорт</span>
+                        <Icon name="download" size={11} />
                       </button>
                       <button
                         type="button"
-                        class="sp-proj-remove-btn"
+                        class="sp-sub-btn btn-del"
                         onclick={() => handleUnbindProject(env, projPath)}
-                        title="Отвязать проект от этой среды"
+                        title="Отвязать проект"
                       >
                         ✕
                       </button>
@@ -903,50 +902,57 @@
 
   .sp-env-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 16px;
+    align-items: stretch;
   }
 
   .sp-env-card {
     background: var(--sp-card-bg, #181b22);
     border: 1px solid var(--sp-border, #282e3e);
-    border-radius: 10px;
-    padding: 14px 16px;
+    border-radius: 12px;
+    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    transition: transform 0.15s ease, border-color 0.15s ease;
+    height: 100%;
+    box-sizing: border-box;
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .sp-env-card:hover {
     border-color: rgba(245, 158, 11, 0.4);
-    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   }
 
   .sp-env-card.is-default {
     border-color: rgba(59, 130, 246, 0.35);
   }
 
-  .sp-env-card-header {
+  .sp-env-head {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 12px;
+    gap: 10px;
   }
 
-  .sp-env-title-block {
+  .sp-env-lead {
     display: flex;
-    gap: 12px;
+    gap: 10px;
     align-items: flex-start;
+    min-width: 0;
+    flex: 1;
   }
 
   .sp-env-avatar {
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    background: rgba(245, 158, 11, 0.15);
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: rgba(245, 158, 11, 0.12);
     color: #f59e0b;
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    border: 1px solid rgba(245, 158, 11, 0.25);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -954,85 +960,154 @@
   }
 
   .sp-env-avatar.default-avatar {
-    background: rgba(59, 130, 246, 0.15);
+    background: rgba(59, 130, 246, 0.12);
     color: #3b82f6;
-    border-color: rgba(59, 130, 246, 0.3);
+    border-color: rgba(59, 130, 246, 0.25);
+  }
+
+  .sp-env-title-col {
+    min-width: 0;
+    flex: 1;
   }
 
   .sp-env-name-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    min-width: 0;
     flex-wrap: wrap;
   }
 
   .sp-env-name {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--sp-text, #f1f5f9);
     margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 170px;
+  }
+
+  .sp-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .pill-amber {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .pill-cyan {
+    background: rgba(6, 182, 212, 0.15);
+    color: #06b6d4;
+    border: 1px solid rgba(6, 182, 212, 0.3);
+  }
+
+  .pill-neutral {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--sp-text-muted, #94a3b8);
+    border: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .sp-env-desc {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--sp-text-muted, #94a3b8);
-    margin: 4px 0 0 0;
-    line-height: 1.4;
+    margin: 3px 0 0 0;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    line-clamp: 2;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
-  .sp-env-actions {
+  .sp-env-toolbar {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 3px;
+    flex-shrink: 0;
   }
 
-  .sp-icon-delete-btn {
-    background: transparent;
-    border: none;
-    color: var(--sp-text-muted, #94a3b8);
-    cursor: pointer;
-    padding: 6px;
+  .sp-tool-btn {
+    width: 28px;
+    height: 28px;
     border-radius: 6px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--sp-text-muted, #94a3b8);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.15s ease, background 0.15s ease;
+    cursor: pointer;
+    transition: all 0.12s ease;
   }
 
-  .sp-icon-delete-btn:hover {
+  .sp-tool-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--sp-text, #f1f5f9);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .sp-tool-btn.btn-danger:hover {
+    background: rgba(239, 68, 68, 0.12);
     color: #ef4444;
-    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
   }
 
-  .sp-env-section {
+  .sp-env-block {
     background: rgba(0, 0, 0, 0.2);
-    border-radius: 8px;
-    padding: 12px;
+    border-radius: 7px;
+    padding: 8px 10px;
     border: 1px solid rgba(255, 255, 255, 0.04);
   }
 
-  .sp-section-header {
+  .sp-block-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
-  .sp-section-title {
+  .sp-block-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12px;
+    gap: 5px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--sp-text-muted, #94a3b8);
-    margin-bottom: 6px;
   }
 
-  .sp-env-tools-empty,
-  .sp-empty-projects {
-    font-size: 12px;
+  .sp-mini-link-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    color: var(--sp-accent, #3b82f6);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 1px 4px;
+    border-radius: 4px;
+  }
+
+  .sp-mini-link-btn:hover {
+    background: rgba(59, 130, 246, 0.1);
+  }
+
+  .sp-block-empty {
+    font-size: 11.5px;
     color: var(--sp-text-muted, #64748b);
     font-style: italic;
   }
@@ -1040,18 +1115,18 @@
   .sp-tools-tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
   }
 
   .sp-tool-tag {
     background: var(--sp-card-bg, #1e222b);
     border: 1px solid var(--sp-border, #333b4f);
-    border-radius: 6px;
-    padding: 3px 8px;
-    font-size: 12px;
+    border-radius: 5px;
+    padding: 2px 7px;
+    font-size: 11.5px;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
   }
 
   .tool-name {
@@ -1062,7 +1137,7 @@
   .tool-ver {
     color: #f59e0b;
     font-family: monospace;
-    font-size: 11px;
+    font-size: 10.5px;
   }
 
   .sp-envvars-preview {
@@ -1085,74 +1160,87 @@
     color: var(--sp-text-muted, #94a3b8);
   }
 
+  .sp-projects-block {
+    margin-top: auto;
+  }
+
   .sp-projects-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 5px;
+    max-height: 140px;
+    overflow-y: auto;
+    padding-right: 2px;
   }
 
-  .sp-project-item {
+  .sp-project-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    background: var(--sp-card-bg, #1e222b);
+    background: var(--sp-card-bg, #1a1e27);
     border: 1px solid var(--sp-border, #2d3343);
-    border-radius: 6px;
-    padding: 6px 10px;
+    border-radius: 5px;
+    padding: 4px 8px;
+    min-width: 0;
   }
 
-  .sp-project-path-wrap {
+  .sp-project-label {
     display: flex;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+    flex: 1;
     overflow: hidden;
   }
 
-  .sp-project-path {
+  .sp-proj-name {
     font-size: 12px;
+    font-weight: 500;
     color: var(--sp-text, #f1f5f9);
-    text-overflow: ellipsis;
     white-space: nowrap;
     overflow: hidden;
-    max-width: 200px;
+    text-overflow: ellipsis;
   }
 
-  .sp-project-actions {
+  .sp-proj-sub {
+    font-size: 10.5px;
+    color: var(--sp-text-muted, #64748b);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sp-proj-btn-group {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
+    flex-shrink: 0;
   }
 
-  .sp-proj-btn {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: var(--sp-text, #f1f5f9);
-    border-radius: 4px;
-    padding: 2px 6px;
-    font-size: 11px;
-    cursor: pointer;
-    display: inline-flex;
+  .sp-sub-btn {
+    width: 22px;
+    height: 22px;
+    display: flex;
     align-items: center;
-    gap: 4px;
-    transition: background 0.15s ease;
-  }
-
-  .sp-proj-btn:hover {
-    background: rgba(255, 255, 255, 0.12);
-  }
-
-  .sp-proj-remove-btn {
-    background: transparent;
-    border: none;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     color: var(--sp-text-muted, #94a3b8);
+    border-radius: 4px;
     cursor: pointer;
-    font-size: 11px;
-    padding: 2px 4px;
+    font-size: 10px;
+    transition: all 0.12s ease;
   }
 
-  .sp-proj-remove-btn:hover {
+  .sp-sub-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--sp-text, #f1f5f9);
+  }
+
+  .sp-sub-btn.btn-del:hover {
     color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
   }
 
   /* Modal Form */

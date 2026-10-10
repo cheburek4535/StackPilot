@@ -116,6 +116,21 @@ export type ActiveTooltip = {
   item: TooltipItem;
 };
 
+export type ZeroStepTool = {
+  name: string;
+  version: string;
+  status: "pending" | "downloading" | "ready" | "failed";
+};
+
+export type ZeroStepState = {
+  active: boolean;
+  status: "running" | "success" | "failed";
+  title: string;
+  detail: string;
+  tools: ZeroStepTool[];
+  logs: string[];
+};
+
 export function createProjectStore() {
   
   // Toolchain: слой совместимости Project Creator (легаси-поверхность tc_*)
@@ -161,6 +176,8 @@ export function createProjectStore() {
   let git = $state(true);
   let vscode = $state(true);
   let envIsolationMode = $state<"isolated" | "global">("isolated");
+  let envSubMode = $state<"new" | "existing">("new");
+  let envReuseTarget = $state<EnvironmentBinding | null>(null);
   let createdEnvBinding = $state<EnvironmentBinding | null>(null);
   
   // Живая валидация стека (зеркало бэкенда, rules.ts)
@@ -388,6 +405,7 @@ export function createProjectStore() {
   let analyzedPath = $state<string | null>(null);
   
   // ---- Execution ----
+  let zeroStep = $state<ZeroStepState | null>(null);
   let execPlan = $state<ExecutionPlan | null>(null);
   let execProjectPath = $state<string | null>(null);
   let execStatuses = $state<Map<number, { name: string; status: StepStatus; logs: string[] }>>(new Map());
@@ -570,6 +588,8 @@ export function createProjectStore() {
       envLocalInfra: [...envLocalInfra],
       envSelectedIds: [...envSelectedIds],
       envIsolationMode,
+      envSubMode,
+      envReuseTarget,
       envInstalling,
       envInstallDone,
       execOverallStatus,
@@ -618,6 +638,12 @@ export function createProjectStore() {
     vscode = bool(s.vscode);
     if (s.envIsolationMode === "global" || s.envIsolationMode === "isolated") {
       envIsolationMode = s.envIsolationMode;
+    }
+    if (s.envSubMode === "new" || s.envSubMode === "existing") {
+      envSubMode = s.envSubMode;
+    }
+    if (s.envReuseTarget && typeof s.envReuseTarget === "object") {
+      envReuseTarget = s.envReuseTarget as EnvironmentBinding;
     }
     const restoredReadmeLocale = str(s.readmeLocale) as Locale;
     if ((availableLocales.map((l) => l.id) as string[]).includes(restoredReadmeLocale)) {
@@ -2433,6 +2459,7 @@ export function createProjectStore() {
     };
   
     phase = 6;
+    zeroStep = null;
     execPlan = null;
     execProjectPath = path;
     execStatuses = new Map();
@@ -2450,94 +2477,183 @@ export function createProjectStore() {
 
     try {
       if (envIsolationMode === "isolated") {
-        // Collect required tools
-        const toolIdsToResolve = new Set<string>();
-        for (const tid of selectedTools) toolIdsToResolve.add(tid);
-        if (tree?.framework_tool_map) {
-          for (const fwId of selectedFrameworks) {
-            for (const tid of tree.framework_tool_map[fwId] ?? []) {
-              toolIdsToResolve.add(tid);
-            }
-          }
-        }
-        if (envCheck?.requirements) {
-          for (const req of envCheck.requirements) {
-            toolIdsToResolve.add(req.tool_id);
-          }
-        }
+        if (envSubMode === "existing" && envReuseTarget) {
+          const envId = envReuseTarget.binding_id;
+          const envName = envReuseTarget.name || envReuseTarget.binding_id;
+          zeroStep = {
+            active: true,
+            status: "running",
+            title: `Подключение к окружению '${envName}'`,
+            detail: "Привязка проекта к существующей песочнице...",
+            tools: Object.entries(envReuseTarget.tool_overrides || {}).map(([tid, t]) => ({
+              name: tid,
+              version: t.version || "",
+              status: "ready" as const,
+            })),
+            logs: [`Подключение к существующей песочнице '${envName}' (ID: ${envId})...`],
+          };
 
-        let resolvedOverrides: Record<string, ToolOverride> = {};
-        try {
-          resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
-        } catch (err) {
-          console.warn("[ProjectCreator] Failed to resolve tools:", err);
-        }
+          const bound = await bindProjectToEnvironment(envId, path);
+          createdEnvBinding = bound;
+          ctx.environment_binding_id = envId;
+          execLogs = [
+            ...execLogs,
+            `[StackPilot] ⚡ Project sandbox attached to existing environment '${envName}'.`,
+          ];
 
-        // Install any missing multi-version candidates
-        for (const [tid, candidate] of Object.entries(envSelectedVersions)) {
-          if (toolIdsToResolve.has(tid) && candidate) {
-            let targetCandidate = candidate;
-            if (!targetCandidate.is_installed) {
-              const notice = `[StackPilot] Downloading standalone ${tid} ${candidate.version} to Shared Store...`;
-              execLogs = [...execLogs, notice];
-              try {
-                const exePath = await installToolVersion(tid, candidate.version, candidate.download_url || "");
-                targetCandidate = {
-                  ...candidate,
-                  is_installed: true,
-                  executable_path: exePath,
-                  source_kind: "shared_store",
-                };
-                envSelectedVersions = { ...envSelectedVersions, [tid]: targetCandidate };
-                execLogs = [...execLogs, `[StackPilot] ✓ Installed ${tid} ${candidate.version}`];
-              } catch (installErr) {
-                console.warn(`[ProjectCreator] Failed to install selected tool version for ${tid}:`, installErr);
-                execLogs = [...execLogs, `[StackPilot] ⚠ Failed to download ${tid} ${candidate.version}: ${installErr}`];
+          if (zeroStep) {
+            zeroStep.status = "success";
+            zeroStep.detail = `Песочница готова и привязана: '${envName}'`;
+            zeroStep.logs = [...zeroStep.logs, `⚡ Изолированная среда '${envName}' активна`];
+          }
+        } else {
+          // Collect required tools
+          const toolIdsToResolve = new Set<string>();
+          for (const tid of selectedTools) toolIdsToResolve.add(tid);
+          if (tree?.framework_tool_map) {
+            for (const fwId of selectedFrameworks) {
+              for (const tid of tree.framework_tool_map[fwId] ?? []) {
+                toolIdsToResolve.add(tid);
               }
             }
-            if (targetCandidate.is_installed && targetCandidate.executable_path) {
-              resolvedOverrides[tid] = {
-                version: targetCandidate.version,
-                executable_path: targetCandidate.executable_path,
-              };
+          }
+          if (envCheck?.requirements) {
+            for (const req of envCheck.requirements) {
+              toolIdsToResolve.add(req.tool_id);
             }
           }
-        }
 
-        const envId = `env_${Date.now().toString(16)}`;
-        const envName = projectName || conflictResolvedFolder || "Project Sandbox";
-        const saved = await saveEnvironment({
-          schema_version: 1,
-          binding_id: envId,
-          name: envName,
-          isolation_mode: "isolated",
-          is_default: false,
-          description: `Изолированное окружение для ${envName}`,
-          icon: "package",
-          color: "amber",
-          project_path: path,
-          bound_projects: [path],
-          env_dir: null,
-          tool_overrides: resolvedOverrides,
-          managed_path_entries: [],
-          env_vars: {},
-          env_vars_remove: [],
-          preferred_ide: null,
-          preferred_ide_args: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        const bound = await bindProjectToEnvironment(envId, path);
-        createdEnvBinding = bound;
-        ctx.environment_binding_id = envId;
-        execLogs = [
-          ...execLogs,
-          `[StackPilot] ⚡ Project sandbox ready. Bound to isolated environment '${saved.name}'.`,
-        ];
+          const toolsForZero: ZeroStepTool[] = [];
+          for (const [tid, cand] of Object.entries(envSelectedVersions)) {
+            if (toolIdsToResolve.has(tid) && cand) {
+              toolsForZero.push({
+                name: tid,
+                version: cand.version,
+                status: cand.is_installed ? "ready" : "pending",
+              });
+            }
+          }
+
+          zeroStep = {
+            active: true,
+            status: "running",
+            title: "Подготовка изолированного окружения",
+            detail: toolsForZero.some(t => t.status === "pending")
+              ? "Загрузка необходимых инструментов в Shared Store..."
+              : "Инициализация песочницы...",
+            tools: toolsForZero,
+            logs: [],
+          };
+
+          let resolvedOverrides: Record<string, ToolOverride> = {};
+          try {
+            resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
+          } catch (err) {
+            console.warn("[ProjectCreator] Failed to resolve tools:", err);
+          }
+
+          // Install any missing multi-version candidates
+          for (const [tid, candidate] of Object.entries(envSelectedVersions)) {
+            if (toolIdsToResolve.has(tid) && candidate) {
+              let targetCandidate = candidate;
+              if (!targetCandidate.is_installed) {
+                const notice = `[StackPilot] Downloading standalone ${tid} ${candidate.version} to Shared Store...`;
+                execLogs = [...execLogs, notice];
+                if (zeroStep) {
+                  const t = zeroStep.tools.find(x => x.name === tid);
+                  if (t) t.status = "downloading";
+                  zeroStep.detail = `Загрузка standalone ${tid} ${candidate.version} в Shared Store...`;
+                  zeroStep.logs = [...zeroStep.logs, `Загрузка ${tid} ${candidate.version}...`];
+                }
+                try {
+                  const exePath = await installToolVersion(tid, candidate.version, candidate.download_url || "");
+                  targetCandidate = {
+                    ...candidate,
+                    is_installed: true,
+                    executable_path: exePath,
+                    source_kind: "shared_store",
+                  };
+                  envSelectedVersions = { ...envSelectedVersions, [tid]: targetCandidate };
+                  execLogs = [...execLogs, `[StackPilot] ✓ Installed ${tid} ${candidate.version}`];
+                  if (zeroStep) {
+                    const t = zeroStep.tools.find(x => x.name === tid);
+                    if (t) t.status = "ready";
+                    zeroStep.detail = `Установлен ${tid} ${candidate.version}`;
+                    zeroStep.logs = [...zeroStep.logs, `✓ ${tid} ${candidate.version} готов`];
+                  }
+                } catch (installErr) {
+                  console.warn(`[ProjectCreator] Failed to install selected tool version for ${tid}:`, installErr);
+                  execLogs = [...execLogs, `[StackPilot] ⚠ Failed to download ${tid} ${candidate.version}: ${installErr}`];
+                  if (zeroStep) {
+                    const t = zeroStep.tools.find(x => x.name === tid);
+                    if (t) t.status = "failed";
+                    zeroStep.logs = [...zeroStep.logs, `⚠ Ошибка скачивания ${tid}: ${installErr}`];
+                  }
+                }
+              }
+              if (targetCandidate.is_installed && targetCandidate.executable_path) {
+                resolvedOverrides[tid] = {
+                  version: targetCandidate.version,
+                  executable_path: targetCandidate.executable_path,
+                };
+              }
+            }
+          }
+
+          // Clean up tool overrides to prevent host leakage
+          if (resolvedOverrides["node"] || resolvedOverrides["nodejs"]) {
+            delete resolvedOverrides["npm"];
+            delete resolvedOverrides["npx"];
+          }
+          if (resolvedOverrides["python"] || resolvedOverrides["python3"]) {
+            delete resolvedOverrides["pip"];
+          }
+
+          const envId = `env_${Date.now().toString(16)}`;
+          const envName = projectName || conflictResolvedFolder || "Project Sandbox";
+          const saved = await saveEnvironment({
+            schema_version: 1,
+            binding_id: envId,
+            name: envName,
+            isolation_mode: "isolated",
+            is_default: false,
+            description: `Изолированное окружение для ${envName}`,
+            icon: "package",
+            color: "amber",
+            project_path: path,
+            bound_projects: [path],
+            env_dir: null,
+            tool_overrides: resolvedOverrides,
+            managed_path_entries: [],
+            env_vars: {},
+            env_vars_remove: [],
+            preferred_ide: null,
+            preferred_ide_args: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+          const bound = await bindProjectToEnvironment(envId, path);
+          createdEnvBinding = bound;
+          ctx.environment_binding_id = envId;
+          execLogs = [
+            ...execLogs,
+            `[StackPilot] ⚡ Project sandbox ready. Bound to isolated environment '${saved.name}'.`,
+          ];
+
+          if (zeroStep) {
+            zeroStep.status = "success";
+            zeroStep.detail = `Песочница готова и привязана: '${saved.name}'`;
+            zeroStep.logs = [...zeroStep.logs, `⚡ Изолированная среда '${saved.name}' активна`];
+          }
+        }
       }
 
       execPlan = await startProjectExecution(ctx, path, removedStepIds);
     } catch (err) {
+      if (zeroStep && zeroStep.status === "running") {
+        zeroStep.status = "failed";
+        zeroStep.detail = String(err);
+      }
       execError = String(err);
       execOverallStatus = "error";
     }
@@ -2843,6 +2959,10 @@ export function createProjectStore() {
     set vscode(v) { vscode = v; },
     get envIsolationMode() { return envIsolationMode; },
     set envIsolationMode(v) { envIsolationMode = v; },
+    get envSubMode() { return envSubMode; },
+    set envSubMode(v) { envSubMode = v; },
+    get envReuseTarget() { return envReuseTarget; },
+    set envReuseTarget(v) { envReuseTarget = v; },
     get stackIssues() { return stackIssues; },
     set stackIssues(v) { stackIssues = v; },
     get stackError() { return stackError; },
@@ -2900,6 +3020,8 @@ export function createProjectStore() {
     set analyzing(v) { analyzing = v; },
     get analyzedPath() { return analyzedPath; },
     set analyzedPath(v) { analyzedPath = v; },
+    get zeroStep() { return zeroStep; },
+    set zeroStep(v) { zeroStep = v; },
     get execPlan() { return execPlan; },
     set execPlan(v) { execPlan = v; },
     get execProjectPath() { return execProjectPath; },

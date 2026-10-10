@@ -17,6 +17,7 @@
     execLogs,
     devlProfileExists,
     createdEnvBinding = null,
+    zeroStep = null,
     oncancel,
     onreset,
     onopenvscode,
@@ -33,6 +34,14 @@
     execLogs: string[];
     devlProfileExists: boolean;
     createdEnvBinding?: import("$lib/modules/project_environment/types").EnvironmentBinding | null;
+    zeroStep?: {
+      active: boolean;
+      status: "running" | "success" | "failed";
+      title: string;
+      detail: string;
+      tools: { name: string; version: string; status: "pending" | "downloading" | "ready" | "failed" }[];
+      logs: string[];
+    } | null;
     oncancel: () => void;
     onreset: () => void;
     onopenvscode: () => void;
@@ -202,6 +211,56 @@
 <p class="prompt">{i18n.t("create.generating") as TranslationKey}</p>
 
 <div class="exec-steps">
+  {#if zeroStep && zeroStep.active}
+    <div
+      class="exec-step exec-step-zero"
+      class:running={zeroStep.status === "running"}
+      class:success={zeroStep.status === "success"}
+      class:failed={zeroStep.status === "failed"}
+    >
+      <div class="exec-icon">
+        {#if zeroStep.status === "running"}
+          ⏳
+        {:else if zeroStep.status === "success"}
+          ✅
+        {:else}
+          ❌
+        {/if}
+      </div>
+      <div class="exec-detail">
+        <div class="exec-zero-header">
+          <p class="exec-name">{zeroStep.title}</p>
+          <span class="sp-zero-pill">Этап 0 · Sandbox</span>
+        </div>
+        <p class="exec-zero-sub">{zeroStep.detail}</p>
+        {#if zeroStep.tools.length > 0}
+          <div class="exec-zero-tools">
+            {#each zeroStep.tools as t}
+              <span
+                class="sp-zero-tool-tag"
+                class:tag-ready={t.status === "ready"}
+                class:tag-loading={t.status === "downloading"}
+                class:tag-failed={t.status === "failed"}
+              >
+                {#if t.status === "downloading"}
+                  <span class="sp-mini-dot-pulse"></span>
+                {:else if t.status === "ready"}
+                  ✓
+                {:else if t.status === "failed"}
+                  ⚠
+                {/if}
+                {t.name} v{t.version}
+              </span>
+            {/each}
+          </div>
+        {/if}
+        {#if zeroStep.logs.length > 0}
+          <pre class="exec-log">{zeroStep.logs.join("\n")}</pre>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   {#each [...execStatuses.entries()] as [idx, entry]}
     <div class="exec-step"
          class:running={stepIsRunning(entry.status)}
@@ -378,6 +437,92 @@
   .exec-step.success { border-left: 3px solid var(--sp-success); }
   .exec-step.failed { border-left: 3px solid var(--sp-danger); }
   .exec-step.skipped { border-left: 3px solid var(--sp-text-3); opacity: 0.6; }
+  .exec-step.exec-step-zero {
+    background: rgba(245, 158, 11, 0.05);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-left: 3px solid #f59e0b;
+    margin-bottom: 0.35rem;
+  }
+  .exec-step.exec-step-zero.success {
+    background: rgba(34, 197, 94, 0.04);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    border-left: 3px solid #22c55e;
+  }
+  .exec-step.exec-step-zero.failed {
+    background: rgba(239, 68, 68, 0.05);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-left: 3px solid #ef4444;
+  }
+  .exec-zero-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sp-zero-pill {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+  .exec-step.exec-step-zero.success .sp-zero-pill {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.3);
+  }
+  .exec-zero-sub {
+    margin: 3px 0 0 0;
+    font-size: 0.8rem;
+    color: var(--sp-text-3);
+  }
+  .exec-zero-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+  }
+  .sp-zero-tool-tag {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    color: var(--sp-text-2);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sp-zero-tool-tag.tag-loading {
+    border-color: #f59e0b;
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.08);
+  }
+  .sp-zero-tool-tag.tag-ready {
+    border-color: rgba(34, 197, 94, 0.3);
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.08);
+  }
+  .sp-zero-tool-tag.tag-failed {
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.08);
+  }
+  .sp-mini-dot-pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #f59e0b;
+    animation: sp-pulse 1s infinite alternate;
+  }
+  @keyframes sp-pulse {
+    0% { opacity: 0.3; transform: scale(0.8); }
+    100% { opacity: 1; transform: scale(1.2); }
+  }
   .exec-icon { font-size: 1.1rem; min-width: 24px; }
   .exec-detail { flex: 1; min-width: 0; }
   .exec-name { font-weight: 600; margin: 0; font-size: 0.9rem; }

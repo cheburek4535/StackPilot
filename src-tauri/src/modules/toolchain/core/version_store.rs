@@ -703,11 +703,12 @@ fn get_upstream_download_candidates(tool_id: &str) -> Vec<ToolVersionCandidate> 
                 ("3.12.9", "Python 3.12.9 (Рекомендуется)", "stable", 38, "20250212"),
                 ("3.12.7", "Python 3.12.7 (Stable 3.12)", "stable", 38, "20241002"),
                 ("3.11.11", "Python 3.11.11 (Latest 3.11)", "stable", 36, "20250212"),
-                ("3.11.9", "Python 3.11.9 (Stable 3.11)", "stable", 36, "20241002"),
+                ("3.11.10", "Python 3.11.10 (Stable 3.11)", "stable", 36, "20241002"),
+                ("3.11.9", "Python 3.11.9 (v3.11)", "stable", 36, "20240814"),
                 ("3.10.16", "Python 3.10.16 (Latest 3.10)", "stable", 35, "20250212"),
-                ("3.10.13", "Python 3.10.13 (Stable 3.10)", "stable", 35, "20241002"),
+                ("3.10.15", "Python 3.10.15 (Stable 3.10)", "stable", 35, "20241002"),
                 ("3.9.21", "Python 3.9.21 (LTS 3.9)", "stable", 34, "20250212"),
-                ("3.8.20", "Python 3.8.20 (Legacy 3.8)", "legacy", 33, "20250212"),
+                ("3.8.20", "Python 3.8.20 (Legacy 3.8)", "legacy", 33, "20241002"),
             ];
 
             for (ver, label, chan, sz, rel) in py_versions {
@@ -808,8 +809,11 @@ pub async fn download_and_install_to_shared_store(
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args([
         "-fSL",
+        "--connect-timeout",
+        "15",
         "--retry",
         "2",
+        "--retry-connrefused",
         "-A",
         "StackPilot/1.4",
         "-o",
@@ -824,22 +828,31 @@ pub async fn download_and_install_to_shared_store(
     let status = cmd
         .status()
         .await
-        .map_err(|e| format!("Ошибка запуска curl для загрузки {}: {}", download_url, e))?;
+        .map_err(|e| {
+            let _ = fs::remove_file(&temp_archive);
+            let _ = fs::remove_dir_all(&target_dir);
+            format!("Ошибка запуска curl для загрузки {}: {}", download_url, e)
+        })?;
 
     if !status.success() {
         let _ = fs::remove_file(&temp_archive);
+        let _ = fs::remove_dir_all(&target_dir);
         return Err(format!("curl завершился с ошибкой при загрузке {}", download_url));
     }
 
     // 2. Распаковка архива
     let extract_res = extract_archive_to_dir(&temp_archive, &target_dir).await;
     let _ = fs::remove_file(&temp_archive);
-    extract_res?;
+    if let Err(e) = extract_res {
+        let _ = fs::remove_dir_all(&target_dir);
+        return Err(e);
+    }
 
     // 3. Поиск и возврат исполняемого файла
     if let Some(exe) = find_binary_in_tool_dir(&normalized, &target_dir) {
         Ok(exe.to_string_lossy().into_owned())
     } else {
+        let _ = fs::remove_dir_all(&target_dir);
         Err(format!(
             "Распаковка завершена, но бинарник для {} не найден в {}",
             normalized,

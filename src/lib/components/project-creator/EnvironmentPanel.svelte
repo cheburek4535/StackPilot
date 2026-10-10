@@ -21,6 +21,9 @@
   } from "$lib/modules/toolchain/compat";
   import type { WizardTreeData } from "$lib/modules/project_creator/types";
   import type { ToolVersionCandidate } from "$lib/modules/toolchain/types";
+  import Modal from "$lib/components/ui/Modal.svelte";
+  import { listEnvironments } from "$lib/modules/project_environment/api";
+  import type { EnvironmentBinding } from "$lib/modules/project_environment/types";
 
   let {
     tree,
@@ -46,11 +49,15 @@
     secretCopied,
     installedTools,
     envIsolationMode = "isolated",
+    envSubMode = "new",
+    envReuseTarget = null,
     envAvailableVersions = {},
     envSelectedVersions = {},
     envLoadingVersions = {},
     onselectToolVersion,
     onchangeIsolationMode,
+    onchangeSubMode,
+    onselectReuseTarget,
     ontoggleEnvTool,
     onselectAll,
     onoptInLocalInfra,
@@ -88,11 +95,15 @@
     secretCopied: string | null;
     installedTools: Set<string>;
     envIsolationMode?: "isolated" | "global";
+    envSubMode?: "new" | "existing";
+    envReuseTarget?: EnvironmentBinding | null;
     envAvailableVersions?: Record<string, ToolVersionCandidate[]>;
     envSelectedVersions?: Record<string, ToolVersionCandidate>;
     envLoadingVersions?: Record<string, boolean>;
     onselectToolVersion?: (toolId: string, candidate: ToolVersionCandidate) => void;
     onchangeIsolationMode?: (mode: "isolated" | "global") => void;
+    onchangeSubMode?: (mode: "new" | "existing") => void;
+    onselectReuseTarget?: (target: EnvironmentBinding | null) => void;
     ontoggleEnvTool: (toolId: string) => void;
     onselectAll: () => void;
     onoptInLocalInfra: (toolId: string) => void;
@@ -216,6 +227,39 @@
     const req = envCheck?.requirements.find((r) => r.tool_id === toolId);
     return req?.display ?? toolId;
   }
+  let showEnvPicker = $state(false);
+  let availableEnvList = $state<EnvironmentBinding[]>([]);
+  let envLoadingList = $state(false);
+  let envFilterQuery = $state("");
+
+  async function openEnvPicker() {
+    showEnvPicker = true;
+    envLoadingList = true;
+    try {
+      const list = await listEnvironments();
+      availableEnvList = list;
+    } catch (e) {
+      console.error("Failed to load environments:", e);
+      availableEnvList = [];
+    } finally {
+      envLoadingList = false;
+    }
+  }
+
+  function selectEnvironment(env: EnvironmentBinding) {
+    onchangeSubMode?.("existing");
+    onselectReuseTarget?.(env);
+    showEnvPicker = false;
+  }
+
+  function projectCountWord(n: number): string {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 19) return "проектов";
+    if (mod10 === 1) return "проект";
+    if (mod10 >= 2 && mod10 <= 4) return "проекта";
+    return "проектов";
+  }
 </script>
 
 <p class="prompt">{i18n.t("create.env_check") as TranslationKey}</p>
@@ -268,6 +312,73 @@
     {/if}
   </div>
 </div>
+
+{#if envIsolationMode === "isolated"}
+  <div class="env-submode-strip">
+    <div class="env-submode-left">
+      <span class="env-submode-label">Песочница:</span>
+      <div class="env-submode-pills" role="radiogroup" aria-label="Target Sandbox">
+        <button
+          type="button"
+          class="env-subpill-btn"
+          class:active={envSubMode === "new"}
+          onclick={() => onchangeSubMode?.("new")}
+        >
+          <span class="subpill-icon">➕</span>
+          <span>Новая среда</span>
+        </button>
+        <button
+          type="button"
+          class="env-subpill-btn"
+          class:active={envSubMode === "existing"}
+          onclick={() => {
+            onchangeSubMode?.("existing");
+            if (!envReuseTarget) {
+              openEnvPicker();
+            }
+          }}
+        >
+          <Icon name="folder" size={13} />
+          <span>Существующая среда</span>
+        </button>
+      </div>
+
+      {#if envSubMode === "existing"}
+        {#if envReuseTarget}
+          <div class="env-target-badge">
+            <span class="env-target-dot"></span>
+            <span class="env-target-name">{envReuseTarget.name || envReuseTarget.binding_id}</span>
+            <span class="env-target-count">({(envReuseTarget.bound_projects || []).length} {projectCountWord((envReuseTarget.bound_projects || []).length)})</span>
+            <button
+              type="button"
+              class="btn-change-env"
+              onclick={() => openEnvPicker()}
+              title="Сменить песочницу"
+            >
+              Сменить
+            </button>
+          </div>
+        {:else}
+          <button
+            type="button"
+            class="btn-pick-env"
+            onclick={() => openEnvPicker()}
+          >
+            <Icon name="search" size={12} />
+            <span>Выбрать среду...</span>
+          </button>
+        {/if}
+      {/if}
+    </div>
+
+    <div class="env-advice-box">
+      <span class="advice-icon">💡</span>
+      <span class="advice-text">
+        <strong>Совет:</strong> песочница разделяет общие бинарники тулчейнов (Node, Python) без дублирования на диске, но зависимости проекта (<code>venv</code>, <code>node_modules</code>) изолированы отдельно.
+      </span>
+    </div>
+  </div>
+{/if}
 
 {#if envChecking}
   <p class="muted">{i18n.t("create.checking_tools") as TranslationKey}</p>
@@ -343,6 +454,56 @@
     </div>
     {#if envRestartHint}
       <p class="env-warn">{i18n.t("create.path_restart_hint") as TranslationKey}</p>
+    {/if}
+  {:else}
+    {#if envIsolationMode === "isolated" && envSubMode === "existing"}
+    {#if envReuseTarget}
+      <div class="env-reused-card">
+        <div class="env-reused-head">
+          <div class="env-reused-title-row">
+            <span class="reused-icon">⚡</span>
+            <div>
+              <h4 class="reused-title">{envReuseTarget.name || envReuseTarget.binding_id}</h4>
+              <p class="reused-subtitle">ID: {envReuseTarget.binding_id} · Проект будет подключен к этой песочнице</p>
+            </div>
+          </div>
+          <button type="button" class="btn-change-reused" onclick={() => openEnvPicker()}>
+            Сменить песочницу
+          </button>
+        </div>
+
+        <div class="env-reused-tools-section">
+          <span class="reused-section-title">Готовые тулчейны окружения:</span>
+          <div class="reused-tools-chips">
+            {#each Object.entries(envReuseTarget.tool_overrides || {}) as [tid, ov]}
+              <div class="reused-tool-chip">
+                <TechIcon icon={toolIcon(tid)} alt={tid} size="xs" />
+                <span class="chip-name">{tid}</span>
+                <span class="chip-ver">{ov.version || "по умолчанию"}</span>
+              </div>
+            {/each}
+            {#if Object.keys(envReuseTarget.tool_overrides || {}).length === 0}
+              <span class="muted text-sm">Используются настройки тулчейнов по умолчанию</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="env-reused-footer-note">
+          <span class="ok-dot">✓</span>
+          <span>Повторное скачивание не требуется — инструменты уже установлены в Shared Store.</span>
+        </div>
+      </div>
+    {:else}
+      <div class="env-reused-empty-prompt">
+        <div class="prompt-icon">🔍</div>
+        <div class="prompt-body">
+          <h4>Песочница не выбрана</h4>
+          <p>Для подключения выберите одно из ранее созданных изолированных окружений.</p>
+        </div>
+        <button type="button" class="btn-primary" onclick={() => openEnvPicker()}>
+          Выбрать песочницу
+        </button>
+      </div>
     {/if}
   {:else}
   <div class="env-summary">
@@ -499,6 +660,7 @@
       {/each}
     </div>
   {/if}
+  {/if}
 
   {#if envPlan && envInstalling}
     {@const totalN = envPlan.tasks.length}
@@ -594,6 +756,16 @@
     <button class="btn-back" onclick={onbackReview} disabled={envInstalling}>{i18n.t("create.back") as TranslationKey}</button>
     {#if envInstalling}
       <button class="btn-secondary" onclick={oncancelInstall}>{i18n.t("create.abort") as TranslationKey}</button>
+    {:else if envIsolationMode === "isolated" && envSubMode === "existing"}
+      {#if !envReuseTarget}
+        <button class="btn-primary" onclick={() => openEnvPicker()}>
+          Выбрать песочницу...
+        </button>
+      {:else}
+        <button class="btn-primary" onclick={oncontinue}>
+          {i18n.t("create.create_project") as TranslationKey}
+        </button>
+      {/if}
     {:else if missingAll.length > 0}
       <button class="btn-primary" class:sp-help-anchor={envHintVisible} onclick={onstartInstall} disabled={missingSelected.length === 0}>
         {i18n.t("create.install_selected", { n: missingSelected.length }) as TranslationKey}
@@ -647,6 +819,121 @@
     </div>
   </div>
 {/if}
+
+<Modal
+  open={showEnvPicker}
+  onclose={() => (showEnvPicker = false)}
+  title="Выбор существующей изолированной песочницы"
+  description="Выберите песочницу, тулчейны которой будут переиспользованы для нового проекта."
+  size="lg"
+>
+  <div class="env-modal-content">
+    <div class="env-modal-search">
+      <Icon name="search" size={14} />
+      <input
+        type="search"
+        class="env-search-input"
+        placeholder="Поиск по названию среды или инструментам..."
+        bind:value={envFilterQuery}
+      />
+    </div>
+
+    {#if envLoadingList}
+      <div class="env-modal-loading">
+        <span class="spin"></span> Загрузка окружений...
+      </div>
+    {:else if availableEnvList.length === 0}
+      <div class="env-modal-empty">
+        <Icon name="box" size={32} />
+        <p>Нет доступных сохраненных окружений.</p>
+        <span class="muted">Вы можете продолжить с режимом "Новая среда" — песочница создастся автоматически.</span>
+      </div>
+    {:else}
+      {@const filtered = availableEnvList.filter((e) => {
+        const q = envFilterQuery.toLowerCase().trim();
+        if (!q) return true;
+        const name = (e.name || e.binding_id).toLowerCase();
+        const tools = Object.keys(e.tool_overrides || {}).join(" ").toLowerCase();
+        return name.includes(q) || tools.includes(q);
+      })}
+      {#if filtered.length === 0}
+        <div class="env-modal-empty">
+          <p>Ничего не найдено по запросу "{envFilterQuery}".</p>
+        </div>
+      {:else}
+        <div class="env-modal-grid">
+          {#each filtered as env (env.binding_id)}
+            {@const isSelected = envReuseTarget?.binding_id === env.binding_id}
+            <div
+              class="env-card-pick"
+              class:selected={isSelected}
+              onclick={() => selectEnvironment(env)}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") selectEnvironment(env); }}
+            >
+              <div class="env-card-header">
+                <div class="env-card-title-group">
+                  <span class="env-card-avatar">⚡</span>
+                  <div>
+                    <div class="env-card-name">{env.name || env.binding_id}</div>
+                    <div class="env-card-sub">
+                      ID: {env.binding_id} · {env.isolation_mode === "isolated" ? "Песочница" : "Global"}
+                    </div>
+                  </div>
+                </div>
+                {#if isSelected}
+                  <span class="selected-badge">Выбрана</span>
+                {/if}
+              </div>
+
+              <div class="env-card-tools">
+                {#each Object.entries(env.tool_overrides || {}) as [toolId, ov]}
+                  <span class="tool-tag">
+                    <strong>{toolId}</strong> {ov.version || ""}
+                  </span>
+                {/each}
+                {#if Object.keys(env.tool_overrides || {}).length === 0}
+                  <span class="tool-tag muted">Тулчейны по умолчанию</span>
+                {/if}
+              </div>
+
+              <div class="env-card-footer">
+                <span class="env-card-projects">
+                  📁 {(env.bound_projects || []).length} {projectCountWord((env.bound_projects || []).length)}
+                </span>
+                <button
+                  type="button"
+                  class="btn-pick-action"
+                  class:active={isSelected}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    selectEnvironment(env);
+                  }}
+                >
+                  {isSelected ? "Выбрано ✓" : "Выбрать"}
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  </div>
+
+  {#snippet footer()}
+    <div class="env-modal-actions">
+      <button type="button" class="btn-secondary" onclick={() => (showEnvPicker = false)}>
+        Отмена
+      </button>
+      {#if envReuseTarget}
+        <button type="button" class="btn-primary" onclick={() => (showEnvPicker = false)}>
+          Применить выбор
+        </button>
+      {/if}
+    </div>
+  {/snippet}
+</Modal>
 
 <style>
   .prompt { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.4rem; }
@@ -919,5 +1206,424 @@
   }
   .hint-text {
     line-height: 1.2;
+  }
+  /* Submode strip & advice */
+  .env-submode-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 1.2rem;
+    padding: 0.6rem 0.85rem;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border, #262c3c);
+    border-radius: 8px;
+  }
+  .env-submode-left {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .env-submode-label {
+    font-size: 0.78rem;
+    color: var(--sp-text-3, #94a3b8);
+    font-weight: 500;
+  }
+  .env-submode-pills {
+    display: inline-flex;
+    align-items: center;
+    background: var(--sp-bg-1, #0f1117);
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .env-subpill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-3, #94a3b8);
+    font-size: 0.76rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .env-subpill-btn:hover {
+    color: var(--sp-text-1, #f1f5f9);
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .env-subpill-btn.active {
+    background: var(--sp-accent-soft, rgba(245, 158, 11, 0.15));
+    color: var(--sp-accent-strong, #f59e0b);
+    font-weight: 600;
+  }
+  .env-target-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    font-size: 0.76rem;
+    color: #10b981;
+  }
+  .env-target-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  }
+  .env-target-name {
+    font-weight: 600;
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .env-target-count {
+    font-size: 0.7rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .btn-change-env {
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--sp-text-2, #cbd5e1);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    margin-left: 0.2rem;
+    transition: background 0.15s;
+  }
+  .btn-change-env:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+  }
+  .btn-pick-env {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px dashed var(--sp-accent-strong, #f59e0b);
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--sp-accent-strong, #f59e0b);
+    border-radius: 5px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-pick-env:hover {
+    background: rgba(245, 158, 11, 0.18);
+  }
+
+  .env-advice-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    font-size: 0.75rem;
+    color: var(--sp-text-2, #cbd5e1);
+    line-height: 1.35;
+  }
+  .advice-icon {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .advice-text code {
+    background: rgba(0, 0, 0, 0.25);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--sp-font-mono, monospace);
+    color: #93c5fd;
+  }
+
+  /* Reused Card */
+  .env-reused-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    border-radius: 10px;
+    background: var(--sp-bg-1, #0f1117);
+    margin-bottom: 1.2rem;
+  }
+  .env-reused-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .env-reused-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .reused-icon {
+    font-size: 1.3rem;
+  }
+  .reused-title {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .reused-subtitle {
+    margin: 0.15rem 0 0;
+    font-size: 0.76rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .btn-change-reused {
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    background: var(--sp-bg-2, #161821);
+    color: var(--sp-text-2, #cbd5e1);
+    border-radius: 6px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-change-reused:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .env-reused-tools-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .reused-section-title {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .reused-tools-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .reused-tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.55rem;
+    border-radius: 5px;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border, #262c3c);
+    font-size: 0.76rem;
+  }
+  .reused-tool-chip .chip-name {
+    font-weight: 600;
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .reused-tool-chip .chip-ver {
+    color: var(--sp-accent-strong, #f59e0b);
+    font-family: var(--sp-font-mono, monospace);
+  }
+  .env-reused-footer-note {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.76rem;
+    color: #10b981;
+    padding-top: 0.3rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .ok-dot {
+    font-weight: 700;
+  }
+
+  /* Empty Prompt for Reused */
+  .env-reused-empty-prompt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.2rem;
+    border: 1px dashed var(--sp-border-strong, #2c3242);
+    border-radius: 10px;
+    background: var(--sp-bg-1, #0f1117);
+    margin-bottom: 1.2rem;
+  }
+  .prompt-icon {
+    font-size: 1.8rem;
+  }
+  .prompt-body h4 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .prompt-body p {
+    margin: 0.2rem 0 0;
+    font-size: 0.78rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+
+  /* Modal content */
+  .env-modal-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-height: 520px;
+  }
+  .env-modal-search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--sp-bg-1, #0f1117);
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    border-radius: 8px;
+  }
+  .env-search-input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-1, #f1f5f9);
+    font-size: 0.85rem;
+    outline: none;
+  }
+  .env-modal-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 2rem;
+    color: var(--sp-text-3, #94a3b8);
+    font-size: 0.9rem;
+  }
+  .env-modal-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 2.5rem 1rem;
+    color: var(--sp-text-3, #94a3b8);
+    text-align: center;
+  }
+  .env-modal-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.75rem;
+    overflow-y: auto;
+    max-height: 400px;
+    padding-right: 4px;
+  }
+  .env-card-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.85rem;
+    border-radius: 8px;
+    background: var(--sp-bg-1, #0f1117);
+    border: 1px solid var(--sp-border, #262c3c);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
+  }
+  .env-card-pick:hover {
+    border-color: var(--sp-accent-strong, #f59e0b);
+    background: var(--sp-bg-2, #161821);
+    transform: translateY(-1px);
+  }
+  .env-card-pick.selected {
+    border-color: #10b981;
+    background: rgba(16, 185, 129, 0.06);
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.15);
+  }
+  .env-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .env-card-title-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .env-card-avatar {
+    font-size: 1.1rem;
+  }
+  .env-card-name {
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: var(--sp-text-1, #f1f5f9);
+    line-height: 1.2;
+  }
+  .env-card-sub {
+    font-size: 0.68rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .selected-badge {
+    font-size: 0.65rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    font-weight: 600;
+  }
+  .env-card-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .tool-tag {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    color: var(--sp-text-2, #cbd5e1);
+  }
+  .tool-tag strong {
+    color: var(--sp-text-1, #f1f5f9);
+  }
+  .env-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: auto;
+    padding-top: 0.4rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .env-card-projects {
+    font-size: 0.72rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .btn-pick-action {
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--sp-text-2, #cbd5e1);
+    border-radius: 4px;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-pick-action:hover {
+    background: var(--sp-accent-strong, #f59e0b);
+    color: #000;
+  }
+  .btn-pick-action.active {
+    background: #10b981;
+    color: #000;
+  }
+  .env-modal-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
   }
 </style>

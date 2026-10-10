@@ -20,7 +20,7 @@ pub use preview::*;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -407,38 +407,63 @@ impl RecipeEngine for DefaultRecipeEngine {
         let mut results = Vec::with_capacity(total);
         let mut aborted = false;
 
-        // Log active isolated environment notice in project execution stream
+        // Log active isolated environment notice in project execution stream and ensure descriptor exists
         let sp_env = plan.project_path.join(".stackpilot").join("environment.json");
-        if sp_env.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&sp_env) {
-                if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
-                    if binding.is_isolated() {
-                        let mut tool_strs = Vec::new();
-                        for (tid, t) in &binding.tool_overrides {
-                            let ver = t.version.as_deref().unwrap_or("custom");
-                            tool_strs.push(format!("{tid} v{ver}"));
-                        }
-                        let tools_line = if tool_strs.is_empty() {
-                            "Isolated project sandbox active (clean Windows PATH)".to_string()
-                        } else {
-                            format!("Isolated project sandbox active: {}", tool_strs.join(", "))
-                        };
-                        let _ = tx
-                            .send(ExecutionEvent {
-                                event_type: ExecutionEventType::StepProgress {
-                                    stdout: format!("[Environment] ⚡ {}\n", tools_line),
-                                    stderr: String::new(),
-                                },
-                                step_id: "env_setup".to_string(),
-                                step_index: 0,
-                                total_steps: total,
-                                step_name: "Environment Sandbox".into(),
-                                step_description: "Initialize isolated runtime sandbox".into(),
-                                timestamp: chrono_event_time(),
-                            })
-                            .await;
-                    }
+        let binding = if sp_env.is_file() {
+            std::fs::read_to_string(&sp_env)
+                .ok()
+                .and_then(|c| serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&c).ok())
+        } else if let Some(ref binding_id) = plan.context.environment_binding_id {
+            let app_data = std::env::var("APPDATA").unwrap_or_default();
+            let candidate_files = [
+                PathBuf::from(&app_data).join("com.cheburek4535.stackpilot").join("project_environments").join("bindings").join(format!("{}.json", binding_id)),
+                PathBuf::from(&app_data).join("com.cheburek4535.devlauncher").join("project_environments").join("bindings").join(format!("{}.json", binding_id)),
+                PathBuf::from(&app_data).join("StackPilot").join("project_environments").join("bindings").join(format!("{}.json", binding_id)),
+            ];
+            candidate_files.into_iter().find_map(|p| {
+                if p.is_file() {
+                    std::fs::read_to_string(&p).ok().and_then(|c| serde_json::from_str(&c).ok())
+                } else {
+                    None
                 }
+            })
+        } else {
+            None
+        };
+
+        if let Some(ref binding) = binding {
+            let sp_dir = plan.project_path.join(".stackpilot");
+            let _ = std::fs::create_dir_all(&sp_dir);
+            if !sp_env.is_file() {
+                if let Ok(content) = serde_json::to_string_pretty(binding) {
+                    let _ = std::fs::write(&sp_env, content);
+                }
+            }
+            if binding.is_isolated() {
+                let mut tool_strs = Vec::new();
+                for (tid, t) in &binding.tool_overrides {
+                    let ver = t.version.as_deref().unwrap_or("custom");
+                    tool_strs.push(format!("{tid} v{ver}"));
+                }
+                let tools_line = if tool_strs.is_empty() {
+                    "Isolated project sandbox active (clean Windows PATH)".to_string()
+                } else {
+                    format!("Isolated project sandbox active: {}", tool_strs.join(", "))
+                };
+                let _ = tx
+                    .send(ExecutionEvent {
+                        event_type: ExecutionEventType::StepProgress {
+                            stdout: format!("[Environment] ⚡ {}\n", tools_line),
+                            stderr: String::new(),
+                        },
+                        step_id: "env_setup".to_string(),
+                        step_index: 0,
+                        total_steps: total,
+                        step_name: "Environment Sandbox".into(),
+                        step_description: "Initialize isolated runtime sandbox".into(),
+                        timestamp: chrono_event_time(),
+                    })
+                    .await;
             }
         }
 

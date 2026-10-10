@@ -248,29 +248,27 @@ impl EnvironmentBindingService for JsonEnvironmentBindingService {
 
         // Write dual descriptor: .stackpilot/environment.json (full metadata) and .stackpilot.json (legacy)
         let proj = Path::new(project_path);
-        if proj.is_dir() {
-            let sp_dir = proj.join(".stackpilot");
-            let _ = fs::create_dir_all(&sp_dir);
-            let sp_env_file = sp_dir.join("environment.json");
-            if let Ok(content) = serde_json::to_string_pretty(&saved) {
-                let _ = fs::write(sp_env_file, content);
-            }
-
-            let sp_json_path = proj.join(".stackpilot.json");
-            let mut obj = if sp_json_path.exists() {
-                fs::read_to_string(&sp_json_path)
-                    .ok()
-                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                    .and_then(|v| v.as_object().cloned())
-                    .unwrap_or_default()
-            } else {
-                serde_json::Map::new()
-            };
-            obj.insert("environment_id".to_string(), serde_json::Value::String(binding_id.to_string()));
-            obj.insert("environment_name".to_string(), serde_json::Value::String(saved.name.clone().unwrap_or_default()));
-            obj.insert("isolation_mode".to_string(), serde_json::Value::String(if saved.is_isolated() { "isolated".to_string() } else { "global".to_string() }));
-            let _ = fs::write(&sp_json_path, serde_json::to_string_pretty(&obj).unwrap_or_default());
+        let sp_dir = proj.join(".stackpilot");
+        let _ = fs::create_dir_all(&sp_dir);
+        let sp_env_file = sp_dir.join("environment.json");
+        if let Ok(content) = serde_json::to_string_pretty(&saved) {
+            let _ = fs::write(sp_env_file, content);
         }
+
+        let sp_json_path = proj.join(".stackpilot.json");
+        let mut obj = if sp_json_path.exists() {
+            fs::read_to_string(&sp_json_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+        obj.insert("environment_id".to_string(), serde_json::Value::String(binding_id.to_string()));
+        obj.insert("environment_name".to_string(), serde_json::Value::String(saved.name.clone().unwrap_or_default()));
+        obj.insert("isolation_mode".to_string(), serde_json::Value::String(if saved.is_isolated() { "isolated".to_string() } else { "global".to_string() }));
+        let _ = fs::write(&sp_json_path, serde_json::to_string_pretty(&obj).unwrap_or_default());
 
         Ok(saved)
     }

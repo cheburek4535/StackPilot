@@ -106,11 +106,15 @@
               secretCopied={store.secretCopied}
               installedTools={store.installedTools}
               envIsolationMode={store.envIsolationMode}
+              envSubMode={store.envSubMode}
+              envReuseTarget={store.envReuseTarget}
               envAvailableVersions={store.envAvailableVersions}
               envSelectedVersions={store.envSelectedVersions}
               envLoadingVersions={store.envLoadingVersions}
               onselectToolVersion={store.selectToolVersion}
               onchangeIsolationMode={(m: "isolated" | "global") => (store.envIsolationMode = m)}
+              onchangeSubMode={(sm: "new" | "existing") => (store.envSubMode = sm)}
+              onselectReuseTarget={(target: any) => (store.envReuseTarget = target)}
               ontoggleEnvTool={store.toggleEnvTool}
               onselectAll={store.selectAllEnvTools}
               onoptInLocalInfra={store.optInLocalInfra}
@@ -141,6 +145,7 @@
               execLogs={store.execLogs}
               devlProfileExists={store.devlProfileExists}
               createdEnvBinding={store.createdEnvBinding}
+              zeroStep={store.zeroStep}
               onopenenvterminal={store.openCreatedEnvTerminal}
               onopenworkspace={store.openInWorkspace}
               oncancel={store.cancelExecution}

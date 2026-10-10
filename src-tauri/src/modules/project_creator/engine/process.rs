@@ -298,8 +298,9 @@ impl ProcessRunner {
     ) -> Result<ProcessOutput, ProcessExecutionError> {
         let mut overlay = None;
         if let Some(ref wd) = spec.working_dir {
-            for candidate in [wd.clone(), wd.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| wd.clone())] {
-                let sp_env = candidate.join(".stackpilot").join("environment.json");
+            let mut curr = Some(wd.as_path());
+            while let Some(dir) = curr {
+                let sp_env = dir.join(".stackpilot").join("environment.json");
                 if sp_env.is_file() {
                     if let Ok(content) = std::fs::read_to_string(&sp_env) {
                         if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
@@ -309,6 +310,7 @@ impl ProcessRunner {
                         }
                     }
                 }
+                curr = dir.parent();
             }
         }
 
@@ -691,6 +693,63 @@ async fn check_triggers(
 // ============================================================================
 
 /// Разрешает команду с учётом оверлея окружения (shim в bin/ или portable exe в shared store)
+fn parse_node_major(v_str: &str) -> Option<u32> {
+    let trimmed = v_str.trim().trim_start_matches('v');
+    let first = trimmed.split('.').next()?;
+    first.parse::<u32>().ok()
+}
+
+fn detect_node_major_version(overlay: Option<&crate::platform::environment::EnvironmentOverlay>) -> Option<u32> {
+    if let Some(ov) = overlay {
+        #[cfg(target_os = "windows")]
+        let node_cands = ["node.exe", "node"];
+        #[cfg(not(target_os = "windows"))]
+        let node_cands = ["node"];
+
+        for dir in &ov.path_prepend {
+            let p = std::path::Path::new(dir);
+            for cand in &node_cands {
+                let full = p.join(cand);
+                if full.is_file() {
+                    let mut cmd = std::process::Command::new(&full);
+                    cmd.arg("-v");
+                    #[cfg(target_os = "windows")]
+                    crate::platform::suppress_child_console(&mut cmd);
+                    if let Ok(out) = cmd.output() {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        if let Some(major) = parse_node_major(&text) {
+                            return Some(major);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cmd = std::process::Command::new("node");
+    cmd.arg("-v");
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    if let Ok(out) = cmd.output() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        return parse_node_major(&text);
+    }
+
+    None
+}
+
+fn adapt_npx_args(args: &mut [String], overlay: Option<&crate::platform::environment::EnvironmentOverlay>) {
+    for arg in args.iter_mut() {
+        if *arg == "create-vite@latest" || *arg == "create-vite" {
+            let major = detect_node_major_version(overlay).unwrap_or(20);
+            if major < 20 {
+                log::info!("[ProcessRunner] Node v{} detected: adapting create-vite to create-vite@5 for runtime compatibility", major);
+                *arg = "create-vite@5".to_string();
+            }
+        }
+    }
+}
+
 fn resolve_command_with_overlay(
     command: &str,
     overlay: Option<&crate::platform::environment::EnvironmentOverlay>,
@@ -700,6 +759,74 @@ fn resolve_command_with_overlay(
     };
 
     let trimmed = command.trim();
+
+    // Do not override commands that already point into a project's virtual environment
+    let is_in_venv = trimmed.contains("\\venv\\")
+        || trimmed.contains("/venv/")
+        || trimmed.contains("\\.venv\\")
+        || trimmed.contains("/.venv/");
+    if is_in_venv {
+        return trimmed.to_string();
+    }
+
+    // Is it a Python invocation (either bare "python"/"python3" or an absolute path to a system python executable)?
+    let is_python_invocation = {
+        let lower = trimmed.to_ascii_lowercase();
+        lower == "python"
+            || lower == "python3"
+            || lower == "python.exe"
+            || lower == "python3.exe"
+            || lower.ends_with("\\python.exe")
+            || lower.ends_with("/python.exe")
+            || lower.ends_with("/python")
+            || lower.ends_with("/python3")
+    };
+
+    if is_python_invocation {
+        #[cfg(target_os = "windows")]
+        let py_candidates = ["python.exe", "python3.exe", "python.cmd", "python"];
+        #[cfg(not(target_os = "windows"))]
+        let py_candidates = ["python3", "python"];
+
+        for dir in &overlay.path_prepend {
+            let dir_path = std::path::Path::new(dir);
+            for cand in &py_candidates {
+                let full = dir_path.join(cand);
+                if full.is_file() {
+                    return full.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    // Is it a Node invocation (either bare "node" or an absolute path to a system node executable)?
+    let is_node_invocation = {
+        let lower = trimmed.to_ascii_lowercase();
+        lower == "node"
+            || lower == "nodejs"
+            || lower == "node.exe"
+            || lower.ends_with("\\node.exe")
+            || lower.ends_with("/node.exe")
+            || lower.ends_with("/node")
+    };
+
+    if is_node_invocation {
+        #[cfg(target_os = "windows")]
+        let node_candidates = ["node.exe", "node"];
+        #[cfg(not(target_os = "windows"))]
+        let node_candidates = ["node"];
+
+        for dir in &overlay.path_prepend {
+            let dir_path = std::path::Path::new(dir);
+            for cand in &node_candidates {
+                let full = dir_path.join(cand);
+                if full.is_file() {
+                    return full.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
     if trimmed.contains('\\') || trimmed.contains('/') {
         return trimmed.to_string();
     }
@@ -740,12 +867,19 @@ fn build_command(
     use crate::platform::command::{build_tokio_command, infer_command_mode};
 
     let effective_command = resolve_command_with_overlay(&spec.command, overlay);
-    let mode = infer_command_mode(&effective_command, &spec.args, None);
+    let mut effective_args = spec.args.clone();
+    let lower_cmd = spec.command.to_ascii_lowercase();
+    let lower_eff = effective_command.to_ascii_lowercase();
+    if lower_cmd.contains("npx") || lower_eff.contains("npx") {
+        adapt_npx_args(&mut effective_args, overlay);
+    }
+
+    let mode = infer_command_mode(&effective_command, &effective_args, None);
     // CommandBuildError arises only when a shell is incompatible with the
     // current OS. That would be a cross-function invariant violation on
     // infer_command_mode's side — surface it as a Spawn error instead of
     // panicking: the user gets a readable failure, not a crash.
-    let mut cmd = build_tokio_command(&effective_command, &spec.args, mode).map_err(|e| {
+    let mut cmd = build_tokio_command(&effective_command, &effective_args, mode).map_err(|e| {
         ProcessExecutionError {
             kind: ProcessErrorKind::Spawn {
                 source: e.to_string(),
