@@ -1557,3 +1557,60 @@ pub async fn tcx_uninstall_tool(
     .await
     .map_err(|e| format!("Uninstall task failed: {e}"))?
 }
+
+/// Получить список всех обнаруженных и доступных версий инструмента
+/// (StackPilot Store, fnm, nvm, pyenv, uv, системный PATH, официальные загрузки).
+#[tauri::command]
+pub async fn tc_list_tool_versions(
+    state: State<'_, ToolchainState>,
+    tool_id: String,
+) -> Result<Vec<ToolVersionCandidate>, String> {
+    let store_dir = state.shared_store_dir.clone();
+    let query_id = tool_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(core::version_store::list_available_versions(&query_id, &store_dir))
+    })
+    .await
+    .map_err(|e| format!("Ошибка поиска версий {}: {}", tool_id, e))?
+}
+
+/// Скачать и распаковать портативную версию инструмента в Shared Tool Store StackPilot.
+#[tauri::command]
+pub async fn tc_install_tool_version(
+    state: State<'_, ToolchainState>,
+    tool_id: String,
+    version: String,
+    download_url: String,
+) -> Result<String, String> {
+    let store_dir = state.shared_store_dir.clone();
+    core::version_store::download_and_install_to_shared_store(
+        &tool_id,
+        &version,
+        &download_url,
+        &store_dir,
+    )
+    .await
+}
+
+/// Получить сводную матрицу использования версий по всем проектам/окружениям
+/// с расчётом сэкономленного дискового пространства благодаря дедупликации.
+#[tauri::command]
+pub async fn tc_get_toolchain_environments_matrix(
+    tc_state: State<'_, ToolchainState>,
+    pe_state: State<'_, crate::modules::project_environment::ProjectEnvironmentState>,
+) -> Result<ToolchainDeduplicationReport, String> {
+    let store_dir = tc_state.shared_store_dir.clone();
+    let environments = pe_state.binding_service.list()?;
+    Ok(core::version_store::calculate_deduplication_report(&store_dir, &environments))
+}
+
+/// Удалить из Shared Tool Store неиспользуемые версии (на которые не ссылается ни один проект).
+#[tauri::command]
+pub async fn tc_prune_unused_tool_versions(
+    tc_state: State<'_, ToolchainState>,
+    pe_state: State<'_, crate::modules::project_environment::ProjectEnvironmentState>,
+) -> Result<Vec<String>, String> {
+    let store_dir = tc_state.shared_store_dir.clone();
+    let environments = pe_state.binding_service.list()?;
+    core::version_store::prune_unused_versions(&store_dir, &environments)
+}

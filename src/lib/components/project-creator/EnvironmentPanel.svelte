@@ -20,6 +20,7 @@
     ToolRequirement,
   } from "$lib/modules/toolchain/compat";
   import type { WizardTreeData } from "$lib/modules/project_creator/types";
+  import type { ToolVersionCandidate } from "$lib/modules/toolchain/types";
 
   let {
     tree,
@@ -45,6 +46,10 @@
     secretCopied,
     installedTools,
     envIsolationMode = "isolated",
+    envAvailableVersions = {},
+    envSelectedVersions = {},
+    envLoadingVersions = {},
+    onselectToolVersion,
     onchangeIsolationMode,
     ontoggleEnvTool,
     onselectAll,
@@ -83,6 +88,10 @@
     secretCopied: string | null;
     installedTools: Set<string>;
     envIsolationMode?: "isolated" | "global";
+    envAvailableVersions?: Record<string, ToolVersionCandidate[]>;
+    envSelectedVersions?: Record<string, ToolVersionCandidate>;
+    envLoadingVersions?: Record<string, boolean>;
+    onselectToolVersion?: (toolId: string, candidate: ToolVersionCandidate) => void;
     onchangeIsolationMode?: (mode: "isolated" | "global") => void;
     ontoggleEnvTool: (toolId: string) => void;
     onselectAll: () => void;
@@ -105,6 +114,29 @@
   );
 
   /** Иконка тула из wizard_tree по tool_id (для requirements/tasks окружения) */
+  function sourceKindBadge(kind: string): { label: string; tone: "primary" | "secondary" | "accent" | "success" | "warning" | "danger" | "ghost" | "cyan" | "violet" | "amber" | "emerald" } {
+    switch (kind) {
+      case "shared_store":
+        return { label: "StackPilot Store", tone: "violet" };
+      case "fnm":
+        return { label: "fnm", tone: "cyan" };
+      case "nvm":
+        return { label: "nvm", tone: "cyan" };
+      case "uv":
+        return { label: "uv", tone: "emerald" };
+      case "pyenv":
+        return { label: "pyenv", tone: "emerald" };
+      case "windows_py_launcher":
+        return { label: "py", tone: "primary" };
+      case "system":
+        return { label: "System PATH", tone: "secondary" };
+      case "standalone_download":
+        return { label: "Standalone", tone: "amber" };
+      default:
+        return { label: kind, tone: "secondary" };
+    }
+  }
+
   function toolIcon(toolId: string): string | null {
     return tree?.tools.find((t) => t.id === toolId)?.icon ?? null;
   }
@@ -429,6 +461,42 @@
         <span class="env-icon"><TechIcon icon={req.icon ?? toolIcon(req.tool_id)} alt={req.display} size="sm" /></span>
         <span class="env-name">{req.display}</span>
         <span class="env-source">{i18n.t(req.source_description as TranslationKey)}</span>
+        {#if envAvailableVersions?.[req.tool_id] && envAvailableVersions[req.tool_id].length > 0}
+          {@const candidates = envAvailableVersions[req.tool_id]}
+          {@const selected = envSelectedVersions?.[req.tool_id] ?? candidates[0]}
+          <div class="env-version-picker" title={i18n.t("create.version_selector_title" as TranslationKey)}>
+            <span class="version-label"><Icon name="wrench" size={13} /> {i18n.t("create.version_label" as TranslationKey)}:</span>
+            <select
+              class="version-select"
+              value={selected?.version ?? candidates[0]?.version}
+              onchange={(e) => {
+                const targetId = (e.currentTarget as HTMLSelectElement).value;
+                const match = candidates.find((c) => c.version === targetId);
+                if (match && onselectToolVersion) {
+                  onselectToolVersion(req.tool_id, match);
+                }
+              }}
+            >
+              {#each candidates as cand}
+                {@const badge = sourceKindBadge(cand.source_kind)}
+                <option value={cand.version}>
+                  v{cand.version} — {badge.label}{cand.is_installed ? ' (Ready)' : ' (~' + (cand.size_mb ?? 30) + ' MB)'}
+                </option>
+              {/each}
+            </select>
+            {#if selected}
+              {@const b = sourceKindBadge(selected.source_kind)}
+              <span class="source-tag" class:tag-store={selected.source_kind === "shared_store"} class:tag-manager={selected.source_kind !== "shared_store" && selected.source_kind !== "system"}>
+                {b.label}
+              </span>
+            {/if}
+          </div>
+        {:else if envLoadingVersions?.[req.tool_id]}
+          <div class="env-version-loading">
+            <span class="spinner-mini"></span>
+            <span>{i18n.t("create.loading_versions" as TranslationKey)}…</span>
+          </div>
+        {/if}
         <span
           class="env-status"
           class:ok={kind === "ok"}
@@ -704,6 +772,35 @@
   .env-icon { min-width: 20px; font-size: 0.95rem; }
   .env-name { font-weight: 600; font-size: 0.9rem; flex: 0 0 auto; }
   .env-source { font-size: 0.75rem; color: var(--sp-text-3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .env-version-picker { display: inline-flex; align-items: center; gap: 0.4rem; flex: 0 0 auto; margin-left: auto; }
+  .version-label { font-size: 0.72rem; color: var(--sp-text-3); display: inline-flex; align-items: center; gap: 0.2rem; }
+  .version-select {
+    border: 1px solid var(--sp-border-strong);
+    background: var(--sp-bg-2);
+    color: var(--sp-text);
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    font-size: 0.75rem;
+    font-family: var(--sp-font-mono, monospace);
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .version-select:focus { border-color: var(--sp-accent-strong); }
+  .source-tag {
+    font-size: 0.68rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+    white-space: nowrap;
+    border: 1px solid var(--sp-border-strong);
+    background: var(--sp-bg-3);
+    color: var(--sp-text-2);
+  }
+  .tag-store { background: rgba(168, 85, 247, 0.15); color: #c084fc; border-color: rgba(168, 85, 247, 0.3); }
+  .tag-manager { background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3); }
+  .env-version-loading { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: var(--sp-text-3); margin-left: auto; }
+  .spinner-mini { width: 10px; height: 10px; border: 2px solid var(--sp-text-3); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
   .env-status { font-size: 0.8rem; font-weight: 600; flex: 0 0 auto; }
   .env-status.ok { color: var(--sp-success); }
   .env-status.update { color: var(--sp-warning); }

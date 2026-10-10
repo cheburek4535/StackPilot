@@ -922,6 +922,77 @@ pub struct InstalledToolInfo {
     pub path_entries: Vec<String>,
 }
 
+/// Кандидат версии инструмента для выбора в мастере и переключения в окружении.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolVersionCandidate {
+    /// Семантическая версия (например "20.18.0", "3.12.7", "1.23.2")
+    pub version: String,
+    /// Человекочитаемая метка (например "Node.js 20.18.0 (LTS)")
+    pub display_label: String,
+    /// Категория источника версии
+    pub source_kind: ToolVersionSourceKind,
+    /// Имя источника ("StackPilot Store", "fnm", "nvm", "pyenv", "uv", "Система", "Официальный архив")
+    pub source_name: String,
+    /// Абсолютный путь к исполняемому файлу (если уже установлен)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
+    /// Канал стабильности ("lts", "current", "stable", "system")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Флаг: доступна ли версия локально без скачивания
+    pub is_installed: bool,
+    /// Прямой URL для загрузки портативного архива
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    /// Размер загрузки в МБ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_mb: Option<u32>,
+}
+
+/// Тип источника обнаруженной или доступной версии
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolVersionSourceKind {
+    /// Общий склад StackPilot (toolchains/{tool}/{version})
+    SharedStore,
+    /// Внешний менеджер версий на хосте (nvm, fnm, pyenv, uv, py launcher)
+    ExternalManager,
+    /// Глобальная системная версия из PATH
+    System,
+    /// Официальный портативный архив для скачивания в Shared Store
+    UpstreamDownload,
+}
+
+/// Использование конкретной версии инструмента в окружениях и проектах
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolEnvironmentUsage {
+    pub tool_id: String,
+    pub version: String,
+    pub executable_path: String,
+    pub source_kind: ToolVersionSourceKind,
+    pub bound_environments: Vec<BoundEnvironmentInfo>,
+    pub size_bytes: u64,
+}
+
+/// Информация о привязанном окружении для матрицы версий
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundEnvironmentInfo {
+    pub binding_id: String,
+    pub name: String,
+    pub bound_projects: Vec<String>,
+}
+
+/// Матрица использования версий и дедупликации по всем окружениям
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolchainDeduplicationReport {
+    pub total_shared_versions: usize,
+    pub total_bindings_using_shared: usize,
+    pub total_disk_used_bytes: u64,
+    pub total_disk_saved_bytes: u64,
+    pub usages: Vec<ToolEnvironmentUsage>,
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

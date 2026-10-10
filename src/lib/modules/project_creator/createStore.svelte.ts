@@ -89,6 +89,8 @@ import { setContext, getContext } from "svelte";
   } from "$lib/modules/project_environment/api";
   import type { EnvironmentBinding, ToolOverride } from "$lib/modules/project_environment/types";
   import { openProject } from "$lib/core/integration";
+  import { listToolVersions, installToolVersion } from "$lib/modules/toolchain/api";
+  import type { ToolVersionCandidate } from "$lib/modules/toolchain/types";
 
 export type TooltipItem =
   | { type: 'tool'; tool: ToolDef; conflictReason?: string | null }
@@ -439,6 +441,9 @@ export function createProjectStore() {
    *  (state.json toolchain). Панды окружения показывают их «уже готовыми»
    *  и предлагают «Связать с локальным» вместо повторной установки. */
   let installedTools = $state<Set<string>>(new Set());
+  let envAvailableVersions = $state<Record<string, ToolVersionCandidate[]>>({});
+  let envSelectedVersions = $state<Record<string, ToolVersionCandidate>>({});
+  let envLoadingVersions = $state<Record<string, boolean>>({});
   
   // ---- Integration: DevLauncher profile ----
   let devlProfileCreated = $state(false);
@@ -1965,6 +1970,38 @@ export function createProjectStore() {
     };
   }
   
+  async function loadVersionsForRequirements(reqs: ToolRequirement[]) {
+    for (const req of reqs) {
+      const tid = req.tool_id;
+      envLoadingVersions = { ...envLoadingVersions, [tid]: true };
+      try {
+        const candidates = await listToolVersions(tid);
+        if (candidates && candidates.length > 0) {
+          envAvailableVersions = { ...envAvailableVersions, [tid]: candidates };
+          if (!envSelectedVersions[tid]) {
+            const installed =
+              candidates.find((c) => c.is_installed && c.source_kind === "shared_store") ||
+              candidates.find((c) => c.is_installed);
+            envSelectedVersions = {
+              ...envSelectedVersions,
+              [tid]: installed || candidates[0],
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`[createStore] Failed to list versions for ${tid}:`, err);
+      } finally {
+        const next = { ...envLoadingVersions };
+        delete next[tid];
+        envLoadingVersions = next;
+      }
+    }
+  }
+
+  function selectToolVersion(toolId: string, candidate: ToolVersionCandidate) {
+    envSelectedVersions = { ...envSelectedVersions, [toolId]: candidate };
+  }
+
   async function runEnvironmentCheck(silent = false) {
     envChecking = !silent;
     envError = null;
@@ -1978,6 +2015,9 @@ export function createProjectStore() {
           .filter((r) => statusKind(r.status) !== "ok" && statusKind(r.status) !== "manual")
           .map((r) => r.tool_id),
       );
+      if (fresh?.requirements) {
+        void loadVersionsForRequirements(fresh.requirements);
+      }
     } catch (e) {
       console.error("[env] ОШИБКА проверки:", e);
       envError = String(e) || i18n.t("create.env_check_unknown_error");
@@ -2213,6 +2253,9 @@ export function createProjectStore() {
           .filter((r) => statusKind(r.status) !== "ok" && statusKind(r.status) !== "manual")
           .map((r) => r.tool_id),
       );
+      if (fresh.requirements) {
+        void loadVersionsForRequirements(fresh.requirements);
+      }
       // Свежая проверка прошла — экран «завершено» сменяется списком,
       // где поставленные тулы уже «готовы».
       envInstallDone = false;
@@ -2488,6 +2531,35 @@ export function createProjectStore() {
               resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
             } catch (err) {
               console.warn("[ProjectCreator] Failed to resolve tools:", err);
+            }
+
+            // Apply selected multi-version candidates
+            for (const [tid, candidate] of Object.entries(envSelectedVersions)) {
+              if (toolIdsToResolve.has(tid) && candidate) {
+                let targetCandidate = candidate;
+                if (!targetCandidate.is_installed) {
+                  try {
+                    const notice = `[StackPilot] Downloading standalone ${tid} ${candidate.version} to Shared Store...`;
+                    execLogs = [...execLogs, notice];
+                    const exePath = await installToolVersion(tid, candidate.version, candidate.download_url || "");
+                    targetCandidate = {
+                      ...candidate,
+                      is_installed: true,
+                      executable_path: exePath,
+                      source_kind: "shared_store",
+                    };
+                    envSelectedVersions = { ...envSelectedVersions, [tid]: targetCandidate };
+                  } catch (installErr) {
+                    console.warn(`[ProjectCreator] Failed to install selected tool version for ${tid}:`, installErr);
+                  }
+                }
+                if (targetCandidate.is_installed && targetCandidate.executable_path) {
+                  resolvedOverrides[tid] = {
+                    version: targetCandidate.version,
+                    executable_path: targetCandidate.executable_path,
+                  };
+                }
+              }
             }
 
             if (envIsolationMode === "isolated") {
@@ -2886,6 +2958,12 @@ export function createProjectStore() {
     set envLocalInfra(v) { envLocalInfra = v; },
     get installedTools() { return installedTools; },
     set installedTools(v) { installedTools = v; },
+    get envAvailableVersions() { return envAvailableVersions; },
+    set envAvailableVersions(v) { envAvailableVersions = v; },
+    get envSelectedVersions() { return envSelectedVersions; },
+    set envSelectedVersions(v) { envSelectedVersions = v; },
+    get envLoadingVersions() { return envLoadingVersions; },
+    set envLoadingVersions(v) { envLoadingVersions = v; },
     get devlProfileCreated() { return devlProfileCreated; },
     set devlProfileCreated(v) { devlProfileCreated = v; },
     get devlShowReminder() { return devlShowReminder; },
@@ -3040,6 +3118,7 @@ export function createProjectStore() {
         get HINT_CREATE_TOOLS() { return HINT_CREATE_TOOLS; },
         get HINT_CREATE_PREVIEW() { return HINT_CREATE_PREVIEW; },
         get HelpHint() { return HelpHint; },
+        get selectToolVersion() { return selectToolVersion; },
         get resetAll() { return resetAll; },
         get createdEnvBinding() { return createdEnvBinding; },
         get openCreatedEnvTerminal() { return openCreatedEnvTerminal; },

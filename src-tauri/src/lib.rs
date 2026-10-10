@@ -316,6 +316,11 @@ pub fn run() {
             modules::toolchain::commands::tcx_cancel_job,
             modules::toolchain::commands::tcx_retry_job,
             modules::toolchain::commands::tcx_adopt_tool,
+            // ToolchainManager: multi-version & shared store
+            modules::toolchain::commands::tc_list_tool_versions,
+            modules::toolchain::commands::tc_install_tool_version,
+            modules::toolchain::commands::tc_get_toolchain_environments_matrix,
+            modules::toolchain::commands::tc_prune_unused_tool_versions,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,

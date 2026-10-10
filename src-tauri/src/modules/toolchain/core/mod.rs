@@ -34,3 +34,4 @@ pub mod requirements;
 pub mod secrets;
 pub mod upstream;
 pub mod version;
+pub mod version_store;

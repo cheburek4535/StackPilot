@@ -69,6 +69,8 @@ pub struct ToolchainState {
     /// Фактическая реализация мутаций машины; легаси tc_run_install
     /// идёт через адаптер над ним.
     job_engine: Arc<JobEngine>,
+    /// Директория Shared Tool Store для портативных версий инструментов
+    pub shared_store_dir: PathBuf,
 }
 
 impl ToolchainState {
@@ -77,6 +79,9 @@ impl ToolchainState {
         // Осиротевшие временные файлы заданий (крэш посреди установки)
         // убираются при старте — «вечного» мусора в temp не копится.
         core::console::sweep_stale_temp_files();
+
+        let shared_store_dir = dir.parent().unwrap_or(&dir).join("toolchains");
+        let _ = std::fs::create_dir_all(&shared_store_dir);
 
         let definitions = defs::load_definitions();
         let legacy_definitions = defs::load_legacy_definitions();
@@ -152,6 +157,7 @@ impl ToolchainState {
             pending_secrets: Arc::new(Mutex::new(HashMap::new())),
             scan_engine,
             job_engine,
+            shared_store_dir,
         }
     }
 

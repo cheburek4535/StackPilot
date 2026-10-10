@@ -23,6 +23,7 @@
   import type { CardPlanOp } from "$lib/modules/toolchain/components/ToolCard.svelte";
   import ActivityStrip from "$lib/modules/toolchain/components/ActivityStrip.svelte";
   import EnvironmentHero from "$lib/modules/toolchain/components/EnvironmentHero.svelte";
+  import DeduplicationBanner from "$lib/modules/toolchain/components/DeduplicationBanner.svelte";
   import JobCenter from "$lib/modules/toolchain/components/JobCenter.svelte";
   import ToolDetailDrawer from "$lib/modules/toolchain/components/ToolDetailDrawer.svelte";
   import type { Component } from "svelte";
@@ -251,6 +252,8 @@
       onupdates={reviewUpdates}
     />
   </div>
+
+  <DeduplicationBanner />
 
   <!-- ===== Проблемы последнего скана (честно, не скрыты) ===== -->
   {#if issues.length > 0}
