@@ -39,11 +39,100 @@ impl EnvironmentFsManager {
                 let exe_path = Path::new(exe_str);
                 if exe_path.is_file() {
                     Self::create_tool_shim(&bin_dir, tool_id, exe_path)?;
+
+                    // Also auto-shim companion binaries from the tool's installation directory
+                    Self::create_companion_shims(&bin_dir, tool_id, exe_path);
                 }
             }
         }
 
         Ok(env_dir)
+    }
+
+    /// Automatically create shims for companion utilities (npm/npx for node, pip for python, gofmt for go)
+    fn create_companion_shims(bin_dir: &Path, tool_id: &str, target_exe: &Path) {
+        let parent = match target_exe.parent() {
+            Some(p) => p,
+            None => return,
+        };
+
+        match tool_id.to_ascii_lowercase().as_str() {
+            "node" | "nodejs" => {
+                #[cfg(target_os = "windows")]
+                let companions = [
+                    ("npm", ["npm.cmd", "npm.bat", "npm.exe"]),
+                    ("npx", ["npx.cmd", "npx.bat", "npx.exe"]),
+                    ("corepack", ["corepack.cmd", "corepack.bat", "corepack.exe"]),
+                ];
+                #[cfg(not(target_os = "windows"))]
+                let companions = [
+                    ("npm", ["npm", "bin/npm"]),
+                    ("npx", ["npx", "bin/npx"]),
+                    ("corepack", ["corepack", "bin/corepack"]),
+                ];
+
+                for (name, candidates) in companions {
+                    for cand in candidates {
+                        let cand_path = parent.join(cand);
+                        if cand_path.is_file() {
+                            let _ = Self::create_tool_shim(bin_dir, name, &cand_path);
+                            break;
+                        }
+                    }
+                }
+            }
+            "python" | "python3" => {
+                #[cfg(target_os = "windows")]
+                {
+                    // 1. Python aliases
+                    let py_exe = parent.join("python.exe");
+                    if py_exe.is_file() {
+                        let _ = Self::create_tool_shim(bin_dir, "python", &py_exe);
+                        let _ = Self::create_tool_shim(bin_dir, "python3", &py_exe);
+                    }
+                    // 2. pip in parent or Scripts/
+                    let pip_candidates = [
+                        parent.join("pip.exe"),
+                        parent.join("Scripts").join("pip.exe"),
+                        parent.join("Scripts").join("pip3.exe"),
+                    ];
+                    for pip in pip_candidates {
+                        if pip.is_file() {
+                            let _ = Self::create_tool_shim(bin_dir, "pip", &pip);
+                            let _ = Self::create_tool_shim(bin_dir, "pip3", &pip);
+                            break;
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let py3 = parent.join("python3");
+                    if py3.is_file() {
+                        let _ = Self::create_tool_shim(bin_dir, "python", &py3);
+                        let _ = Self::create_tool_shim(bin_dir, "python3", &py3);
+                    }
+                    let pip_candidates = [parent.join("pip3"), parent.join("pip")];
+                    for pip in pip_candidates {
+                        if pip.is_file() {
+                            let _ = Self::create_tool_shim(bin_dir, "pip", &pip);
+                            let _ = Self::create_tool_shim(bin_dir, "pip3", &pip);
+                            break;
+                        }
+                    }
+                }
+            }
+            "go" | "golang" => {
+                #[cfg(target_os = "windows")]
+                let gofmt = parent.join("gofmt.exe");
+                #[cfg(not(target_os = "windows"))]
+                let gofmt = parent.join("gofmt");
+
+                if gofmt.is_file() {
+                    let _ = Self::create_tool_shim(bin_dir, "gofmt", &gofmt);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Create executable shims (.cmd + .ps1 on Windows, shell scripts on Unix) in the environment's bin folder.

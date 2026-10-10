@@ -488,6 +488,21 @@ fn spawn_in_terminal(
     #[cfg(target_os = "windows")]
     let pid_file: Option<String> = None;
 
+    let terminal_env = overlay.map(|ov| {
+        let mut map = ov.vars_set.clone();
+        if !ov.path_prepend.is_empty() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let prepend = ov.path_prepend.join(";");
+            let effective_path = if current_path.is_empty() {
+                prepend
+            } else {
+                format!("{};{}", prepend, current_path)
+            };
+            map.insert("PATH".to_string(), effective_path);
+        }
+        map
+    });
+
     let config = TerminalConfig {
         backend: TerminalBackend::Default,
         command: inner,
@@ -495,7 +510,7 @@ fn spawn_in_terminal(
         window_policy: TerminalWindowPolicy::NewWindow,
         label: Some(label.to_string()),
         keep_open: true,
-        env: None,
+        env: terminal_env,
         startup_marker: startup_marker.map(String::from),
         capture_output,
         pid_file,
@@ -1216,7 +1231,37 @@ impl OsProcessManager {
         step_id: Option<String>,
         pid_file: Option<std::path::PathBuf>,
     ) -> Result<TrackedProcess, String> {
-        let plan = crate::platform::command::resolve_spawn_plan(command);
+        let mut detected_overlay = None;
+        let effective_overlay = if overlay.is_some() {
+            overlay
+        } else if let Some(wd) = working_dir {
+            let cand = std::path::Path::new(wd);
+            for p in [cand.to_path_buf(), cand.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| cand.to_path_buf())] {
+                let sp_env = p.join(".stackpilot").join("environment.json");
+                let legacy_sp = p.join(".stackpilot.json");
+                let target_file = if sp_env.is_file() {
+                    Some(sp_env)
+                } else if legacy_sp.is_file() {
+                    Some(legacy_sp)
+                } else {
+                    None
+                };
+                if let Some(tf) = target_file {
+                    if let Ok(content) = std::fs::read_to_string(&tf) {
+                        if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
+                            let (ov, _) = crate::modules::project_environment::resolver::resolve_with_diagnostics(&binding);
+                            detected_overlay = Some(ov);
+                            break;
+                        }
+                    }
+                }
+            }
+            detected_overlay.as_ref()
+        } else {
+            None
+        };
+
+        let plan = crate::platform::command::resolve_spawn_plan_with_overlay(command, effective_overlay);
         // Batch shims must go through `cmd /C`. The command line built by
         // `batch_shim_cmd_line` is already cmd-style quoted; passing it
         // through argument quoting would re-escape the quotes (`\"`), which
@@ -1253,7 +1298,7 @@ impl OsProcessManager {
             }
         }
 
-        if let Some(ov) = overlay {
+        if let Some(ov) = effective_overlay {
             ov.apply_std(&mut cmd);
         }
 

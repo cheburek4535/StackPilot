@@ -296,6 +296,22 @@ impl ProcessRunner {
         spec: ProcessSpec,
         sink: Option<&ExecutionEventSink>,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
+        let mut overlay = None;
+        if let Some(ref wd) = spec.working_dir {
+            for candidate in [wd.clone(), wd.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| wd.clone())] {
+                let sp_env = candidate.join(".stackpilot").join("environment.json");
+                if sp_env.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&sp_env) {
+                        if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
+                            let (ov, _) = crate::modules::project_environment::resolver::resolve_with_diagnostics(&binding);
+                            overlay = Some(ov);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         let command = spec.command.clone();
         let args = spec.args.clone();
         let working_dir = spec
@@ -304,12 +320,15 @@ impl ProcessRunner {
             .unwrap_or_else(|| PathBuf::from("."));
         let start = Instant::now();
 
-        let mut cmd = build_command(&spec)?;
+        let mut cmd = build_command(&spec, overlay.as_ref())?;
         if let Some(dir) = &spec.working_dir {
             cmd.current_dir(dir);
         }
         if let Some(env) = &spec.env {
             cmd.envs(env);
+        }
+        if let Some(ref ov) = overlay {
+            ov.apply_tokio(&mut cmd);
         }
         if spec.ci_mode {
             cmd.env("CI", "1");
@@ -671,21 +690,62 @@ async fn check_triggers(
 // Кроссплатформенное построение команды
 // ============================================================================
 
+/// Разрешает команду с учётом оверлея окружения (shim в bin/ или portable exe в shared store)
+fn resolve_command_with_overlay(
+    command: &str,
+    overlay: Option<&crate::platform::environment::EnvironmentOverlay>,
+) -> String {
+    let Some(overlay) = overlay else {
+        return command.to_string();
+    };
+
+    let trimmed = command.trim();
+    if trimmed.contains('\\') || trimmed.contains('/') {
+        return trimmed.to_string();
+    }
+
+    #[cfg(target_os = "windows")]
+    let candidates = [
+        format!("{}.cmd", trimmed),
+        format!("{}.exe", trimmed),
+        format!("{}.bat", trimmed),
+        trimmed.to_string(),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let candidates = [trimmed.to_string()];
+
+    for dir in &overlay.path_prepend {
+        let dir_path = std::path::Path::new(dir);
+        for cand in &candidates {
+            let full = dir_path.join(cand);
+            if full.is_file() {
+                return full.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    command.to_string()
+}
+
 /// Кроссплатформенное построение команды.
 ///
 /// Delegates to [`crate::platform::command`] for platform-aware dispatch:
 ///   - Windows: PowerShell via `powershell -Command`; .cmd/.bat via
 ///     `cmd /D /C`; direct commands for everything else.
 ///   - Unix: `sh -c` with sh-quoted arguments (preserves existing behavior).
-fn build_command(spec: &ProcessSpec) -> Result<TokioCommand, ProcessExecutionError> {
+fn build_command(
+    spec: &ProcessSpec,
+    overlay: Option<&crate::platform::environment::EnvironmentOverlay>,
+) -> Result<TokioCommand, ProcessExecutionError> {
     use crate::platform::command::{build_tokio_command, infer_command_mode};
 
-    let mode = infer_command_mode(&spec.command, &spec.args, None);
+    let effective_command = resolve_command_with_overlay(&spec.command, overlay);
+    let mode = infer_command_mode(&effective_command, &spec.args, None);
     // CommandBuildError arises only when a shell is incompatible with the
     // current OS. That would be a cross-function invariant violation on
     // infer_command_mode's side — surface it as a Spawn error instead of
     // panicking: the user gets a readable failure, not a crash.
-    let mut cmd = build_tokio_command(&spec.command, &spec.args, mode).map_err(|e| {
+    let mut cmd = build_tokio_command(&effective_command, &spec.args, mode).map_err(|e| {
         ProcessExecutionError {
             kind: ProcessErrorKind::Spawn {
                 source: e.to_string(),
@@ -1172,7 +1232,7 @@ mod tests {
         // проходить без ошибок.
         let direct = ProcessSpec::new("npm");
         assert!(
-            build_command(&direct).is_ok(),
+            build_command(&direct, None).is_ok(),
             "direct command должен собираться"
         );
 
@@ -1180,14 +1240,14 @@ mod tests {
         {
             let batch = ProcessSpec::new("gradle");
             assert!(
-                build_command(&batch).is_ok(),
+                build_command(&batch, None).is_ok(),
                 "batch-шим обязан собираться через cmd"
             );
         }
         #[cfg(not(target_os = "windows"))]
         {
             let sh = ProcessSpec::new("ls");
-            assert!(build_command(&sh).is_ok(), "sh-команда обязана собираться");
+            assert!(build_command(&sh, None).is_ok(), "sh-команда обязана собираться");
         }
     }
 

@@ -233,6 +233,8 @@ export type WizardContext = {
   /** Язык сгенерированного README ("en" | "ru"). Текст README собирается
    *  бэкендом из общих i18n-словарей (locales/readme/*.json). */
   readme_locale?: "en" | "ru";
+  /** Optional environment binding ID to run project creation within an isolated sandbox */
+  environment_binding_id?: string | null;
 };
 
 export type WizardSession = {

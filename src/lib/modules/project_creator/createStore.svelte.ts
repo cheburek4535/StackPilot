@@ -2442,13 +2442,100 @@ export function createProjectStore() {
     execError = null;
     devlAutoPopupShown = false;
     persistNow();
-  
+
     if (unlisten) unlisten();
     unlisten = await listen<ExecutionEvent>("project_creator:step_event", (e) => {
       handleExecEvent(e.payload);
     });
-  
+
     try {
+      if (envIsolationMode === "isolated") {
+        // Collect required tools
+        const toolIdsToResolve = new Set<string>();
+        for (const tid of selectedTools) toolIdsToResolve.add(tid);
+        if (tree?.framework_tool_map) {
+          for (const fwId of selectedFrameworks) {
+            for (const tid of tree.framework_tool_map[fwId] ?? []) {
+              toolIdsToResolve.add(tid);
+            }
+          }
+        }
+        if (envCheck?.requirements) {
+          for (const req of envCheck.requirements) {
+            toolIdsToResolve.add(req.tool_id);
+          }
+        }
+
+        let resolvedOverrides: Record<string, ToolOverride> = {};
+        try {
+          resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
+        } catch (err) {
+          console.warn("[ProjectCreator] Failed to resolve tools:", err);
+        }
+
+        // Install any missing multi-version candidates
+        for (const [tid, candidate] of Object.entries(envSelectedVersions)) {
+          if (toolIdsToResolve.has(tid) && candidate) {
+            let targetCandidate = candidate;
+            if (!targetCandidate.is_installed) {
+              const notice = `[StackPilot] Downloading standalone ${tid} ${candidate.version} to Shared Store...`;
+              execLogs = [...execLogs, notice];
+              try {
+                const exePath = await installToolVersion(tid, candidate.version, candidate.download_url || "");
+                targetCandidate = {
+                  ...candidate,
+                  is_installed: true,
+                  executable_path: exePath,
+                  source_kind: "shared_store",
+                };
+                envSelectedVersions = { ...envSelectedVersions, [tid]: targetCandidate };
+                execLogs = [...execLogs, `[StackPilot] ✓ Installed ${tid} ${candidate.version}`];
+              } catch (installErr) {
+                console.warn(`[ProjectCreator] Failed to install selected tool version for ${tid}:`, installErr);
+                execLogs = [...execLogs, `[StackPilot] ⚠ Failed to download ${tid} ${candidate.version}: ${installErr}`];
+              }
+            }
+            if (targetCandidate.is_installed && targetCandidate.executable_path) {
+              resolvedOverrides[tid] = {
+                version: targetCandidate.version,
+                executable_path: targetCandidate.executable_path,
+              };
+            }
+          }
+        }
+
+        const envId = `env_${Date.now().toString(16)}`;
+        const envName = projectName || conflictResolvedFolder || "Project Sandbox";
+        const saved = await saveEnvironment({
+          schema_version: 1,
+          binding_id: envId,
+          name: envName,
+          isolation_mode: "isolated",
+          is_default: false,
+          description: `Изолированное окружение для ${envName}`,
+          icon: "package",
+          color: "amber",
+          project_path: path,
+          bound_projects: [path],
+          env_dir: null,
+          tool_overrides: resolvedOverrides,
+          managed_path_entries: [],
+          env_vars: {},
+          env_vars_remove: [],
+          preferred_ide: null,
+          preferred_ide_args: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        const bound = await bindProjectToEnvironment(envId, path);
+        createdEnvBinding = bound;
+        ctx.environment_binding_id = envId;
+        execLogs = [
+          ...execLogs,
+          `[StackPilot] ⚡ Project sandbox ready. Bound to isolated environment '${saved.name}'.`,
+        ];
+      }
+
       execPlan = await startProjectExecution(ctx, path, removedStepIds);
     } catch (err) {
       execError = String(err);
@@ -2510,86 +2597,9 @@ export function createProjectStore() {
         if (createdSuccessfully && execPlan?.project_path) {
           const pPath = execPlan.project_path;
           try {
-            // Collect all tools required for this project's chosen stack
-            const toolIdsToResolve = new Set<string>();
-            for (const tid of selectedTools) toolIdsToResolve.add(tid);
-            if (tree?.framework_tool_map) {
-              for (const fwId of selectedFrameworks) {
-                for (const tid of tree.framework_tool_map[fwId] ?? []) {
-                  toolIdsToResolve.add(tid);
-                }
-              }
-            }
-            if (envCheck?.requirements) {
-              for (const req of envCheck.requirements) {
-                toolIdsToResolve.add(req.tool_id);
-              }
-            }
-
-            let resolvedOverrides: Record<string, ToolOverride> = {};
-            try {
-              resolvedOverrides = await resolveToolsForProject([...toolIdsToResolve]);
-            } catch (err) {
-              console.warn("[ProjectCreator] Failed to resolve tools:", err);
-            }
-
-            // Apply selected multi-version candidates
-            for (const [tid, candidate] of Object.entries(envSelectedVersions)) {
-              if (toolIdsToResolve.has(tid) && candidate) {
-                let targetCandidate = candidate;
-                if (!targetCandidate.is_installed) {
-                  try {
-                    const notice = `[StackPilot] Downloading standalone ${tid} ${candidate.version} to Shared Store...`;
-                    execLogs = [...execLogs, notice];
-                    const exePath = await installToolVersion(tid, candidate.version, candidate.download_url || "");
-                    targetCandidate = {
-                      ...candidate,
-                      is_installed: true,
-                      executable_path: exePath,
-                      source_kind: "shared_store",
-                    };
-                    envSelectedVersions = { ...envSelectedVersions, [tid]: targetCandidate };
-                  } catch (installErr) {
-                    console.warn(`[ProjectCreator] Failed to install selected tool version for ${tid}:`, installErr);
-                  }
-                }
-                if (targetCandidate.is_installed && targetCandidate.executable_path) {
-                  resolvedOverrides[tid] = {
-                    version: targetCandidate.version,
-                    executable_path: targetCandidate.executable_path,
-                  };
-                }
-              }
-            }
-
             if (envIsolationMode === "isolated") {
-              const envId = `env_${Date.now().toString(16)}`;
-              const now = new Date().toISOString();
-              const saved = await saveEnvironment({
-                schema_version: 1,
-                binding_id: envId,
-                name: projectName || "Project Sandbox",
-                isolation_mode: "isolated",
-                is_default: false,
-                description: `Изолированное окружение для ${projectName || pPath}`,
-                icon: "package",
-                color: "amber",
-                project_path: pPath,
-                bound_projects: [pPath],
-                env_dir: null,
-                tool_overrides: resolvedOverrides,
-                managed_path_entries: [],
-                env_vars: {},
-                env_vars_remove: [],
-                preferred_ide: null,
-                preferred_ide_args: null,
-                created_at: now,
-                updated_at: now,
-              });
-              const bound = await bindProjectToEnvironment(envId, pPath);
-              createdEnvBinding = bound;
-              if (vscode) {
-                await configureVsCodeEnvironment(envId, pPath);
+              if (createdEnvBinding && vscode) {
+                await configureVsCodeEnvironment(createdEnvBinding.binding_id, pPath);
               }
             } else {
               const defEnv = await getOrCreateDefaultEnvironment();
@@ -2600,7 +2610,7 @@ export function createProjectStore() {
               }
             }
           } catch (envErr) {
-            console.warn("[ProjectCreator] Failed to bind environment:", envErr);
+            console.warn("[ProjectCreator] Failed to configure environment:", envErr);
           }
         }
         if (createdSuccessfully && !devlAutoPopupShown && execPlan?.context) {

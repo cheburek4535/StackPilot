@@ -967,7 +967,7 @@ mod tests {
             .into_iter()
             .find(|d| d.id == "qt")
             .expect("qt в каталоге");
-        let mut def = |rec: Option<&str>| {
+        let def = |rec: Option<&str>| {
             let mut d = qt.clone();
             d.versions.recommended = rec.map(str::to_string);
             d

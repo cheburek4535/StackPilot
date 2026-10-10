@@ -228,118 +228,44 @@
 />
 <p class="hint">{i18n.t("create.env_check_desc") as TranslationKey}</p>
 
-<!-- Project Environment Isolation Mode Selector -->
-<div class="env-isolation-section">
-  <div class="env-isolation-header">
-    <div class="env-isolation-title-row">
-      <Icon name="package" size={18} />
-      <h3 class="env-isolation-title">{i18n.t("create.env_isolation_title" as TranslationKey) || "Режим изоляции окружения"}</h3>
+<!-- Compact Environment Mode Segmented Bar -->
+<div class="env-mode-strip">
+  <div class="env-mode-left">
+    <div class="env-mode-meta">
+      <Icon name="package" size={14} />
+      <span class="env-mode-label">{i18n.t("create.env_isolation_title" as TranslationKey) || "Режим окружения"}:</span>
     </div>
-    <p class="env-isolation-desc">
-      {i18n.t("create.env_isolation_desc" as TranslationKey) || "Выберите, где и как изолируются рантаймы и зависимости этого проекта"}
-    </p>
+    <div class="env-mode-pills" role="radiogroup" aria-label="Environment Mode">
+      <button
+        type="button"
+        class="env-pill-btn"
+        class:active={envIsolationMode === "isolated"}
+        onclick={() => onchangeIsolationMode?.("isolated")}
+      >
+        <span class="env-pill-icon">⚡</span>
+        <span class="env-pill-text">{i18n.t("create.env_mode_isolated" as TranslationKey) || "Sandbox"}</span>
+        <span class="env-pill-tag">{i18n.t("create.env_mode_isolated_tag" as TranslationKey) || "Rec"}</span>
+      </button>
+      <button
+        type="button"
+        class="env-pill-btn"
+        class:active={envIsolationMode === "global"}
+        onclick={() => onchangeIsolationMode?.("global")}
+      >
+        <span class="env-pill-icon">🌐</span>
+        <span class="env-pill-text">{i18n.t("create.env_mode_global" as TranslationKey) || "Global PATH"}</span>
+      </button>
+    </div>
   </div>
 
-  <div class="env-modes-grid">
-    <!-- Isolated Mode Card (Recommended) -->
-    <div
-      class="env-mode-card"
-      class:selected={envIsolationMode === "isolated"}
-      onclick={() => onchangeIsolationMode?.("isolated")}
-      role="button"
-      tabindex="0"
-      onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") onchangeIsolationMode?.("isolated"); }}
-    >
-      <div class="env-mode-top">
-        <div class="env-mode-radio">
-          <input
-            type="radio"
-            name="proj-env-mode"
-            value="isolated"
-            checked={envIsolationMode === "isolated"}
-            tabindex="-1"
-          />
-        </div>
-        <div class="env-mode-identity">
-          <div class="env-mode-badge-row">
-            <span class="env-mode-name">{i18n.t("create.env_mode_isolated" as TranslationKey) || "Изолированная среда StackPilot"}</span>
-            <Badge tone="amber">{i18n.t("create.env_mode_isolated_tag" as TranslationKey) || "Рекомендуется"}</Badge>
-          </div>
-          <p class="env-mode-summary">
-            {i18n.t("create.env_mode_isolated_summary" as TranslationKey) || "Создаёт выделенный песочный бокс проекта. Глобальный PATH и Windows остаются чистыми."}
-          </p>
-        </div>
-      </div>
-
-      <div class="env-mode-details">
-        <div class="env-bullet-list">
-          <div class="env-bullet pro">
-            <span class="bullet-icon">⚡</span>
-            <span>{i18n.t("create.env_mode_isolated_pro_1" as TranslationKey)}</span>
-          </div>
-          <div class="env-bullet pro">
-            <span class="bullet-icon">📦</span>
-            <span>{i18n.t("create.env_mode_isolated_pro_2" as TranslationKey)}</span>
-          </div>
-          <div class="env-bullet pro">
-            <span class="bullet-icon">🛡️</span>
-            <span>{i18n.t("create.env_mode_isolated_pro_3" as TranslationKey)}</span>
-          </div>
-          <div class="env-bullet con">
-            <span class="bullet-icon">🔗</span>
-            <span>{i18n.t("create.env_mode_isolated_con" as TranslationKey)}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Global System Mode Card -->
-    <div
-      class="env-mode-card"
-      class:selected={envIsolationMode === "global"}
-      onclick={() => onchangeIsolationMode?.("global")}
-      role="button"
-      tabindex="0"
-      onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") onchangeIsolationMode?.("global"); }}
-    >
-      <div class="env-mode-top">
-        <div class="env-mode-radio">
-          <input
-            type="radio"
-            name="proj-env-mode"
-            value="global"
-            checked={envIsolationMode === "global"}
-            tabindex="-1"
-          />
-        </div>
-        <div class="env-mode-identity">
-          <div class="env-mode-badge-row">
-            <span class="env-mode-name">{i18n.t("create.env_mode_global" as TranslationKey) || "Глобальное системное окружение"}</span>
-            <Badge tone="neutral">{i18n.t("create.env_mode_global_tag" as TranslationKey) || "Классический режим"}</Badge>
-          </div>
-          <p class="env-mode-summary">
-            {i18n.t("create.env_mode_global_summary" as TranslationKey) || "Использует общесистемные версии тулов из стандартного PATH Windows."}
-          </p>
-        </div>
-      </div>
-
-      <div class="env-mode-details">
-        <div class="env-bullet-list">
-          <div class="env-bullet pro">
-            <span class="bullet-icon">🌐</span>
-            <span>{i18n.t("create.env_mode_global_pro_1" as TranslationKey)}</span>
-          </div>
-          <div class="env-bullet pro">
-            <span class="bullet-icon">🚀</span>
-            <span>{i18n.t("create.env_mode_global_pro_2" as TranslationKey)}</span>
-          </div>
-          <div class="env-bullet con warning">
-            <span class="bullet-icon">⚠️</span>
-            <span>{i18n.t("create.env_mode_global_con" as TranslationKey)}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+  <div class="env-mode-hint-inline">
+    {#if envIsolationMode === "isolated"}
+      <span class="hint-dot ok"></span>
+      <span class="hint-text">{i18n.t("create.env_mode_isolated_summary" as TranslationKey) || "Изолированная песочница проекта (чистый PATH Windows)"}</span>
+    {:else}
+      <span class="hint-dot warn"></span>
+      <span class="hint-text">{i18n.t("create.env_mode_global_summary" as TranslationKey) || "Системные версии из PATH хоста"}</span>
+    {/if}
   </div>
 </div>
 
@@ -894,119 +820,104 @@
   .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-secondary { background: var(--sp-accent-soft); color: var(--sp-text-2); padding: 0.6rem 1.5rem; border-radius: 8px; border: 1px solid var(--sp-border-strong); cursor: pointer; font-size: 0.95rem; }
 
-  /* Environment isolation mode selection */
-  .env-isolation-section {
-    background: var(--sp-surface-grad, #181b22);
-    border: 1px solid var(--sp-border, #282e3e);
-    border-radius: var(--sp-radius-lg, 12px);
-    padding: 1.25rem;
-    margin-bottom: 1.5rem;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  }
-  .env-isolation-header {
+  /* Compact Environment Mode Strip */
+  .env-mode-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border, #262c3c);
+    border-radius: 8px;
+    padding: 0.45rem 0.75rem;
     margin-bottom: 1rem;
   }
-  .env-isolation-title-row {
+  .env-mode-left {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    color: var(--sp-text-1, #f1f5f9);
-    margin-bottom: 0.25rem;
-  }
-  .env-isolation-title {
-    margin: 0;
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: var(--sp-text-1, #f1f5f9);
-  }
-  .env-isolation-desc {
-    margin: 0;
-    font-size: 0.85rem;
-    color: var(--sp-text-3, #94a3b8);
-  }
-  .env-modes-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1rem;
-  }
-  .env-mode-card {
-    background: var(--sp-bg-1, #13151b);
-    border: 2px solid var(--sp-border, #2d3343);
-    border-radius: 10px;
-    padding: 1rem;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    transition: border-color 0.2s ease, background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
-  }
-  .env-mode-card:hover {
-    border-color: rgba(245, 158, 11, 0.4);
-    transform: translateY(-1px);
-  }
-  .env-mode-card.selected {
-    border-color: #f59e0b;
-    background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%);
-    box-shadow: 0 0 16px rgba(245, 158, 11, 0.15);
-  }
-  .env-mode-top {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.75rem;
-  }
-  .env-mode-radio {
-    margin-top: 2px;
-  }
-  .env-mode-identity {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    flex: 1;
-  }
-  .env-mode-badge-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    gap: 0.6rem;
     flex-wrap: wrap;
   }
-  .env-mode-name {
-    font-size: 0.95rem;
-    font-weight: 700;
-    color: var(--sp-text-1, #f1f5f9);
-  }
-  .env-mode-summary {
-    font-size: 0.8rem;
-    color: var(--sp-text-3, #94a3b8);
-    margin: 0;
-    line-height: 1.35;
-  }
-  .env-mode-details {
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    padding-top: 0.65rem;
-  }
-  .env-bullet-list {
+  .env-mode-meta {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: 0.35rem;
+    color: var(--sp-text-3, #94a3b8);
+    font-size: 0.8rem;
+    font-weight: 500;
   }
-  .env-bullet {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.45rem;
+  .env-mode-label {
+    white-space: nowrap;
+  }
+  .env-mode-pills {
+    display: inline-flex;
+    align-items: center;
+    background: var(--sp-bg-1, #0f1117);
+    border: 1px solid var(--sp-border-strong, #2c3242);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .env-pill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-3, #94a3b8);
     font-size: 0.78rem;
-    line-height: 1.35;
-    color: var(--sp-text-2, #cbd5e1);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
   }
-  .bullet-icon {
-    font-size: 0.85rem;
+  .env-pill-btn:hover {
+    color: var(--sp-text-1, #f1f5f9);
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .env-pill-btn.active {
+    background: var(--sp-accent-soft, rgba(245, 158, 11, 0.15));
+    color: var(--sp-accent-strong, #f59e0b);
+    font-weight: 600;
+  }
+  .env-pill-icon {
+    font-size: 0.8rem;
+  }
+  .env-pill-tag {
+    font-size: 0.65rem;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fbbf24;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .env-mode-hint-inline {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--sp-text-3, #94a3b8);
+  }
+  .hint-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
     flex-shrink: 0;
   }
-  .env-bullet.con {
-    color: var(--sp-text-3, #94a3b8);
-    font-style: italic;
+  .hint-dot.ok {
+    background: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
   }
-  .env-bullet.con.warning {
-    color: #fbbf24;
-    font-style: normal;
+  .hint-dot.warn {
+    background: #f59e0b;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+  }
+  .hint-text {
+    line-height: 1.2;
   }
 </style>

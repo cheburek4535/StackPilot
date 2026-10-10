@@ -374,68 +374,28 @@
     {/snippet}
   </PageHeader>
 
-  <!-- Paradigm Explainer Banner -->
-  <div class="sp-env-paradigm-banner">
-    <div class="sp-banner-icon">
-      <Icon name="package" size={22} />
+  <!-- Compact Statistics Strip -->
+  <div class="sp-env-stat-strip">
+    <div class="stat-pill">
+      <span class="stat-icon purple"><Icon name="layers" size={13} /></span>
+      <span class="stat-num">{environments.length}</span>
+      <span class="stat-text">сред</span>
     </div>
-    <div class="sp-banner-content">
-      <div class="sp-banner-title">Быстрые изолированные песочницы StackPilot</div>
-      <div class="sp-banner-desc">
-        Каждое окружение изолирует глобальные пакеты (<code>npm -g</code>, <code>pip</code>, <code>cargo</code>) и генерирует локальные системные шиммы (<code>.cmd</code>, <code>.ps1</code>), не засоряя глобальную ОС. Никакого Docker или виртуализации — мгновенный запуск и прямая совместимость с IDE и терминалом.
-      </div>
+    <div class="stat-pill">
+      <span class="stat-icon amber"><Icon name="package" size={13} /></span>
+      <span class="stat-num">{totalIsolated}</span>
+      <span class="stat-text">песочниц</span>
     </div>
-  </div>
-
-  <!-- Statistics strip -->
-  <div class="sp-env-metrics-grid">
-    <Card padding="md" variant="elevated">
-      <div class="metric-card">
-        <div class="metric-icon metric-purple">
-          <Icon name="layers" size={20} />
-        </div>
-        <div class="metric-content">
-          <div class="metric-val">{environments.length}</div>
-          <div class="metric-lbl">Всего сред</div>
-        </div>
-      </div>
-    </Card>
-
-    <Card padding="md" variant="elevated">
-      <div class="metric-card">
-        <div class="metric-icon metric-amber">
-          <Icon name="package" size={20} />
-        </div>
-        <div class="metric-content">
-          <div class="metric-val">{totalIsolated}</div>
-          <div class="metric-lbl">Изолированных боксов</div>
-        </div>
-      </div>
-    </Card>
-
-    <Card padding="md" variant="elevated">
-      <div class="metric-card">
-        <div class="metric-icon metric-blue">
-          <Icon name="folder" size={20} />
-        </div>
-        <div class="metric-content">
-          <div class="metric-val">{totalProjects}</div>
-          <div class="metric-lbl">Связанных проектов</div>
-        </div>
-      </div>
-    </Card>
-
-    <Card padding="md" variant="elevated">
-      <div class="metric-card">
-        <div class="metric-icon metric-cyan">
-          <Icon name="database" size={20} />
-        </div>
-        <div class="metric-content">
-          <div class="metric-val">{totalDiskUsageDisplay}</div>
-          <div class="metric-lbl">Объём песочниц</div>
-        </div>
-      </div>
-    </Card>
+    <div class="stat-pill">
+      <span class="stat-icon blue"><Icon name="folder" size={13} /></span>
+      <span class="stat-num">{totalProjects}</span>
+      <span class="stat-text">проектов</span>
+    </div>
+    <div class="stat-pill">
+      <span class="stat-icon cyan"><Icon name="database" size={13} /></span>
+      <span class="stat-num">{totalDiskUsageDisplay}</span>
+      <span class="stat-text">объём</span>
+    </div>
   </div>
 
   <!-- Search and filter bar -->
@@ -866,79 +826,61 @@
 </PageContainer>
 
 <style>
-  .sp-env-metrics-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-
-  .metric-card {
+  .sp-env-stat-strip {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border, #262c3c);
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 1rem;
   }
 
-  .metric-icon {
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
+  .stat-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 2px 8px;
+    background: var(--sp-bg-3, #1e222f);
+    border-radius: 6px;
+    font-size: 0.75rem;
+  }
+
+  .stat-icon {
     display: flex;
     align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
   }
+  .stat-icon.purple { color: #c084fc; }
+  .stat-icon.amber { color: #fbbf24; }
+  .stat-icon.blue { color: #60a5fa; }
+  .stat-icon.cyan { color: #22d3ee; }
 
-  .metric-purple {
-    background: rgba(168, 85, 247, 0.15);
-    color: #c084fc;
-    border: 1px solid rgba(168, 85, 247, 0.3);
-  }
-
-  .metric-amber {
-    background: rgba(245, 158, 11, 0.15);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-  }
-
-  .metric-blue {
-    background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
-    border: 1px solid rgba(59, 130, 246, 0.3);
-  }
-
-  .metric-cyan {
-    background: rgba(6, 182, 212, 0.15);
-    color: #22d3ee;
-    border: 1px solid rgba(6, 182, 212, 0.3);
-  }
-
-  .metric-val {
-    font-size: 22px;
+  .stat-num {
     font-weight: 700;
     color: var(--sp-text, #f1f5f9);
-    line-height: 1.2;
+    font-family: var(--sp-font-mono, monospace);
   }
 
-  .metric-lbl {
-    font-size: 12px;
-    color: var(--sp-text-muted, #94a3b8);
+  .stat-text {
+    color: var(--sp-text-3, #94a3b8);
   }
 
   .sp-filter-bar {
-    margin-bottom: 20px;
+    margin-bottom: 1rem;
   }
 
   .sp-search-wrapper {
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: var(--sp-card-bg, #1e222b);
+    gap: 8px;
+    background: var(--sp-card-bg, #181b22);
     border: 1px solid var(--sp-border, #2d3343);
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: 6px;
+    padding: 6px 12px;
     color: var(--sp-text-muted, #94a3b8);
-    max-width: 480px;
+    max-width: 440px;
   }
 
   .sp-search-input {
@@ -946,7 +888,7 @@
     border: none;
     outline: none;
     color: var(--sp-text, #f1f5f9);
-    font-size: 14px;
+    font-size: 13px;
     width: 100%;
   }
 
@@ -961,18 +903,18 @@
 
   .sp-env-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 14px;
   }
 
   .sp-env-card {
     background: var(--sp-card-bg, #181b22);
     border: 1px solid var(--sp-border, #282e3e);
-    border-radius: 12px;
-    padding: 20px;
+    border-radius: 10px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
     transition: transform 0.15s ease, border-color 0.15s ease;
   }
 
@@ -1342,56 +1284,6 @@
 
   .sp-row-del-btn:hover {
     color: #ef4444;
-  }
-
-  /* Paradigm Explainer Banner */
-  .sp-env-paradigm-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-4);
-    padding: var(--sp-4) var(--sp-5);
-    border-radius: var(--sp-radius-lg);
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(99, 102, 241, 0.06) 100%);
-    border: 1px solid rgba(245, 158, 11, 0.2);
-    margin-bottom: var(--sp-5);
-  }
-
-  .sp-banner-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 38px;
-    border-radius: var(--sp-radius-md);
-    background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
-    flex-shrink: 0;
-  }
-
-  .sp-banner-content {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .sp-banner-title {
-    font-weight: var(--sp-fw-semibold);
-    font-size: var(--sp-fs-md);
-    color: var(--sp-text-1);
-  }
-
-  .sp-banner-desc {
-    font-size: var(--sp-fs-sm);
-    color: var(--sp-text-2);
-    line-height: 1.5;
-  }
-
-  .sp-banner-desc code {
-    background: var(--sp-bg-2);
-    padding: 1px 5px;
-    border-radius: var(--sp-radius-xs);
-    font-family: var(--sp-font-mono);
-    color: var(--sp-text-1);
   }
 
   /* Modal Tools Table */

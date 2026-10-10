@@ -62,258 +62,206 @@
   });
 </script>
 
-<div class="dedup-card">
-  <div class="dedup-header">
-    <div class="dedup-title-block">
-      <div class="dedup-icon">
-        <Icon name="database" size={18} />
-      </div>
-      <div>
-        <div class="title-row">
-          <h3 class="dedup-title">{i18n.t("tc.dedup.title" as TranslationKey)}</h3>
-          <Badge tone="violet">{i18n.t("create.shared_store_tag" as TranslationKey)}</Badge>
-        </div>
-        <p class="dedup-desc">{i18n.t("tc.dedup.desc" as TranslationKey)}</p>
-      </div>
+<div class="dedup-strip" class:is-expanded={expanded}>
+  <div class="strip-left">
+    <div class="strip-icon">
+      <Icon name="database" size={14} />
     </div>
+    <span class="strip-title">{i18n.t("tc.dedup.title" as TranslationKey)}</span>
+    <span class="store-badge">Shared Store</span>
 
-    <div class="header-actions">
-      <Button
-        variant="secondary"
-        size="sm"
-        icon="trash"
-        loading={pruning}
-        onclick={handlePrune}
-      >
-        {i18n.t("tc.dedup.prune_btn" as TranslationKey)}
-      </Button>
-      <button
-        type="button"
-        class="expand-toggle"
-        onclick={() => (expanded = !expanded)}
-        title={expanded ? "Collapse details" : "Expand details"}
-      >
-        <Icon name={expanded ? "chevronUp" : "chevronDown"} size={14} />
-      </button>
+    <div class="strip-metrics">
+      <span class="metric-chip emerald" title="Сэкономлено места за счёт дедупликации версий">
+        <Icon name="sparkles" size={11} />
+        <span>{report ? formatBytes(report.total_disk_saved_bytes) : "0 MB"} сэкономлено</span>
+      </span>
+      <span class="metric-chip neutral">
+        <span>{report?.total_shared_versions ?? 0} версий</span>
+      </span>
+      <span class="metric-chip cyan">
+        <span>{report?.total_bindings_using_shared ?? 0} песочниц</span>
+      </span>
     </div>
   </div>
 
-  <div class="stats-grid">
-    <div class="stat-box highlight">
-      <span class="stat-label">{i18n.t("tc.dedup.savings" as TranslationKey)}</span>
-      <span class="stat-value text-emerald">
-        {report ? formatBytes(report.total_disk_saved_bytes) : "0 MB"}
-      </span>
-      <span class="stat-sub">Zero duplicate copies</span>
-    </div>
-
-    <div class="stat-box">
-      <span class="stat-label">{i18n.t("tc.dedup.shared_versions" as TranslationKey)}</span>
-      <span class="stat-value">
-        {report?.total_shared_versions ?? 0}
-      </span>
-      <span class="stat-sub">Portable versions in store</span>
-    </div>
-
-    <div class="stat-box">
-      <span class="stat-label">{i18n.t("tc.dedup.bound_projects" as TranslationKey)}</span>
-      <span class="stat-value text-cyan">
-        {report?.total_bindings_using_shared ?? 0}
-      </span>
-      <span class="stat-sub">Active project sandboxes</span>
-    </div>
+  <div class="strip-right">
+    <Button
+      variant="ghost"
+      size="sm"
+      icon="trash"
+      loading={pruning}
+      onclick={handlePrune}
+      label="Удалить неиспользуемые версии"
+    >
+      {i18n.t("tc.dedup.prune_btn" as TranslationKey)}
+    </Button>
+    <button
+      type="button"
+      class="strip-toggle"
+      onclick={() => (expanded = !expanded)}
+      title={expanded ? "Скрыть детали" : "Показать детали"}
+    >
+      <span>Детали</span>
+      <Icon name={expanded ? "chevronUp" : "chevronDown"} size={12} />
+    </button>
   </div>
-
-  {#if expanded && report && report.usages.length > 0}
-    <div class="usages-table-wrapper">
-      <table class="usages-table">
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th>Version</th>
-            <th>Source</th>
-            <th>Disk Usage</th>
-            <th>Bound Projects</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each report.usages as u}
-            <tr>
-              <td>
-                <div class="tool-cell">
-                  <TechIcon icon={u.tool_id} alt={u.tool_id} size="sm" />
-                  <span class="tool-name">{u.tool_id}</span>
-                </div>
-              </td>
-              <td>
-                <code class="version-code">v{u.version}</code>
-              </td>
-              <td>
-                <span class="source-pill" class:pill-store={u.source_kind === "shared_store"}>
-                  {u.source_kind === "shared_store" ? "StackPilot Store" : u.source_kind}
-                </span>
-              </td>
-              <td>
-                <span class="disk-text">{formatBytes(u.size_bytes)}</span>
-              </td>
-              <td>
-                <div class="projects-cell">
-                  {#if u.bound_environments.length === 0}
-                    <span class="unused-label">Unreferenced (safe to prune)</span>
-                  {:else}
-                    <div class="project-tags">
-                      {#each u.bound_environments as env}
-                        <span class="project-tag" title={env.bound_projects.join(", ")}>
-                          <Icon name="package" size={11} />
-                          {env.name || env.binding_id}
-                        </span>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
 </div>
 
+{#if expanded && report && report.usages.length > 0}
+  <div class="usages-tray">
+    <table class="usages-table">
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Version</th>
+          <th>Source</th>
+          <th>Disk Usage</th>
+          <th>Bound Projects</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each report.usages as u}
+          <tr>
+            <td>
+              <div class="tool-cell">
+                <TechIcon icon={u.tool_id} alt={u.tool_id} size="sm" />
+                <span class="tool-name">{u.tool_id}</span>
+              </div>
+            </td>
+            <td>
+              <code class="version-code">v{u.version}</code>
+            </td>
+            <td>
+              <span class="source-pill" class:pill-store={u.source_kind === "shared_store"}>
+                {u.source_kind === "shared_store" ? "StackPilot Store" : u.source_kind}
+              </span>
+            </td>
+            <td>
+              <span class="disk-text">{formatBytes(u.size_bytes)}</span>
+            </td>
+            <td>
+              <div class="projects-cell">
+                {#if u.bound_environments.length === 0}
+                  <span class="unused-label">Unreferenced (safe to prune)</span>
+                {:else}
+                  <div class="project-tags">
+                    {#each u.bound_environments as env}
+                      <span class="project-tag" title={env.bound_projects.join(", ")}>
+                        <Icon name="package" size={11} />
+                        {env.name || env.binding_id}
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+{/if}
+
 <style>
-  .dedup-card {
-    background: linear-gradient(135deg, rgba(26, 27, 38, 0.85) 0%, rgba(20, 21, 31, 0.95) 100%);
-    border: 1px solid rgba(168, 85, 247, 0.25);
-    border-radius: 12px;
-    padding: 1.1rem 1.25rem;
-    margin-bottom: 1.25rem;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-    backdrop-filter: blur(12px);
-  }
-
-  .dedup-header {
+  .dedup-strip {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .dedup-title-block {
-    display: flex;
-    align-items: flex-start;
     gap: 0.75rem;
-  }
-
-  .dedup-icon {
-    width: 34px;
-    height: 34px;
+    padding: 0.45rem 0.75rem;
+    background: var(--sp-bg-2, #161821);
+    border: 1px solid var(--sp-border, #262c3c);
     border-radius: 8px;
-    background: rgba(168, 85, 247, 0.15);
-    border: 1px solid rgba(168, 85, 247, 0.3);
-    color: #c084fc;
+    margin-bottom: 1rem;
+    transition: border-color 0.15s ease;
+  }
+  .dedup-strip.is-expanded {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-color: transparent;
+    margin-bottom: 0;
+  }
+  .strip-left {
     display: flex;
     align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
+    gap: 0.55rem;
+    flex-wrap: wrap;
   }
-
-  .title-row {
+  .strip-icon {
+    color: #a855f7;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.2rem;
   }
-
-  .dedup-title {
-    font-size: 1rem;
+  .strip-title {
+    font-size: 0.82rem;
     font-weight: 600;
-    color: var(--sp-text);
-    margin: 0;
+    color: var(--sp-text, #f1f5f9);
   }
-
-  .dedup-desc {
-    font-size: 0.8rem;
-    color: var(--sp-text-3);
-    margin: 0;
-    max-width: 600px;
-    line-height: 1.35;
+  .store-badge {
+    font-size: 0.65rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(168, 85, 247, 0.15);
+    color: #c084fc;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
-
-  .header-actions {
+  .strip-metrics {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
+    margin-left: 0.4rem;
   }
-
-  .expand-toggle {
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    border: 1px solid var(--sp-border-strong);
-    background: var(--sp-bg-2);
-    color: var(--sp-text-2);
+  .metric-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--sp-bg-3, #1e222f);
+    color: var(--sp-text-2, #cbd5e1);
+  }
+  .metric-chip.emerald {
+    background: rgba(16, 185, 129, 0.12);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    font-weight: 600;
+  }
+  .metric-chip.cyan {
+    color: #38bdf8;
+  }
+  .strip-right {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 0.4rem;
+  }
+  .strip-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: transparent;
+    border: 1px solid var(--sp-border-strong, #2f3547);
+    color: var(--sp-text-3, #94a3b8);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.72rem;
     cursor: pointer;
     transition: all 0.15s ease;
   }
-
-  .expand-toggle:hover {
-    background: var(--sp-bg-3);
-    color: var(--sp-text);
-    border-color: var(--sp-border-focus);
+  .strip-toggle:hover {
+    color: var(--sp-text-1, #f1f5f9);
+    border-color: var(--sp-border-focus, #4f5872);
   }
-
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.75rem;
-  }
-
-  .stat-box {
-    background: rgba(15, 17, 23, 0.6);
-    border: 1px solid var(--sp-border-strong);
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-  }
-
-  .stat-box.highlight {
-    border-color: rgba(16, 185, 129, 0.3);
-    background: rgba(16, 185, 129, 0.05);
-  }
-
-  .stat-label {
-    font-size: 0.72rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--sp-text-3);
-  }
-
-  .stat-value {
-    font-size: 1.35rem;
-    font-weight: 700;
-    color: var(--sp-text);
-    font-family: var(--sp-font-mono, monospace);
-  }
-
-  .text-emerald { color: #34d399; }
-  .text-cyan { color: #38bdf8; }
-
-  .stat-sub {
-    font-size: 0.72rem;
-    color: var(--sp-text-3);
-  }
-
-  .usages-table-wrapper {
-    margin-top: 1rem;
-    border-top: 1px solid var(--sp-border-strong);
-    padding-top: 0.75rem;
+  .usages-tray {
+    background: var(--sp-bg-1, #10121a);
+    border: 1px solid var(--sp-border, #262c3c);
+    border-top: none;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
     overflow-x: auto;
   }
 

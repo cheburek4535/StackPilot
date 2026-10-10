@@ -659,39 +659,34 @@ fn get_upstream_download_candidates(tool_id: &str) -> Vec<ToolVersionCandidate> 
                 "linux-x64.tar.gz"
             };
 
-            list.push(ToolVersionCandidate {
-                version: "22.11.0".to_string(),
-                display_label: "Node.js 22.11.0 (Current)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Node.js Dist (Portable)".to_string(),
-                executable_path: None,
-                channel: Some("current".to_string()),
-                is_installed: false,
-                download_url: Some(format!("https://nodejs.org/dist/v22.11.0/node-v22.11.0-{}", os_name)),
-                size_mb: Some(35),
-            });
-            list.push(ToolVersionCandidate {
-                version: "20.18.0".to_string(),
-                display_label: "Node.js 20.18.0 (LTS Рекомендуется)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Node.js Dist (Portable)".to_string(),
-                executable_path: None,
-                channel: Some("lts".to_string()),
-                is_installed: false,
-                download_url: Some(format!("https://nodejs.org/dist/v20.18.0/node-v20.18.0-{}", os_name)),
-                size_mb: Some(32),
-            });
-            list.push(ToolVersionCandidate {
-                version: "18.20.4".to_string(),
-                display_label: "Node.js 18.20.4 (Maintenance)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Node.js Dist (Portable)".to_string(),
-                executable_path: None,
-                channel: Some("lts".to_string()),
-                is_installed: false,
-                download_url: Some(format!("https://nodejs.org/dist/v18.20.4/node-v18.20.4-{}", os_name)),
-                size_mb: Some(30),
-            });
+            let node_versions = [
+                ("22.14.0", "Node.js 22.14.0 (v22 Active LTS)", "lts", 36),
+                ("22.11.0", "Node.js 22.11.0 (v22 Jod)", "lts", 35),
+                ("21.7.3", "Node.js 21.7.3 (v21 Stable)", "current", 34),
+                ("20.18.3", "Node.js 20.18.3 (v20 Iron LTS Рекомендуется)", "lts", 33),
+                ("20.18.0", "Node.js 20.18.0 (v20 LTS)", "lts", 32),
+                ("20.11.1", "Node.js 20.11.1 (v20 LTS)", "lts", 32),
+                ("19.9.0", "Node.js 19.9.0 (v19 Maintenance)", "current", 31),
+                ("18.20.7", "Node.js 18.20.7 (v18 Hydrogen LTS)", "lts", 30),
+                ("18.20.4", "Node.js 18.20.4 (v18 Maintenance)", "lts", 30),
+                ("18.16.1", "Node.js 18.16.1 (v18 LTS)", "lts", 29),
+                ("16.20.2", "Node.js 16.20.2 (v16 Gallium LTS)", "legacy", 27),
+                ("14.21.3", "Node.js 14.21.3 (v14 Fermium Legacy)", "legacy", 25),
+            ];
+
+            for (ver, label, chan, sz) in node_versions {
+                list.push(ToolVersionCandidate {
+                    version: ver.to_string(),
+                    display_label: label.to_string(),
+                    source_kind: ToolVersionSourceKind::UpstreamDownload,
+                    source_name: "Node.js Dist (Portable)".to_string(),
+                    executable_path: None,
+                    channel: Some(chan.to_string()),
+                    is_installed: false,
+                    download_url: Some(format!("https://nodejs.org/dist/v{}/node-v{}-{}", ver, ver, os_name)),
+                    size_mb: Some(sz),
+                });
+            }
         }
         "python" | "python3" => {
             // Python standalone builds (astral-sh / indygreg standalone)
@@ -703,34 +698,34 @@ fn get_upstream_download_candidates(tool_id: &str) -> Vec<ToolVersionCandidate> 
                 ("x86_64-unknown-linux-gnu-install_only", "tar.gz")
             };
 
-            list.push(ToolVersionCandidate {
-                version: "3.12.7".to_string(),
-                display_label: "Python 3.12.7 (Рекомендуется)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Python Standalone (Portable)".to_string(),
-                executable_path: None,
-                channel: Some("stable".to_string()),
-                is_installed: false,
-                download_url: Some(format!(
-                    "https://github.com/astral-sh/python-build-standalone/releases/download/20241002/cpython-3.12.7%2B20241002-{}.{}",
-                    py_os, ext
-                )),
-                size_mb: Some(38),
-            });
-            list.push(ToolVersionCandidate {
-                version: "3.11.9".to_string(),
-                display_label: "Python 3.11.9".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Python Standalone (Portable)".to_string(),
-                executable_path: None,
-                channel: Some("stable".to_string()),
-                is_installed: false,
-                download_url: Some(format!(
-                    "https://github.com/astral-sh/python-build-standalone/releases/download/20241002/cpython-3.11.9%2B20241002-{}.{}",
-                    py_os, ext
-                )),
-                size_mb: Some(36),
-            });
+            let py_versions = [
+                ("3.13.2", "Python 3.13.2 (Latest 3.13)", "stable", 39, "20250212"),
+                ("3.12.9", "Python 3.12.9 (Рекомендуется)", "stable", 38, "20250212"),
+                ("3.12.7", "Python 3.12.7 (Stable 3.12)", "stable", 38, "20241002"),
+                ("3.11.11", "Python 3.11.11 (Latest 3.11)", "stable", 36, "20250212"),
+                ("3.11.9", "Python 3.11.9 (Stable 3.11)", "stable", 36, "20241002"),
+                ("3.10.16", "Python 3.10.16 (Latest 3.10)", "stable", 35, "20250212"),
+                ("3.10.13", "Python 3.10.13 (Stable 3.10)", "stable", 35, "20241002"),
+                ("3.9.21", "Python 3.9.21 (LTS 3.9)", "stable", 34, "20250212"),
+                ("3.8.20", "Python 3.8.20 (Legacy 3.8)", "legacy", 33, "20250212"),
+            ];
+
+            for (ver, label, chan, sz, rel) in py_versions {
+                list.push(ToolVersionCandidate {
+                    version: ver.to_string(),
+                    display_label: label.to_string(),
+                    source_kind: ToolVersionSourceKind::UpstreamDownload,
+                    source_name: "Python Standalone (Portable)".to_string(),
+                    executable_path: None,
+                    channel: Some(chan.to_string()),
+                    is_installed: false,
+                    download_url: Some(format!(
+                        "https://github.com/astral-sh/python-build-standalone/releases/download/{}/cpython-{}%2B{}-{}.{}",
+                        rel, ver, rel, py_os, ext
+                    )),
+                    size_mb: Some(sz),
+                });
+            }
         }
         "go" | "golang" => {
             let (go_os, ext) = if cfg!(target_os = "windows") {
@@ -741,28 +736,30 @@ fn get_upstream_download_candidates(tool_id: &str) -> Vec<ToolVersionCandidate> 
                 ("linux-amd64", "tar.gz")
             };
 
-            list.push(ToolVersionCandidate {
-                version: "1.23.2".to_string(),
-                display_label: "Go 1.23.2 (Latest)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Go Official Dist".to_string(),
-                executable_path: None,
-                channel: Some("stable".to_string()),
-                is_installed: false,
-                download_url: Some(format!("https://go.dev/dl/go1.23.2.{}.{}", go_os, ext)),
-                size_mb: Some(65),
-            });
-            list.push(ToolVersionCandidate {
-                version: "1.22.8".to_string(),
-                display_label: "Go 1.22.8 (LTS)".to_string(),
-                source_kind: ToolVersionSourceKind::UpstreamDownload,
-                source_name: "Go Official Dist".to_string(),
-                executable_path: None,
-                channel: Some("lts".to_string()),
-                is_installed: false,
-                download_url: Some(format!("https://go.dev/dl/go1.22.8.{}.{}", go_os, ext)),
-                size_mb: Some(63),
-            });
+            let go_versions = [
+                ("1.24.0", "Go 1.24.0 (Latest)", "stable", 68),
+                ("1.23.6", "Go 1.23.6 (Stable Рекомендуется)", "stable", 66),
+                ("1.23.2", "Go 1.23.2", "stable", 65),
+                ("1.22.12", "Go 1.22.12 (Supported LTS)", "lts", 64),
+                ("1.22.8", "Go 1.22.8 (LTS)", "lts", 63),
+                ("1.21.13", "Go 1.21.13 (Maintenance)", "lts", 60),
+                ("1.20.14", "Go 1.20.14 (Legacy)", "legacy", 58),
+                ("1.19.13", "Go 1.19.13 (Legacy)", "legacy", 56),
+            ];
+
+            for (ver, label, chan, sz) in go_versions {
+                list.push(ToolVersionCandidate {
+                    version: ver.to_string(),
+                    display_label: label.to_string(),
+                    source_kind: ToolVersionSourceKind::UpstreamDownload,
+                    source_name: "Go Official Dist".to_string(),
+                    executable_path: None,
+                    channel: Some(chan.to_string()),
+                    is_installed: false,
+                    download_url: Some(format!("https://go.dev/dl/go{}.{}.{}", ver, go_os, ext)),
+                    size_mb: Some(sz),
+                });
+            }
         }
         _ => {}
     }

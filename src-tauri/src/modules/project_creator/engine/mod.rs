@@ -406,6 +406,42 @@ impl RecipeEngine for DefaultRecipeEngine {
         let total = plan.steps.len();
         let mut results = Vec::with_capacity(total);
         let mut aborted = false;
+
+        // Log active isolated environment notice in project execution stream
+        let sp_env = plan.project_path.join(".stackpilot").join("environment.json");
+        if sp_env.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&sp_env) {
+                if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
+                    if binding.is_isolated() {
+                        let mut tool_strs = Vec::new();
+                        for (tid, t) in &binding.tool_overrides {
+                            let ver = t.version.as_deref().unwrap_or("custom");
+                            tool_strs.push(format!("{tid} v{ver}"));
+                        }
+                        let tools_line = if tool_strs.is_empty() {
+                            "Isolated project sandbox active (clean Windows PATH)".to_string()
+                        } else {
+                            format!("Isolated project sandbox active: {}", tool_strs.join(", "))
+                        };
+                        let _ = tx
+                            .send(ExecutionEvent {
+                                event_type: ExecutionEventType::StepProgress {
+                                    stdout: format!("[Environment] ⚡ {}\n", tools_line),
+                                    stderr: String::new(),
+                                },
+                                step_id: "env_setup".to_string(),
+                                step_index: 0,
+                                total_steps: total,
+                                step_name: "Environment Sandbox".into(),
+                                step_description: "Initialize isolated runtime sandbox".into(),
+                                timestamp: chrono_event_time(),
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+
         // Любой Failed (включая Skip-режим): финализационные шаги
         // (git_add/git_commit/readme) после него не выполняются — коммитить
         // и перезаписывать README на сломанном проекте вредно.
