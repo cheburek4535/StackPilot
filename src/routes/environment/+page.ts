@@ -5,5 +5,5 @@
 import { redirect } from "@sveltejs/kit";
 
 export function load(): never {
-  redirect(308, "/toolchain");
+  redirect(308, "/environments");
 }

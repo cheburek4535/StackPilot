@@ -141,7 +141,10 @@ pub fn validate_shell(shell: ShellKind) -> ShellValidationResult {
 pub fn is_shell_compatible(shell: ShellKind, os: HostOs) -> bool {
     match (shell, os) {
         (ShellKind::Cmd | ShellKind::PowerShell, HostOs::Linux | HostOs::Macos) => false,
-        (ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh, HostOs::Windows) => false,
+        (
+            ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish,
+            HostOs::Windows,
+        ) => false,
         _ => true,
     }
 }
@@ -161,6 +164,7 @@ pub fn available_shells_for_os(os: HostOs) -> Vec<ShellKind> {
             ShellKind::Sh,
             ShellKind::Bash,
             ShellKind::Zsh,
+            ShellKind::Fish,
             ShellKind::Pwsh,
         ],
     }
@@ -292,8 +296,27 @@ mod tests {
 
     #[test]
     fn validate_shell_string_invalid() {
-        let result = validate_shell_string("fish");
+        let result = validate_shell_string("nu");
         assert!(result.is_err());
+    }
+
+    /// `fish` is a documented run_script shell on Unix; it must parse and
+    /// validate instead of being silently downgraded without a diagnostic.
+    /// When fish is not installed the validator falls back to the platform
+    /// default (with a diagnostic) вЂ” that is fine, as long as it is not an
+    /// outright rejection.
+    #[test]
+    fn validate_shell_string_fish_is_supported_on_unix() {
+        let result = validate_shell_string("fish");
+        if cfg!(target_os = "windows") {
+            assert!(result.is_err(), "fish is not a native Windows shell");
+        } else {
+            let effective = result.expect("fish must validate on Unix");
+            assert!(
+                matches!(effective, ShellKind::Fish | ShellKind::Sh),
+                "unexpected effective shell: {effective:?}"
+            );
+        }
     }
 
     #[test]

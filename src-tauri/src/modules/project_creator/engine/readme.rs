@@ -557,7 +557,18 @@ const SERVICE_TOOLS: &[&str] = &[
 fn is_web_frontend(id: &str) -> bool {
     matches!(
         id,
-        "react" | "vue" | "svelte" | "nextjs" | "sveltekit" | "nuxt" | "solidjs" | "solidstart"
+        "react"
+            | "vue"
+            | "svelte"
+            | "nextjs"
+            | "sveltekit"
+            | "nuxt"
+            | "solidjs"
+            | "solidstart"
+            | "angular"
+            | "vite"
+            | "astro"
+            | "remix"
     )
 }
 
@@ -623,12 +634,60 @@ fn local_tools(ctx: &ReadmeContext) -> Vec<String> {
         .collect()
 }
 
-fn venv_prefix() -> &'static str {
-    if cfg!(target_os = "windows") {
-        ".venv\\Scripts\\python"
+/// Каталог venv проекта относительно корня: `venv` в одно-сторонней
+/// раскладке, `<segment>/venv` (например `backend/venv`) в split. Совпадает
+/// с каноническим venv движка (см. preflight::venv_abs).
+fn venv_dir_rel(ctx: &ReadmeContext) -> String {
+    let seg = python_segment_dir(ctx);
+    if seg == "." {
+        "venv".to_string()
     } else {
-        ".venv/bin/python"
+        format!("{}/venv", seg)
     }
+}
+
+/// Интерпретатор venv проекта ОТ КОРНЯ проекта (`venv/bin/python` или
+/// `backend/venv/bin/python`; на Windows — `venv\Scripts\python`).
+/// Единственный канонический venv создаётся в каталоге python-сегмента, а
+/// не в `.venv` корня.
+fn venv_prefix(ctx: &ReadmeContext) -> String {
+    let dir = venv_dir_rel(ctx);
+    if cfg!(target_os = "windows") {
+        format!("{}\\Scripts\\python", dir.replace('/', "\\"))
+    } else {
+        format!("{}/bin/python", dir)
+    }
+}
+
+/// Интерпретатор venv ОТНОСИТЕЛЬНО каталога python-сегмента — для команд,
+/// которые выполняются после `cd <segment>` (см. fill_python_paths).
+fn venv_segment_prefix() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "venv\\Scripts\\python"
+    } else {
+        "venv/bin/python"
+    }
+}
+
+/// Подстановка python-путей в шаблон команды README:
+///   {venv}     — интерпретатор venv от корня проекта;
+///   {venv_seg} — интерпретатор venv от каталога python-сегмента (вместе с {cd});
+///   {cd}       — `cd <segment> && `, если python-код лежит в сегменте
+///                (backend/ в split-раскладке), иначе пусто.
+/// Строки без плейсхолдеров возвращаются без изменений.
+fn fill_python_paths(ctx: &ReadmeContext, template: &str) -> String {
+    let seg = python_segment_dir(ctx);
+    let cd = if seg == "." {
+        String::new()
+    } else {
+        format!("cd {seg} && ")
+    };
+    // {venv_seg} обязан быть заменён ДО {venv}: "{venv}" — подстрока
+    // "{venv_seg}", преждевременная замена испортила бы плейсхолдер.
+    template
+        .replace("{venv_seg}", venv_segment_prefix())
+        .replace("{venv}", &venv_prefix(ctx))
+        .replace("{cd}", &cd)
 }
 
 // ============================================================================
@@ -645,7 +704,9 @@ pub fn language_profile(id: &str) -> Option<LanguageProfile> {
         "java" => Some(lang_java()),
         "kotlin" => Some(lang_kotlin()),
         "csharp" => Some(lang_csharp()),
-        "cpp" | "c" => Some(lang_cpp()),
+        "cpp" => Some(lang_cpp()),
+        "c" => Some(lang_c()),
+        "ruby" => Some(lang_ruby()),
         "dart" => Some(lang_dart()),
         "php" => Some(lang_php()),
         "swift" => Some(lang_swift()),
@@ -788,6 +849,36 @@ fn lang_cpp() -> LanguageProfile {
         tips: &[
             "readme.lang.cpp.tip.0",
             "readme.lang.cpp.tip.1",
+        ],
+    }
+}
+
+fn lang_c() -> LanguageProfile {
+    LanguageProfile {
+        name: "C",
+        summary: "readme.lang.c.summary",
+        first_code: "readme.lang.c.first_code",
+        dev_cmd: "readme.lang.c.dev_cmd",
+        build_cmd: "readme.lang.c.build_cmd",
+        test_cmd: None,
+        tips: &[
+            "readme.lang.c.tip.0",
+            "readme.lang.c.tip.1",
+        ],
+    }
+}
+
+fn lang_ruby() -> LanguageProfile {
+    LanguageProfile {
+        name: "Ruby",
+        summary: "readme.lang.ruby.summary",
+        first_code: "readme.lang.ruby.first_code",
+        dev_cmd: "readme.lang.ruby.dev_cmd",
+        build_cmd: "readme.lang.ruby.build_cmd",
+        test_cmd: Some("readme.lang.ruby.test_cmd"),
+        tips: &[
+            "readme.lang.ruby.tip.0",
+            "readme.lang.ruby.tip.1",
         ],
     }
 }
@@ -941,6 +1032,17 @@ pub fn framework_profile(id: &str) -> Option<FrameworkProfile> {
         "react" => Some(fw_react()),
         "vue" => Some(fw_vue()),
         "svelte" => Some(fw_svelte()),
+        "angular" => Some(fw_angular()),
+        "vite" => Some(fw_vite()),
+        "rails" => Some(fw_rails()),
+        "astro" => Some(fw_astro()),
+        "remix" => Some(fw_remix()),
+        "hono" => Some(fw_hono()),
+        "actix-web" => Some(fw_actix_web()),
+        "echo" => Some(fw_echo()),
+        "fiber" => Some(fw_fiber()),
+        "blazor" => Some(fw_blazor()),
+        "adonisjs" => Some(fw_adonisjs()),
         _ => None,
     }
 }
@@ -1419,6 +1521,138 @@ fn fw_svelte() -> FrameworkProfile {
     }
 }
 
+fn fw_angular() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Angular",
+        what: "readme.fw.angular.what",
+        first_code: "readme.fw.angular.first_code",
+        entry: "readme.fw.angular.entry",
+        dev_cmd: "readme.fw.angular.dev_cmd",
+        build_cmd: "readme.fw.angular.build_cmd",
+        test_cmd: Some("readme.fw.angular.test_cmd"),
+    }
+}
+
+fn fw_vite() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Vite",
+        what: "readme.fw.vite.what",
+        first_code: "readme.fw.vite.first_code",
+        entry: "readme.fw.vite.entry",
+        dev_cmd: "readme.fw.vite.dev_cmd",
+        build_cmd: "readme.fw.vite.build_cmd",
+        test_cmd: Some("readme.fw.vite.test_cmd"),
+    }
+}
+
+fn fw_rails() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Ruby on Rails",
+        what: "readme.fw.rails.what",
+        first_code: "readme.fw.rails.first_code",
+        entry: "readme.fw.rails.entry",
+        dev_cmd: "readme.fw.rails.dev_cmd",
+        build_cmd: "readme.fw.rails.build_cmd",
+        test_cmd: Some("readme.fw.rails.test_cmd"),
+    }
+}
+
+fn fw_astro() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Astro",
+        what: "readme.fw.astro.what",
+        first_code: "readme.fw.astro.first_code",
+        entry: "readme.fw.astro.entry",
+        dev_cmd: "readme.fw.astro.dev_cmd",
+        build_cmd: "readme.fw.astro.build_cmd",
+        test_cmd: Some("readme.fw.astro.test_cmd"),
+    }
+}
+
+fn fw_remix() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Remix",
+        what: "readme.fw.remix.what",
+        first_code: "readme.fw.remix.first_code",
+        entry: "readme.fw.remix.entry",
+        dev_cmd: "readme.fw.remix.dev_cmd",
+        build_cmd: "readme.fw.remix.build_cmd",
+        test_cmd: Some("readme.fw.remix.test_cmd"),
+    }
+}
+
+fn fw_hono() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Hono",
+        what: "readme.fw.hono.what",
+        first_code: "readme.fw.hono.first_code",
+        entry: "readme.fw.hono.entry",
+        dev_cmd: "readme.fw.hono.dev_cmd",
+        build_cmd: "readme.fw.hono.build_cmd",
+        test_cmd: Some("readme.fw.hono.test_cmd"),
+    }
+}
+
+fn fw_actix_web() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Actix Web",
+        what: "readme.fw.actix_web.what",
+        first_code: "readme.fw.actix_web.first_code",
+        entry: "readme.fw.actix_web.entry",
+        dev_cmd: "readme.fw.actix_web.dev_cmd",
+        build_cmd: "readme.fw.actix_web.build_cmd",
+        test_cmd: Some("readme.fw.actix_web.test_cmd"),
+    }
+}
+
+fn fw_echo() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Echo",
+        what: "readme.fw.echo.what",
+        first_code: "readme.fw.echo.first_code",
+        entry: "readme.fw.echo.entry",
+        dev_cmd: "readme.fw.echo.dev_cmd",
+        build_cmd: "readme.fw.echo.build_cmd",
+        test_cmd: Some("readme.fw.echo.test_cmd"),
+    }
+}
+
+fn fw_fiber() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Fiber",
+        what: "readme.fw.fiber.what",
+        first_code: "readme.fw.fiber.first_code",
+        entry: "readme.fw.fiber.entry",
+        dev_cmd: "readme.fw.fiber.dev_cmd",
+        build_cmd: "readme.fw.fiber.build_cmd",
+        test_cmd: Some("readme.fw.fiber.test_cmd"),
+    }
+}
+
+fn fw_blazor() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "Blazor",
+        what: "readme.fw.blazor.what",
+        first_code: "readme.fw.blazor.first_code",
+        entry: "readme.fw.blazor.entry",
+        dev_cmd: "readme.fw.blazor.dev_cmd",
+        build_cmd: "readme.fw.blazor.build_cmd",
+        test_cmd: Some("readme.fw.blazor.test_cmd"),
+    }
+}
+
+fn fw_adonisjs() -> FrameworkProfile {
+    FrameworkProfile {
+        name: "AdonisJS",
+        what: "readme.fw.adonisjs.what",
+        first_code: "readme.fw.adonisjs.first_code",
+        entry: "readme.fw.adonisjs.entry",
+        dev_cmd: "readme.fw.adonisjs.dev_cmd",
+        build_cmd: "readme.fw.adonisjs.build_cmd",
+        test_cmd: Some("readme.fw.adonisjs.test_cmd"),
+    }
+}
+
 // ============================================================================
 // Провайдеры инструментов
 // ============================================================================
@@ -1449,6 +1683,12 @@ pub fn tool_profile(id: &str) -> Option<ToolProfile> {
         "npm" => Some(tool_npm()),
         "maven" => Some(tool_maven()),
         "gradle" => Some(tool_gradle()),
+        "angular-cli" => Some(tool_angular_cli()),
+        "biome" => Some(tool_biome()),
+        "vitest" => Some(tool_vitest()),
+        "gcc" => Some(tool_gcc()),
+        "bun" => Some(tool_bun()),
+        "tailwind" => Some(tool_tailwind()),
         _ => None,
     }
 }
@@ -1921,6 +2161,114 @@ fn tool_gradle() -> ToolProfile {
     }
 }
 
+fn tool_angular_cli() -> ToolProfile {
+    ToolProfile {
+        name: "Angular CLI",
+        what: "readme.tool.angular_cli.what",
+        config: "readme.tool.angular_cli.config",
+        start: "readme.tool.angular_cli.start",
+        credentials: "readme.tool.angular_cli.credentials",
+        verify: "readme.tool.angular_cli.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_biome() -> ToolProfile {
+    ToolProfile {
+        name: "Biome",
+        what: "readme.tool.biome.what",
+        config: "readme.tool.biome.config",
+        start: "readme.tool.biome.start",
+        credentials: "readme.tool.biome.credentials",
+        verify: "readme.tool.biome.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_vitest() -> ToolProfile {
+    ToolProfile {
+        name: "Vitest",
+        what: "readme.tool.vitest.what",
+        config: "readme.tool.vitest.config",
+        start: "readme.tool.vitest.start",
+        credentials: "readme.tool.vitest.credentials",
+        verify: "readme.tool.vitest.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_gcc() -> ToolProfile {
+    ToolProfile {
+        name: "GCC",
+        what: "readme.tool.gcc.what",
+        config: "readme.tool.gcc.config",
+        start: "readme.tool.gcc.start",
+        credentials: "readme.tool.gcc.credentials",
+        verify: "readme.tool.gcc.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_bun() -> ToolProfile {
+    ToolProfile {
+        name: "Bun",
+        what: "readme.tool.bun.what",
+        config: "readme.tool.bun.config",
+        start: "readme.tool.bun.start",
+        credentials: "readme.tool.bun.credentials",
+        verify: "readme.tool.bun.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
+fn tool_tailwind() -> ToolProfile {
+    ToolProfile {
+        name: "Tailwind CSS",
+        what: "readme.tool.tailwind.what",
+        config: "readme.tool.tailwind.config",
+        start: "readme.tool.tailwind.start",
+        credentials: "readme.tool.tailwind.credentials",
+        verify: "readme.tool.tailwind.verify",
+        env: &[],
+        start_docker: None,
+        credentials_docker: None,
+        verify_docker: None,
+        start_local: None,
+        credentials_local: None,
+        verify_local: None,
+    }
+}
+
 // ============================================================================
 // Композиция секций
 // ============================================================================
@@ -2046,13 +2394,14 @@ fn section_selected_stack(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if !langs.is_empty() {
         body.push_str(&format!("{}\n\n", ctx.t("readme.stack.languages")));
         for l in langs {
-            body.push_str(&format!(
-                "- **{}** — {}\n",
-                language_name(l),
-                language_profile(l)
-                    .map(|p| ctx.t(p.summary))
-                    .unwrap_or_default()
-            ));
+            let summary = language_profile(l)
+                .map(|p| ctx.t(p.summary))
+                .unwrap_or_default();
+            if summary.is_empty() {
+                body.push_str(&format!("- **{}**\n", language_name(l)));
+            } else {
+                body.push_str(&format!("- **{}** — {}\n", language_name(l), summary));
+            }
         }
         body.push('\n');
     }
@@ -2060,13 +2409,14 @@ fn section_selected_stack(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if !fws.is_empty() {
         body.push_str(&format!("{}\n\n", ctx.t("readme.stack.frameworks")));
         for f in fws {
-            body.push_str(&format!(
-                "- **{}** — {}\n",
-                framework_name(f),
-                framework_profile(f)
-                    .map(|p| ctx.t(p.what))
-                    .unwrap_or_default()
-            ));
+            let what = framework_profile(f)
+                .map(|p| ctx.t(p.what))
+                .unwrap_or_default();
+            if what.is_empty() {
+                body.push_str(&format!("- **{}**\n", framework_name(f)));
+            } else {
+                body.push_str(&format!("- **{}** — {}\n", framework_name(f), what));
+            }
         }
         body.push('\n');
     }
@@ -2164,45 +2514,66 @@ fn section_directory_map(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         }
         files
     };
-    // Файлы каркасов, лежащие в корне (языковые манифесты).
+    // Файлы каркасов (языковые манифесты). В split-раскладке манифест лежит
+    // ВНУТРИ сегмента языка (backend/requirements.txt, frontend/package.json) —
+    // путь обязан совпадать с фактической записью движка, а не корнем.
+    let manifest_path = |lang: &str, name: &str| -> String {
+        match ctx.layout.language_dir(lang) {
+            Some(dir) => format!("{}/{}", dir, name),
+            None => name.to_string(),
+        }
+    };
     let root_manifests: Vec<String> = {
         let mut m = Vec::new();
         if has_language(ctx, "python") {
-            m.push("requirements.txt".to_string());
-            m.push("pyproject.toml".to_string());
+            m.push(manifest_path("python", "requirements.txt"));
+            m.push(manifest_path("python", "pyproject.toml"));
         }
         if has_language(ctx, "rust") && !has_framework(ctx, "tauri") {
-            m.push("Cargo.toml".to_string());
+            m.push(manifest_path("rust", "Cargo.toml"));
         }
         if has_language(ctx, "go") {
-            m.push("go.mod".to_string());
+            m.push(manifest_path("go", "go.mod"));
         }
         if has_language(ctx, "java") || has_language(ctx, "kotlin") {
-            m.push("pom.xml / build.gradle.kts".to_string());
+            let lang = if has_language(ctx, "java") { "java" } else { "kotlin" };
+            m.push(match ctx.layout.language_dir(lang) {
+                Some(dir) => format!("{dir}/pom.xml / {dir}/build.gradle.kts"),
+                None => "pom.xml / build.gradle.kts".to_string(),
+            });
         }
         if has_language(ctx, "typescript") || has_language(ctx, "javascript") {
-            m.push("package.json".to_string());
+            let lang = if has_language(ctx, "typescript") {
+                "typescript"
+            } else {
+                "javascript"
+            };
+            m.push(manifest_path(lang, "package.json"));
         }
         if has_language(ctx, "php") {
-            m.push("composer.json".to_string());
+            m.push(manifest_path("php", "composer.json"));
         }
         if has_language(ctx, "cpp") || has_language(ctx, "c") {
-            m.push("CMakeLists.txt".to_string());
+            let lang = if has_language(ctx, "cpp") { "cpp" } else { "c" };
+            m.push(manifest_path(lang, "CMakeLists.txt"));
         }
         if has_language(ctx, "zig") {
-            m.push("build.zig".to_string());
+            m.push(manifest_path("zig", "build.zig"));
         }
         if has_language(ctx, "elixir") {
-            m.push("mix.exs".to_string());
+            m.push(manifest_path("elixir", "mix.exs"));
         }
         if has_language(ctx, "gleam") {
-            m.push("gleam.toml".to_string());
+            m.push(manifest_path("gleam", "gleam.toml"));
         }
         if has_language(ctx, "dart") {
-            m.push("pubspec.yaml".to_string());
+            m.push(manifest_path("dart", "pubspec.yaml"));
         }
         if has_language(ctx, "swift") {
-            m.push("Package.swift".to_string());
+            m.push(manifest_path("swift", "Package.swift"));
+        }
+        if has_language(ctx, "ruby") {
+            m.push(manifest_path("ruby", "Gemfile"));
         }
         m
     };
@@ -2429,21 +2800,23 @@ fn section_frameworks(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
                 ctx.t("readme.label.entry"),
                 ctx.t(p.entry)
             ));
+            // dev_cmd приходит с собственными кавычками из локали; python-
+            // команды получают реальный интерпретатор venv и `cd <segment>`.
             body.push_str(&format!(
-                "**{}** `{}`\n\n",
+                "**{}** {}\n\n",
                 ctx.t("readme.label.dev_cmd"),
-                ctx.t(p.dev_cmd)
+                fill_python_paths(ctx, &ctx.t(p.dev_cmd))
             ));
             body.push_str(&format!(
                 "**{}** {}\n\n",
                 ctx.t("readme.label.build_cmd"),
-                ctx.t(p.build_cmd)
+                fill_python_paths(ctx, &ctx.t(p.build_cmd))
             ));
             match p.test_cmd {
                 Some(cmd) => body.push_str(&format!(
                     "**{}** `{}`\n\n",
                     ctx.t("readme.label.test_cmd"),
-                    ctx.t(cmd)
+                    fill_python_paths(ctx, &ctx.t(cmd))
                 )),
                 None => body.push_str(&format!(
                     "**{}** {}\n\n",
@@ -2489,11 +2862,14 @@ fn section_tools(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             continue;
         };
         let mode = tool_mode(ctx, tool);
-        let start = ctx.t(match mode {
-            ToolMode::Docker => p.start_docker.unwrap_or(p.start),
-            ToolMode::Local => p.start_local.unwrap_or(p.start),
-            _ => p.start,
-        });
+        let start = fill_python_paths(
+            ctx,
+            &ctx.t(match mode {
+                ToolMode::Docker => p.start_docker.unwrap_or(p.start),
+                ToolMode::Local => p.start_local.unwrap_or(p.start),
+                _ => p.start,
+            }),
+        );
         let credentials = ctx.t(match mode {
             ToolMode::Docker => p.credentials_docker.unwrap_or(p.credentials),
             ToolMode::Local => p.credentials_local.unwrap_or(p.credentials),
@@ -2507,11 +2883,14 @@ fn section_tools(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             }
             _ => credentials,
         };
-        let verify = ctx.t(match mode {
-            ToolMode::Docker => p.verify_docker.unwrap_or(p.verify),
-            ToolMode::Local => p.verify_local.unwrap_or(p.verify),
-            _ => p.verify,
-        });
+        let verify = fill_python_paths(
+            ctx,
+            &ctx.t(match mode {
+                ToolMode::Docker => p.verify_docker.unwrap_or(p.verify),
+                ToolMode::Local => p.verify_local.unwrap_or(p.verify),
+                _ => p.verify,
+            }),
+        );
         // Host-порты инструментов, которые могли быть ремаплены из-за
         // конфликта с приложением (см. PortPlan).
         let verify = match tool {
@@ -2603,7 +2982,9 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             "typescript" | "javascript" => "readme.prereq.node",
             "java" | "kotlin" => "readme.prereq.jdk",
             "csharp" => "readme.prereq.dotnet",
-            "cpp" | "c" => "readme.prereq.cpp",
+            "cpp" => "readme.prereq.cpp",
+            "c" => "readme.prereq.c",
+            "ruby" => "readme.prereq.ruby",
             "dart" => "readme.prereq.dart",
             "php" => "readme.prereq.php",
             "swift" => "readme.prereq.swift",
@@ -2622,7 +3003,7 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
         let key = match fw {
             "tauri" | "electron" => "readme.prereq.desktop",
             "flutter" => "readme.prereq.flutter",
-            "maui" | "aspnetcore" | "csharp" => "readme.prereq.dotnet",
+            "maui" | "aspnetcore" | "csharp" | "blazor" => "readme.prereq.dotnet",
             "spring-boot" | "ktor" | "jetpack-compose" => "readme.prereq.jdk",
             "swiftui" | "vapor" => "readme.prereq.swift",
             "react-native" | "expo" => "readme.prereq.mobile",
@@ -2631,6 +3012,7 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             }
             "phoenix" => "readme.prereq.phoenix",
             "laravel" | "symfony" => "readme.prereq.php",
+            "rails" => "readme.prereq.ruby",
             "zig-cli" | "zap" => "readme.prereq.zig",
             _ => "",
         };
@@ -2650,6 +3032,8 @@ fn section_prerequisites(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
                 "npm" => "readme.prereq.node",
                 "maven" | "gradle" => "readme.prereq.jdk",
                 "sqlite" => "readme.prereq.sqlite",
+                "gcc" => "readme.prereq.gcc",
+                "bun" => "readme.prereq.bun",
                 _ => "",
             },
             ToolMode::Unmanaged => "",
@@ -2719,19 +3103,17 @@ fn section_quick_start(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     let mut install_cmds: Vec<String> = Vec::new();
     let py_dir = python_segment_dir(ctx);
     if has_language(ctx, "python") {
-        let venv_dir = if py_dir == "." { ".venv" } else { &py_dir };
+        // Канонический venv (venv/ в корне или backend/venv) и реальный
+        // манифест (requirements.txt) — те же пути, что создаёт пайплайн.
         install_cmds.push(ctx.tf(
             "readme.quick.py_venv",
             &[
                 ("python", python_command()),
-                ("venv", venv_dir),
+                ("venv", &venv_dir_rel(ctx)),
+                ("venv_python", &venv_prefix(ctx)),
                 (
-                    "bindir",
-                    if cfg!(target_os = "windows") {
-                        "Scripts\\python"
-                    } else {
-                        "bin/python"
-                    },
+                    "requirements",
+                    &super::preflight::requirements_path(&py_dir),
                 ),
             ],
         ));
@@ -2767,6 +3149,12 @@ fn section_quick_start(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     }
     if has_language(ctx, "swift") {
         install_cmds.push(ctx.t("readme.quick.swift_install"));
+    }
+    if has_language(ctx, "ruby") {
+        install_cmds.push(ctx.t("readme.quick.ruby_install"));
+    }
+    if has_language(ctx, "c") {
+        install_cmds.push(ctx.t("readme.quick.c_install"));
     }
     if !install_cmds.is_empty() {
         steps.push(ctx.tf(
@@ -2868,6 +3256,12 @@ fn is_js_framework_id(fw: &str) -> bool {
             | "react-native"
             | "expo"
             | "plasmo"
+            | "angular"
+            | "vite"
+            | "astro"
+            | "remix"
+            | "hono"
+            | "adonisjs"
     )
 }
 
@@ -2920,7 +3314,11 @@ fn section_development(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             let mut lines: Vec<String> = Vec::new();
             for lang in langs {
                 if let Some(p) = language_profile(lang) {
-                    lines.push(format!("- **{}** — {}", p.name, ctx.t(p.dev_cmd)));
+                    lines.push(format!(
+                        "- **{}** — {}",
+                        p.name,
+                        fill_python_paths(ctx, &ctx.t(p.dev_cmd))
+                    ));
                 }
             }
             lines.join("\n")
@@ -2931,7 +3329,11 @@ fn section_development(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     let mut body = String::new();
     for fw in fws {
         if let Some(p) = framework_profile(fw) {
-            body.push_str(&format!("- **{}** — `{}`\n", p.name, ctx.t(p.dev_cmd)));
+            // Python-команды рендерятся с реальным интерпретатором venv и
+            // `cd <segment>` для split-раскладки; строки без плейсхолдеров
+            // остаются как есть (кавычки — в самой локализованной строке).
+            let cmd = fill_python_paths(ctx, &ctx.t(p.dev_cmd));
+            body.push_str(&format!("- **{}** — {}\n", p.name, cmd));
         }
     }
     body.push_str(&ctx.t("readme.development.footer"));
@@ -2948,7 +3350,11 @@ fn section_building(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
             let mut lines: Vec<String> = Vec::new();
             for lang in langs {
                 if let Some(p) = language_profile(lang) {
-                    lines.push(format!("- **{}** — {}", p.name, ctx.t(p.build_cmd)));
+                    lines.push(format!(
+                        "- **{}** — {}",
+                        p.name,
+                        fill_python_paths(ctx, &ctx.t(p.build_cmd))
+                    ));
                 }
             }
             lines.join("\n")
@@ -2959,7 +3365,11 @@ fn section_building(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     let mut body = String::new();
     for fw in fws {
         if let Some(p) = framework_profile(fw) {
-            body.push_str(&format!("- **{}** — {}\n", p.name, ctx.t(p.build_cmd)));
+            body.push_str(&format!(
+                "- **{}** — {}\n",
+                p.name,
+                fill_python_paths(ctx, &ctx.t(p.build_cmd))
+            ));
         }
     }
     doc.add(ctx.t("readme.section.building.title"), body);
@@ -2970,14 +3380,14 @@ fn section_testing(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     for fw in sorted_unique(ctx.context.frameworks.iter().map(String::as_str)) {
         if let Some(p) = framework_profile(fw) {
             if let Some(cmd) = p.test_cmd {
-                commands.push((p.name.to_string(), ctx.t(cmd)));
+                commands.push((p.name.to_string(), fill_python_paths(ctx, &ctx.t(cmd))));
             }
         }
     }
     for lang in sorted_unique(ctx.context.languages.iter().map(String::as_str)) {
         if let Some(p) = language_profile(lang) {
             if let Some(cmd) = p.test_cmd {
-                let translated = ctx.t(cmd);
+                let translated = fill_python_paths(ctx, &ctx.t(cmd));
                 let exists = commands.iter().any(|(name, _)| name == p.name);
                 if !exists && !commands.iter().any(|(_, c)| c == &translated) {
                     commands.push((p.name.to_string(), translated));
@@ -2987,9 +3397,18 @@ fn section_testing(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     }
     let has_tool = ctx.context.tools.iter().any(|t| t == "pytest");
     if has_tool {
-        let cmd = format!("{} -m pytest", venv_prefix());
+        // Pytest запускается интерпретатором venv из каталога python-сегмента
+        // (backend/ в split): тесты и pytest.ini лежат рядом с venv.
+        let cmd = fill_python_paths(ctx, "{cd}{venv_seg} -m pytest");
         if !commands.iter().any(|(_, c)| c == &cmd) {
             commands.push(("Pytest".to_string(), cmd));
+        }
+    }
+    let has_vitest = ctx.context.tools.iter().any(|t| t == "vitest");
+    if has_vitest {
+        let cmd = "npx vitest";
+        if !commands.iter().any(|(_, c)| c == cmd) {
+            commands.push(("Vitest".to_string(), cmd.to_string()));
         }
     }
     let body = if commands.is_empty() {
@@ -3140,7 +3559,7 @@ fn section_mistakes(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     if has_language(ctx, "python") {
         items.push(ctx.tf(
             "readme.mistakes.system_python",
-            &[("venv", venv_prefix())],
+            &[("venv", &venv_prefix(ctx))],
         ));
     }
     if has_language(ctx, "typescript") || has_language(ctx, "javascript") {
@@ -3152,7 +3571,7 @@ fn section_mistakes(ctx: &ReadmeContext, doc: &mut ReadmeDoc) {
     for lang in sorted_unique(ctx.context.languages.iter().map(String::as_str)) {
         if let Some(p) = language_profile(lang) {
             for tip in p.tips {
-                let tip_text = ctx.t(tip).replace("{venv}", venv_prefix());
+                let tip_text = fill_python_paths(ctx, &ctx.t(tip));
                 items.push(tip_text);
             }
         }
@@ -3247,6 +3666,82 @@ mod tests {
 
     fn render(ctx: &WizardContext) -> String {
         generate_readme(&ProjectLayout::compute(ctx), ctx, "myapp")
+    }
+
+    #[test]
+    fn directory_map_prefixes_manifests_with_language_segment() {
+        // В split-раскладке манифесты лежат в сегментах (backend/,
+        // frontend/) — включая составную java-строку Maven/Gradle.
+        let ctx = ctx_with(
+            "web-app",
+            &["java", "typescript"],
+            &["java"],
+            &["typescript"],
+            &["spring-boot", "react"],
+            &[],
+            &[],
+            false,
+        );
+        let md = render(&ctx);
+        assert!(
+            md.contains("backend/pom.xml / backend/build.gradle.kts"),
+            "java-манифесты в сегменте: {md}"
+        );
+        assert!(md.contains("frontend/package.json"), "{md}");
+    }
+
+    #[test]
+    fn python_readme_documents_canonical_venv() {
+        // Регрессия: README указывал несуществующий `.venv`, literal
+        // `{venv}` в командах инструментов и системный `python` вместо
+        // интерпретатора venv. Канонический venv — `venv/` (backend/venv в
+        // split), команды обязаны работать от корня проекта.
+        let python = if cfg!(target_os = "windows") {
+            "python"
+        } else {
+            "python3"
+        };
+        let root = ctx_with(
+            "rest-api",
+            &["python"],
+            &["python"],
+            &[],
+            &["fastapi"],
+            &["sqlalchemy", "alembic", "ruff", "pytest"],
+            &[],
+            false,
+        );
+        let md = render(&root);
+        assert!(!md.contains("{venv"), "literal-плейсхолдеры недопустимы: {md}");
+        assert!(!md.contains(".venv"), "venv называется venv, а не .venv: {md}");
+        assert!(md.contains(&format!("{python} -m venv venv")), "{md}");
+        assert!(md.contains("pip install -r requirements.txt"), "{md}");
+        assert!(md.contains("-m alembic upgrade head"), "{md}");
+        assert!(md.contains("-m uvicorn src.main:app --reload"), "{md}");
+
+        let split = ctx_with(
+            "rest-api",
+            &["python", "typescript"],
+            &["python"],
+            &["typescript"],
+            &["django", "react"],
+            &["alembic", "pytest"],
+            &[],
+            false,
+        );
+        let md = render(&split);
+        assert!(!md.contains("{venv"), "literal-плейсхолдеры недопустимы: {md}");
+        assert!(!md.contains(".venv"), "venv называется venv, а не .venv: {md}");
+        assert!(md.contains(&format!("{python} -m venv backend/venv")), "{md}");
+        assert!(
+            md.contains("pip install -r backend/requirements.txt"),
+            "{md}"
+        );
+        assert!(
+            md.contains("cd backend && "),
+            "split-команды обязаны выполняться из backend/: {md}"
+        );
+        assert!(md.contains("manage.py runserver"), "{md}");
     }
 
     fn tree() -> WizardTreeData {
@@ -3718,7 +4213,7 @@ mod tests {
     fn readme_has_no_untranslated_keys_across_stacks() {
         // Словари полные: ни в EN-, ни в RU-README не должно остаться
         // неразрешённых i18n-ключей (`readme.` — префикс ключей).
-        let stacks: [(&str, &[&str], &[&str], &[&str], &[&str], &[&str]); 8] = [
+        let stacks: [(&str, &[&str], &[&str], &[&str], &[&str], &[&str]); 12] = [
             (
                 "rest-api",
                 &["python", "typescript"],
@@ -3783,6 +4278,38 @@ mod tests {
                 &["qt", "vue"],
                 &["postgresql", "mailpit"],
             ),
+            (
+                "web-app",
+                &["ruby", "typescript"],
+                &["ruby"],
+                &["typescript"],
+                &["rails", "angular"],
+                &["redis", "postgresql", "angular-cli", "vitest", "biome", "tailwind"],
+            ),
+            (
+                "cli-tool",
+                &["c"],
+                &["c"],
+                &[],
+                &[],
+                &["gcc"],
+            ),
+            (
+                "web-app",
+                &["typescript"],
+                &[],
+                &["typescript"],
+                &["vite", "astro", "remix"],
+                &["npm", "bun", "vitest", "tailwind"],
+            ),
+            (
+                "rest-api",
+                &["rust", "go", "csharp"],
+                &["rust", "go", "csharp"],
+                &[],
+                &["actix-web", "echo", "fiber", "blazor", "hono", "adonisjs"],
+                &["postgresql", "redis", "sqlite"],
+            ),
         ];
         for (project_type, langs, back, front, fws, tools) in stacks {
             let mut ctx = ctx_with(
@@ -3801,6 +4328,10 @@ mod tests {
                 assert!(
                     !md.contains("readme."),
                     "{locale}/{project_type}: raw key leaked:\n{md}"
+                );
+                assert!(
+                    !md.contains(" — \n") && !md.contains(" — \r\n"),
+                    "{locale}/{project_type}: empty dash in:\n{md}"
                 );
             }
         }

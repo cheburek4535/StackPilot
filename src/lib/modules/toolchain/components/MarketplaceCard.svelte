@@ -18,6 +18,7 @@
     platformName,
     toolVersionDisplay,
   } from "../format";
+  import { toolchain } from "../state.svelte";
   import type { OperationKind } from "../types";
 
   export type MarketplacePlanOp = OperationKind;
@@ -31,7 +32,7 @@
     item: MarketplaceItem;
     /** Идёт перепроверка инструмента (после установки и т.п.). */
     busy?: boolean;
-    onplan: (operation: MarketplacePlanOp, toolId: string) => void;
+    onplan: (operation: MarketplacePlanOp, toolId: string | string[]) => void;
     ondetails: (toolId: string) => void;
   } = $props();
 
@@ -39,6 +40,12 @@
   const scan = $derived(item.scan);
   const version = $derived(scan ? toolVersionDisplay(scan) : null);
   const recommended = $derived(def.versions?.recommended ?? null);
+
+  const hostDef = $derived(def.bundled_with ? toolchain.definitionFor(def.bundled_with) : null);
+  const hostName = $derived(hostDef?.display ?? def.bundled_with ?? "");
+  const bundleActionLabel = $derived(
+    i18n.t("tc.install.download_with", { tool: hostName })
+  );
 
   /** Установлен, но версии нет ни в состоянии, ни в уликах — явная
    *  пометка вместо молчаливого «—» (контракт: версия или объяснение). */
@@ -186,9 +193,25 @@
         {action.label}
       </Button>
     {:else if action.kind === "no_source" || action.kind === "built_in"}
-      <Button variant="ghost" size="sm" disabled>
-        {action.kind === "built_in" && def.bundled_with ? builtInLabel : action.label}
-      </Button>
+      {#if def.bundled_with}
+        <Button
+          variant="primary"
+          size="sm"
+          icon="plus"
+          loading={busy}
+          onclick={() => {
+            if (def.bundled_with) {
+              onplan("install", [def.bundled_with, def.id]);
+            }
+          }}
+        >
+          {bundleActionLabel}
+        </Button>
+      {:else}
+        <Button variant="ghost" size="sm" disabled>
+          {action.label}
+        </Button>
+      {/if}
     {/if}
     <span class="spacer"></span>
     {#if hasLinks}

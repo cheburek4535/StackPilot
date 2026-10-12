@@ -77,11 +77,14 @@
       "linux": [],
       "macos": [
         {
-          "kind": "PkgManager",
-          "id": "brew",
+          "kind": "Script",
+          "id": "brew-install",
+          "url": "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh",
+          "file_name": "install.sh",
           "args": [],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "execution": "script"
         }
       ]
     },
@@ -122,7 +125,9 @@
       ],
       "known_paths": [
         "C:/Program Files/nodejs",
-        "%LOCALAPPDATA%/Programs/nodejs"
+        "%LOCALAPPDATA%/Programs/nodejs",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Node.js"
@@ -180,7 +185,9 @@
     "needs_admin": true,
     "path_entries": [
       "%ProgramFiles%\\nodejs",
-      "%LOCALAPPDATA%\\Programs\\nodejs"
+      "%LOCALAPPDATA%\\Programs\\nodejs",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -260,7 +267,10 @@
       ],
       "known_paths": [
         "C:/Program Files/Python3*",
-        "%LOCALAPPDATA%/Programs/Python/Python3*"
+        "%LOCALAPPDATA%/Programs/Python/Python3*",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Python\\PythonCore"
@@ -321,7 +331,9 @@
     "needs_admin": true,
     "path_entries": [
       "%LOCALAPPDATA%\\Programs\\Python\\Python313",
-      "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts"
+      "%LOCALAPPDATA%\\Programs\\Python\\Python313\\Scripts",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -390,7 +402,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/.cargo/bin"
+        "%USERPROFILE%/.cargo/bin",
+        "$HOME/.cargo/bin"
       ],
       "registry_keys": []
     },
@@ -437,7 +450,9 @@
             "stable"
           ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "file_name": "rustup-init.sh",
+          "execution": "script"
         }
       ],
       "macos": [
@@ -451,14 +466,17 @@
             "stable"
           ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "file_name": "rustup-init.sh",
+          "execution": "script"
         }
       ]
     },
     "size_mb": 250,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\.cargo\\bin"
+      "%USERPROFILE%\\.cargo\\bin",
+      "$HOME/.cargo/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -639,7 +657,8 @@
     "needs_admin": false,
     "path_entries": [
       "%APPDATA%\\npm",
-      "%USERPROFILE%\\.cargo\\bin"
+      "%USERPROFILE%\\.cargo\\bin",
+      "$HOME/.cargo/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -667,7 +686,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Go/bin"
+        "C:/Program Files/Go/bin",
+        "/usr/local/go/bin",
+        "/opt/homebrew/bin",
+        "$HOME/go/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Golang"
@@ -725,7 +747,10 @@
     "size_mb": 150,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Go\\bin"
+      "C:\\Program Files\\Go\\bin",
+      "/usr/local/go/bin",
+      "/opt/homebrew/bin",
+      "$HOME/go/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -753,7 +778,11 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Eclipse Adoptium/*/bin"
+        "C:/Program Files/Eclipse Adoptium/*/bin",
+        "/opt/homebrew/opt/openjdk/bin",
+        "/usr/local/opt/openjdk/bin",
+        "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin",
+        "/usr/lib/jvm/*/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\JavaSoft\\JDK"
@@ -811,7 +840,10 @@
     "size_mb": 200,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Eclipse Adoptium\\*\\bin"
+      "C:\\Program Files\\Eclipse Adoptium\\*\\bin",
+      "/opt/homebrew/opt/openjdk/bin",
+      "/usr/local/opt/openjdk/bin",
+      "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -839,7 +871,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/kotlin/*/bin"
+        "%LOCALAPPDATA%/Programs/kotlin/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -893,7 +927,9 @@
     "size_mb": 87,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\kotlin\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\kotlin\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "dependencies": [
@@ -1187,7 +1223,8 @@
         ]
       ],
       "known_paths": [
-        "%APPDATA%/npm"
+        "%APPDATA%/npm",
+        "$HOME/.npm-global/bin"
       ],
       "registry_keys": []
     },
@@ -1224,42 +1261,46 @@
       ],
       "linux": [
         {
-          "kind": "PkgManager",
-          "id": "firebase-tools",
-          "args": [],
-          "extra_args": [],
-          "dynamic_args": false
-        },
-        {
           "kind": "Official",
           "id": "npm-global",
           "url": "npm",
           "args": [
             "install",
             "-g",
+            "--prefix",
+            "$HOME/.npm-global",
             "firebase-tools"
           ],
+          "extra_args": [],
+          "dynamic_args": false
+        },
+        {
+          "kind": "PkgManager",
+          "id": "firebase-tools",
+          "args": [],
           "extra_args": [],
           "dynamic_args": false
         }
       ],
       "macos": [
         {
-          "kind": "PkgManager",
-          "id": "firebase-tools",
-          "args": [],
-          "extra_args": [],
-          "dynamic_args": false
-        },
-        {
           "kind": "Official",
           "id": "npm-global",
           "url": "npm",
           "args": [
             "install",
             "-g",
+            "--prefix",
+            "$HOME/.npm-global",
             "firebase-tools"
           ],
+          "extra_args": [],
+          "dynamic_args": false
+        },
+        {
+          "kind": "PkgManager",
+          "id": "firebase-tools",
+          "args": [],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -1268,7 +1309,8 @@
     "size_mb": 60,
     "needs_admin": false,
     "path_entries": [
-      "%APPDATA%\\npm"
+      "%APPDATA%\\npm",
+      "$HOME/.npm-global/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1280,7 +1322,12 @@
         ]
       }
     ],
-    "notes": "tool.firebase.notes"
+    "notes": "tool.firebase.notes",
+    "extended": {
+      "dependencies": [
+        "node"
+      ]
+    }
   },
   {
     "id": "dotnet",
@@ -1297,7 +1344,13 @@
       ],
       "known_paths": [
         "C:/Program Files/dotnet",
-        "%LOCALAPPDATA%/Microsoft/dotnet"
+        "%LOCALAPPDATA%/Microsoft/dotnet",
+        "$HOME/.dotnet",
+        "/usr/lib/dotnet",
+        "/usr/lib64/dotnet",
+        "/usr/share/dotnet",
+        "/opt/homebrew/opt/dotnet/libexec",
+        "/usr/local/opt/dotnet/libexec"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64"
@@ -1346,6 +1399,22 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Script",
+          "id": "dotnet-install",
+          "url": "https://dot.net/v1/dotnet-install.sh",
+          "file_name": "dotnet-install.sh",
+          "args": [
+            "--channel",
+            "10.0",
+            "--install-dir",
+            "$HOME/.dotnet"
+          ],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false,
+          "execution": "script"
         }
       ],
       "macos": [
@@ -1355,6 +1424,22 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Script",
+          "id": "dotnet-install",
+          "url": "https://dot.net/v1/dotnet-install.sh",
+          "file_name": "dotnet-install.sh",
+          "args": [
+            "--channel",
+            "10.0",
+            "--install-dir",
+            "$HOME/.dotnet"
+          ],
+          "extra_args": [],
+          "dynamic_args": false,
+          "needs_admin": false,
+          "execution": "script"
         }
       ]
     },
@@ -1362,7 +1447,10 @@
     "needs_admin": true,
     "path_entries": [
       "C:\\Program Files\\dotnet",
-      "%LOCALAPPDATA%\\Microsoft\\dotnet"
+      "%LOCALAPPDATA%\\Microsoft\\dotnet",
+      "$HOME/.dotnet",
+      "/usr/lib/dotnet",
+      "/usr/share/dotnet"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1389,7 +1477,9 @@
           "--version"
         ]
       ],
-      "known_paths": [],
+      "known_paths": [
+        "$HOME/.dotnet/tools"
+      ],
       "registry_keys": []
     },
     "versions": {
@@ -1491,7 +1581,8 @@
     "size_mb": 20,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\.dotnet\\tools"
+      "%USERPROFILE%\\.dotnet\\tools",
+      "$HOME/.dotnet/tools"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1503,7 +1594,12 @@
         ]
       }
     ],
-    "notes": "tool.csharprepl.notes"
+    "notes": "tool.csharprepl.notes",
+    "extended": {
+      "dependencies": [
+        "dotnet"
+      ]
+    }
   },
   {
     "id": "msvc-build-tools",
@@ -1602,7 +1698,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/zig/*"
+        "%USERPROFILE%/zig/*",
+        "$HOME/.local/share/zig/*"
       ],
       "registry_keys": []
     },
@@ -1648,6 +1745,20 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "ziglang-tarball",
+          "url": "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share/zig",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "ziglang"
+          },
+          "url_template": "https://ziglang.org/download/{version}/zig-x86_64-linux-{version}.tar.xz"
         }
       ],
       "macos": [
@@ -1663,7 +1774,8 @@
     "size_mb": 100,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\zig\\*"
+      "%USERPROFILE%\\zig\\*",
+      "$HOME/.local/share/zig/*"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1692,13 +1804,20 @@
       ],
       "known_paths": [
         "C:/Program Files/Dart",
-        "%LOCALAPPDATA%/dart-sdk/*/bin"
+        "%LOCALAPPDATA%/dart-sdk/*/bin",
+        "$HOME/.local/share/dart-sdk/bin",
+        "/usr/lib/dart/bin",
+        "/opt/homebrew/opt/dart/libexec/bin",
+        "/usr/local/opt/dart/libexec/bin"
       ],
       "registry_keys": []
     },
     "versions": {
       "min": "3.0",
-      "recommended": "3.7"
+      "recommended": "3.7",
+      "resolver": {
+        "kind": "dart_sdk"
+      }
     },
     "sources": {
       "windows": [
@@ -1731,6 +1850,19 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dart-sdk",
+          "url": "https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-x64-release.zip",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "dart_sdk"
+          }
         }
       ],
       "macos": [
@@ -1740,6 +1872,18 @@
           "args": [],
           "extra_args": [],
           "dynamic_args": false
+        },
+        {
+          "kind": "Official",
+          "id": "dart-sdk",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false,
+          "install_dir": "$HOME/.local/share",
+          "needs_admin": false,
+          "version_resolver": {
+            "kind": "dart_sdk"
+          }
         }
       ]
     },
@@ -1747,7 +1891,8 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\Dart\\bin",
-      "%LOCALAPPDATA%\\dart-sdk\\*\\bin"
+      "%LOCALAPPDATA%\\dart-sdk\\*\\bin",
+      "$HOME/.local/share/dart-sdk/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1776,7 +1921,10 @@
       ],
       "known_paths": [
         "C:/Program Files/php",
-        "%LOCALAPPDATA%/Programs/php"
+        "%LOCALAPPDATA%/Programs/php",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -1828,7 +1976,9 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\php",
-      "%LOCALAPPDATA%\\Programs\\php"
+      "%LOCALAPPDATA%\\Programs\\php",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -1856,7 +2006,9 @@
         ]
       ],
       "known_paths": [
-        "%APPDATA%/Composer/vendor/bin"
+        "%APPDATA%/Composer/vendor/bin",
+        "$HOME/.composer/vendor/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -1918,7 +2070,9 @@
     "needs_admin": false,
     "path_entries": [
       "%APPDATA%\\Composer",
-      "%APPDATA%\\Composer\\vendor\\bin"
+      "%APPDATA%\\Composer\\vendor\\bin",
+      "$HOME/.composer/vendor/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "dependencies": [
@@ -2312,7 +2466,8 @@
         ]
       ],
       "known_paths": [
-        "%USERPROFILE%/flutter/bin"
+        "%USERPROFILE%/flutter/bin",
+        "$HOME/flutter/bin"
       ],
       "registry_keys": []
     },
@@ -2343,18 +2498,32 @@
       ],
       "linux": [
         {
-          "kind": "PkgManager",
-          "id": "flutter",
-          "args": [],
+          "kind": "Official",
+          "id": "flutter-git",
+          "url": "https://github.com/flutter/flutter.git",
+          "args": [
+            "--depth",
+            "1",
+            "-b",
+            "stable"
+          ],
           "extra_args": [],
-          "dynamic_args": false
+          "dynamic_args": false,
+          "execution": "git_clone",
+          "bootstrap": [
+            "flutter",
+            "--version"
+          ],
+          "needs_admin": false
         }
       ],
       "macos": [
         {
           "kind": "PkgManager",
           "id": "flutter",
-          "args": [],
+          "args": [
+            "--cask"
+          ],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -2363,7 +2532,8 @@
     "size_mb": 1000,
     "needs_admin": false,
     "path_entries": [
-      "%USERPROFILE%\\flutter\\bin"
+      "%USERPROFILE%\\flutter\\bin",
+      "$HOME/flutter/bin"
     ],
     "bundled_with": null,
     "health_checks": [],
@@ -2383,7 +2553,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/maven/*/bin"
+        "%LOCALAPPDATA%/Programs/maven/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2432,7 +2604,9 @@
     "size_mb": 10,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\maven\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\maven\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2460,7 +2634,9 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/gradle/*/bin"
+        "%LOCALAPPDATA%/Programs/gradle/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2509,7 +2685,9 @@
     "size_mb": 140,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\gradle\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\gradle\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2537,7 +2715,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/PostgreSQL/*/bin"
+        "C:/Program Files/PostgreSQL/*/bin",
+        "/opt/homebrew/opt/postgresql@17/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/opt/postgresql@17/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\PostgreSQL\\Installations"
@@ -2608,7 +2789,10 @@
     "size_mb": 350,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\PostgreSQL\\*\\bin"
+      "C:\\Program Files\\PostgreSQL\\*\\bin",
+      "/opt/homebrew/opt/postgresql@17/bin",
+      "/usr/local/opt/postgresql@17/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2641,7 +2825,9 @@
       ],
       "known_paths": [
         "C:/Program Files/Memurai",
-        "%LOCALAPPDATA%/Programs/redis/*"
+        "%LOCALAPPDATA%/Programs/redis/*",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2707,7 +2893,9 @@
     "needs_admin": false,
     "path_entries": [
       "C:\\Program Files\\Memurai\\bin",
-      "%LOCALAPPDATA%\\Programs\\redis\\*"
+      "%LOCALAPPDATA%\\Programs\\redis\\*",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2740,7 +2928,9 @@
       ],
       "known_paths": [
         "C:/Program Files/MongoDB/Server/*/bin",
-        "%LOCALAPPDATA%/Programs/mongodb/*/bin"
+        "%LOCALAPPDATA%/Programs/mongodb/*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": []
     },
@@ -2796,7 +2986,9 @@
     "needs_admin": true,
     "path_entries": [
       "C:\\Program Files\\MongoDB\\Server\\*\\bin",
-      "%LOCALAPPDATA%\\Programs\\mongodb\\*\\bin"
+      "%LOCALAPPDATA%\\Programs\\mongodb\\*\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2828,7 +3020,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/MySQL/*/bin"
+        "C:/Program Files/MySQL/*/bin",
+        "/opt/homebrew/opt/mysql/bin",
+        "/usr/local/opt/mysql/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -2885,7 +3080,10 @@
     "size_mb": 300,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\MySQL\\*\\bin"
+      "C:\\Program Files\\MySQL\\*\\bin",
+      "/opt/homebrew/opt/mysql/bin",
+      "/usr/local/opt/mysql/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -2957,7 +3155,11 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Docker/Docker/resources/bin"
+        "C:/Program Files/Docker/Docker/resources/bin",
+        "/Applications/Docker.app/Contents/Resources/bin",
+        "$HOME/Applications/Docker.app/Contents/Resources/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\Docker Inc.\\DockerDesktop"
@@ -3016,7 +3218,10 @@
     "size_mb": 600,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Docker\\Docker\\resources\\bin"
+      "C:\\Program Files\\Docker\\Docker\\resources\\bin",
+      "/Applications/Docker.app/Contents/Resources/bin",
+      "$HOME/Applications/Docker.app/Contents/Resources/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3053,7 +3258,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/Git/cmd"
+        "C:/Program Files/Git/cmd",
+        "/usr/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": [
         "HKLM\\SOFTWARE\\GitForWindows"
@@ -3112,7 +3320,9 @@
     "size_mb": 70,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\Git\\cmd"
+      "C:\\Program Files\\Git\\cmd",
+      "/usr/local/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3140,7 +3350,10 @@
         ]
       ],
       "known_paths": [
-        "%LOCALAPPDATA%/Programs/Microsoft VS Code/bin"
+        "%LOCALAPPDATA%/Programs/Microsoft VS Code/bin",
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+        "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": [
         "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{EA457B21-F73E-494c-ACAB-524DDEADCE5C}"
@@ -3189,7 +3402,9 @@
         {
           "kind": "PkgManager",
           "id": "visual-studio-code",
-          "args": [],
+          "args": [
+            "--cask"
+          ],
           "extra_args": [],
           "dynamic_args": false
         }
@@ -3198,7 +3413,10 @@
     "size_mb": 100,
     "needs_admin": false,
     "path_entries": [
-      "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin"
+      "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin",
+      "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+      "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+      "/opt/homebrew/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3226,7 +3444,10 @@
         ]
       ],
       "known_paths": [
-        "C:/Program Files/CMake/bin"
+        "C:/Program Files/CMake/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/Applications/CMake.app/Contents/bin"
       ],
       "registry_keys": []
     },
@@ -3282,7 +3503,10 @@
     "size_mb": 30,
     "needs_admin": true,
     "path_entries": [
-      "C:\\Program Files\\CMake\\bin"
+      "C:\\Program Files\\CMake\\bin",
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/Applications/CMake.app/Contents/bin"
     ],
     "bundled_with": null,
     "health_checks": [
@@ -3310,7 +3534,9 @@
         ]
       ],
       "known_paths": [
-        "C:/Windows/System32/curl.exe"
+        "C:/Windows/System32/curl.exe",
+        "/usr/bin",
+        "/opt/homebrew/bin"
       ],
       "registry_keys": []
     },
@@ -3352,7 +3578,9 @@
         ]
       ],
       "known_paths": [
-        "C:/Windows/System32/tar.exe"
+        "C:/Windows/System32/tar.exe",
+        "/usr/bin",
+        "/bin"
       ],
       "registry_keys": []
     },
@@ -3395,7 +3623,9 @@
       ],
       "known_paths": [
         "%LOCALAPPDATA%/Android/Sdk/platform-tools",
-        "C:/Program Files/Android/Android Studio"
+        "C:/Program Files/Android/Android Studio",
+        "$HOME/Library/Android/sdk/platform-tools",
+        "/Applications/Android Studio.app"
       ],
       "registry_keys": []
     },
@@ -3528,5 +3758,321 @@
     "platform_availability": [
       "macos"
     ]
+  },
+  {
+    "id": "ruby",
+    "category": "language",
+    "display": "Ruby",
+    "description": "tool.ruby.desc",
+    "icon": "ruby.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "ruby",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "C:/Ruby*/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "3.0",
+      "recommended": "3.3"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "ruby-installer",
+          "url": "https://github.com/oneclick/rubyinstaller2/releases/download/RubyInstaller-3.3.0-1/rubyinstaller-3.3.0-1-x64.exe",
+          "args": [
+            "/verysilent"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "PkgManager",
+          "id": "ruby",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "ruby",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": true,
+    "path_entries": [
+      "/opt/homebrew/bin",
+      "/usr/local/bin"
+    ],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "ruby",
+        "command": [
+          "ruby",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "gcc",
+    "category": "compiler",
+    "display": "GCC (MinGW-w64)",
+    "description": "tool.gcc.desc",
+    "icon": "gcc.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "gcc",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "C:/MinGW/bin",
+        "C:/msys64/mingw64/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "9.0",
+      "recommended": "13.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "PkgManager",
+          "id": "msys2.msys2",
+          "args": [
+            "--silent"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "PkgManager",
+          "id": "gcc",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "PkgManager",
+          "id": "gcc",
+          "args": [],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 100,
+    "needs_admin": true,
+    "path_entries": [
+      "C:/msys64/mingw64/bin",
+      "/opt/homebrew/bin",
+      "/usr/bin"
+    ],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "gcc",
+        "command": [
+          "gcc",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "angular-cli",
+    "category": "cli",
+    "display": "Angular CLI",
+    "description": "tool.angular_cli.desc",
+    "icon": "angular.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "ng",
+          "version"
+        ]
+      ],
+      "known_paths": [
+        "%APPDATA%/npm",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "15.0",
+      "recommended": "17.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "@angular/cli"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "ng",
+        "command": [
+          "ng",
+          "version"
+        ]
+      }
+    ],
+    "notes": null
+  },
+  {
+    "id": "bun",
+    "category": "language",
+    "display": "Bun",
+    "description": "tool.bun.desc",
+    "icon": "bun.svg",
+    "detection": {
+      "version_probes": [
+        [
+          "bun",
+          "--version"
+        ]
+      ],
+      "known_paths": [
+        "%USERPROFILE%/.bun/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+      ],
+      "registry_keys": []
+    },
+    "versions": {
+      "min": "1.0",
+      "recommended": "1.0"
+    },
+    "sources": {
+      "windows": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "linux": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ],
+      "macos": [
+        {
+          "kind": "Official",
+          "id": "npm-global",
+          "url": "npm",
+          "args": [
+            "install",
+            "-g",
+            "bun"
+          ],
+          "extra_args": [],
+          "dynamic_args": false
+        }
+      ]
+    },
+    "size_mb": 50,
+    "needs_admin": false,
+    "path_entries": [],
+    "bundled_with": null,
+    "health_checks": [
+      {
+        "label": "bun",
+        "command": [
+          "bun",
+          "--version"
+        ]
+      }
+    ],
+    "notes": null
   }
 ]

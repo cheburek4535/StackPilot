@@ -488,6 +488,7 @@ pub fn validate_stack(
     validate_tool_dependencies(tree, tools, &mut issues);
     validate_tool_language_compatibility(tree, tools, languages, &mut issues);
     validate_tool_responsibility_overlap(tree, tools, &mut issues);
+    validate_tool_conflicts(tree, tools, &mut issues);
     validate_framework_tool_warnings(tree, frameworks, tools, &mut issues);
 
     issues
@@ -690,6 +691,45 @@ fn validate_tool_responsibility_overlap(
                     }
                     AlternativePolicy::Allow => {}
                 }
+            }
+        }
+    }
+}
+
+/// Взаимные конфликты инструментов (tool.conflicts[]):
+/// Если инструмент A объявляет взаимный конфликт с B, они не могут быть выбраны вместе.
+fn validate_tool_conflicts(
+    tree: &WizardTreeData,
+    tools: &[String],
+    issues: &mut Vec<StackIssue>,
+) {
+    let selected: Vec<&ToolDef> = tools
+        .iter()
+        .filter_map(|id| tree.tools.iter().find(|t| &t.id == id))
+        .collect();
+
+    for (i, a) in selected.iter().enumerate() {
+        for b in selected.iter().skip(i + 1) {
+            // Если оба инструмента разделяют exclusive responsibility, ошибка уже
+            // сгенерирована проверкой validate_tool_responsibility_overlap — не дублируем.
+            if let (Some(ra), Some(rb)) = (&a.responsibility, &b.responsibility) {
+                if ra == rb
+                    && (a.alternative_policy == AlternativePolicy::Exclusive
+                        || b.alternative_policy == AlternativePolicy::Exclusive)
+                {
+                    continue;
+                }
+            }
+            if a.conflicts.contains(&b.id) || b.conflicts.contains(&a.id) {
+                let mut args = std::collections::HashMap::new();
+                args.insert("a".to_string(), a.label.clone());
+                args.insert("b".to_string(), b.label.clone());
+                issues.push(StackIssue::keyed(
+                    StackSeverity::Error,
+                    format!("«{}» несовместим с «{}».", a.label, b.label),
+                    "stack.tool.conflict",
+                    args,
+                ));
             }
         }
     }

@@ -668,7 +668,14 @@ mod tests {
 
         let profile = build_profile(&canon(&req), &defs, "windows", true, String::new());
 
-        for id in ["winget", "python"] {
+        #[cfg(target_os = "windows")]
+        let expected_required = ["winget", "python"];
+        #[cfg(target_os = "macos")]
+        let expected_required = ["brew", "python"];
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let expected_required = ["python"];
+
+        for id in expected_required {
             assert!(
                 profile.required.iter().any(|t| t.tool_id == id),
                 "{id} обязан быть required: {:?}",
@@ -676,10 +683,17 @@ mod tests {
             );
         }
         assert!(!profile.optional.iter().any(|t| t.tool_id == "python"));
+        #[cfg(target_os = "windows")]
         assert_eq!(
             profile.dependency_closure.first().map(String::as_str),
             Some("winget"),
             "winget-first сохранён"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            profile.dependency_closure.first().map(String::as_str),
+            Some("brew"),
+            "brew-first сохранён"
         );
     }
 
@@ -927,7 +941,7 @@ mod tests {
     fn platform_without_sources_is_unsupported_not_missing() {
         let defs = crate::modules::toolchain::defs::load_definitions();
         let mut reqs = empty_reqs();
-        reqs.languages = vec!["rust".to_string()]; // тянет msvc-build-tools
+        reqs.tools = vec!["msvc-build-tools".to_string()]; // специфичный для Windows инструмент
 
         let profile = build_profile(&canon(&reqs), &defs, "linux", false, String::new());
 
@@ -1124,10 +1138,16 @@ mod tests {
                 || profile.dependency_closure.contains(id);
             assert!(classified, "id {id} из легаси-resolve потерян в профиле");
         }
-        // winget-first сохранён движком resolve → в замыкании он первый.
+        // winget-first сохранён движком resolve → в замыкании он первый (на Windows).
+        #[cfg(target_os = "windows")]
         assert_eq!(
             profile.dependency_closure.first().map(String::as_str),
             Some("winget")
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            profile.dependency_closure.first().map(String::as_str),
+            Some("brew")
         );
     }
 

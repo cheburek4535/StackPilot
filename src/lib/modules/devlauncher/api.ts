@@ -10,6 +10,7 @@ import type {
   StepLogs,
   DraftProfile,
   WslState,
+  PlatformCapabilities,
 } from "./types";
 import type { WizardContext } from "$lib/modules/project_creator/types";
 
@@ -39,12 +40,13 @@ export async function deleteProfile(name: string): Promise<void> {
 
 export async function executeAction(
   action: LaunchAction,
-  opts?: { sessionId?: string; environmentBindingId?: string },
+  opts?: { sessionId?: string; environmentBindingId?: string; projectPath?: string | null },
 ): Promise<ActionStatus> {
   return invoke("execute_action", {
     action,
     sessionId: opts?.sessionId ?? null,
     environmentBindingId: opts?.environmentBindingId ?? null,
+    projectPath: opts?.projectPath ?? null,
   });
 }
 
@@ -187,6 +189,14 @@ export async function buildProfileV2FromContext(
  *  cannot run until WSL is installed and the PC rebooted. */
 export async function getWslState(): Promise<WslState> {
   return invoke("devl_get_wsl_state");
+}
+
+/** Platform capabilities: OS, arch, shells, Docker status, the terminal
+ *  emulator used for visible steps, and whether Docker Desktop resolves.
+ *  Used to gate Windows-only hints/dialogs and to phrase step failures on
+ *  Linux/macOS correctly. */
+export async function getPlatformCapabilities(): Promise<PlatformCapabilities> {
+  return invoke("get_platform_capabilities");
 }
 
 /** Install WSL from scratch + pin default version to 2. Long-running; the

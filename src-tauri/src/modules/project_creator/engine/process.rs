@@ -296,6 +296,24 @@ impl ProcessRunner {
         spec: ProcessSpec,
         sink: Option<&ExecutionEventSink>,
     ) -> Result<ProcessOutput, ProcessExecutionError> {
+        let mut overlay = None;
+        if let Some(ref wd) = spec.working_dir {
+            let mut curr = Some(wd.as_path());
+            while let Some(dir) = curr {
+                let sp_env = dir.join(".stackpilot").join("environment.json");
+                if sp_env.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&sp_env) {
+                        if let Ok(binding) = serde_json::from_str::<crate::modules::project_environment::models::EnvironmentBinding>(&content) {
+                            let (ov, _) = crate::modules::project_environment::resolver::resolve_with_diagnostics(&binding);
+                            overlay = Some(ov);
+                            break;
+                        }
+                    }
+                }
+                curr = dir.parent();
+            }
+        }
+
         let command = spec.command.clone();
         let args = spec.args.clone();
         let working_dir = spec
@@ -304,12 +322,15 @@ impl ProcessRunner {
             .unwrap_or_else(|| PathBuf::from("."));
         let start = Instant::now();
 
-        let mut cmd = build_command(&spec)?;
+        let mut cmd = build_command(&spec, overlay.as_ref())?;
         if let Some(dir) = &spec.working_dir {
             cmd.current_dir(dir);
         }
         if let Some(env) = &spec.env {
             cmd.envs(env);
+        }
+        if let Some(ref ov) = overlay {
+            ov.apply_tokio(&mut cmd);
         }
         if spec.ci_mode {
             cmd.env("CI", "1");
@@ -343,8 +364,9 @@ impl ProcessRunner {
                 });
             }
         };
+        let pid = child.id().unwrap_or(0);
         crate::core::process_registry::register(
-            child.id().unwrap_or(0),
+            pid,
             command.clone(),
             command.clone(),
             args.clone(),
@@ -370,9 +392,6 @@ impl ProcessRunner {
         let stdout_tail_task = Arc::clone(&stdout_tail);
         let stderr_tail_task = Arc::clone(&stderr_tail);
 
-        // Ошибки ридеров stdout/stderr не замалчиваются: первая ошибка чтения
-        // попадает в общий слот и, если процесс в остальном завершился
-        // успешно, превращается в различимый ProcessErrorKind::ReadOutput.
         let reader_error: Arc<Mutex<Option<(&'static str, String)>>> = Arc::new(Mutex::new(None));
         let stdout_reader_error = Arc::clone(&reader_error);
         let stderr_reader_error = Arc::clone(&reader_error);
@@ -394,8 +413,6 @@ impl ProcessRunner {
             }
         });
 
-        // Таймаут: убиваем процесс и возвращаем различимый Timeout-вид
-        // ошибки (в отличие от обычного Exit/Wait/Spawn).
         let wait_result = match spec.timeout {
             Some(timeout) => match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(status)) => Ok(status),
@@ -426,14 +443,30 @@ impl ProcessRunner {
             },
         };
 
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        for (stream, join) in [("stdout", stdout_task.await), ("stderr", stderr_task.await)] {
+            if let Err(join_error) = join {
+                if let Ok(mut slot) = reader_error.lock() {
+                    if slot.is_none() {
+                        *slot = Some((stream, reader_join_failure(join_error)));
+                    }
+                }
+            }
+        }
+
+        crate::core::process_registry::unregister(pid);
 
         let reader_failure = reader_error.lock().ok().and_then(|slot| slot.clone());
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let stdout_detail = tail_text(&stdout_tail);
-        let stderr_detail = tail_text(&stderr_tail);
+        let mut stderr_detail = tail_text(&stderr_tail);
+
+        if let Some((stream, source)) = &reader_failure {
+            stderr_detail = format!(
+                "{}\n[project_creator] {stream} reader failed: {source}",
+                stderr_detail
+            );
+        }
 
         match wait_result {
             Ok(status) if status.success() => match reader_failure {
@@ -473,6 +506,43 @@ impl ProcessRunner {
     }
 }
 
+/// Обрезать скользящее окно триггеров до последних `max_bytes` байт ПО
+/// ГРАНИЦЕ UTF-8.
+///
+/// Прежний `drain(..rolling.len() - 2048)` рвал многобайтовый символ
+/// (кириллица в путях и выводе pip, эмодзи и т.п.) — `String::drain`
+/// паникует на `is_char_boundary`, задача-ридер молча умирает, а
+/// процесс-писатель получает EPIPE: у pip это «ERROR: Pipe to stdout was
+/// broken» и код 120. Граница подтягивается вперёд (окно может стать на
+/// пару байт короче — для поиска триггеров это не важно).
+fn trim_rolling_window(rolling: &mut String, max_bytes: usize) {
+    if rolling.len() <= max_bytes {
+        return;
+    }
+    let mut cut = rolling.len() - max_bytes;
+    while !rolling.is_char_boundary(cut) {
+        cut += 1;
+    }
+    rolling.drain(..cut);
+}
+
+/// Текст причины завершения задачи-ридера: паника (с payload) или отмена.
+/// Используется, когда сама задача не смогла сообщить об ошибке через
+/// Err — без этого сбой ридера выглядел бы как EPIPE у писателя.
+fn reader_join_failure(join_error: tokio::task::JoinError) -> String {
+    if join_error.is_panic() {
+        let payload = join_error.into_panic();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|text| text.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_string());
+        format!("reader task panicked: {message}")
+    } else {
+        format!("reader task was cancelled: {join_error}")
+    }
+}
+
 /// Прочитать stdout побайтово: стриминг в sink, накопление хвоста,
 /// детекция триггеров и отправка ответов в stdin (если stdin piped),
 /// idle-fallback при молчании процесса. Ошибка чтения — Err (не
@@ -508,11 +578,9 @@ async fn read_stdout_loop(
                     sink.emit_stdout(&chunk).await;
                 }
 
-                // Добавляем в скользящее окно
+                // Добавляем в скользящее окно (обрезка — по границе UTF-8)
                 rolling.push_str(&chunk);
-                if rolling.len() > 2048 {
-                    rolling.drain(..rolling.len() - 2048);
-                }
+                trim_rolling_window(&mut rolling, 2048);
 
                 // Ищем триггеры (только если stdin открыт)
                 if let Some(stdin) = &mut stdin {
@@ -624,21 +692,194 @@ async fn check_triggers(
 // Кроссплатформенное построение команды
 // ============================================================================
 
+/// Разрешает команду с учётом оверлея окружения (shim в bin/ или portable exe в shared store)
+fn parse_node_major(v_str: &str) -> Option<u32> {
+    let trimmed = v_str.trim().trim_start_matches('v');
+    let first = trimmed.split('.').next()?;
+    first.parse::<u32>().ok()
+}
+
+fn detect_node_major_version(overlay: Option<&crate::platform::environment::EnvironmentOverlay>) -> Option<u32> {
+    if let Some(ov) = overlay {
+        #[cfg(target_os = "windows")]
+        let node_cands = ["node.exe", "node"];
+        #[cfg(not(target_os = "windows"))]
+        let node_cands = ["node"];
+
+        for dir in &ov.path_prepend {
+            let p = std::path::Path::new(dir);
+            for cand in &node_cands {
+                let full = p.join(cand);
+                if full.is_file() {
+                    let mut cmd = std::process::Command::new(&full);
+                    cmd.arg("-v");
+                    #[cfg(target_os = "windows")]
+                    crate::platform::suppress_child_console(&mut cmd);
+                    if let Ok(out) = cmd.output() {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        if let Some(major) = parse_node_major(&text) {
+                            return Some(major);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cmd = std::process::Command::new("node");
+    cmd.arg("-v");
+    #[cfg(target_os = "windows")]
+    crate::platform::suppress_child_console(&mut cmd);
+    if let Ok(out) = cmd.output() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        return parse_node_major(&text);
+    }
+
+    None
+}
+
+fn adapt_npx_args(args: &mut [String], overlay: Option<&crate::platform::environment::EnvironmentOverlay>) {
+    for arg in args.iter_mut() {
+        if *arg == "create-vite@latest" || *arg == "create-vite" {
+            let major = detect_node_major_version(overlay).unwrap_or(20);
+            if major < 20 {
+                log::info!("[ProcessRunner] Node v{} detected: adapting create-vite to create-vite@5 for runtime compatibility", major);
+                *arg = "create-vite@5".to_string();
+            }
+        }
+    }
+}
+
+fn resolve_command_with_overlay(
+    command: &str,
+    overlay: Option<&crate::platform::environment::EnvironmentOverlay>,
+) -> String {
+    let Some(overlay) = overlay else {
+        return command.to_string();
+    };
+
+    let trimmed = command.trim();
+
+    // Do not override commands that already point into a project's virtual environment
+    let is_in_venv = trimmed.contains("\\venv\\")
+        || trimmed.contains("/venv/")
+        || trimmed.contains("\\.venv\\")
+        || trimmed.contains("/.venv/");
+    if is_in_venv {
+        return trimmed.to_string();
+    }
+
+    // Is it a Python invocation (either bare "python"/"python3" or an absolute path to a system python executable)?
+    let is_python_invocation = {
+        let lower = trimmed.to_ascii_lowercase();
+        lower == "python"
+            || lower == "python3"
+            || lower == "python.exe"
+            || lower == "python3.exe"
+            || lower.ends_with("\\python.exe")
+            || lower.ends_with("/python.exe")
+            || lower.ends_with("/python")
+            || lower.ends_with("/python3")
+    };
+
+    if is_python_invocation {
+        #[cfg(target_os = "windows")]
+        let py_candidates = ["python.exe", "python3.exe", "python.cmd", "python"];
+        #[cfg(not(target_os = "windows"))]
+        let py_candidates = ["python3", "python"];
+
+        for dir in &overlay.path_prepend {
+            let dir_path = std::path::Path::new(dir);
+            for cand in &py_candidates {
+                let full = dir_path.join(cand);
+                if full.is_file() {
+                    return full.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    // Is it a Node invocation (either bare "node" or an absolute path to a system node executable)?
+    let is_node_invocation = {
+        let lower = trimmed.to_ascii_lowercase();
+        lower == "node"
+            || lower == "nodejs"
+            || lower == "node.exe"
+            || lower.ends_with("\\node.exe")
+            || lower.ends_with("/node.exe")
+            || lower.ends_with("/node")
+    };
+
+    if is_node_invocation {
+        #[cfg(target_os = "windows")]
+        let node_candidates = ["node.exe", "node"];
+        #[cfg(not(target_os = "windows"))]
+        let node_candidates = ["node"];
+
+        for dir in &overlay.path_prepend {
+            let dir_path = std::path::Path::new(dir);
+            for cand in &node_candidates {
+                let full = dir_path.join(cand);
+                if full.is_file() {
+                    return full.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    if trimmed.contains('\\') || trimmed.contains('/') {
+        return trimmed.to_string();
+    }
+
+    #[cfg(target_os = "windows")]
+    let candidates = [
+        format!("{}.cmd", trimmed),
+        format!("{}.exe", trimmed),
+        format!("{}.bat", trimmed),
+        trimmed.to_string(),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let candidates = [trimmed.to_string()];
+
+    for dir in &overlay.path_prepend {
+        let dir_path = std::path::Path::new(dir);
+        for cand in &candidates {
+            let full = dir_path.join(cand);
+            if full.is_file() {
+                return full.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    command.to_string()
+}
+
 /// Кроссплатформенное построение команды.
 ///
 /// Delegates to [`crate::platform::command`] for platform-aware dispatch:
 ///   - Windows: PowerShell via `powershell -Command`; .cmd/.bat via
 ///     `cmd /D /C`; direct commands for everything else.
 ///   - Unix: `sh -c` with sh-quoted arguments (preserves existing behavior).
-fn build_command(spec: &ProcessSpec) -> Result<TokioCommand, ProcessExecutionError> {
+fn build_command(
+    spec: &ProcessSpec,
+    overlay: Option<&crate::platform::environment::EnvironmentOverlay>,
+) -> Result<TokioCommand, ProcessExecutionError> {
     use crate::platform::command::{build_tokio_command, infer_command_mode};
 
-    let mode = infer_command_mode(&spec.command, &spec.args, None);
+    let effective_command = resolve_command_with_overlay(&spec.command, overlay);
+    let mut effective_args = spec.args.clone();
+    let lower_cmd = spec.command.to_ascii_lowercase();
+    let lower_eff = effective_command.to_ascii_lowercase();
+    if lower_cmd.contains("npx") || lower_eff.contains("npx") {
+        adapt_npx_args(&mut effective_args, overlay);
+    }
+
+    let mode = infer_command_mode(&effective_command, &effective_args, None);
     // CommandBuildError arises only when a shell is incompatible with the
     // current OS. That would be a cross-function invariant violation on
     // infer_command_mode's side — surface it as a Spawn error instead of
     // panicking: the user gets a readable failure, not a crash.
-    let mut cmd = build_tokio_command(&spec.command, &spec.args, mode).map_err(|e| {
+    let mut cmd = build_tokio_command(&effective_command, &effective_args, mode).map_err(|e| {
         ProcessExecutionError {
             kind: ProcessErrorKind::Spawn {
                 source: e.to_string(),
@@ -1125,7 +1366,7 @@ mod tests {
         // проходить без ошибок.
         let direct = ProcessSpec::new("npm");
         assert!(
-            build_command(&direct).is_ok(),
+            build_command(&direct, None).is_ok(),
             "direct command должен собираться"
         );
 
@@ -1133,14 +1374,14 @@ mod tests {
         {
             let batch = ProcessSpec::new("gradle");
             assert!(
-                build_command(&batch).is_ok(),
+                build_command(&batch, None).is_ok(),
                 "batch-шим обязан собираться через cmd"
             );
         }
         #[cfg(not(target_os = "windows"))]
         {
             let sh = ProcessSpec::new("ls");
-            assert!(build_command(&sh).is_ok(), "sh-команда обязана собираться");
+            assert!(build_command(&sh, None).is_ok(), "sh-команда обязана собираться");
         }
     }
 
@@ -1247,6 +1488,84 @@ mod tests {
             output.stdout_tail
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rolling_window_trim_keeps_utf8_boundaries() {
+        // "привет" — многобайтовые символы: прежний drain(..len - 2048)
+        // попадал внутрь символа и паниковал (is_char_boundary), убивая
+        // ридер пайпа. Обрезка обязана быть по границе UTF-8.
+        let mut rolling = String::new();
+        while rolling.len() < 3000 {
+            rolling.push_str("привет ");
+        }
+        let before = rolling.len();
+        trim_rolling_window(&mut rolling, 2048);
+        assert!(before > 2048);
+        assert!(rolling.len() <= 2048, "окно не больше лимита");
+        assert!(
+            rolling.len() > 2048 - 4,
+            "обрезка не теряет лишнего: {}",
+            rolling.len()
+        );
+        assert!(rolling.is_char_boundary(rolling.len()));
+        assert!(
+            rolling.chars().all(|c| c.is_alphabetic() || c == ' '),
+            "многобайтовые символы не порваны: {rolling:?}"
+        );
+
+        // Окно меньше лимита не трогается.
+        let mut short = "привет".to_string();
+        trim_rolling_window(&mut short, 2048);
+        assert_eq!(short, "привет");
+    }
+
+    #[tokio::test]
+    async fn runner_streams_multibyte_output_without_losing_reader() {
+        // Регрессия: >2 КБ кириллического вывода (пути, локализованные
+        // сообщения) раньше панически убивали задачу-ридер — процесс-писатель
+        // получал EPIPE («Pipe to stdout was broken» у pip). Теперь вывод
+        // доходит целиком, а процесс завершается успешно.
+        let python = if cfg!(target_os = "windows") {
+            "python"
+        } else {
+            "python3"
+        };
+        if std::process::Command::new(python)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // без интерпретатора проверка недоступна
+        }
+        let spec = ProcessSpec {
+            command: python.to_string(),
+            args: vec![
+                "-c".into(),
+                "import sys; hasattr(sys.stdout, 'reconfigure') and sys.stdout.reconfigure(encoding='utf-8'); hasattr(sys.stderr, 'reconfigure') and sys.stderr.reconfigure(encoding='utf-8'); sys.stdout.write('привет мир ' * 1000); sys.stderr.write('ошибок нет\\n')"
+                    .into(),
+            ],
+            working_dir: None,
+            env: None,
+            timeout: Some(Duration::from_secs(60)),
+            // Как у Step::Command: stdin пайпится, поэтому работает и обрезка
+            // скользящего окна триггеров, и детекция фраз.
+            stdin: StdinMode::Piped(InteractiveRules::default()),
+            ci_mode: false,
+        };
+        let output = ProcessRunner::run(spec, None)
+            .await
+            .expect("процесс обязан завершиться успешно, а ридер — выжить");
+        assert!(
+            output.stdout_tail.contains("привет мир"),
+            "многобайтовый stdout дошёл: {}",
+            output.stdout_tail
+        );
+        assert!(
+            output.stderr_tail.contains("ошибок нет"),
+            "stderr дошёл: {}",
+            output.stderr_tail
+        );
     }
 
     #[tokio::test]

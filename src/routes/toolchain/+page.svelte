@@ -23,6 +23,7 @@
   import type { CardPlanOp } from "$lib/modules/toolchain/components/ToolCard.svelte";
   import ActivityStrip from "$lib/modules/toolchain/components/ActivityStrip.svelte";
   import EnvironmentHero from "$lib/modules/toolchain/components/EnvironmentHero.svelte";
+  import DeduplicationBanner from "$lib/modules/toolchain/components/DeduplicationBanner.svelte";
   import JobCenter from "$lib/modules/toolchain/components/JobCenter.svelte";
   import ToolDetailDrawer from "$lib/modules/toolchain/components/ToolDetailDrawer.svelte";
   import type { Component } from "svelte";
@@ -195,11 +196,6 @@
       <div class="header-actions">
         {#if snapshot}
           <Badge tone="neutral">{platformName(snapshot.os)} · {snapshot.arch}</Badge>
-          {#if freshness === "live"}
-            <Badge tone="cyan" dot>{i18n.t("tc.data_live") as TranslationKey}</Badge>
-          {:else if freshness === "stale"}
-            <Badge tone="amber" dot>{i18n.t("tc.data_stale") as TranslationKey} · {formatAgeSeconds(snapshot.age_seconds)}</Badge>
-          {/if}
         {:else}
           <Badge tone="neutral">{i18n.t("tc.no_data") as TranslationKey}</Badge>
         {/if}
@@ -256,6 +252,8 @@
       onupdates={reviewUpdates}
     />
   </div>
+
+  <DeduplicationBanner />
 
   <!-- ===== Проблемы последнего скана (честно, не скрыты) ===== -->
   {#if issues.length > 0}
@@ -318,7 +316,10 @@
   <div class="mode-pane" hidden={toolchain.mode !== "tool_marketplace"}>
     {#if MarketplaceMode}
       <MarketplaceMode
-        onplan={(op: string, id: string) => openPlan(op as CardPlanOp, [id])}
+        onplan={(op: string, id: string | string[]) => {
+          const ids = Array.isArray(id) ? id : [id];
+          openPlan(op as CardPlanOp, ids);
+        }}
         ondetails={(id: string) => openTool(id)}
       />
     {/if}
@@ -369,7 +370,7 @@
   }
 
   .hero-block {
-    margin-bottom: var(--sp-4);
+    margin-bottom: var(--sp-3);
   }
 
   .active-op {
@@ -441,7 +442,7 @@
     justify-content: space-between;
     gap: var(--sp-3);
     flex-wrap: wrap;
-    margin-bottom: var(--sp-5);
+    margin-bottom: var(--sp-3);
   }
 
   .modes-hint {

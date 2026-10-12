@@ -14,10 +14,10 @@
 
   const roadmapItems: RoadmapItem[] = [
     { id: "ai_assistant", status: "in_progress", icon: "bot" },
-    { id: "env_isolation", status: "planned", icon: "shield" },
-    { id: "tech_expansion", status: "in_progress", icon: "layers" },
+    { id: "env_isolation", status: "done", icon: "shield" },
+    { id: "tech_expansion", status: "done", icon: "layers" },
     { id: "localization", status: "planned", icon: "glob" },
-    { id: "cli_service", status: "planned", icon: "terminal" },
+    { id: "cli_service", status: "done", icon: "terminal" },
     { id: "plugin_system", status: "planned", icon: "store" },
     { id: "bug_fixes", status: "in_progress", icon: "refresh" },
   ];
@@ -30,8 +30,8 @@
 
   const techList = [
     "C", "Ruby", "Angular", "Vite", "Rails", "Astro", "Hono",
-    "Actix Web", "Echo", "Blazor", "Remix", "AdonisJS", "Rails",
-    "Angular CLI", "GCC (MinGW-w64)"
+    "Actix Web", "Echo", "Fiber", "Blazor", "Remix", "AdonisJS",
+    "Biome", "Vitest", "Bun", "Tailwind CSS", "GCC (MinGW-w64)"
   ];
 
   const techListTranslated = $derived([
@@ -64,6 +64,36 @@
   };
 
   const changelog: ChangelogEntry[] = [
+    {
+      version: "1.4.0",
+      date: "2026-10-09",
+      changesKey: "roadmap.changelog.v140"
+    },
+    {
+      version: "1.3.0",
+      date: "2026-09-29",
+      changesKey: "roadmap.changelog.v130"
+    },
+    {
+      version: "1.2.5",
+      date: "2026-09-28",
+      changesKey: "roadmap.changelog.v125"
+    },
+    {
+      version: "1.2.4",
+      date: "2026-09-27",
+      changesKey: "roadmap.changelog.v124"
+    },
+    {
+      version: "1.2.3",
+      date: "2026-09-21",
+      changesKey: "roadmap.changelog.v123"
+    },
+    {
+      version: "1.2.2",
+      date: "2026-09-12",
+      changesKey: "roadmap.changelog.v122"
+    },
     {
       version: "1.2.1",
       date: "2026-08-28",

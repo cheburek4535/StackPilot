@@ -109,16 +109,6 @@
       <Button variant="ghost" size="sm" onclick={onopenactivity}>{i18n.t("tc.open_ops") as TranslationKey}</Button>
     {/if}
   </div>
-{:else if scan && scan.terminal !== "Running"}
-  <div class="strip strip-terminal" role="status">
-    <Badge tone={scan.terminal === "Cancelled" ? "neutral" : scan.terminal === "Completed" ? "lime" : "amber"}>
-      {i18n.t("tc.scan_prefix") as TranslationKey} {scanTerminalLabel(scan.terminal)}
-    </Badge>
-    <span class="muted">{scan.completed_tools}/{scan.total_tools} {i18n.t("tc.tools_suffix") as TranslationKey}</span>
-    <Button variant="ghost" size="sm" icon="refresh" onclick={() => toolchain.ensureScanRunning()}>
-      {i18n.t("tc.retry_scan") as TranslationKey}
-    </Button>
-  </div>
 {/if}
 
 <style>
@@ -132,10 +122,6 @@
     border-radius: var(--sp-radius-lg);
     background: var(--sp-glass-bg);
     box-shadow: var(--sp-shadow-1);
-  }
-
-  .strip-terminal {
-    border-color: var(--sp-border);
   }
 
   .op {

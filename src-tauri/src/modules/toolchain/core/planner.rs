@@ -72,7 +72,9 @@ pub fn canonicalize_plan(
             display: def.display.clone(),
             icon: def.icon.clone(),
             size_mb: def.size_mb,
-            needs_admin: def.needs_admin,
+            // Та же точка правды, что у установщика: Linux PkgManager
+            // требует root (pkexec/sudo), brew — никогда.
+            needs_admin: needs_admin_for(def, os_sources),
             source_description: source_description_for(def, &os),
             install_options: install_options.get(&def.id).cloned().unwrap_or_default(),
             state: TaskState::Pending,
@@ -147,7 +149,7 @@ fn add_missing_dependencies(
                     display: dep_def.display.clone(),
                     icon: dep_def.icon.clone(),
                     size_mb: dep_def.size_mb,
-                    needs_admin: dep_def.needs_admin,
+                    needs_admin: needs_admin_for(dep_def, os_sources),
                     source_description: source_description_for(dep_def, os),
                     install_options: Vec::new(),
                     state: TaskState::Pending,
@@ -205,6 +207,17 @@ fn declared_dependency_ids(def: &ToolDefinition) -> Vec<String> {
         }
     }
     ids
+}
+
+/// Права администратора для задачи: первый (приоритетный) источник
+/// пропускается через единую точку правды установщика
+/// (source_requires_elevation) — Linux PkgManager требует root,
+/// brew на macOS под sudo не запускается никогда.
+fn needs_admin_for(def: &ToolDefinition, os_sources: &[InstallSource]) -> bool {
+    match os_sources.first() {
+        Some(first) => super::installer::source_requires_elevation(first, def),
+        None => def.needs_admin,
+    }
 }
 
 /// Человекочитаемое описание первого источника на указанной ОС

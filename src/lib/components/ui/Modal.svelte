@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { onMount, tick } from "svelte";
+  import { fade, scale } from "svelte/transition";
   import IconButton from "./IconButton.svelte";
 
   export type ModalSize = "sm" | "md" | "lg";
@@ -58,6 +59,11 @@
       lastFocused = null;
     }
   });
+
+  function customSpring(t: number) {
+    const c4 = (2 * Math.PI) / 3;
+    return t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+  }
 </script>
 
 {#if open}
@@ -67,6 +73,7 @@
     onclick={(e) => {
       if (closeOnBackdrop && e.target === e.currentTarget) onclose();
     }}
+    transition:fade={{ duration: 250 }}
   >
     <div
       class="sp-modal sp-modal-{size}"
@@ -75,6 +82,7 @@
       aria-label={title}
       tabindex="-1"
       bind:this={panelEl}
+      transition:scale={{ duration: 400, start: 0.95, opacity: 0, easing: customSpring }}
     >
       <header class="sp-modal-header">
         <div class="sp-modal-heading">
@@ -102,10 +110,9 @@
     align-items: center;
     justify-content: center;
     padding: var(--sp-6);
-    background: rgba(2, 3, 6, 0.72);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    animation: sp-fade-in 0.2s ease;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
 
   .sp-modal {
@@ -117,9 +124,9 @@
     border: 1px solid var(--sp-border-strong);
     border-radius: var(--sp-radius-xl);
     box-shadow:
-      var(--sp-gloss-top-strong),
-      var(--sp-shadow-3);
-    animation: sp-modal-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+      0 16px 40px rgba(0, 0, 0, 0.3),
+      inset 0 1px 1px rgba(255, 255, 255, 0.1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
     outline: none;
   }
 

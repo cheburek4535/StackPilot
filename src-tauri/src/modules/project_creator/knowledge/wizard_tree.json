@@ -27,6 +27,18 @@
     [
       "electron",
       "svelte"
+    ],
+    [
+      "echo",
+      "cobra"
+    ],
+    [
+      "fiber",
+      "cobra"
+    ],
+    [
+      "actix-web",
+      "clap"
     ]
   ],
   "main_limit_exempt": [
@@ -499,6 +511,22 @@
       "color": "#E34F26",
       "category": "static",
       "knowledge_key": null
+    },
+    {
+      "id": "c",
+      "label": "C",
+      "icon": "c.svg",
+      "color": "#555555",
+      "category": "backend",
+      "knowledge_key": "c"
+    },
+    {
+      "id": "ruby",
+      "label": "Ruby",
+      "icon": "ruby.svg",
+      "color": "#701516",
+      "category": "backend",
+      "knowledge_key": "ruby"
     }
   ],
   "frameworks": [
@@ -668,7 +696,8 @@
         "sveltekit",
         "solidjs",
         "flutter",
-        "qt"
+        "qt",
+        "blazor"
       ],
       "knowledge_key": "tauri",
       "scaffold": "root",
@@ -1145,7 +1174,7 @@
       "label": "Qt",
       "description": "wizard.fw.qt.desc",
       "icon": "qt.svg",
-      "class": "inplace",
+      "class": "standalone",
       "side": "either",
       "languages": [
         "cpp"
@@ -1157,7 +1186,8 @@
         "custom"
       ],
       "conflicts": [
-        "tauri"
+        "tauri",
+        "blazor"
       ],
       "knowledge_key": "qt",
       "output_subdir": "frontend",
@@ -1904,6 +1934,393 @@
       ],
       "suppresses_language_scaffold": true,
       "recommends": []
+    },
+    {
+      "id": "angular",
+      "label": "Angular",
+      "description": "wizard.fw.angular.desc",
+      "icon": "angular.svg",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "nextjs",
+        "nuxt",
+        "sveltekit",
+        "solidjs",
+        "react",
+        "vue",
+        "svelte",
+        "electron",
+        "react-native",
+        "plasmo",
+        "expo",
+        "vite",
+        "astro",
+        "remix",
+        "blazor"
+      ],
+      "knowledge_key": "angular",
+      "scaffold": "subdir",
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "vite",
+      "label": "Vite",
+      "description": "wizard.fw.vite.desc",
+      "icon": "vite.svg",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "nextjs",
+        "nuxt",
+        "angular",
+        "sveltekit",
+        "solidjs",
+        "react",
+        "vue",
+        "svelte",
+        "electron",
+        "react-native",
+        "plasmo",
+        "expo",
+        "astro",
+        "remix"
+      ],
+      "knowledge_key": "vite",
+      "scaffold": "subdir",
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "rails",
+      "label": "Ruby on Rails",
+      "description": "wizard.fw.rails.desc",
+      "icon": "rails.svg",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "ruby"
+      ],
+      "recommended_language": "ruby",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [],
+      "knowledge_key": "rails",
+      "scaffold": "root",
+      "output_subdir": null,
+      "required_tools": [
+        "ruby"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": [],
+      "provides_capabilities": [
+        "orm",
+        "migrations",
+        "auth"
+      ]
+    },
+    {
+      "id": "astro",
+      "label": "Astro",
+      "description": "wizard.fw.astro.desc",
+      "icon": "astro.svg",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "nextjs",
+        "nuxt",
+        "angular",
+        "sveltekit",
+        "solidjs",
+        "react",
+        "vue",
+        "svelte",
+        "electron",
+        "react-native",
+        "plasmo",
+        "expo",
+        "vite",
+        "remix"
+      ],
+      "knowledge_key": "astro",
+      "scaffold": "subdir",
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "hono",
+      "label": "Hono",
+      "description": "wizard.fw.hono.desc",
+      "icon": "hono.svg",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "express",
+        "nest",
+        "fastify",
+        "adonisjs"
+      ],
+      "knowledge_key": "hono",
+      "output_subdir": "backend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "actix-web",
+      "label": "Actix Web",
+      "description": "wizard.fw.actix_web.desc",
+      "icon": "actix.svg",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "rust"
+      ],
+      "recommended_language": "rust",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "axum"
+      ],
+      "knowledge_key": "actix-web",
+      "output_subdir": "backend",
+      "required_tools": [
+        "cargo"
+      ],
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "echo",
+      "label": "Echo",
+      "description": "wizard.fw.echo.desc",
+      "icon": "echo.svg",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "go"
+      ],
+      "recommended_language": "go",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "gin",
+        "fiber"
+      ],
+      "knowledge_key": "echo",
+      "output_subdir": "backend",
+      "required_tools": [
+        "go"
+      ],
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "blazor",
+      "label": "Blazor",
+      "description": "wizard.fw.blazor.desc",
+      "icon": "blazor.svg",
+      "class": "standalone",
+      "side": "either",
+      "languages": [
+        "csharp"
+      ],
+      "recommended_language": "csharp",
+      "project_types": [
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "nextjs",
+        "angular",
+        "react",
+        "vue",
+        "tauri",
+        "qt"
+      ],
+      "knowledge_key": "blazor",
+      "scaffold": "root",
+      "output_subdir": null,
+      "required_tools": [
+        "dotnet"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "remix",
+      "label": "Remix",
+      "description": "wizard.fw.remix.desc",
+      "icon": "remix.svg",
+      "class": "standalone",
+      "side": "frontend",
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "nextjs",
+        "nuxt",
+        "angular",
+        "sveltekit",
+        "solidjs",
+        "react",
+        "vue",
+        "svelte",
+        "electron",
+        "react-native",
+        "plasmo",
+        "expo",
+        "vite",
+        "astro"
+      ],
+      "knowledge_key": "remix",
+      "scaffold": "subdir",
+      "output_subdir": "frontend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": []
+    },
+    {
+      "id": "adonisjs",
+      "label": "AdonisJS",
+      "description": "wizard.fw.adonisjs.desc",
+      "icon": "adonisjs.svg",
+      "class": "standalone",
+      "side": "backend",
+      "languages": [
+        "typescript"
+      ],
+      "recommended_language": "typescript",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "express",
+        "nest",
+        "fastify",
+        "hono"
+      ],
+      "knowledge_key": "adonisjs",
+      "scaffold": "subdir",
+      "output_subdir": "backend",
+      "required_tools": [
+        "npm"
+      ],
+      "suppresses_language_scaffold": true,
+      "kind": "app",
+      "recommends": [],
+      "provides_capabilities": [
+        "orm",
+        "auth"
+      ]
+    },
+    {
+      "id": "fiber",
+      "label": "Fiber",
+      "description": "wizard.fw.fiber.desc",
+      "icon": "fiber.svg",
+      "class": "inplace",
+      "side": "backend",
+      "languages": [
+        "go"
+      ],
+      "recommended_language": "go",
+      "project_types": [
+        "rest-api",
+        "web-app",
+        "custom"
+      ],
+      "conflicts": [
+        "gin",
+        "echo"
+      ],
+      "knowledge_key": "fiber",
+      "output_subdir": "backend",
+      "required_tools": [
+        "go"
+      ],
+      "suppresses_language_scaffold": false,
+      "kind": "app",
+      "recommends": []
     }
   ],
   "tools": [
@@ -1916,7 +2333,10 @@
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "mysql",
+        "sqlite"
+      ],
       "platforms": [],
       "for_languages": [],
       "for_project_types": [],
@@ -2075,13 +2495,20 @@
       "knowledge_key": null,
       "requires_docker": false,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "maven"
+      ],
       "platforms": [],
       "for_languages": [
         "java",
         "kotlin"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "build_tool",
+      "alternatives": [
+        "maven"
+      ],
+      "alternative_policy": "exclusive"
     },
     {
       "id": "maven",
@@ -2092,12 +2519,19 @@
       "knowledge_key": null,
       "requires_docker": false,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "gradle"
+      ],
       "platforms": [],
       "for_languages": [
         "java"
       ],
-      "for_project_types": []
+      "for_project_types": [],
+      "responsibility": "build_tool",
+      "alternatives": [
+        "gradle"
+      ],
+      "alternative_policy": "exclusive"
     },
     {
       "id": "mongodb",
@@ -2115,14 +2549,17 @@
     },
     {
       "id": "mysql",
-        "label": "MySQL",
-        "description": "wizard.tool.mysql.desc",
-        "icon": "mysql.svg",
-        "category": "database",
+      "label": "MySQL",
+      "description": "wizard.tool.mysql.desc",
+      "icon": "mysql.svg",
+      "category": "database",
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "postgresql",
+        "sqlite"
+      ],
       "platforms": [],
       "for_languages": [],
       "for_project_types": [],
@@ -2144,7 +2581,10 @@
       "knowledge_key": null,
       "requires_docker": false,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "postgresql",
+        "mysql"
+      ],
       "platforms": [],
       "for_languages": [],
       "for_project_types": [],
@@ -2261,10 +2701,10 @@
     },
     {
       "id": "mailpit",
-        "label": "Mailpit",
-        "description": "wizard.tool.mailpit.desc",
-        "icon": "mailpit.webp",
-        "category": "messaging",
+      "label": "Mailpit",
+      "description": "wizard.tool.mailpit.desc",
+      "icon": "mailpit.webp",
+      "category": "messaging",
       "knowledge_key": null,
       "requires_docker": true,
       "requires": [],
@@ -2307,8 +2747,7 @@
       "platforms": [],
       "for_languages": [
         "typescript",
-        "javascript",
-        "python"
+        "javascript"
       ],
       "for_project_types": [],
       "responsibility": "orm",
@@ -2333,7 +2772,9 @@
       "knowledge_key": null,
       "requires_docker": false,
       "requires": [],
-      "conflicts": [],
+      "conflicts": [
+        "mongodb"
+      ],
       "platforms": [],
       "for_languages": [
         "typescript",
@@ -2365,6 +2806,131 @@
         "web-app",
         "custom"
       ]
+    },
+    {
+      "id": "angular-cli",
+      "label": "Angular CLI",
+      "description": "wizard.tool.angular_cli.desc",
+      "category": "cli",
+      "requires_docker": false,
+      "requires": [],
+      "for_languages": [
+        "typescript"
+      ],
+      "for_project_types": [],
+      "knowledge_key": "angular-cli",
+      "conflicts": [],
+      "for_frameworks": [
+        "angular"
+      ],
+      "icon": "angular.svg",
+      "responsibility": "cli",
+      "alternative_policy": "exclusive"
+    },
+    {
+      "id": "biome",
+      "label": "Biome",
+      "description": "wizard.tool.biome.desc",
+      "icon": "biome.svg",
+      "category": "tooling",
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [
+        "npm"
+      ],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": [],
+      "responsibility": "linter_formatter",
+      "alternative_policy": "exclusive"
+    },
+    {
+      "id": "vitest",
+      "label": "Vitest",
+      "description": "wizard.tool.vitest.desc",
+      "icon": "vitest.svg",
+      "category": "testing",
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [
+        "npm"
+      ],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": [],
+      "responsibility": "testing",
+      "alternative_policy": "exclusive"
+    },
+    {
+      "id": "gcc",
+      "label": "GCC (MinGW-w64)",
+      "description": "wizard.tool.gcc.desc",
+      "icon": "gcc.svg",
+      "category": "tooling",
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "c",
+        "cpp"
+      ],
+      "for_project_types": [],
+      "responsibility": "compiler",
+      "alternative_policy": "exclusive"
+    },
+    {
+      "id": "bun",
+      "label": "Bun",
+      "description": "wizard.tool.bun.desc",
+      "icon": "bun.svg",
+      "category": "package_manager",
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript"
+      ],
+      "for_project_types": [],
+      "responsibility": "package_manager",
+      "alternatives": [
+        "npm"
+      ],
+      "alternative_policy": "exclusive"
+    },
+    {
+      "id": "tailwind",
+      "label": "Tailwind CSS",
+      "description": "wizard.tool.tailwind.desc",
+      "icon": "tailwind-css.svg",
+      "category": "tooling",
+      "knowledge_key": null,
+      "requires_docker": false,
+      "requires": [
+        "npm"
+      ],
+      "conflicts": [],
+      "platforms": [],
+      "for_languages": [
+        "typescript",
+        "javascript",
+        "html"
+      ],
+      "for_project_types": [],
+      "responsibility": "css_framework",
+      "alternative_policy": "exclusive"
     }
   ],
   "presets": [
@@ -4009,7 +4575,8 @@
       "swift",
       "elixir",
       "zig",
-      "gleam"
+      "gleam",
+      "ruby"
     ],
     "desktop-app": [
       "rust",
@@ -4020,7 +4587,8 @@
       "cpp",
       "dart",
       "java",
-      "swift"
+      "swift",
+      "c"
     ],
     "web-app": [
       "typescript",
@@ -4036,7 +4604,8 @@
       "swift",
       "elixir",
       "zig",
-      "html"
+      "html",
+      "ruby"
     ],
     "cli-tool": [
       "rust",
@@ -4050,7 +4619,9 @@
       "kotlin",
       "dart",
       "zig",
-      "gleam"
+      "gleam",
+      "ruby",
+      "c"
     ],
     "telegram-bot": [
       "python",
@@ -4072,7 +4643,8 @@
       "kotlin",
       "php",
       "swift",
-      "zig"
+      "zig",
+      "c"
     ],
     "custom": [
       "python",
@@ -4090,7 +4662,9 @@
       "zig",
       "elixir",
       "gleam",
-      "html"
+      "html",
+      "ruby",
+      "c"
     ],
     "mobile-app": [
       "dart",
@@ -4118,7 +4692,8 @@
     "embedded": [
       "cpp",
       "rust",
-      "zig"
+      "zig",
+      "c"
     ]
   },
   "language_framework_map": {
@@ -4131,11 +4706,14 @@
     "rust": [
       "axum",
       "tauri",
-      "clap"
+      "clap",
+      "actix-web"
     ],
     "go": [
       "gin",
-      "cobra"
+      "cobra",
+      "echo",
+      "fiber"
     ],
     "typescript": [
       "nextjs",
@@ -4150,7 +4728,13 @@
       "solidjs",
       "react",
       "vue",
-      "svelte"
+      "svelte",
+      "vite",
+      "astro",
+      "remix",
+      "hono",
+      "angular",
+      "adonisjs"
     ],
     "javascript": [
       "nextjs",
@@ -4165,7 +4749,11 @@
       "fastify",
       "react",
       "vue",
-      "svelte"
+      "svelte",
+      "vite",
+      "astro",
+      "remix",
+      "hono"
     ],
     "java": [
       "spring-boot",
@@ -4173,7 +4761,8 @@
     ],
     "csharp": [
       "aspnetcore",
-      "maui"
+      "maui",
+      "blazor"
     ],
     "cpp": [
       "qt"
@@ -4201,7 +4790,10 @@
       "phoenix"
     ],
     "gleam": [],
-    "html": []
+    "html": [],
+    "ruby": [
+      "rails"
+    ]
   },
   "framework_tool_map": {
     "fastapi": [
@@ -4419,15 +5011,103 @@
     ],
     "react": [
       "docker",
-      "npm"
+      "npm",
+      "tailwind",
+      "biome",
+      "vitest"
     ],
     "vue": [
       "docker",
-      "npm"
+      "npm",
+      "tailwind",
+      "biome",
+      "vitest"
     ],
     "svelte": [
       "docker",
-      "npm"
+      "npm",
+      "tailwind",
+      "biome",
+      "vitest"
+    ],
+    "angular": [
+      "npm",
+      "angular-cli",
+      "tailwind",
+      "biome",
+      "vitest",
+      "docker"
+    ],
+    "vite": [
+      "npm",
+      "tailwind",
+      "biome",
+      "vitest",
+      "docker"
+    ],
+    "astro": [
+      "npm",
+      "tailwind",
+      "biome",
+      "docker"
+    ],
+    "remix": [
+      "npm",
+      "tailwind",
+      "biome",
+      "vitest",
+      "docker"
+    ],
+    "hono": [
+      "npm",
+      "prisma",
+      "drizzle",
+      "biome",
+      "vitest",
+      "docker"
+    ],
+    "adonisjs": [
+      "npm",
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
+    ],
+    "actix-web": [
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
+    ],
+    "echo": [
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
+    ],
+    "fiber": [
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
+    ],
+    "blazor": [
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
+    ],
+    "rails": [
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "redis",
+      "docker"
     ]
   },
   "project_tool_map": {
@@ -4478,17 +5158,25 @@
     "rust": [],
     "go": [],
     "typescript": [
-      "npm"
+      "npm",
+      "biome",
+      "vitest",
+      "tailwind"
     ],
     "javascript": [
-      "npm"
+      "npm",
+      "biome",
+      "vitest",
+      "tailwind"
     ],
     "java": [
       "gradle",
       "maven"
     ],
     "csharp": [],
-    "cpp": [],
+    "cpp": [
+      "gcc"
+    ],
     "dart": [],
     "kotlin": [
       "gradle"
@@ -4498,6 +5186,12 @@
     "zig": [],
     "elixir": [],
     "gleam": [],
-    "html": []
+    "html": [
+      "tailwind"
+    ],
+    "c": [
+      "gcc"
+    ],
+    "ruby": []
   }
 }

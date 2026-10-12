@@ -4,8 +4,10 @@
 // В tools.json linux-источники записаны именами Debian/Ubuntu-пакетов
 // (docker.io, nodejs, openjdk-21-jdk...). На Arch они называются иначе,
 // а часть пакетов живёт только в AUR. Здесь — перевод имён, выбор
-// AUR-помощника, повышение прав через pkexec и пост-настройка служб
-// (docker, БД), без которой на Arch «установлено» ещё не значит «работает».
+// AUR-помощника и пост-настройка служб (docker, БД), без которой на Arch
+// «установлено» ещё не значит «работает». Повышение прав при установке
+// делает общий console::run_elevated (см. installer::source_requires_elevation);
+// здесь with_privileges нужен только синхронному удалению.
 
 /// Как поставить пакет на Arch.
 #[derive(Debug, PartialEq, Eq)]
@@ -61,7 +63,8 @@ pub fn is_root() -> bool {
 }
 
 /// Оборачивает команду в pkexec (графический polkit-запрос пароля),
-/// если процесс не root. Без pkexec — понятная ошибка вместо
+/// если процесс не root. Используется удалением; установка повышает
+/// права через console::run_elevated. Без pkexec — понятная ошибка вместо
 /// невидимого sudo, который завис бы в ожидании пароля на TTY.
 pub fn with_privileges(program: &str, args: Vec<String>) -> Result<(String, Vec<String>), String> {
     if is_root() {
@@ -80,14 +83,15 @@ pub fn with_privileges(program: &str, args: Vec<String>) -> Result<(String, Vec<
 }
 
 /// Пост-настройка службы после установки пакета Arch (выполняется в том же
-/// pkexec-вызове, что и pacman). Скрипт статичен; пользователь берётся из
-/// PKEXEC_UID, а не подставляется в строку.
+/// повышенном вызове, что и pacman). Скрипт статичен; пользователь берётся
+/// из PKEXEC_UID (pkexec) или SUDO_USER (sudo), а не подставляется в строку.
 pub fn arch_post_install(pkg_id: &str) -> Option<&'static str> {
     Some(match pkg_id {
         "docker.io" => {
             // Демон + доступ без sudo (после перелогина).
             "systemctl enable --now docker.service; \
-             u=$(id -nu \"${PKEXEC_UID:-}\" 2>/dev/null) && [ -n \"$u\" ] && [ \"$u\" != root ] && usermod -aG docker \"$u\"; true"
+             u=${PKEXEC_UID:+$(id -nu \"$PKEXEC_UID\" 2>/dev/null)}; u=${u:-${SUDO_USER:-}}; \
+             [ -n \"$u\" ] && [ \"$u\" != root ] && usermod -aG docker \"$u\"; true"
         }
         "postgresql" => {
             // На Arch кластер не создаётся автоматически.
@@ -105,7 +109,17 @@ pub fn arch_post_install(pkg_id: &str) -> Option<&'static str> {
     })
 }
 
-/// Команда для Arch: (program, args).
+/// Ставится ли пакет каталога на этой системе из AUR (только Arch-системы:
+/// pacman без apt-get/dnf). Такой источник запускается без внешней элевации.
+pub fn is_arch_aur_install(id: &str) -> bool {
+    matches!(arch_package(id), Some(ArchPkg::Aur(_)))
+        && which::which("pacman").is_ok()
+        && which::which("apt-get").is_err()
+        && which::which("dnf").is_err()
+}
+
+/// Команда для Arch: (program, args). Не повышает права — для pacman это
+/// делает вызывающий (run_elevated), AUR-помощник просит pkexec сам.
 pub fn build_arch_command(
     id: &str,
     extra: &[String],
@@ -149,9 +163,9 @@ pub fn build_arch_command(
             let script = format!("pacman \"$@\" && {{ {post} }}");
             let mut args = vec!["-c".to_string(), script, "sh".to_string()];
             args.extend(pacman);
-            with_privileges("sh", args)
+            Ok(("sh".to_string(), args))
         }
-        None => with_privileges("pacman", pacman),
+        None => Ok(("pacman".to_string(), pacman)),
     }
 }
 
@@ -191,21 +205,17 @@ mod tests {
 
     #[test]
     fn plain_package_without_post_install_uses_pacman_needed() {
-        let (prog, args) = build_arch_command("git", &[]).unwrap_or_else(|_| {
-            // pkexec отсутствует в окружении тестов — проверять нечего
-            ("pkexec".into(), vec!["pacman".into(), "--needed".into(), "git".into()])
-        });
-        let all = format!("{prog} {}", args.join(" "));
-        assert!(all.contains("pacman") && all.contains("--needed") && all.contains("git"));
+        let (prog, args) = build_arch_command("git", &[]).unwrap();
+        assert_eq!(prog, "pacman");
+        assert_eq!(args, ["-S", "--noconfirm", "--needed", "git"]);
+    }
+
+    #[test]
+    fn service_setup_runs_in_same_shell_with_packages_as_argv() {
+        let (prog, args) = build_arch_command("docker.io", &[]).unwrap();
+        assert_eq!(prog, "sh");
+        assert!(args[1].starts_with("pacman \"$@\" && {"));
+        assert_eq!(&args[3..], ["-S", "--noconfirm", "--needed", "docker", "docker-compose"]);
     }
 }
 
-/// Доступно ли повышение прав на этой ОС: UAC на Windows,
-/// root/pkexec на Linux.
-pub fn elevation_available() -> bool {
-    match std::env::consts::OS {
-        "windows" => true,
-        "linux" => is_root() || which::which("pkexec").is_ok(),
-        _ => false,
-    }
-}

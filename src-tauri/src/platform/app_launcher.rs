@@ -105,7 +105,10 @@ fn known_applications() -> Vec<KnownApp> {
         #[cfg(target_os = "windows")]
         registry_names: &["Cursor.exe"],
         #[cfg(target_os = "macos")]
-        app_bundles: &[("Cursor.app", "Contents/MacOS/Cursor")],
+        app_bundles: &[
+            ("Cursor.app", "Contents/Resources/app/bin/cursor"),
+            ("Cursor.app", "Contents/MacOS/Cursor"),
+        ],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[("cursor", "com.todesktop.230313mzl4w4u92")],
     });
@@ -117,9 +120,39 @@ fn known_applications() -> Vec<KnownApp> {
         #[cfg(target_os = "windows")]
         registry_names: &["Windsurf.exe"],
         #[cfg(target_os = "macos")]
-        app_bundles: &[("Windsurf.app", "Contents/MacOS/windsurf")],
+        app_bundles: &[
+            ("Windsurf.app", "Contents/Resources/app/bin/windsurf"),
+            ("Windsurf.app", "Contents/MacOS/windsurf"),
+        ],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[],
+    });
+
+    // Zed
+    apps.push(KnownApp {
+        name: "Zed",
+        cli_names: &["zed"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["Zed.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[
+            ("Zed.app", "Contents/MacOS/cli"),
+            ("Zed.app", "Contents/MacOS/Zed"),
+        ],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("zed", "dev.zed.Zed")],
+    });
+
+    // Sublime Text
+    apps.push(KnownApp {
+        name: "Sublime Text",
+        cli_names: &["subl", "sublime", "sublime_text"],
+        #[cfg(target_os = "windows")]
+        registry_names: &["sublime_text.exe"],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[("Sublime Text.app", "Contents/SharedSupport/bin/subl")],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[("subl", "com.sublimetext.three")],
     });
 
     // PyCharm
@@ -303,6 +336,21 @@ fn known_applications() -> Vec<KnownApp> {
         app_bundles: &[("Chromium.app", "Contents/MacOS/Chromium")],
         #[cfg(target_os = "linux")]
         flatpak_ids: &[("chromium", "org.chromium.Chromium")],
+    });
+
+    // Safari (macOS native browser)
+    apps.push(KnownApp {
+        name: "Safari",
+        cli_names: &["safari"],
+        #[cfg(target_os = "windows")]
+        registry_names: &[],
+        #[cfg(target_os = "macos")]
+        app_bundles: &[
+            ("Safari.app", "Contents/MacOS/Safari"),
+            ("../System/Applications/Safari.app", "Contents/MacOS/Safari"),
+        ],
+        #[cfg(target_os = "linux")]
+        flatpak_ids: &[],
     });
 
     // Database viewers
@@ -537,6 +585,7 @@ pub fn browser_candidates() -> &'static [(&'static str, &'static str)] {
         ("opera", "Opera"),
         ("yandex", "Yandex Browser"),
         ("chromium", "Chromium"),
+        ("safari", "Safari"),
     ]
 }
 
@@ -755,6 +804,26 @@ fn resolve_known_app(
         found: false,
         diagnostics,
     }
+}
+
+/// Split a resolved launcher string into a spawnable program + arguments.
+///
+/// IDE resolution returns `"flatpak run <id>"` for flatpak installs (see
+/// [`crate::platform::ide::resolve_ide_executable`]). Passing that whole
+/// string to `Command::new` tries to exec a file literally named
+/// `flatpak run com.visualstudio.code` and fails with ENOENT — the IDE
+/// silently never opens on Linux. This helper turns it into the structured
+/// `("flatpak", ["run", "<id>"])` form; any other string passes through
+/// unchanged.
+pub fn split_launcher_string(spec: &str) -> (String, Vec<String>) {
+    let trimmed = spec.trim();
+    if is_flatpak_invocation(trimmed) {
+        let launcher = parse_flatpak_invocation(trimmed);
+        if launcher.found {
+            return (launcher.program, launcher.args);
+        }
+    }
+    (trimmed.to_string(), Vec::new())
 }
 
 /// Check if a string looks like a flatpak invocation.

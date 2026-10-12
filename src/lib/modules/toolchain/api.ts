@@ -42,6 +42,8 @@ import type {
   PersistedJob,
   JobEvent,
   OperationKind,
+  ToolVersionCandidate,
+  ToolchainDeduplicationReport,
 } from "./types";
 
 // ============================================================
@@ -287,4 +289,38 @@ export function mutationRequest(
 
 export function uninstallTool(toolId: string): Promise<void> {
   return invoke("tcx_uninstall_tool", { toolId });
+}
+
+/**
+ * Получить список доступных версий инструмента:
+ * в StackPilot Shared Store, во внешних менеджерах (fnm, nvm, pyenv, uv),
+ * в системном PATH, и доступные для портативного скачивания.
+ */
+export function listToolVersions(toolId: string): Promise<ToolVersionCandidate[]> {
+  return invoke("tc_list_tool_versions", { toolId });
+}
+
+/**
+ * Скачать и распаковать портативную версию инструмента в Shared Tool Store StackPilot.
+ */
+export function installToolVersion(
+  toolId: string,
+  version: string,
+  downloadUrl: string,
+): Promise<string> {
+  return invoke("tc_install_tool_version", { toolId, version, downloadUrl });
+}
+
+/**
+ * Получить сводную матрицу использования версий по окружениям с расчётом дедупликации.
+ */
+export function getToolchainEnvironmentsMatrix(): Promise<ToolchainDeduplicationReport> {
+  return invoke("tc_get_toolchain_environments_matrix");
+}
+
+/**
+ * Удалить из Shared Tool Store неиспользуемые версии.
+ */
+export function pruneUnusedToolVersions(): Promise<string[]> {
+  return invoke("tc_prune_unused_tool_versions");
 }

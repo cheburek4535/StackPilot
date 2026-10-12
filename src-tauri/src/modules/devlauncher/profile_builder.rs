@@ -356,6 +356,8 @@ fn is_backend_framework(fw: &str) -> bool {
             | "hono"
             | "nestjs"
             | "nest"
+            | "adonisjs"
+            | "adonis"
             | "fastapi"
             | "flask"
             | "django"
@@ -369,6 +371,7 @@ fn is_backend_framework(fw: &str) -> bool {
             | "gorilla"
             | "axum"
             | "actix"
+            | "actix-web"
             | "rocket"
             | "warp"
             | "spring-boot"
@@ -377,6 +380,11 @@ fn is_backend_framework(fw: &str) -> bool {
             | "blazor"
             | "rails"
             | "tauri"
+            | "qt"
+            | "qt-qml"
+            | "qt-widgets"
+            | "qt-webengine"
+            | "qt-kirigami"
     )
 }
 
@@ -395,6 +403,8 @@ fn is_frontend_framework(fw: &str) -> bool {
             | "vue"
             | "svelte"
             | "angular"
+            | "astro"
+            | "remix"
             | "android"
             | "solid"
             | "expo"
@@ -412,8 +422,20 @@ fn is_frontend_framework(fw: &str) -> bool {
 fn is_vite_family(fw: &str) -> bool {
     !matches!(
         fw,
-        "nextjs" | "next" | "nuxt" | "nuxtjs" | "angular" | "expo" | "electron" | "react-native"
-            | "flutter" | "maui" | "swiftui" | "android"
+        "nextjs"
+            | "next"
+            | "nuxt"
+            | "nuxtjs"
+            | "angular"
+            | "astro"
+            | "remix"
+            | "expo"
+            | "electron"
+            | "react-native"
+            | "flutter"
+            | "maui"
+            | "swiftui"
+            | "android"
     )
 }
 
@@ -441,6 +463,8 @@ fn framework_manifests(fw: &str) -> &'static [&'static str] {
         "rails" => &["Gemfile", "config.ru"],
         // .NET backends
         "aspnet" | "aspnetcore" | "blazor" | "maui" => &["*.csproj", "*.fsproj", "*.sln"],
+        // C++ / Qt desktop
+        "qt" | "qt-qml" | "qt-widgets" | "qt-webengine" | "qt-kirigami" => &["CMakeLists.txt"],
         // Everything Node-based (backends and frontends)
         _ => &["package.json"],
     }
@@ -723,6 +747,10 @@ fn preferred_ide_for(ctx: &WizardContext) -> Option<PreferredIde> {
     } else if has_language(ctx, "csharp") || has_language(ctx, "fsharp") || has_language(ctx, "vb")
     {
         Some(PreferredIde::VisualStudio)
+    } else if has_language(ctx, "ruby") {
+        Some(PreferredIde::Custom("rubymine".to_string()))
+    } else if has_language(ctx, "c") || has_language(ctx, "cpp") {
+        Some(PreferredIde::Custom("clion".to_string()))
     } else if has_language(ctx, "typescript") || has_language(ctx, "javascript") {
         Some(PreferredIde::Webstorm)
     } else {
@@ -897,6 +925,12 @@ pub fn build_profile_v2_from_context_with_options(
     let has_frontend = !frontend_frameworks(ctx).is_empty();
 
     // --- 1. IDE / tool windows (roots) ---
+    let project_dir_arg = ctx
+        .project_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     let effective_vscode = opts
         .vscode
         .as_deref()
@@ -909,7 +943,7 @@ pub fn build_profile_v2_from_context_with_options(
             &mut g,
             "Open VS Code",
             &resolved,
-            vec![".".to_string()],
+            vec![project_dir_arg.clone()],
             Vec::new(),
         );
         ide_opened = true;
@@ -938,7 +972,7 @@ pub fn build_profile_v2_from_context_with_options(
                 &mut g,
                 "Open Android Studio",
                 &resolved,
-                vec![".".to_string()],
+                vec![project_dir_arg.clone()],
                 Vec::new(),
             );
         } else {
@@ -961,19 +995,16 @@ pub fn build_profile_v2_from_context_with_options(
     // 3001 next to a Grafana container on 3001).
     let mut compose_published_ports: Vec<u16> = Vec::new();
     if docker {
-        let docker_app = if cfg!(target_os = "windows") {
-            "Docker Desktop"
-        } else {
-            "docker"
-        };
-        if let Some(resolved) = resolve_app(docker_app) {
-            open_app_step(
-                &mut g,
-                "Open Docker Desktop",
-                &resolved,
-                Vec::new(),
-                Vec::new(),
-            );
+        // Docker Desktop resolution is centralized in the platform Docker
+        // service: Windows keeps its App Paths/Start Menu resolution, macOS
+        // uses `open -a Docker`, Linux finds the GUI binary / CLI plugin /
+        // systemd unit. Using the bare `docker` CLI here (the old Linux
+        // branch) opened nothing — it only prints help — while the step was
+        // reported as successful.
+        if let Some((program, args)) =
+            crate::platform::docker_service::DockerService::desktop_launcher()
+        {
+            open_app_step(&mut g, "Open Docker Desktop", &program, args, Vec::new());
         } else {
             diagnostics.push(AnalysisDiagnostic::new(
                 DiagnosticSeverity::Info,
@@ -1173,7 +1204,7 @@ vec![docker_wait
         let dir = side_dir(ctx, "backend", fw);
         let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
-            "express" | "fastify" | "hono" | "nestjs" | "nest" => {
+            "express" | "fastify" | "hono" | "nestjs" | "nest" | "adonisjs" | "adonis" => {
                 let install = one_shot_step(
                     &mut g,
                     "Install backend dependencies",
@@ -1317,7 +1348,7 @@ vec![docker_wait
                     None,
                 ));
             }
-            "gin" | "echo" | "fiber" | "chi" | "gorilla" | "actix-web" => {
+            "gin" | "echo" | "fiber" | "chi" | "gorilla" => {
                 let start = service_step(
                     &mut g,
                     "Start Go backend",
@@ -1398,7 +1429,7 @@ vec![docker_wait
                 );
                 backend_waits.push(wait);
             }
-            "axum" | "actix" | "rocket" | "warp" | "tauri" => {
+            "axum" | "actix" | "actix-web" | "rocket" | "warp" | "tauri" => {
                 let cmd = if fw == "tauri" {
                     "cargo tauri dev"
                 } else {
@@ -1521,6 +1552,29 @@ vec![docker_wait
                 );
                 backend_waits.push(wait);
             }
+            "qt" | "qt-qml" | "qt-widgets" | "qt-webengine" | "qt-kirigami" => {
+                let build = one_shot_step(
+                    &mut g,
+                    "Build Qt project",
+                    "cmake -B build && cmake --build build",
+                    dir.as_deref(),
+                    infra.clone(),
+                    true,
+                );
+                let start = service_step(
+                    &mut g,
+                    "Start Qt desktop application",
+                    if cfg!(target_os = "windows") {
+                        "build\\Debug\\app.exe"
+                    } else {
+                        "./build/app"
+                    },
+                    dir.as_deref(),
+                    vec![build],
+                    "high",
+                );
+                let _ = start;
+            }
             _ => {}
         }
     }
@@ -1535,15 +1589,17 @@ vec![docker_wait
         let infra: Vec<String> = compose.clone().into_iter().collect();
         match fw.as_str() {
             "nextjs" | "next" | "nuxt" | "nuxtjs" | "vite" | "vite-react" | "vite-vue"
-            | "vite-svelte" | "react" | "vue" | "svelte" | "solid" => {
+            | "vite-svelte" | "react" | "vue" | "svelte" | "solid" | "astro" | "remix" => {
                 // Canonical port first; nextjs/nuxt dev servers own 3000, the
-                // vite family 5173. With a backend present the frontend moves
+                // vite family 5173, astro 4321, remix 3000. With a backend present the frontend moves
                 // off the backend's port, then off every port the compose
                 // bootstrap publishes (grafana 3001, airflow 8080, ...) so
                 // the frontend never collides with a container.
                 let base_port =
-                    if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs") {
+                    if matches!(fw.as_str(), "next" | "nextjs" | "nuxt" | "nuxtjs" | "remix") {
                         3000
+                    } else if fw == "astro" {
+                        4321
                     } else {
                         5173
                     };
@@ -1552,7 +1608,7 @@ vec![docker_wait
                 } else {
                     let mut reserved: Vec<u16> = compose_published_ports.clone();
                     reserved.extend(allocated_backend_ports.iter().copied());
-                    let start = if has_backend { base_port + 1 } else { base_port };
+                    let start = if has_backend && base_port == 3000 { base_port + 1 } else { base_port };
                     crate::ports::local_dev_port(start, &reserved)
                 };
                 let frontend_cmd = if is_vite_family(fw) {
@@ -1574,7 +1630,7 @@ vec![docker_wait
                     } else {
                         "npm run dev -- --host 127.0.0.1".to_string()
                     }
-                } else if has_backend && !has_tauri {
+                } else if frontend_port != base_port && !has_tauri {
                     format!("npm run dev -- --port {}", frontend_port)
                 } else {
                     "npm run dev".to_string()
@@ -2762,5 +2818,99 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn actix_web_generates_rust_backend_not_go() {
+        let c = ctx(&["rust"], &["actix-web"], &[], false);
+        let (profile, _) = build(&c);
+        let rust_step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Rust backend"))
+            .expect("should generate Start Rust backend for actix-web");
+        assert!(
+            matches!(&rust_step.kind, StepKind::RunCommand { command, .. } if command == "cargo run"),
+            "actix-web must run 'cargo run'"
+        );
+        let go_step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Go backend"));
+        assert!(go_step.is_none(), "actix-web must never generate Go backend step");
+
+        let wait_step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for Rust backend port"))
+            .expect("should generate wait step for actix-web");
+        assert!(
+            matches!(&wait_step.kind, StepKind::WaitForPort { port, .. } if *port == 8080),
+            "actix-web default port is 8080"
+        );
+    }
+
+    #[test]
+    fn adonis_and_astro_generate_correct_steps() {
+        let c = ctx(&["typescript"], &["adonisjs", "astro"], &[], false);
+        let (profile, _) = build(&c);
+        let backend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start backend"))
+            .expect("backend step");
+        assert!(
+            matches!(&backend.kind, StepKind::RunCommand { command, .. } if command == "npm run dev")
+        );
+
+        let wait_backend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for backend port"))
+            .expect("wait backend step");
+        assert!(
+            matches!(&wait_backend.kind, StepKind::WaitForPort { port, .. } if *port == 3333),
+            "adonisjs port is 3333"
+        );
+
+        let frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start frontend dev server"))
+            .expect("frontend step");
+        assert!(
+            matches!(&frontend.kind, StepKind::RunCommand { command, .. } if command.contains("npm run dev"))
+        );
+
+        let wait_frontend = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Wait for frontend port"))
+            .expect("wait frontend step");
+        assert!(
+            matches!(&wait_frontend.kind, StepKind::WaitForPort { port, .. } if *port == 4321),
+            "astro port is 4321"
+        );
+    }
+
+    #[test]
+    fn qt_generates_cmake_build_and_run_steps() {
+        let c = ctx(&["cpp"], &["qt"], &[], false);
+        let (profile, _) = build(&c);
+        let build_step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Build Qt project"))
+            .expect("should generate Build Qt project");
+        assert!(
+            matches!(&build_step.kind, StepKind::RunCommand { command, .. } if command.contains("cmake --build build"))
+        );
+
+        let run_step = profile
+            .steps
+            .iter()
+            .find(|s| s.label.contains("Start Qt desktop application"))
+            .expect("should generate Start Qt desktop application");
+        assert_eq!(run_step.depends_on, vec![build_step.id.clone()]);
     }
 }

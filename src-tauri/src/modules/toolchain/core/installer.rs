@@ -125,8 +125,9 @@ impl EventSink for RedactingSink {
 /// Порядок автоопределения:
 ///   1. URL оканчивается на `.git`        → GitClone (flutter и т.п.);
 ///   2. расширение .phar                  → Phar  (composer через php);
-///   3. .ps1 / .sh                        → Script (интерпретатор);
-///   4. .zip/.tgz/.gz/.tar                → Archive (распаковка);
+///   3. .ps1 / .sh / без расширения у
+///      Script-источника                   → Script (интерпретатор);
+///   4. архивы (.zip/.tgz/.tar.xz/...)    → Archive (распаковка);
 ///   5. всё остальное                     → Exe (запуск напрямую).
 fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> ExecutionKind {
     if let Some(kind) = source.execution {
@@ -161,14 +162,38 @@ fn resolve_execution(source: &InstallSource, offline_path: Option<&Path>) -> Exe
     match ext.as_str() {
         "phar" => ExecutionKind::Phar,
         "ps1" | "sh" => ExecutionKind::Script,
-        "zip" | "tgz" | "gz" | "tar" => ExecutionKind::Archive,
+        "pkg" => ExecutionKind::ApplePkg,
+        "dmg" => ExecutionKind::AppleDmg,
+        _ if is_archive_name(path) => ExecutionKind::Archive,
+        // Script-источник без узнаваемого расширения (rustup-init:
+        // https://sh.rustup.rs) — это скрипт, а не бинарь: запускать
+        // его напрямую бессмысленно (Permission denied / os error 193).
+        _ if matches!(source.kind, InstallSourceKind::Script) => ExecutionKind::Script,
         _ => ExecutionKind::Exe,
     }
+}
+
+/// Архивное ли имя файла: обычные расширения (.zip/.tgz/.gz/.tar) и
+/// составные (.tar.gz/.tar.xz/.tar.bz2/.txz/.tbz2). Составные нужно
+/// распознавать явно: `Path::extension()` у них — только хвост
+/// («xz»), и без проверки .tar.xz попал бы в «Exe».
+fn is_archive_name(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    const SUFFIXES: [&str; 8] = [
+        ".zip", ".tgz", ".gz", ".tar", ".tar.gz", ".tar.xz", ".tar.bz2", ".txz",
+    ];
+    SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
 /// Каталог, куда клонируется git-источник: явный install_dir или первый
 /// известный путь без glob (для flutter — %USERPROFILE%/flutter из
 /// known_paths). Хвост «/bin» срезается — клонируется корень SDK.
+/// Записи, не относящиеся к текущей ОС (не раскрылись в абсолютный путь,
+/// например `%USERPROFILE%/flutter` на Linux), пропускаются: иначе целью
+/// клонирования стал бы литеральный относительный каталог.
 fn git_clone_target(def: &ToolDefinition, source: &InstallSource) -> Result<String, String> {
     if let Some(dir) = source.install_dir.as_ref() {
         return Ok(path_service::expand_env_vars(dir));
@@ -176,6 +201,9 @@ fn git_clone_target(def: &ToolDefinition, source: &InstallSource) -> Result<Stri
     for known in &def.detection.known_paths {
         let expanded = path_service::expand_env_vars(known);
         if expanded.contains('*') {
+            continue;
+        }
+        if !Path::new(&expanded).is_absolute() {
             continue;
         }
         let p = Path::new(&expanded);
@@ -329,10 +357,20 @@ fn build_install_command(
                     })
                 }
                 "macos" => {
-                    // Homebrew: brew install <id> [args...]
+                    // Homebrew: brew install [--cask] <id> [args...]
                     // Homebrew must NOT use sudo.
-                    let mut args = vec!["install".to_string(), source.id.clone()];
-                    args.extend(source.args.iter().cloned());
+                    let is_cask = source.args.iter().any(|a| a == "--cask")
+                        || matches!(source.id.as_str(), "visual-studio-code" | "docker");
+                    let mut args = vec!["install".to_string()];
+                    if is_cask {
+                        args.push("--cask".to_string());
+                    }
+                    args.push(source.id.clone());
+                    for a in &source.args {
+                        if a != "--cask" {
+                            args.push(a.clone());
+                        }
+                    }
                     args.extend(source.extra_args.iter().cloned());
                     Ok(InstallCommand {
                         program: "brew".to_string(),
@@ -422,8 +460,11 @@ fn build_install_command(
                 }
 
                 // Скрипты интерпретаторов: .ps1 → powershell -File,
-                // .sh → bash (на Unix скрипт исполняется напрямую —
-                // shebang). Прочее (.bat/.cmd) — напрямую.
+                // .sh → bash. На Unix скрипт НЕ запускается напрямую:
+                // скачанный файл не имеет бита +x, а https://sh.rustup.rs
+                // отдаётся вообще без shebang — запуск дал бы
+                // «Permission denied». Явный `bash <файл>` работает
+                // всегда (bash есть на всех Linux/macOS).
                 ExecutionKind::Script => {
                     let ext = path
                         .extension()
@@ -454,13 +495,37 @@ fn build_install_command(
                                 args,
                             });
                         }
+                        // Прочее (.bat/.cmd) — запуск напрямую.
+                        let mut args = source.args.clone();
+                        args.extend(dynamic);
+                        return Ok(InstallCommand {
+                            program: path.to_string_lossy().into_owned(),
+                            args,
+                        });
                     }
-                    let mut args = source.args.clone();
-                    args.extend(dynamic);
-                    Ok(InstallCommand {
-                        program: path.to_string_lossy().into_owned(),
-                        args,
-                    })
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        if ext == "ps1" {
+                            return Err(format!(
+                                "{}: PowerShell-скрипты на этой ОС не поддерживаются",
+                                source.id
+                            ));
+                        }
+                        // %VAR%/$VAR/~ в аргументах раскрываются заранее:
+                        // Command не подставляет переменные окружения.
+                        let mut args = vec![path.to_string_lossy().into_owned()];
+                        args.extend(
+                            source
+                                .args
+                                .iter()
+                                .map(|a| path_service::expand_env_vars(a)),
+                        );
+                        args.extend(dynamic);
+                        return Ok(InstallCommand {
+                            program: "bash".to_string(),
+                            args,
+                        });
+                    }
                 }
 
                 // Архивы: распаковка идёт ТОЛЬКО через безопасный слой
@@ -470,6 +535,35 @@ fn build_install_command(
                     "{}: архивный источник распаковывается безопасным слоем archive.rs, команда не строится",
                     source.id
                 )),
+
+                ExecutionKind::ApplePkg => {
+                    let mut args = vec![
+                        "-pkg".to_string(),
+                        path.to_string_lossy().into_owned(),
+                        "-target".to_string(),
+                        "/".to_string(),
+                    ];
+                    args.extend(source.args.iter().cloned());
+                    args.extend(dynamic);
+                    Ok(InstallCommand {
+                        program: "installer".to_string(),
+                        args,
+                    })
+                }
+
+                ExecutionKind::AppleDmg => {
+                    let path_str = path.to_string_lossy().into_owned();
+                    // We use a robust script to ensure we detach even if cp fails.
+                    let script = format!(
+                        "MNT=\"/Volumes/sp_mnt_{id}\"; hdiutil attach -nobrowse -mountpoint \"$MNT\" '{path_str}' && {{ cp -R \"$MNT\"/*.app /Applications/; hdiutil detach \"$MNT\"; }}",
+                        id = source.id,
+                        path_str = path_str
+                    );
+                    Ok(InstallCommand {
+                        program: "sh".to_string(),
+                        args: vec!["-c".to_string(), script],
+                    })
+                }
 
                 // Бинарь/инсталлятор: msi → msiexec, msix → App Installer,
                 // exe → запуск напрямую.
@@ -575,7 +669,14 @@ try {{
                         }
                 // Прочие (exe): запуск напрямую.
                 _ => {
-                    let mut args = source.args.clone();
+                    // %VAR%/$VAR/~ раскрываются заранее: Command не
+                    // подставляет переменные окружения (npm --prefix
+                    // $HOME/.npm-global иначе создал бы каталог «$HOME»).
+                    let mut args: Vec<String> = source
+                        .args
+                        .iter()
+                        .map(|a| path_service::expand_env_vars(a))
+                        .collect();
                     args.extend(dynamic);
                     // NSIS-инсталлятор Erlang/OTP: без /S в неинтерактивной
                     // сессии падает с кодом 1; /v"/qn" передаёт флаги
@@ -633,41 +734,109 @@ try {{
 /// Priority: apt-get (Debian/Ubuntu) > dnf (Fedora/RHEL) > pacman (Arch) > zypper (openSUSE).
 /// Returns an error if no supported manager is found.
 ///
-/// Design rules:
-/// - Uses direct executable invocation, not shell string concatenation.
-/// - Does not use sudo invisibly; returns a clear error if elevation is needed.
-/// - Supports user-local installations (e.g., `pip install --user`).
+/// Does NOT add sudo — elevation is handled by the caller through
+/// `run_elevated` when `needs_admin` is true. This avoids double-sudo
+/// when the command reaches the Linux sudo wrapper.
+///
+/// Исправление (критическое): базовые аргументы содержали ИМЯ самого
+/// менеджера первым элементом («apt-get», «dnf», «pacman», «zypper»),
+/// из-за чего на выходе получалось `apt-get apt-get install -y php` и
+/// apt отвечал «E: Неверная операция apt-get» (код 100) на ЛЮБОЙ
+/// инструмент. Аргументы теперь содержат только операцию и флаги.
+///
+/// Debian/Ubuntu: перед install выполняется `apt-get update`
+/// (не фатально при сбое: `;`, а не `&&`) — на чистой системе без
+/// обновлённых списков install падает с «Unable to locate package».
+/// DEBIAN_FRONTEND=noninteractive отключает интерактивные вопросы
+/// debconf, которые в неинтерактивной сессии подвешивали установку.
 fn build_linux_pkg_command(
     source: &InstallSource,
     _password: Option<&str>,
 ) -> Result<InstallCommand, String> {
-    // Detect which package manager is actually available on this system.
-    // We probe each one; the first found wins.
+    // (менеджер, аргументы установки). Имя менеджера НЕ дублируется в
+    // аргументах: program = менеджер, args = операция + флаги.
     let managers: &[(&str, &[&str])] = &[
-        ("apt-get", &["apt-get", "install", "-y"]),
-        ("dnf", &["dnf", "install", "-y"]),
-        ("pacman", &["pacman", "-S", "--noconfirm"]),
-        ("zypper", &["zypper", "install", "-y"]),
+        ("apt-get", &["install", "-y"]),
+        ("dnf", &["install", "-y"]),
+        ("pacman", &["-S", "--noconfirm", "--needed"]),
+        ("zypper", &["--non-interactive", "install", "-y"]),
     ];
 
-    // Arch и производные: свои имена пакетов, AUR, pkexec и пост-настройка
-    // служб (docker/БД) — см. linux_pkg.
-    if which_exists("pacman") && !which_exists("apt-get") && !which_exists("dnf") {
-        let mut extra = source.args.clone();
-        extra.extend(source.extra_args.iter().cloned());
-        let (program, args) = super::linux_pkg::build_arch_command(&source.id, &extra)?;
-        return Ok(InstallCommand { program, args });
-    }
-
-    for &(manager, base_args) in managers {
-        if which_exists(manager) {
-            let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
-            args.push(source.id.clone());
-            args.extend(source.args.iter().cloned());
-            args.extend(source.extra_args.iter().cloned());
-            let (program, args) = super::linux_pkg::with_privileges(manager, args)?;
+    for &(manager, install_args) in managers {
+        if !which_exists(manager) {
+            continue;
+        }
+        if manager == "pacman" {
+            // Arch и производные: свои имена пакетов (часть — несколько
+            // пакетов), AUR через yay/paru и пост-настройка служб
+            // (docker/БД) — см. linux_pkg. Повышение прав — как и для
+            // остальных менеджеров, через run_elevated (кроме AUR).
+            let extra: Vec<String> = source
+                .args
+                .iter()
+                .chain(source.extra_args.iter())
+                .map(|a| path_service::expand_env_vars(a))
+                .collect();
+            let (program, args) = super::linux_pkg::build_arch_command(&source.id, &extra)?;
             return Ok(InstallCommand { program, args });
         }
+        // Дистрибутивные имена пакетов: каталог написан под Debian/Ubuntu.
+        // Одно имя может раскрыться в НЕСКОЛЬКО пакетов через пробел
+        // (apt: python3 → "python3 python3-venv") — каждое имя уходит
+        // отдельным argv.
+        let package = platforms::linux_package_alias(manager, &source.id);
+        let packages: Vec<String> = package
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let source_args: Vec<String> = source
+            .args
+            .iter()
+            .map(|a| path_service::expand_env_vars(a))
+            .collect();
+        let extra_args: Vec<String> = source
+            .extra_args
+            .iter()
+            .map(|a| path_service::expand_env_vars(a))
+            .collect();
+        let mut args: Vec<String> = install_args.iter().map(|s| s.to_string()).collect();
+        if manager == "apt-get" {
+            // Опции менеджера — ДО `--`: после него apt трактует любой
+            // аргумент как имя пакета. `--` завершает опции, чтобы имя
+            // пакета не могло быть принято за флаг.
+            args.extend(source_args);
+            args.extend(extra_args);
+            args.push("--".to_string());
+            args.extend(packages);
+        } else {
+            args.extend(packages);
+            args.extend(source_args);
+            args.extend(extra_args);
+        }
+
+        if manager == "apt-get" {
+            // apt-get update + install одной командой: пароль pkexec/sudo
+            // спрашивается один раз (polkit кэширует авторизацию), а сбой
+            // update (например, недоступное стороннее зеркало) не валит
+            // установку — install отработает по имеющимся спискам.
+            let install = std::iter::once("apt-get".to_string())
+                .chain(args.iter().cloned())
+                .map(|a| console::posix_shell_quote(&a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let script = format!(
+                "apt-get update || true; DEBIAN_FRONTEND=noninteractive {install}"
+            );
+            return Ok(InstallCommand {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+            });
+        }
+
+        return Ok(InstallCommand {
+            program: manager.to_string(),
+            args,
+        });
     }
 
     Err("Нет доступного менеджера пакетов на Linux (apt-get, dnf, pacman, zypper)".to_string())
@@ -676,6 +845,66 @@ fn build_linux_pkg_command(
 /// Check if an executable exists in PATH (non-blocking, no timeout).
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
+}
+
+/// Текущий процесс работает от root (Linux/macOS). Root-у sudo не нужен
+/// (а самого sudo в контейнере может и не быть).
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
+}
+
+/// Требуется ли повышение прав для запуска конкретного источника.
+///
+/// Windows: `needs_admin` из каталога (UAC). Linux: к флагу каталога
+/// добавляется системный пакетный менеджер — apt-get/dnf/pacman/zypper
+/// ставят пакеты в системные каталоги и без root НЕ работают, каталог же
+/// (tools.json) для Linux-источников часто не выставляет needs_admin.
+/// Если процесс уже root — элевация не нужна.
+///
+/// macOS: brew (PkgManager) НИКОГДА не запускается под sudo — сам
+/// отказывается работать от root и подсказывает «don't run as root».
+/// Каталожный needs_admin для brew-источников игнорируется.
+///
+/// Единая точка правды: используется и установщиком, и планировщиком
+/// (превью плана обязано показывать администратора там, где он реально
+/// понадобится при исполнении).
+pub fn source_requires_elevation(source: &InstallSource, def: &ToolDefinition) -> bool {
+    let catalog_flag = source.needs_admin.unwrap_or(def.needs_admin);
+    match platforms::current_platform().os_name().as_str() {
+        "linux" => {
+            // AUR-помощник (yay/paru) под root не работает (makepkg отказывается)
+            // и сам просит повышение через pkexec — внешняя элевация ему не нужна.
+            if matches!(source.kind, InstallSourceKind::PkgManager)
+                && super::linux_pkg::is_arch_aur_install(&source.id)
+            {
+                return false;
+            }
+            if matches!(source.kind, InstallSourceKind::PkgManager) && !running_as_root() {
+                return true;
+            }
+            catalog_flag
+        }
+        "macos" => {
+            if matches!(source.kind, InstallSourceKind::PkgManager) {
+                return false;
+            }
+            if let Some(url) = source.url.as_deref().or(source.url_template.as_deref()) {
+                let tail = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+                let tail_lower = tail.to_ascii_lowercase();
+                if tail_lower.ends_with(".pkg") || tail_lower.ends_with(".dmg") {
+                    return true;
+                }
+            }
+            catalog_flag
+        }
+        _ => catalog_flag,
+    }
 }
 
 // ------------------------------------------------------------
@@ -797,6 +1026,31 @@ pub async fn execute_plan(
     console::cleanup_tracked_temp_files_since(temp_snapshot);
 
     secrets
+}
+
+/// Расширение временного файла скачивания. Составные архивные суффиксы
+/// (.tar.xz/.tar.gz/.tar.bz2) сохраняются ЦЕЛИКОМ: url_file_extension
+/// вернул бы только «xz», и resolve_execution не распознал бы архив
+/// (запуск .xz напрямую — ошибка прав).
+fn download_extension(source: &InstallSource, url: &str) -> String {
+    let candidate = source
+        .file_name
+        .as_deref()
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url));
+    let lower = candidate.to_ascii_lowercase();
+    for suffix in [".tar.xz", ".tar.gz", ".tar.bz2", ".tar.zst", ".tar.zstd"] {
+        if lower.ends_with(suffix) {
+            return suffix.to_string();
+        }
+    }
+    source
+        .file_name
+        .as_deref()
+        .and_then(|n| Path::new(n).extension())
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .or_else(|| url_file_extension(url).map(|e| format!(".{e}")))
+        .unwrap_or_else(|| ".bin".to_string())
 }
 
 /// Расширение файла из URL (последний сегмент пути без query/fragment),
@@ -1545,15 +1799,8 @@ async fn try_install_source(
                 // нет — из URL (winget-бандл .msixbundle и т.п.). Иначе
                 // файл упал бы в .bin и build_install_command «запустил»
                 // его напрямую (os error 193, «%1 не является приложением
-                // Win32»).
-                let ext = source
-                    .file_name
-                    .as_deref()
-                    .and_then(|n| Path::new(n).extension())
-                    .and_then(|e| e.to_str())
-                    .map(|e| format!(".{e}"))
-                    .or_else(|| url_file_extension(url).map(|e| format!(".{e}")))
-                    .unwrap_or_else(|| ".bin".to_string());
+                // Win32»). Составные архивы (.tar.xz) сохраняются целиком.
+                let ext = download_extension(source, url);
                 let dest = console::tracked_temp_file(tool_id, &ext);
                 if let Err(e) = console::download(
                     url,
@@ -1725,10 +1972,9 @@ async fn try_install_source(
             // У источника может быть своё значение (zip-распаковка не требует UAC,
             // даже если у инструмента в целом needs_admin=true).
             // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
-            let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
+            let needs_admin = source_requires_elevation(source, def);
             let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
-            // На Linux повышение уже вшито в команду (pkexec), UAC-обёртка — только Windows.
-            let run = if needs_admin && platforms::current_platform().os_name() == "windows" {
+            let run = if needs_admin {
                 console::run_elevated(
                     &program,
                     &args,
@@ -1877,7 +2123,9 @@ async fn try_install_source(
     // composer.phar (phar-источник) не является исполняемым файлом —
     // рядом с ним создаётся composer.bat-шим, иначе verify не найдёт
     // команду `composer` («%1 не является приложением Win32»).
-    if matches!(exec, ExecutionKind::Phar) && def.id == "composer" {
+    // Только Windows: на Unix phar-установки запускаются через php
+    // напрямую, .bat-шим там бессмыслен.
+    if matches!(exec, ExecutionKind::Phar) && def.id == "composer" && cfg!(target_os = "windows") {
         ensure_composer_bat_shim(source, index, total, task_id, tool_id, session_id, sink).await;
     }
 
@@ -1977,7 +2225,9 @@ async fn try_install_source(
         ToolStatus::Installed { version } => {
             // .NET MAUI: SDK сам по себе не даёт шаблон `dotnet new maui` —
             // нужен workload. Ставим сразу после подтверждённой установки.
-            if def.id == "dotnet" {
+            // На Linux MAUI не поддерживается — workload там отсутствует,
+            // команда заведомо падала бы и пугала пользователя warning'ом.
+            if def.id == "dotnet" && !cfg!(target_os = "linux") {
                 install_maui_workload(
                     index,
                     total,
@@ -1992,7 +2242,9 @@ async fn try_install_source(
             // PHP на Windows: без настроенного php.ini composer падает
             // («The zip extension and unzip/7z commands are both missing»).
             // Строгая конфигурация после подтверждённой установки.
-            if def.id == "php" {
+            // Linux/macOS ставят PHP пакетным менеджером — php.ini уже
+            // настроен дистрибутивом, трогать его не нужно.
+            if def.id == "php" && cfg!(target_os = "windows") {
                 configure_php_ini(def, index, total, task_id, tool_id, session_id, sink).await;
             }
             Ok((version, password))
@@ -2590,8 +2842,9 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn script_sh_runs_directly_on_unix() {
-        // На Unix .sh исполняется напрямую (shebang-строка).
+    fn script_sh_runs_via_bash_on_unix() {
+        // На Unix .sh запускается через `bash <файл>`: скачанный файл
+        // не имеет бита +x, а rustup-скрипт отдаётся вообще без shebang.
         let source = InstallSource {
             kind: InstallSourceKind::Script,
             id: "setup-sh".to_string(),
@@ -2610,8 +2863,11 @@ mod tests {
         };
         let script = std::env::temp_dir().join("tc-tool-setup.sh");
         let cmd = build_install_command(&bare_def(), &source, Some(&script), None).unwrap();
-        assert_eq!(cmd.program, script.to_string_lossy());
-        assert_eq!(cmd.args, vec!["--silent".to_string()]);
+        assert_eq!(cmd.program, "bash");
+        assert_eq!(
+            cmd.args,
+            vec![script.to_string_lossy().into_owned(), "--silent".to_string()]
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -2721,7 +2977,15 @@ mod tests {
     #[test]
     fn git_clone_target_falls_back_to_known_path() {
         let mut def = bare_def();
-        def.detection.known_paths = vec!["%USERPROFILE%/flutter".to_string()];
+        // Запись берётся из известных путей ТЕКУЩЕЙ ОС: на Unix
+        // Windows-путь %USERPROFILE% не раскрывается и обоснованно
+        // пропускается (см. git_clone_target_skips_foreign_known_paths).
+        let known = if cfg!(target_os = "windows") {
+            "%USERPROFILE%/flutter"
+        } else {
+            "$HOME/flutter"
+        };
+        def.detection.known_paths = vec![known.to_string()];
         let source = InstallSource {
             kind: InstallSourceKind::Official,
             id: "flutter-git".to_string(),
@@ -2739,7 +3003,7 @@ mod tests {
             version_resolver: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
-        let expected = path_service::expand_env_vars("%USERPROFILE%/flutter");
+        let expected = path_service::expand_env_vars(known);
         assert_eq!(target, expected);
     }
 
@@ -2757,10 +3021,9 @@ mod tests {
             .find(|d| d.id == "java")
             .expect("java в tools.json");
 
-        assert_eq!(java.detection.known_paths, vec!["C:/Program Files/Eclipse Adoptium/*/bin"]);
-        assert_eq!(
-            java.path_entries,
-            vec!["C:\\Program Files\\Eclipse Adoptium\\*\\bin"]
+        assert!(java.detection.known_paths.iter().any(|p| p == "C:/Program Files/Eclipse Adoptium/*/bin"));
+        assert!(
+            java.path_entries.iter().any(|p| p == "C:\\Program Files\\Eclipse Adoptium\\*\\bin")
         );
 
         let msi = java
@@ -2946,7 +3209,12 @@ mod tests {
     #[test]
     fn git_clone_target_strips_bin_suffix() {
         let mut def = bare_def();
-        def.detection.known_paths = vec!["%LOCALAPPDATA%/Programs/sdk/bin".to_string()];
+        let known = if cfg!(target_os = "windows") {
+            "%LOCALAPPDATA%/Programs/sdk/bin"
+        } else {
+            "$HOME/.local/share/sdk/bin"
+        };
+        def.detection.known_paths = vec![known.to_string()];
         let source = InstallSource {
             kind: InstallSourceKind::Official,
             id: "sdk-git".to_string(),
@@ -2964,7 +3232,13 @@ mod tests {
             version_resolver: None,
         };
         let target = git_clone_target(&def, &source).unwrap();
-        let expected = path_service::expand_env_vars("%LOCALAPPDATA%/Programs/sdk");
+        let expected = path_service::expand_env_vars(
+            if cfg!(target_os = "windows") {
+                "%LOCALAPPDATA%/Programs/sdk"
+            } else {
+                "$HOME/.local/share/sdk"
+            },
+        );
         assert_eq!(target, expected);
     }
 
@@ -3412,7 +3686,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn build_install_command_linux_pkg_manager_finds_available() {
-        // On Linux, PkgManager should resolve to one of apt-get/dnf/pacman/zypper
+        // On Linux, PkgManager should resolve to one of apt-get/dnf/pacman/zypper.
+        // Для apt-get команда обёрнута в `sh -c` (update + install одной
+        // командой) — это тоже корректный результат.
         let source = InstallSource {
             kind: InstallSourceKind::PkgManager,
             id: "fake-pkg-id".to_string(),
@@ -3431,17 +3707,20 @@ mod tests {
         };
         let def = bare_def();
         let result = build_install_command(&def, &source, None, None);
-        if result.is_ok() {
-            let cmd = result.unwrap();
-            let valid_programs = ["apt-get", "dnf", "pacman", "zypper", "pkexec", "sh", "paru", "yay"];
+        if let Ok(cmd) = result {
+            let valid_programs = ["apt-get", "dnf", "pacman", "zypper", "sh", "paru", "yay"];
             assert!(
                 valid_programs.contains(&cmd.program.as_str()),
                 "unexpected Linux package manager: {}",
                 cmd.program
             );
+            // Имя пакета обязано присутствовать: в argv (dnf/pacman/zypper)
+            // или в sh-скрипте apt-get.
+            let package_present = cmd.args.iter().any(|a| a.contains("fake-pkg-id"));
             assert!(
-                cmd.args.contains(&"fake-pkg-id".to_string()),
-                "package id should be in args"
+                package_present,
+                "package id should be in args/script: {:?}",
+                cmd.args
             );
         }
     }
@@ -3503,5 +3782,248 @@ mod tests {
                 "error should mention package manager"
             );
         }
+    }
+
+    /// Регрессия ошибки 100 на Linux: имя менеджера пакетов НЕ должно
+    /// дублироваться в аргументах. Прежний баг давал `apt-get apt-get
+    /// install -y php` → «E: Неверная операция apt-get» на ЛЮБОЙ
+    /// инструмент. Теперь для apt-get собирается одна sh -c команда
+    /// «apt-get update || true; DEBIAN_FRONTEND=noninteractive apt-get
+    /// install -y -- <pkg>», а для прочих менеджеров — прямой argv без
+    /// повторного имени программы.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_pkg_command_never_duplicates_manager_name() {
+        let source = InstallSource {
+            kind: InstallSourceKind::PkgManager,
+            id: "php".to_string(),
+            url: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        let managers = ["apt-get", "dnf", "pacman", "zypper"];
+        let Some(manager) = managers.iter().find(|m| which_exists(m)) else {
+            return; // в тестовом окружении нет ни одного менеджера
+        };
+        let cmd = build_linux_pkg_command(&source, None).unwrap();
+        match *manager {
+            "apt-get" => {
+                assert_eq!(cmd.program, "sh");
+                assert_eq!(cmd.args.first().map(String::as_str), Some("-c"));
+                let script = &cmd.args[1];
+                assert!(script.contains("apt-get update"), "нет refresh: {script}");
+                assert!(
+                    script.contains("apt-get install -y -- php"),
+                    "нет install с пакетом: {script}"
+                );
+                assert!(
+                    !script.contains("apt-get apt-get"),
+                    "имя менеджера продублировано: {script}"
+                );
+                assert!(
+                    script.contains("DEBIAN_FRONTEND=noninteractive"),
+                    "нет noninteractive-режима: {script}"
+                );
+            }
+            other => {
+                assert_eq!(cmd.program, other);
+                assert!(
+                    !cmd.args.iter().any(|a| a == other),
+                    "имя менеджера продублировано в аргументах: {:?}",
+                    cmd.args
+                );
+                assert!(
+                    cmd.args.iter().any(|a| a == "php"),
+                    "пакет отсутствует в аргументах: {:?}",
+                    cmd.args
+                );
+            }
+        }
+    }
+
+    /// Регрессия Linux-venv: python3 на Debian/Ubuntu обязан ставиться
+    /// ВМЕСТЕ с python3-venv (ensurepip выделен в отдельный пакет), иначе
+    /// `python3 -m venv` оставляет окружение без pip. Одно имя пакета
+    /// раскрывается в два argv.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_python_install_pulls_venv_package_on_apt() {
+        if !which_exists("apt-get") {
+            return; // тест про apt: на других менеджерах алиаса нет
+        }
+        let source = InstallSource {
+            kind: InstallSourceKind::PkgManager,
+            id: "python3".to_string(),
+            url: None,
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        let cmd = build_linux_pkg_command(&source, None).unwrap();
+        let script = &cmd.args[1];
+        assert!(
+            script.contains("-- python3 python3-venv"),
+            "python3-venv обязан ставиться рядом с python3: {script}"
+        );
+    }
+
+    /// Script-источник без узнаваемого расширения (rustup: sh.rustup.rs)
+    /// обязан распознаваться как скрипт, а не запускаться напрямую.
+    #[test]
+    fn script_source_without_extension_resolves_to_script() {
+        let source = InstallSource {
+            kind: InstallSourceKind::Script,
+            id: "rustup-init".to_string(),
+            url: Some("https://sh.rustup.rs".to_string()),
+            args: vec!["-y".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        assert_eq!(resolve_execution(&source, None), ExecutionKind::Script);
+    }
+
+    /// Составные расширения архивов (.tar.xz) распознаются как Archive:
+    /// Path::extension() видит только «xz», и без явной проверки архив
+    /// ушёл бы в ветку «Exe».
+    #[test]
+    fn compound_tar_extensions_resolve_to_archive() {
+        for url in [
+            "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
+            "https://example.com/tool.tar.gz",
+            "https://example.com/tool.tgz",
+            "https://example.com/tool.zip",
+        ] {
+            let source = InstallSource {
+                kind: InstallSourceKind::Official,
+                id: "tool".to_string(),
+                url: Some(url.to_string()),
+                args: vec![],
+                extra_args: vec![],
+                dynamic_args: false,
+                install_dir: None,
+                needs_admin: None,
+                file_name: None,
+                execution: None,
+                bootstrap: None,
+                sha256: None,
+                url_template: None,
+                version_resolver: None,
+            };
+            assert_eq!(
+                resolve_execution(&source, None),
+                ExecutionKind::Archive,
+                "URL должен распознаваться как архив: {url}"
+            );
+        }
+    }
+
+    /// Временный файл скачивания обязан сохранять составной суффикс
+    /// (.tar.xz), иначе resolve_execution увидит только «xz» и решит,
+    /// что это запускаемый файл.
+    #[test]
+    fn download_extension_keeps_compound_archive_suffix() {
+        let source_with = |file_name: Option<&str>, url: &str| InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "tool".to_string(),
+            url: Some(url.to_string()),
+            args: vec![],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: file_name.map(str::to_string),
+            execution: None,
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        assert_eq!(
+            download_extension(
+                &source_with(None, "https://x/zig-x86_64-linux-0.16.0.tar.xz"),
+                "https://x/zig-x86_64-linux-0.16.0.tar.xz"
+            ),
+            ".tar.xz"
+        );
+        assert_eq!(
+            download_extension(
+                &source_with(None, "https://x/tool.tar.gz"),
+                "https://x/tool.tar.gz"
+            ),
+            ".tar.gz"
+        );
+        assert_eq!(
+            download_extension(
+                &source_with(Some("dartsdk-linux-x64-release.zip"), "https://x/y"),
+                "https://x/y"
+            ),
+            ".zip"
+        );
+        assert_eq!(
+            download_extension(&source_with(None, "https://x/no-ext"), "https://x/no-ext"),
+            ".bin"
+        );
+    }
+
+    /// git_clone_target обязан пропускать записи known_paths чужой ОС:
+    /// на Linux `%USERPROFILE%/flutter/bin` не раскрывается, и без
+    /// фильтра целью клонирования стал бы литеральный относительный
+    /// каталог `%USERPROFILE%/flutter`.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_clone_target_skips_foreign_known_paths() {
+        let mut def = bare_def();
+        def.detection.known_paths = vec![
+            "%USERPROFILE%/flutter/bin".to_string(),
+            "$HOME/flutter/bin".to_string(),
+        ];
+        let source = InstallSource {
+            kind: InstallSourceKind::Official,
+            id: "flutter-git".to_string(),
+            url: Some("https://github.com/flutter/flutter.git".to_string()),
+            args: vec!["--depth".to_string(), "1".to_string()],
+            extra_args: vec![],
+            dynamic_args: false,
+            install_dir: None,
+            needs_admin: None,
+            file_name: None,
+            execution: Some(ExecutionKind::GitClone),
+            bootstrap: None,
+            sha256: None,
+            url_template: None,
+            version_resolver: None,
+        };
+        let target = git_clone_target(&def, &source).unwrap();
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(
+            target,
+            format!("{home}/flutter"),
+            "целью обязан быть домашний каталог, а не литерал %USERPROFILE%"
+        );
     }
 }

@@ -40,6 +40,7 @@ export type AppSettings = {
 
   auto_save: boolean;
   font_size: string;
+  ui_scale: string;
   reduced_motion: boolean;
   show_interface_hints: boolean;
   accent_color: string;

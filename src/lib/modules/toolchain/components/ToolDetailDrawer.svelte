@@ -12,7 +12,9 @@
   import type {
     CardPlanOp,
   } from "./ToolCard.svelte";
-  import type { ToolDefinition, ToolScanResult } from "../types";
+  import type { ToolDefinition, ToolScanResult, ToolVersionCandidate } from "../types";
+  import { listToolVersions, installToolVersion } from "../api";
+  import { notifySuccess, notifyError } from "$lib/core/toasts";
   import {
     capabilityLabels,
     formatRelativeTime,
@@ -106,6 +108,36 @@
       copiedTimer = setTimeout(() => (copiedKey = null), 1500);
     } catch {
       /* копирование — best-effort; панель с логом остаётся читаемой */
+    }
+  }
+
+  let candidates = $state<ToolVersionCandidate[]>([]);
+  let loadingCandidates = $state(false);
+  let installingCandidateVersion = $state<string | null>(null);
+
+  $effect(() => {
+    if (open && tool?.tool_id) {
+      loadingCandidates = true;
+      listToolVersions(tool.tool_id)
+        .then((res) => { candidates = res; })
+        .catch(() => { candidates = []; })
+        .finally(() => { loadingCandidates = false; });
+    } else {
+      candidates = [];
+    }
+  });
+
+  async function installCandidate(cand: ToolVersionCandidate) {
+    if (!tool) return;
+    installingCandidateVersion = cand.version;
+    try {
+      await installToolVersion(tool.tool_id, cand.version, cand.download_url || "");
+      notifySuccess(`Installed ${tool.tool_id} ${cand.version} to Shared Store`);
+      candidates = await listToolVersions(tool.tool_id);
+    } catch (err) {
+      notifyError(`Failed to install ${cand.version}`, String(err));
+    } finally {
+      installingCandidateVersion = null;
     }
   }
 
@@ -354,6 +386,55 @@
               <p class="muted">{i18n.t("tc.drawer.duration", { n: (tool.duration_ms / 1000).toFixed(1) }) as TranslationKey}</p>
             {/if}
           </section>
+
+          <!-- ===== Мультиверсионность и Shared Tool Store ===== -->
+          {#if candidates.length > 0 || loadingCandidates}
+            <section class="candidates-section">
+              <div class="cand-header-row">
+                <h3 class="section-title">
+                  {i18n.t("create.version_selector_title" as TranslationKey)}
+                </h3>
+                <Badge tone="violet">Shared Store</Badge>
+              </div>
+
+              {#if loadingCandidates}
+                <p class="muted">{i18n.t("create.loading_versions" as TranslationKey)}…</p>
+              {:else}
+                <ul class="candidate-list">
+                  {#each candidates as cand}
+                    <li class="candidate-item" class:is-installed={cand.is_installed}>
+                      <div class="candidate-info">
+                        <div class="cand-top">
+                          <code class="cand-version">v{cand.version}</code>
+                          <Badge tone={cand.source_kind === "shared_store" ? "violet" : cand.is_installed ? "cyan" : "amber"}>
+                            {cand.source_name || cand.source_kind}
+                          </Badge>
+                          {#if cand.is_installed}
+                            <span class="cand-ready">✓ Ready</span>
+                          {/if}
+                        </div>
+                        {#if cand.executable_path}
+                          <span class="cand-path" title={cand.executable_path}>{cand.executable_path}</span>
+                        {/if}
+                      </div>
+
+                      {#if !cand.is_installed}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          icon="download"
+                          loading={installingCandidateVersion === cand.version}
+                          onclick={() => installCandidate(cand)}
+                        >
+                          Download (~{cand.size_mb ?? 30} MB)
+                        </Button>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </section>
+          {/if}
 
           <!-- ===== Здоровье ===== -->
           {#if health}
@@ -1075,5 +1156,71 @@
 
   .spacer {
     flex: 1 1 auto;
+  }
+
+  .cand-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--sp-2);
+  }
+
+  .candidate-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .candidate-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--sp-bg-1);
+    border: 1px solid var(--sp-border-faint);
+    border-radius: var(--sp-radius-md);
+  }
+
+  .candidate-item.is-installed {
+    border-color: rgba(168, 85, 247, 0.25);
+  }
+
+  .candidate-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .cand-top {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .cand-version {
+    font-weight: 600;
+    font-family: var(--sp-font-mono, monospace);
+    color: var(--sp-text);
+  }
+
+  .cand-ready {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-success);
+    font-weight: 500;
+  }
+
+  .cand-path {
+    font-size: 0.7rem;
+    color: var(--sp-text-3);
+    font-family: var(--sp-font-mono, monospace);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
   }
 </style>

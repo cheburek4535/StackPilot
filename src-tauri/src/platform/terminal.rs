@@ -1,4 +1,5 @@
 use std::fmt;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,13 @@ use crate::modules::devlauncher::models::ProcessTrackingQuality;
 /// process lifetime (availability cannot change while the app runs).
 #[cfg(target_os = "windows")]
 static WINDOWS_TERMINAL_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Whether the freedesktop `xdg-terminal-exec` helper can resolve a default
+/// terminal. Probed at most once per process: the answer cannot change while
+/// the app runs, and the probe runs a helper script (never cheap enough for
+/// every terminal spawn).
+#[cfg(target_os = "linux")]
+static LINUX_XDG_TERMINAL_EXEC: OnceLock<bool> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // TerminalBackend вЂ” platform abstraction for native terminal execution
@@ -42,6 +50,10 @@ pub enum TerminalBackend {
     ITerm2,
     /// gnome-terminal (Linux)
     GnomeTerminal,
+    /// ptyxis (GNOME Terminal for GNOME 47+, Linux)
+    Ptyxis,
+    /// freedesktop `xdg-terminal-exec` default-terminal launcher (Linux)
+    XdgTerminalExec,
     /// konsole (Linux KDE)
     Konsole,
     /// xterm (Linux/BSD)
@@ -67,6 +79,8 @@ impl fmt::Display for TerminalBackend {
             TerminalBackend::TerminalApp => write!(f, "Terminal.app"),
             TerminalBackend::ITerm2 => write!(f, "iTerm2"),
             TerminalBackend::GnomeTerminal => write!(f, "gnome-terminal"),
+            TerminalBackend::Ptyxis => write!(f, "ptyxis"),
+            TerminalBackend::XdgTerminalExec => write!(f, "xdg-terminal-exec"),
             TerminalBackend::Konsole => write!(f, "konsole"),
             TerminalBackend::Xterm => write!(f, "xterm"),
             TerminalBackend::Alacritty => write!(f, "alacritty"),
@@ -125,6 +139,23 @@ pub struct TerminalConfig {
     /// treating "terminal opened" as "command started".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_marker: Option<String>,
+    /// Capture the inner-command output into a sidecar log file next to
+    /// `startup_marker` (see [`startup_log_path`]). POSIX terminals tee the
+    /// output there, so the orchestrator can report the REAL failure reason
+    /// ("port is already allocated", "no configuration file provided", ...)
+    /// instead of only "check the terminal output" — the terminal window
+    /// belongs to the emulator and its scrollback is not machine-readable.
+    #[serde(default)]
+    pub capture_output: bool,
+    /// Optional file the inner POSIX command writes its own PID (and process
+    /// group) to, before running. Terminal emulators detach: the tracked
+    /// launcher process exits as soon as the window is up, so Stop/Cancel
+    /// cannot reach the real command tree through it. The recorded process
+    /// group is the only handle that can stop a dev server the user started
+    /// from a terminal step. Windows backends keep the launcher-based kill
+    /// (`taskkill /T`) and never write this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_file: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -142,6 +173,8 @@ impl Default for TerminalConfig {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         }
     }
 }
@@ -196,32 +229,103 @@ pub fn default_terminal_for_platform() -> TerminalBackend {
         }
         HostOs::Macos => TerminalBackend::TerminalApp,
         HostOs::Linux => {
-            // Try common terminals in preference order
-            let candidates = [
-                "gnome-terminal",
-                "konsole",
-                "x-terminal-emulator",
-                "xfce4-terminal",
-                "alacritty",
-                "kitty",
-                "xterm",
+            // 1. The freedesktop default-terminal helper knows the user's
+            //    preferred terminal AND its exact command-line syntax (GNOME
+            //    Ptyxis, Console, foot, WezTerm, ...), which per-terminal
+            //    heuristics cannot. Preferred whenever it can actually find a
+            //    terminal on this machine.
+            if linux_xdg_terminal_exec_available() {
+                return TerminalBackend::XdgTerminalExec;
+            }
+            // 2. Explicit terminals in preference order. Ptyxis and GNOME
+            //    Console are the modern GNOME terminals; x-terminal-emulator
+            //    is the distro's own configured default (Debian/Ubuntu
+            //    alternatives), so it is honored before the raw fallbacks.
+            let candidates: [(&str, TerminalBackend); 8] = [
+                ("ptyxis", TerminalBackend::Ptyxis),
+                ("gnome-terminal", TerminalBackend::GnomeTerminal),
+                ("konsole", TerminalBackend::Konsole),
+                (
+                    "x-terminal-emulator",
+                    TerminalBackend::Custom("x-terminal-emulator".to_string()),
+                ),
+                ("xfce4-terminal", TerminalBackend::Xfce4Terminal),
+                ("alacritty", TerminalBackend::Alacritty),
+                ("kitty", TerminalBackend::Kitty),
+                ("xterm", TerminalBackend::Xterm),
             ];
-            for cand in &candidates {
+            for (cand, backend) in candidates {
                 if which_exists(cand) {
-                    return match *cand {
-                        "gnome-terminal" => TerminalBackend::GnomeTerminal,
-                        "konsole" => TerminalBackend::Konsole,
-                        "xterm" => TerminalBackend::Xterm,
-                        "alacritty" => TerminalBackend::Alacritty,
-                        "kitty" => TerminalBackend::Kitty,
-                        "xfce4-terminal" => TerminalBackend::Xfce4Terminal,
-                        _ => TerminalBackend::Custom(cand.to_string()),
-                    };
+                    // Prefer a backend that knows the terminal's exact command
+                    // syntax. `x-terminal-emulator` is a distro alternatives
+                    // symlink (Debian/Ubuntu): its target decides whether the
+                    // `-e sh -c` contract or a structured `--` invocation is
+                    // correct.
+                    if let Ok(path) = which::which(cand) {
+                        if let Ok(real) = std::fs::canonicalize(&path) {
+                            if let Some(mapped) =
+                                linux_backend_for_terminal_name(&real.to_string_lossy())
+                            {
+                                return mapped;
+                            }
+                        }
+                    }
+                    return backend;
                 }
             }
-            TerminalBackend::Xterm // best fallback
+            // 3. The user's $TERMINAL choice (the same variable the desktop
+            //    files use) before a bare xterm attempt.
+            if let Ok(term) = std::env::var("TERMINAL") {
+                let term = term.trim();
+                if !term.is_empty() && which_exists(term) {
+                    if let Some(mapped) = which::which(term)
+                        .ok()
+                        .and_then(|p| std::fs::canonicalize(p).ok())
+                        .and_then(|real| linux_backend_for_terminal_name(&real.to_string_lossy()))
+                    {
+                        return mapped;
+                    }
+                    return TerminalBackend::Custom(term.to_string());
+                }
+            }
+            // Last resort: xterm is the safest `-hold -e sh -c` contract
+            // even when it is not on PATH — the spawn error is then reported
+            // as an actual failure instead of silently doing nothing.
+            TerminalBackend::Xterm
         }
     }
+}
+
+/// Map a Linux terminal binary (name or path) to the backend that knows its
+/// exact command-line syntax. Unknown terminals return `None`; the caller
+/// then falls back to the generic `-e sh -c` contract that every
+/// x-terminal-emulator-compatible program supports.
+#[cfg(target_os = "linux")]
+fn linux_backend_for_terminal_name(name: &str) -> Option<TerminalBackend> {
+    let base = name
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "ptyxis" => Some(TerminalBackend::Ptyxis),
+        "gnome-terminal" => Some(TerminalBackend::GnomeTerminal),
+        "konsole" => Some(TerminalBackend::Konsole),
+        "xfce4-terminal" => Some(TerminalBackend::Xfce4Terminal),
+        "alacritty" => Some(TerminalBackend::Alacritty),
+        "kitty" => Some(TerminalBackend::Kitty),
+        "xterm" | "uxterm" | "urxvt" | "rxvt" => Some(TerminalBackend::Xterm),
+        "xdg-terminal-exec" => Some(TerminalBackend::XdgTerminalExec),
+        _ => None,
+    }
+}
+
+/// Non-Linux stub.
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn linux_backend_for_terminal_name(_name: &str) -> Option<TerminalBackend> {
+    None
 }
 
 /// Resolve a terminal configuration into a concrete launch plan.
@@ -246,6 +350,8 @@ pub fn resolve_terminal_plan(config: &TerminalConfig) -> Result<TerminalPlan, St
         TerminalBackend::TerminalApp => resolve_terminal_app(config, &inner_cmd),
         TerminalBackend::ITerm2 => resolve_iterm2(config, &inner_cmd),
         TerminalBackend::GnomeTerminal => resolve_gnome_terminal(config, &inner_cmd),
+        TerminalBackend::Ptyxis => resolve_ptyxis(config, &inner_cmd),
+        TerminalBackend::XdgTerminalExec => resolve_xdg_terminal_exec(config, &inner_cmd),
         TerminalBackend::Konsole => resolve_konsole(config, &inner_cmd),
         TerminalBackend::Xterm => resolve_xterm(config, &inner_cmd),
         TerminalBackend::Alacritty => resolve_alacritty(config, &inner_cmd),
@@ -297,26 +403,145 @@ enum MarkerShell {
 /// the startup probe marker after it exits. The suffix is appended AFTER the
 /// inner command unconditionally (`&` in cmd, `;` in sh/ps), so a failing
 /// command still produces a marker with its real exit code.
+///
+/// POSIX commands additionally record their process group (see
+/// [`TerminalConfig::pid_file`]) and remove it again when they finish, so a
+/// Stop/Cancel can kill the real command tree after the terminal launcher
+/// has detached.
 fn with_marker(inner: &str, config: &TerminalConfig, shell: MarkerShell) -> String {
-    let Some(marker) = config.startup_marker.as_deref() else {
-        return inner.to_string();
-    };
     match shell {
         // `!ERRORLEVEL!` (delayed expansion, enabled via `/V:ON`) is expanded
         // when the echo executes, unlike `%ERRORLEVEL%` which is expanded when
         // the whole line is parsed (always 0). The space before `>` and the
         // quoted path are required: `echo !ERRORLEVEL!>path` writes an empty
         // file.
-        MarkerShell::Cmd => format!("{} & echo !ERRORLEVEL! > \"{}\"", inner, marker),
-        MarkerShell::Sh => {
-            format!("{}; echo $? > '{}'", inner, marker.replace('\'', "'\\''"))
+        MarkerShell::Cmd => {
+            let Some(marker) = config.startup_marker.as_deref() else {
+                return inner.to_string();
+            };
+            format!("{} & echo !ERRORLEVEL! > \"{}\"", inner, marker)
         }
-        MarkerShell::Ps => format!(
-            "{}; $LASTEXITCODE | Out-File -FilePath '{}' -Encoding ascii",
-            inner,
-            marker.replace('\'', "''")
-        ),
+        MarkerShell::Sh => with_posix_lifecycle(inner, config),
+        MarkerShell::Ps => {
+            let Some(marker) = config.startup_marker.as_deref() else {
+                return inner.to_string();
+            };
+            format!(
+                "{}; $LASTEXITCODE | Out-File -FilePath '{}' -Encoding ascii",
+                inner,
+                marker.replace('\'', "''")
+            )
+        }
     }
+}
+
+/// POSIX command lifecycle wrapper:
+///
+/// 1. record the command's PID + process group into `pid_file` (when set), so
+///    Stop/Cancel can signal the real tree even though the terminal launcher
+///    has already detached;
+/// 2. run the command and write its exit code to `startup_marker` (when set);
+/// 3. remove both helpers again.
+///
+/// When `capture_output` is set the output is additionally teed into a sidecar
+/// log while the user still watches it in the terminal — terminal scrollback
+/// is not machine-readable, and the orchestrator can then report the REAL
+/// failure reason instead of only "check the terminal output". The marker is
+/// written from inside the group, so it carries the command's real exit code
+/// even though a pipeline's status is `tee`'s.
+fn with_posix_lifecycle(inner: &str, config: &TerminalConfig) -> String {
+    let pid_file_raw = config.pid_file.as_deref();
+    let marker_raw = config.startup_marker.as_deref();
+    let pid_file = pid_file_raw.map(|p| p.replace('\'', "'\\''"));
+    let marker = marker_raw.map(|m| m.replace('\'', "'\\''"));
+
+    let mut prefix = String::new();
+    if let Some(pid_file) = &pid_file {
+        // `ps -o pgid=` is the portable way to learn the process group; when
+        // it is unavailable the group equals the PID for terminal foreground
+        // jobs. The EXIT trap is a best-effort cleanup for signal
+        // termination (a closed window, SIGTERM); the explicit `rm` below
+        // handles the normal path (an `exec` of the interactive shell would
+        // skip the trap).
+        prefix.push_str(&format!(
+            "{{ __dl_pidfile='{pid_file}'; __dl_pid=$$; \
+             __dl_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' '); \
+             if [ -z \"$__dl_pgid\" ]; then __dl_pgid=$__dl_pid; fi; \
+             printf '%s %s\\n' \"$__dl_pid\" \"$__dl_pgid\" > \"$__dl_pidfile\"; \
+             trap 'rm -f \"$__dl_pidfile\"' EXIT; }}; "
+        ));
+    }
+
+    let cleanup = if pid_file.is_some() {
+        "rm -f \"$__dl_pidfile\"; ".to_string()
+    } else {
+        String::new()
+    };
+
+    let body = match (&marker, config.capture_output) {
+        (Some(marker), true) => {
+            let log = startup_log_path(marker_raw.unwrap_or(marker)).replace('\'', "'\\''");
+            format!(
+                "{{ {inner}; __dl_exit=$?; echo \"$__dl_exit\" > '{marker}'; {cleanup} }} \
+                 2>&1 | tee '{log}'"
+            )
+        }
+        (Some(marker), false) => format!("{inner}; echo $? > '{marker}'; {cleanup}"),
+        (None, _) => {
+            if cleanup.is_empty() {
+                inner.to_string()
+            } else {
+                format!("{inner}; {cleanup}")
+            }
+        }
+    };
+
+    format!("{prefix}{body}")
+}
+
+/// Sidecar log file used when [`TerminalConfig::capture_output`] is set.
+/// Derived from the marker path so both the spawner and the orchestrator
+/// agree without extra plumbing.
+pub fn startup_log_path(marker: &str) -> String {
+    format!("{}.log", marker)
+}
+
+/// Keep the terminal window open after the inner command exits.
+///
+/// Windows backends already hold the window themselves (`cmd /K`,
+/// PowerShell `-NoExit`), so nothing is appended there. POSIX terminals
+/// close their window as soon as the spawned shell exits, which on Linux
+/// made every failing command's output unreadable (the terminal vanished
+/// before the user could see why the step failed). Handing the terminal over
+/// to an interactive shell is the POSIX analogue of `cmd /K`: the window
+/// stays open with the full output above the prompt.
+fn with_hold(cmd: String, shell: MarkerShell, keep_open: bool) -> String {
+    if !keep_open {
+        return cmd;
+    }
+    match shell {
+        MarkerShell::Sh => format!(
+            "{}; {{ [ -n \"$SHELL\" ] && [ -x \"$SHELL\" ] && exec \"$SHELL\" || exec /bin/sh; }}",
+            cmd
+        ),
+        // cmd /K and PowerShell -NoExit keep the window open by themselves.
+        MarkerShell::Cmd | MarkerShell::Ps => cmd,
+    }
+}
+
+/// Apply the exit-code marker (when requested) and the keep-open hold to an
+/// inner command for the given terminal shell family.
+fn prepare_inner(inner: &str, config: &TerminalConfig, shell: MarkerShell) -> String {
+    with_hold(with_marker(inner, config, shell), shell, config.keep_open)
+}
+
+/// Fresh pid-file path for a visible terminal command (POSIX only). The file
+/// is written by the command itself inside the terminal window.
+pub fn create_pid_file_path() -> String {
+    std::env::temp_dir()
+        .join(format!("devlauncher_term_pid_{}.txt", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Escape a command for osascript (macOS Terminal.app / iTerm2).
@@ -503,7 +728,7 @@ fn resolve_pwsh(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan
 }
 
 fn resolve_terminal_app(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let escaped = escape_osascript(&inner_cmd);
     let script = if let Some(ref label) = config.label {
         format!(
@@ -525,7 +750,7 @@ fn resolve_terminal_app(config: &TerminalConfig, inner_cmd: &str) -> Result<Term
 fn resolve_iterm2(_config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
     // iTerm2 can be controlled via AppleScript or its CLI (iterm2://)
     // Use the AppleScript approach for reliability
-    let inner_cmd = with_marker(inner_cmd, _config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, _config, MarkerShell::Sh);
     let escaped = escape_osascript(&inner_cmd);
     let script = format!(
         "tell application \"iTerm\"\n  activate\n  set newWindow to (create window with default profile)\n  tell current session of newWindow\n    write text \"{}\"\n  end tell\nend tell",
@@ -544,7 +769,7 @@ fn resolve_gnome_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let mut args = Vec::new();
 
     if matches!(config.window_policy, TerminalWindowPolicy::NewTab) {
@@ -571,8 +796,73 @@ fn resolve_gnome_terminal(
     })
 }
 
+/// Ptyxis (GNOME's terminal since GNOME 47) takes the command after `--`,
+/// not `-e`; the working directory and title are structured options. Passing
+/// `-e sh -c ...` happens to work on some builds but is not the documented
+/// interface, and the `cd` prefix baked into the command (see
+/// [`build_inner_command`]) breaks for paths the terminal would have to
+/// expand itself.
+fn resolve_ptyxis(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
+    let mut args = vec!["--new-window".to_string()];
+
+    if let Some(dir) = config.working_dir.as_deref() {
+        args.push("--working-directory".to_string());
+        args.push(dir.to_string());
+    }
+    if let Some(ref label) = config.label {
+        args.push("--title".to_string());
+        args.push(label.clone());
+    }
+
+    args.push("--".to_string());
+    args.push("sh".to_string());
+    args.push("-c".to_string());
+    args.push(inner_cmd.to_string());
+
+    Ok(TerminalPlan {
+        program: "ptyxis".to_string(),
+        args,
+        tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
+    })
+}
+
+/// The freedesktop default-terminal launcher resolves the user's terminal
+/// (and the correct CLI syntax for it) from the desktop entries, so one plan
+/// works for every Linux desktop.
+fn resolve_xdg_terminal_exec(
+    config: &TerminalConfig,
+    inner_cmd: &str,
+) -> Result<TerminalPlan, String> {
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
+    let mut args = Vec::new();
+
+    if let Some(ref label) = config.label {
+        args.push(format!("--title={}", label));
+    }
+    // `--dir` is the spec's structured working directory. The POSIX `cd`
+    // prefix stays in the command as well: `--dir` is ignored by entries
+    // that do not support it, while `cd` always works.
+    if let Some(dir) = config.working_dir.as_deref() {
+        args.push(format!("--dir={}", dir));
+    }
+
+    args.push("--".to_string());
+    args.push("sh".to_string());
+    args.push("-c".to_string());
+    args.push(inner_cmd.to_string());
+
+    Ok(TerminalPlan {
+        program: "xdg-terminal-exec".to_string(),
+        args,
+        tracking_quality: ProcessTrackingQuality::TerminalWrapper,
+        raw_tail: None,
+    })
+}
+
 fn resolve_konsole(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![
         "--hold".to_string(),
         "-e".to_string(),
@@ -594,7 +884,7 @@ fn resolve_konsole(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalP
 }
 
 fn resolve_xterm(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![
         "-hold".to_string(),
         "-e".to_string(),
@@ -615,16 +905,24 @@ fn resolve_xterm(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPla
     })
 }
 
+/// Alacritty takes the command as trailing arguments after `--command`
+/// (`alacritty --command sh -c '<cmd>'`), NOT as one pre-joined shell string:
+/// the old single-argument form was passed to `execve` verbatim, so alacritty
+/// tried to run a file literally named `sh -c '...'`. Options must precede
+/// `--command` — anything after it belongs to the spawned program.
 fn resolve_alacritty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![];
-    args.push("--command".to_string());
-    args.push(format!("sh -c '{}'", inner_cmd.replace('\'', "'\\''")));
 
     if let Some(ref label) = config.label {
         args.push("--title".to_string());
         args.push(label.clone());
     }
+
+    args.push("--command".to_string());
+    args.push("sh".to_string());
+    args.push("-c".to_string());
+    args.push(inner_cmd.to_string());
 
     Ok(TerminalPlan {
         program: "alacritty".to_string(),
@@ -634,18 +932,22 @@ fn resolve_alacritty(config: &TerminalConfig, inner_cmd: &str) -> Result<Termina
     })
 }
 
+/// Kitty takes options first and the program after them; the old order put
+/// `--title` AFTER the command, so the title was passed to the shell as
+/// `$0`/positional arguments instead of being applied to the window.
 fn resolve_kitty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     let mut args = vec![];
-    args.push("--hold".to_string());
-    args.push("sh".to_string());
-    args.push("-c".to_string());
-    args.push(inner_cmd.to_string());
 
     if let Some(ref label) = config.label {
         args.push("--title".to_string());
         args.push(label.clone());
     }
+
+    args.push("--hold".to_string());
+    args.push("sh".to_string());
+    args.push("-c".to_string());
+    args.push(inner_cmd.to_string());
 
     Ok(TerminalPlan {
         program: "kitty".to_string(),
@@ -655,23 +957,25 @@ fn resolve_kitty(config: &TerminalConfig, inner_cmd: &str) -> Result<TerminalPla
     })
 }
 
+/// xfce4-terminal treats everything after `-e` as the command, so the title
+/// option must come BEFORE `-e` (the old order appended `--title` after the
+/// command, which forwarded it to `sh` as an extra argument).
 fn resolve_xfce4_terminal(
     config: &TerminalConfig,
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
-    let mut args = vec![
-        "--hold".to_string(),
-        "-e".to_string(),
-        "sh".to_string(),
-        "-c".to_string(),
-        inner_cmd.to_string(),
-    ];
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
+    let mut args = vec!["--hold".to_string()];
 
     if let Some(ref label) = config.label {
         args.push("--title".to_string());
         args.push(label.clone());
     }
+
+    args.push("-e".to_string());
+    args.push("sh".to_string());
+    args.push("-c".to_string());
+    args.push(inner_cmd.to_string());
 
     Ok(TerminalPlan {
         program: "xfce4-terminal".to_string(),
@@ -687,7 +991,7 @@ fn resolve_custom_terminal(
     inner_cmd: &str,
 ) -> Result<TerminalPlan, String> {
     // Custom terminal: assume it can accept `-e sh -c "<cmd>"` pattern
-    let inner_cmd = with_marker(inner_cmd, config, MarkerShell::Sh);
+    let inner_cmd = prepare_inner(inner_cmd, config, MarkerShell::Sh);
     Ok(TerminalPlan {
         program: name.to_string(),
         args: vec![
@@ -708,6 +1012,59 @@ fn resolve_custom_terminal(
 /// Check if a program exists on PATH.
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
+}
+
+/// Whether the freedesktop `xdg-terminal-exec` helper can resolve a default
+/// terminal on this machine. A binary alone is not enough: a host can ship
+/// the helper without any usable terminal desktop entry, in which case every
+/// launch would fail with a non-zero exit instead of opening a window. The
+/// probe (`--print-id`) reports the selected entry without launching
+/// anything, and the verdict is cached for the process lifetime.
+#[cfg(target_os = "linux")]
+fn linux_xdg_terminal_exec_available() -> bool {
+    *LINUX_XDG_TERMINAL_EXEC
+        .get_or_init(|| which_exists("xdg-terminal-exec") && xdg_terminal_exec_finds_terminal())
+}
+
+/// Non-Linux stub: the helper is a freedesktop/Linux tool.
+#[cfg(not(target_os = "linux"))]
+fn linux_xdg_terminal_exec_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn xdg_terminal_exec_finds_terminal() -> bool {
+    let mut child = match std::process::Command::new("xdg-terminal-exec")
+        .arg("--print-id")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    // The probe must never block a terminal spawn: a broken helper script is
+    // killed after a short grace period and treated as unavailable.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Whether Windows Terminal can actually be launched on this machine.
@@ -791,10 +1148,13 @@ mod tests {
             }
             HostOs::Macos => assert_eq!(backend, TerminalBackend::TerminalApp),
             HostOs::Linux => {
-                // Should be one of the known Linux terminals
+                // Should be one of the known Linux terminals (or the
+                // freedesktop default-terminal helper).
                 assert!(matches!(
                     backend,
                     TerminalBackend::GnomeTerminal
+                        | TerminalBackend::Ptyxis
+                        | TerminalBackend::XdgTerminalExec
                         | TerminalBackend::Konsole
                         | TerminalBackend::Xterm
                         | TerminalBackend::Alacritty
@@ -833,6 +1193,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "cmd");
@@ -854,6 +1216,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "osascript");
@@ -871,6 +1235,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "gnome-terminal");
@@ -888,6 +1254,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: Some(r"C:\Temp\probe\m.txt".to_string()),
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "cmd");
@@ -914,6 +1282,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let cmd_plan = resolve_terminal_plan(&cmd_config).unwrap();
         assert!(cmd_plan.raw_tail.is_some());
@@ -936,6 +1306,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let wt_plan = resolve_terminal_plan(&wt_config).unwrap();
         assert!(wt_plan.raw_tail.is_some());
@@ -958,15 +1330,323 @@ mod tests {
             working_dir: None,
             window_policy: TerminalWindowPolicy::NewWindow,
             label: None,
-            keep_open: true,
+            keep_open: false,
             env: None,
             startup_marker: Some("/tmp/probe/m.txt".to_string()),
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "gnome-terminal");
         let joined = plan.args.join(" ");
         assert!(joined.contains("echo $? > '/tmp/probe/m.txt'"), "{joined}");
         assert!(joined.contains("python manage.py runserver"), "{joined}");
+        // keep_open = false: no interactive shell hand-off.
+        assert!(!joined.contains("exec \"$SHELL\""), "{joined}");
+    }
+
+    /// POSIX terminals close their window when the spawned shell exits, which
+    /// made every failing command's output unreadable on Linux. The hold is
+    /// the POSIX analogue of `cmd /K`: an interactive shell keeps the window
+    /// (and its scrollback) alive after the command finishes.
+    #[test]
+    fn posix_plan_holds_terminal_open() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::Xterm,
+            command: "npm run dev".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: true,
+            env: None,
+            startup_marker: None,
+            capture_output: false,
+            pid_file: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        let joined = plan.args.join(" ");
+        assert!(joined.contains("exec \"$SHELL\""), "{joined}");
+        // The hold must come AFTER the command, never before it.
+        let cmd_pos = joined.find("npm run dev").expect("command present");
+        let hold_pos = joined.find("exec \"$SHELL\"").expect("hold present");
+        assert!(hold_pos > cmd_pos, "{joined}");
+    }
+
+    /// End-to-end check of the POSIX wrapper: the marker must carry the
+    /// command's REAL exit code even though the output goes through `tee`,
+    /// the sidecar log must contain both streams, and the pid file must be
+    /// cleaned up when the command finishes.
+    #[cfg(unix)]
+    #[test]
+    fn posix_lifecycle_wrapper_writes_marker_log_and_pidfile() {
+        let dir = std::env::temp_dir().join(format!(
+            "sp_term_lifecycle_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("marker.txt");
+        let pid_file = dir.join("pid.txt");
+        let config = TerminalConfig {
+            backend: TerminalBackend::Xterm,
+            command: "echo hello-from-wrapper; echo err-line >&2; false".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: false,
+            env: None,
+            startup_marker: Some(marker.to_string_lossy().into_owned()),
+            capture_output: true,
+            pid_file: Some(pid_file.to_string_lossy().into_owned()),
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        let idx = plan
+            .args
+            .iter()
+            .position(|a| a == "-c")
+            .expect("xterm plan carries sh -c");
+        let inner = plan.args[idx + 1].clone();
+
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&inner)
+            .status()
+            .expect("wrapper must run");
+        assert!(status.success(), "wrapper itself must exit cleanly");
+
+        let code: i32 = std::fs::read_to_string(&marker)
+            .expect("marker written")
+            .trim()
+            .parse()
+            .expect("marker holds a number");
+        assert_eq!(code, 1, "marker must carry the command's real exit code");
+
+        let log = std::fs::read_to_string(dir.join("marker.txt.log")).expect("log written");
+        assert!(log.contains("hello-from-wrapper"), "{log}");
+        assert!(log.contains("err-line"), "{log}");
+        assert!(
+            !pid_file.exists(),
+            "pid file must be removed after the command"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pid file must record a live process group while the command runs,
+    /// so Stop/Cancel can kill a dev server started in a terminal window.
+    #[cfg(unix)]
+    #[test]
+    fn posix_lifecycle_wrapper_records_live_process_group() {
+        let dir = std::env::temp_dir().join(format!(
+            "sp_term_pgid_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("pid.txt");
+        let config = TerminalConfig {
+            backend: TerminalBackend::Xterm,
+            command: "sleep 30".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: false,
+            env: None,
+            startup_marker: None,
+            capture_output: false,
+            pid_file: Some(pid_file.to_string_lossy().into_owned()),
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        let idx = plan.args.iter().position(|a| a == "-c").unwrap();
+        let inner = plan.args[idx + 1].clone();
+
+        // Spawn the wrapper as a session/group leader, exactly like a
+        // terminal emulator does: the recorded pgid then belongs to the
+        // command's own session, never to the app's process group.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(&inner);
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("wrapper must spawn");
+        // Wait for the pid file to appear.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let content = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if !text.trim().is_empty() {
+                    break text;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid file was never written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let nums: Vec<i32> = content
+            .split_whitespace()
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        assert_eq!(nums.len(), 2, "pid file must hold pid and pgid: {content}");
+        assert!(nums[0] > 1 && nums[1] > 1, "invalid recorded ids: {content}");
+        assert_eq!(nums[1], nums[0], "session leader must be its own group");
+        // The recorded group must be alive while the command runs.
+        assert_eq!(
+            unsafe { libc::kill(-nums[1], 0) },
+            0,
+            "recorded process group must be alive"
+        );
+
+        // The real kill path: the recorded group is signalled and the pid
+        // file is consumed.
+        assert!(
+            crate::modules::workspace::process_manager::kill_recorded_process_group(&pid_file)
+                .unwrap(),
+            "the live recorded group must be killed"
+        );
+        let _ = child.wait();
+        assert!(
+            unsafe { libc::kill(-nums[1], 0) } != 0,
+            "the recorded group must be gone after the kill"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows terminals hold the window themselves (`cmd /K`,
+    /// PowerShell `-NoExit`) — the POSIX hold must never leak into their
+    /// command lines.
+    #[test]
+    fn windows_plans_do_not_get_posix_hold() {
+        for backend in [TerminalBackend::Cmd, TerminalBackend::PowerShell] {
+            let config = TerminalConfig {
+                backend,
+                command: "npm run dev".to_string(),
+                working_dir: None,
+                window_policy: TerminalWindowPolicy::NewWindow,
+                label: None,
+                keep_open: true,
+                env: None,
+                startup_marker: None,
+                capture_output: false,
+                pid_file: None,
+            };
+            let plan = resolve_terminal_plan(&config).unwrap();
+            let joined = plan.args.join(" ");
+            assert!(!joined.contains("exec \"$SHELL\""), "{joined}");
+        }
+    }
+
+    /// Compose bootstraps opt into output capture: the exit-code marker must
+    /// still carry the REAL exit code while the output is teed to the sidecar
+    /// log (a pipeline's status is `tee`'s, so the code is read before it).
+    #[test]
+    fn posix_capture_plan_tees_output_and_keeps_real_exit_code() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::Xterm,
+            command: "docker compose up -d".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: true,
+            env: None,
+            startup_marker: Some("/tmp/probe/m.txt".to_string()),
+            capture_output: true,
+            pid_file: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        let joined = plan.args.join(" ");
+        assert!(joined.contains("__dl_exit=$?"), "{joined}");
+        assert!(
+            joined.contains("echo \"$__dl_exit\" > '/tmp/probe/m.txt'"),
+            "{joined}"
+        );
+        assert!(joined.contains("tee '/tmp/probe/m.txt.log'"), "{joined}");
+        assert!(joined.contains("docker compose up -d"), "{joined}");
+        assert_eq!(startup_log_path("/tmp/probe/m.txt"), "/tmp/probe/m.txt.log");
+    }
+
+    /// Ptyxis (GNOME's default terminal) takes `--` plus structured options,
+    /// not `-e`; the legacy custom-terminal pattern is not its interface.
+    #[test]
+    fn ptyxis_plan_uses_structured_options() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::Ptyxis,
+            command: "npm start".to_string(),
+            working_dir: Some("/tmp/project".to_string()),
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: Some("Dev".to_string()),
+            keep_open: false,
+            env: None,
+            startup_marker: None,
+            capture_output: false,
+            pid_file: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        assert_eq!(plan.program, "ptyxis");
+        assert!(plan.args.iter().any(|a| a == "--new-window"));
+        assert!(plan.args.iter().any(|a| a == "--working-directory"));
+        assert!(plan.args.iter().any(|a| a == "--"));
+        assert!(!plan.args.iter().any(|a| a == "-e"));
+    }
+
+    /// The freedesktop helper receives the command after `--`, with the
+    /// title/dir as structured options; it selects the actual terminal.
+    #[test]
+    fn xdg_terminal_exec_plan_is_structured() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::XdgTerminalExec,
+            command: "npm start".to_string(),
+            working_dir: Some("/tmp/project".to_string()),
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: Some("Dev".to_string()),
+            keep_open: false,
+            env: None,
+            startup_marker: None,
+            capture_output: false,
+            pid_file: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        assert_eq!(plan.program, "xdg-terminal-exec");
+        assert!(plan.args.iter().any(|a| a.starts_with("--title=")));
+        assert!(plan.args.iter().any(|a| a == "--dir=/tmp/project"));
+        assert!(plan.args.iter().any(|a| a == "--"));
+    }
+
+    /// Alacritty takes the command as trailing argv after `--command`; the
+    /// old code passed one pre-joined string, which `execve` cannot run.
+    #[test]
+    fn alacritty_plan_passes_argv_not_prejoined_string() {
+        let config = TerminalConfig {
+            backend: TerminalBackend::Alacritty,
+            command: "npm start".to_string(),
+            working_dir: None,
+            window_policy: TerminalWindowPolicy::NewWindow,
+            label: None,
+            keep_open: false,
+            env: None,
+            startup_marker: None,
+            capture_output: false,
+            pid_file: None,
+        };
+        let plan = resolve_terminal_plan(&config).unwrap();
+        let idx = plan
+            .args
+            .iter()
+            .position(|a| a == "--command")
+            .expect("--command present");
+        assert_eq!(plan.args[idx + 1], "sh");
+        assert_eq!(plan.args[idx + 2], "-c");
+        assert_eq!(plan.args[idx + 3], "npm start");
     }
 
     #[test]
@@ -1001,6 +1681,8 @@ mod tests {
             keep_open: true,
             env: None,
             startup_marker: None,
+            capture_output: false,
+            pid_file: None,
         };
         let plan = resolve_terminal_plan(&config).unwrap();
         assert_eq!(plan.program, "wt");

@@ -50,12 +50,24 @@ use crate::modules::toolchain::models::{
 fn language_tools(lang: &str) -> &'static [&'static str] {
     match lang {
         "python" => &["python"],
-        "rust" => &["rust", "msvc-build-tools"],
+        "rust" => {
+            #[cfg(target_os = "windows")]
+            { &["rust", "msvc-build-tools"] }
+            #[cfg(not(target_os = "windows"))]
+            { &["rust"] }
+        },
         "go" => &["go"],
         "typescript" | "javascript" => &["node"],
         "java" => &["java"],
         "csharp" => &["dotnet"],
-        "cpp" => &["msvc-build-tools"],
+        "cpp" => {
+            #[cfg(target_os = "windows")]
+            { &["msvc-build-tools"] }
+            #[cfg(target_os = "macos")]
+            { &["xcodebuild"] }
+            #[cfg(target_os = "linux")]
+            { &[] }
+        },
         "dart" => &["dart"],
         "kotlin" => &["java", "kotlin"],
         "php" => &["php"],
@@ -64,6 +76,15 @@ fn language_tools(lang: &str) -> &'static [&'static str] {
         "elixir" => &["erlang", "elixir"],
         // gleam компилируется в Erlang и требует erlc/erlang для сборки
         "gleam" => &["gleam", "erlang"],
+        "ruby" => &["ruby"],
+        "c" => {
+            #[cfg(target_os = "windows")]
+            { &["gcc"] }
+            #[cfg(target_os = "macos")]
+            { &["xcodebuild"] }
+            #[cfg(target_os = "linux")]
+            { &["gcc"] }
+        },
         // html — статика, отдельного рантайма нет
         _ => &[],
     }
@@ -99,6 +120,7 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         // если язык php не выбран в мастере явно (symfony/laravel —
         // standalone-фреймворки со своим scaffold'ом).
         "symfony" | "laravel" => &["php", "composer"],
+        "rails" => &["ruby"],
         // Android SDK нужен и для android, и для jetpack-compose.
         "android" | "jetpack-compose" => &["java", "android"],
         // JVM-фреймворки: spring boot и ktor требуют JDK, даже если
@@ -110,7 +132,7 @@ fn framework_extra_tools(framework: &str) -> &'static [&'static str] {
         "unity" => &["unity"],
         "unreal" => &["unreal"],
         "godot" => &["godot"],
-        "qt" => &["qt"],
+        "qt" | "qt-qml" | "qt-widgets" | "qt-webengine" | "qt-kirigami" => &["qt"],
         // SwiftUI/Vapor — только macOS: нужен Xcode (xcodebuild).
         "swiftui" | "vapor" => &["xcodebuild"],
         _ => &[],
@@ -227,6 +249,10 @@ pub fn wizard_tool_to_toolchain(wizard_id: &str) -> Option<&'static str> {
         // реальный REPL — CSharpRepl (dotnet tool install -g CSharpRepl).
         // «dotnet-cmd» замаплен на него для совместимости с мастером.
         "dotnet-cmd" | "csharprepl" => Some("csharprepl"),
+        "msvc-build-tools" => Some("msvc-build-tools"),
+        "angular-cli" => Some("angular-cli"),
+        "gcc" => Some("gcc"),
+        "bun" => Some("bun"),
         _ => None,
     }
 }
@@ -391,7 +417,10 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
         }
     };
 
+    #[cfg(target_os = "windows")]
     push("winget");
+    #[cfg(target_os = "macos")]
+    push("brew");
 
     for lang in &requirements.languages {
         for id in language_tools(lang) {
@@ -449,7 +478,7 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
             // firebase-tools ставится через npm, CSharpRepl — через dotnet tool.
             // Рантайм обязан попасть в требования, даже если язык не выбран.
             match id {
-                "firebase" => push("node"),
+                "firebase" | "angular-cli" => push("node"),
                 "csharprepl" => push("dotnet"),
                 _ => {}
             }
@@ -477,6 +506,29 @@ fn resolve_inner(requirements: &ProjectRequirements, standalone: bool) -> Vec<St
 mod tests {
     use super::*;
 
+    fn base_tools() -> Vec<&'static str> {
+        #[cfg(target_os = "windows")]
+        {
+            vec!["winget"]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            vec!["brew"]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            vec![]
+        }
+    }
+
+    fn expected_with_base(tools: &[&'static str]) -> Vec<String> {
+        let mut res: Vec<String> = base_tools().into_iter().map(String::from).collect();
+        for t in tools {
+            res.push(t.to_string());
+        }
+        res
+    }
+
     fn req() -> ProjectRequirements {
         ProjectRequirements::default()
     }
@@ -485,18 +537,18 @@ mod tests {
     fn language_python_resolves_to_python() {
         let mut r = req();
         r.languages = vec!["python".into()];
-        assert_eq!(resolve(&r), vec!["winget", "python"]);
+        assert_eq!(resolve(&r), expected_with_base(&["python"]));
     }
 
     #[test]
     fn typescript_and_javascript_use_node() {
         let mut r = req();
         r.languages = vec!["typescript".into()];
-        assert_eq!(resolve(&r), vec!["winget", "node"]);
+        assert_eq!(resolve(&r), expected_with_base(&["node"]));
 
         let mut r = req();
         r.languages = vec!["javascript".into()];
-        assert_eq!(resolve(&r), vec!["winget", "node"]);
+        assert_eq!(resolve(&r), expected_with_base(&["node"]));
     }
 
     #[test]
@@ -505,7 +557,7 @@ mod tests {
         r.languages = vec!["elixir".into()];
         // erlang идёт ПЕРВЫМ: elixir.bat запускает erl, без рантайма
         // на PATH проверка установленного elixir не сработает.
-        assert_eq!(resolve(&r), vec!["winget", "erlang", "elixir"]);
+        assert_eq!(resolve(&r), expected_with_base(&["erlang", "elixir"]));
     }
 
     #[test]
@@ -540,7 +592,11 @@ mod tests {
         let ids = resolve(&r);
         // рантаймы из статичной таблицы (tauri-cli больше не нужен —
         // генерация идёт через npx create-tauri-app)
-        for expected in ["rust", "node", "msvc-build-tools"] {
+        #[cfg(target_os = "windows")]
+        let expected_tools = ["rust", "node", "msvc-build-tools"];
+        #[cfg(not(target_os = "windows"))]
+        let expected_tools = ["rust", "node"];
+        for expected in expected_tools {
             assert!(
                 ids.iter().any(|i| i == expected),
                 "нет {expected} в {ids:?}"
@@ -709,13 +765,13 @@ mod tests {
             "mailpit".into(),
             "docker".into(),
         ];
-        assert_eq!(resolve(&r), vec!["winget", "docker"]);
+        assert_eq!(resolve(&r), expected_with_base(&["docker"]));
 
         // попытка выбрать «локально» чисто docker-инструмент (нет источников
         // в tools.json) ничего не даёт: clickhouse/airflow/mailpit не замаплены
         let mut r2 = r.clone();
         r2.local_infra_tools = vec!["clickhouse".into(), "mailpit".into()];
-        assert_eq!(resolve(&r2), vec!["winget", "docker"]);
+        assert_eq!(resolve(&r2), expected_with_base(&["docker"]));
     }
 
     #[test]
@@ -762,7 +818,7 @@ mod tests {
             "mysql".into(),
         ];
         // resolve() (легаси-мастер) прячет их за local_infra_tools...
-        assert_eq!(resolve(&r), vec!["winget"]);
+        assert_eq!(resolve(&r), expected_with_base(&[]));
         // ...а resolve_standalone() ставит локально все шесть.
         let ids = resolve_standalone(&r);
         for expected in [
@@ -779,7 +835,10 @@ mod tests {
             );
         }
         // Порядок детерминирован = порядок выбора.
+        #[cfg(target_os = "windows")]
         assert_eq!(ids[0], "winget");
+        #[cfg(target_os = "macos")]
+        assert_eq!(ids[0], "brew");
     }
 
     /// STANDALONE: чисто docker-инструменты (нет маппинга/источников)
@@ -794,7 +853,7 @@ mod tests {
             "mysql".into(),
         ];
         let ids = resolve_standalone(&r);
-        assert_eq!(ids, vec!["winget", "mysql"]);
+        assert_eq!(ids, expected_with_base(&["mysql"]));
     }
 
     /// Легаси-поведение `resolve()` не изменилось (совместимость мастера):
@@ -803,10 +862,10 @@ mod tests {
     fn legacy_resolve_keeps_opt_in_gating_for_wizard() {
         let mut r = req();
         r.tools = vec!["mysql".into(), "postgresql".into()];
-        assert_eq!(resolve(&r), vec!["winget"]);
+        assert_eq!(resolve(&r), expected_with_base(&[]));
 
         r.local_infra_tools = vec!["mysql".into()];
-        assert_eq!(resolve(&r), vec!["winget", "mysql"]);
+        assert_eq!(resolve(&r), expected_with_base(&["mysql"]));
     }
 
     #[test]
@@ -870,9 +929,21 @@ mod tests {
         for id in &ids {
             assert!(seen.insert(id), "дубликат {id} в {ids:?}");
         }
-        // winget идёт первым, языки — раньше тулов фреймворка
-        assert_eq!(ids[0], "winget");
-        assert_eq!(ids[1], "rust");
+        // winget/brew идёт первым на Win/Mac, языки — раньше тулов фреймворка
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(ids[0], "winget");
+            assert_eq!(ids[1], "rust");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(ids[0], "brew");
+            assert_eq!(ids[1], "rust");
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            assert_eq!(ids[0], "rust");
+        }
     }
 
     #[test]
@@ -972,8 +1043,8 @@ mod tests {
 
     #[test]
     fn empty_requirements_resolve_to_winget_only() {
-        // winget — обязательный базовый инструмент даже при пустом запросе
-        assert_eq!(resolve(&req()), vec!["winget"]);
+        // Базовый менеджер пакетов (winget/brew) даже при пустом запросе
+        assert_eq!(resolve(&req()), expected_with_base(&[]));
     }
 
     /// Гарантия отсутствия молчаливых дыр: каждый id, который resolve()
@@ -1091,10 +1162,42 @@ mod tests {
             let mut r = req();
             r.frameworks = vec![fw.clone()];
             let ids = resolve(&r);
+            let min_expected = if base_tools().is_empty() { 1 } else { 2 };
             assert!(
-                ids.len() > 1,
-                "фреймворк {fw} не даёт ни одного требования (только winget): {ids:?}"
+                ids.len() >= min_expected,
+                "фреймворк {fw} не даёт ни одного требования: {ids:?}"
             );
         }
     }
+
+    #[test]
+    fn new_technologies_resolve_correct_requirements() {
+        // Ruby & Rails
+        let mut r = req();
+        r.languages = vec!["ruby".to_string()];
+        r.frameworks = vec!["rails".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"ruby".to_string()), "rails must require ruby: {ids:?}");
+
+        // C & GCC
+        let mut r = req();
+        r.languages = vec!["c".to_string()];
+        let ids = resolve(&r);
+        #[cfg(target_os = "windows")]
+        assert!(ids.contains(&"gcc".to_string()), "C on Windows must require gcc: {ids:?}");
+
+        // Angular-cli as optional tool
+        let mut r = req();
+        r.tools = vec!["angular-cli".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"angular-cli".to_string()), "angular-cli tool must resolve: {ids:?}");
+        assert!(ids.contains(&"node".to_string()), "angular-cli must pull node: {ids:?}");
+
+        // Bun tool
+        let mut r = req();
+        r.tools = vec!["bun".to_string()];
+        let ids = resolve(&r);
+        assert!(ids.contains(&"bun".to_string()), "bun tool must resolve: {ids:?}");
+    }
 }
+

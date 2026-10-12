@@ -119,22 +119,15 @@ pub struct FileChangeEvent {
 }
 
 fn is_source_file(path: &Path) -> bool {
-    // Skip hidden dirs and known non-source dirs
-    if let Some(components) = path.components().next() {
-        if let std::path::Component::Normal(name) = components {
-            if let Some(s) = name.to_str() {
-                if s.starts_with('.') || SKIP_DIRS.contains(&s) {
-                    return false;
-                }
-            }
-        }
-    }
-
-    // Check all path components for skip dirs
+    // Skip hidden directories and known non-source directories anywhere in
+    // the path. The first component of an absolute path is `RootDir`, so the
+    // old check against `components().next()` never fired — edits inside
+    // dot-directories (`.config`, `.github`, ...) still emitted restart
+    // events.
     for component in path.components() {
         if let std::path::Component::Normal(name) = component {
             if let Some(s) = name.to_str() {
-                if SKIP_DIRS.contains(&s) {
+                if s.starts_with('.') || SKIP_DIRS.contains(&s) {
                     return false;
                 }
             }

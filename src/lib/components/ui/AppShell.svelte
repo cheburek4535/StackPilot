@@ -5,8 +5,9 @@
   import { page } from "$app/stores";
   import { APP_NAME, APP_VERSION } from "$lib/core/app";
   import { NAV_GROUPS, isNavItemActive, isNavGroupActive } from "$lib/core/navigation";
-  import { initTheme } from "$lib/core/theme";
-  import { getSettings } from "$lib/core/api";
+  import { initTheme, applyUiPrefs, getNextZoomLevel } from "$lib/core/theme";
+  import { getSettings, updateSettings } from "$lib/core/api";
+  import type { AppSettings } from "$lib/core/types";
   import { rememberRoute } from "$lib/core/lastRoute";
   import { onboarding, showOnboarding, reopenOnboarding } from "$lib/core/onboarding";
   import { helpMode, toggleHelpMode } from "$lib/core/help";
@@ -15,25 +16,75 @@
   import type { Locale, TranslationKey } from "$lib/core/i18n.svelte";
   import { listenExitRequest } from "$lib/core/exit";
   import type { ExitAskPayload } from "$lib/core/exit";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { loadPlatformCapabilities, isMacosHost } from "$lib/modules/devlauncher/platform";
+  import type { PlatformCapabilities } from "$lib/modules/devlauncher/types";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
   import IconButton from "./IconButton.svelte";
   import ToastRegion from "./ToastRegion.svelte";
   import OnboardingOverlay from "./OnboardingOverlay.svelte";
   import ExitDialog from "./ExitDialog.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
+  import { updater } from "$lib/core/updater.svelte";
 
   let { children }: { children: Snippet } = $props();
 
   let restoreRoute = $state(true);
+  let caps = $state<PlatformCapabilities | null>(null);
+  let appSettings = $state<AppSettings | null>(null);
+  const isMac = $derived(
+    isMacosHost(caps) ||
+      (typeof navigator !== "undefined" &&
+        /Mac|iPhone|iPod|iPad/i.test(navigator.platform || navigator.userAgent))
+  );
 
   /** Запрос выхода с запущенными процессами StackPilot (говорит бэкенд). */
   let exitAsk = $state<ExitAskPayload | null>(null);
   let unlistenExit: (() => void) | null = null;
 
+  async function adjustZoom(dir: "in" | "out" | "reset"): Promise<void> {
+    try {
+      const s = appSettings ?? (await getSettings());
+      if (dir === "reset") {
+        s.ui_scale = "auto";
+      } else {
+        s.ui_scale = getNextZoomLevel(s.ui_scale || "auto", dir);
+      }
+      appSettings = s;
+      applyUiPrefs(s);
+      await updateSettings(s);
+    } catch {}
+  }
+
+  function handleKeydown(e: KeyboardEvent): void {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        void adjustZoom("in");
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        void adjustZoom("out");
+      } else if (e.key === "0") {
+        e.preventDefault();
+        void adjustZoom("reset");
+      }
+    }
+  }
+
   onMount(() => {
     initTheme();
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", handleKeydown);
+    }
+    loadPlatformCapabilities()
+      .then((c) => {
+        caps = c;
+      })
+      .catch(() => {});
     getSettings()
       .then((s) => {
+        appSettings = s;
         restoreRoute = s.restore_last_route;
         // The backend is the single source of truth for the UI language.
         i18n.setLocale((s.language as Locale) || "ru");
@@ -49,9 +100,14 @@
       // Exit-диалог недоступен (например, браузерные dev-сборки без Tauri) —
       // закрытие окна обрабатывает бэкенд штатным образом.
     });
+    // Check GitHub releases in background upon application launch.
+    void updater.check();
   });
 
   onDestroy(() => {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("keydown", handleKeydown);
+    }
     if (unlistenExit) unlistenExit();
   });
 
@@ -64,13 +120,29 @@
   $effect(() => {
     if (restoreRoute) rememberRoute(pathname);
   });
+
+  function minimizeWindow() {
+    getCurrentWindow().minimize();
+  }
+  function maximizeWindow() {
+    getCurrentWindow().toggleMaximize();
+  }
+  function closeWindow() {
+    getCurrentWindow().close();
+  }
+  
+  function startDrag(e: PointerEvent) {
+    if (e.target instanceof Element && e.target.closest('button, a')) return;
+    getCurrentWindow().startDragging();
+  }
 </script>
 
 <div class="sp-app">
-  <header class="sp-topbar">
+  <header class="sp-topbar" class:sp-topbar-macos={isMac} data-tauri-drag-region onpointerdown={startDrag}>
     <a href="/" class="sp-brand">
-      <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo"/>
+      <img src="/images/logo-name.svg" alt={APP_NAME} class="sp-brand-logo" />
     </a>
+    <div class="sp-topbar-drag" data-tauri-drag-region onpointerdown={startDrag}></div>
     <div class="sp-topbar-actions">
       <button
         type="button"
@@ -89,8 +161,23 @@
         onclick={() => reopenOnboarding()}
       />
       <IconButton icon="settings" label={i18n.t("nav.settings") as TranslationKey} href="/settings" />
+      {#if !isMac}
+        <div class="sp-window-controls">
+          <button class="sp-window-control" onclick={minimizeWindow} aria-label="Minimize">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 0,5 10,5" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="sp-window-control" onclick={maximizeWindow} aria-label="Maximize">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,1 9,9 1,9 Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="sp-window-control sp-window-close" onclick={closeWindow} aria-label="Close">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M 1,1 9,9 M 1,9 9,1" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+        </div>
+      {/if}
     </div>
   </header>
+
+  <UpdateBanner />
 
   <div class="sp-body">
     <aside class="sp-sidebar">
@@ -162,7 +249,7 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    background: var(--sp-bg-0);
+    background: transparent;
     color: var(--sp-text-1);
     font-family: var(--sp-font-sans);
   }
@@ -178,11 +265,14 @@
     gap: var(--sp-4);
     height: var(--sp-topbar-h);
     padding: 0 var(--sp-4);
-    background: var(--sp-panel-sheen),
-      var(--sp-solid-chrome);
-    border-bottom: 1px solid var(--sp-border);
-    box-shadow: var(--sp-gloss-top-strong);
+    background: transparent;
+    border-bottom: none;
+    box-shadow: none;
     z-index: 10;
+  }
+
+  .sp-topbar.sp-topbar-macos {
+    padding-left: 5.25rem;
   }
 
   .sp-brand {
@@ -227,6 +317,12 @@
     border-radius: var(--sp-radius-full);
   }
 
+  .sp-topbar-drag {
+    flex: 1;
+    height: 100%;
+    /* No visual styles needed, this is an invisible drag handle */
+  }
+
   .sp-brand-logo {
     height: 30px;
     width: auto;
@@ -264,6 +360,36 @@
     color: var(--sp-text-1);
   }
 
+  .sp-window-controls {
+    display: flex;
+    align-items: center;
+    margin-left: var(--sp-2);
+    -webkit-app-region: no-drag;
+  }
+
+  .sp-window-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2rem;
+    border: none;
+    background: transparent;
+    color: var(--sp-text-2);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .sp-window-control:hover {
+    background: var(--sp-bg-2);
+    color: var(--sp-text-1);
+  }
+
+  .sp-window-close:hover {
+    background: #e81123;
+    color: white;
+  }
+
   /* ---- body ---- */
 
   .sp-body {
@@ -281,10 +407,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--sp-panel-sheen),
-      var(--sp-solid-chrome);
-    border-right: 1px solid var(--sp-border);
-    box-shadow: var(--sp-gloss-top);
+    background: transparent;
+    border-right: none;
+    box-shadow: none;
   }
 
   .sp-nav {
@@ -338,7 +463,7 @@
     font-size: var(--sp-fs-sm);
     font-weight: var(--sp-fw-medium);
     text-decoration: none;
-    box-shadow: var(--sp-gloss-top);
+    
     transition:
       background-color 0.15s ease,
       color 0.15s ease,
@@ -366,26 +491,18 @@
   }
 
   .sp-nav-item-active {
-    background: var(--sp-surface-grad),
-      var(--sp-bg-2);
-    color: var(--sp-text-1);
-    box-shadow:
-      var(--sp-gloss-top-strong),
-      inset 0 0 0 1px var(--sp-border);
-  }
+      background: var(--sp-bg-2);
+      color: var(--sp-text-1);
+    }
 
   .sp-nav-item-active::before {
     opacity: 1;
   }
 
   .sp-nav-item-active:hover {
-    background: var(--sp-surface-grad),
-      var(--sp-bg-2);
-    color: var(--sp-text-1);
-    box-shadow:
-      var(--sp-gloss-top-strong),
-      inset 0 0 0 1px var(--sp-border);
-  }
+      background: var(--sp-bg-2);
+      color: var(--sp-text-1);
+    }
 
   .sp-nav-item-label {
     line-height: 1;
@@ -416,7 +533,7 @@
     text-align: left;
     text-decoration: none;
     cursor: pointer;
-    box-shadow: var(--sp-gloss-top);
+    
     transition: background-color 0.15s ease, color 0.15s ease;
   }
 
@@ -433,5 +550,14 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    background: var(--sp-bg-0);
+    border-radius: 10px;
+    margin: 0 8px 8px 0;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.4), 
+      inset 0 1px 1px rgba(255, 255, 255, 0.1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-direction: column;
   }
 </style>

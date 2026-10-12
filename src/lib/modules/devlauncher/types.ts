@@ -190,6 +190,28 @@ export type WslState = {
 };
 
 // ---------------------------------------------------------------------------
+// Platform capabilities (backend `get_platform_capabilities`)
+// ---------------------------------------------------------------------------
+
+/** Host platform facts used to gate OS-specific hints and dialogs. */
+export type PlatformCapabilities = {
+  /** `windows` | `linux` | `macos`. */
+  os: string;
+  arch: string;
+  /** Shells available on this host. */
+  shells: string[];
+  has_docker: boolean;
+  has_compose: boolean;
+  /** The TERMINAL EMULATOR used for visible steps (e.g. `ptyxis`,
+   *  `gnome-terminal`, `wt`, `Terminal.app`) — not the shell. */
+  default_terminal: string;
+  supports_terminal_windows: boolean;
+  /** Whether a Docker Desktop launcher resolves on this host. Docker Engine
+   *  can still be present when this is `false`. */
+  docker_desktop: boolean;
+};
+
+// ---------------------------------------------------------------------------
 // Analysis draft types (backend `analyze_project_v2` output)
 // ---------------------------------------------------------------------------
 

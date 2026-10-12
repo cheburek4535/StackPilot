@@ -1255,3 +1255,48 @@ export type PageMeta = {
 };
 
 export type Paged<T> = { items: T[]; meta: PageMeta };
+
+// ------------------------------------------------------------
+// РАЗДЕЛ C — Мультиверсионность и Shared Tool Store
+// ------------------------------------------------------------
+
+export type ToolVersionSourceKind =
+  | "shared_store"
+  | "external_manager"
+  | "system"
+  | "upstream_download";
+
+export type ToolVersionCandidate = {
+  version: string;
+  display_label: string;
+  source_kind: ToolVersionSourceKind;
+  source_name: string;
+  executable_path?: string | null;
+  channel?: string | null;
+  is_installed: boolean;
+  download_url?: string | null;
+  size_mb?: number | null;
+};
+
+export type BoundEnvironmentInfo = {
+  binding_id: string;
+  name: string;
+  bound_projects: string[];
+};
+
+export type ToolEnvironmentUsage = {
+  tool_id: string;
+  version: string;
+  executable_path: string;
+  source_kind: ToolVersionSourceKind;
+  bound_environments: BoundEnvironmentInfo[];
+  size_bytes: number;
+};
+
+export type ToolchainDeduplicationReport = {
+  total_shared_versions: number;
+  total_bindings_using_shared: number;
+  total_disk_used_bytes: number;
+  total_disk_saved_bytes: number;
+  usages: ToolEnvironmentUsage[];
+};

@@ -11,6 +11,7 @@
   import LoadingState from "$lib/components/ui/LoadingState.svelte";
   import ErrorState from "$lib/components/ui/ErrorState.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
   import {
     workspaceContext,
     reloadWorkspaceContext,
@@ -22,6 +23,18 @@
     setCurrentProject,
     openInVSCode,
   } from "$lib/modules/workspace/api";
+  import {
+    findEnvironmentForProject,
+    openEnvironmentTerminal,
+    listEnvironments,
+    bindProjectToEnvironment,
+    unbindProjectFromEnvironment,
+    configureVsCodeEnvironment,
+    exportStandaloneEnvironment,
+    saveEnvironment,
+    resolveToolsForProject,
+  } from "$lib/modules/project_environment/api";
+  import type { EnvironmentBinding } from "$lib/modules/project_environment/types";
   import type { TrackedProcess, SessionInfo } from "$lib/modules/workspace/types";
   import {
     statusTone,
@@ -46,6 +59,7 @@
     LaunchRun,
     ActionStatus,
     WslState,
+    PlatformCapabilities,
   } from "$lib/modules/devlauncher/types";
   import {
     isV2Profile,
@@ -55,6 +69,7 @@
     profileHasDockerSteps,
   } from "$lib/modules/devlauncher/types";
   import { subscribeWslInstallProgress } from "$lib/modules/devlauncher/wsl";
+  import { loadPlatformCapabilities, isWindowsHost } from "$lib/modules/devlauncher/platform";
   import * as runStore from "$lib/modules/devlauncher/runStore";
   import { openProject } from "$lib/core/integration";
   import { recentProjects } from "$lib/core/recent";
@@ -89,6 +104,10 @@
   // ---- Docker / WSL ----
   /** Whether the most recent launch was a V2 profile with docker steps. */
   let launchedHasDocker = $state(false);
+  /** Platform capabilities (OS gating for the WSL dialog and Docker
+   *  Desktop hints). */
+  let caps = $state<PlatformCapabilities | null>(null);
+  const isWindows = $derived(isWindowsHost(caps));
   // ---- WSL readiness (Docker on Windows requires WSL2) ----
   let wslState = $state<WslState | null>(null);
   let showWslModal = $state(false);
@@ -105,6 +124,15 @@
       wslState = await getWslState();
     } catch {
       wslState = null;
+    }
+  }
+
+  /** Load the session-cached platform capabilities. */
+  async function refreshCaps() {
+    try {
+      caps = await loadPlatformCapabilities();
+    } catch {
+      caps = null;
     }
   }
 
@@ -154,12 +182,193 @@
   }
 
   /** Docker steps exist but WSL (their Windows backend) is not installed.
-   *  When true the launch is blocked behind the WSL install dialog instead. */
-  const wslMissing = $derived(!!launchedHasDocker && !!wslState && !wslState.present);
+   *  When true the launch is blocked behind the WSL install dialog instead.
+   *  Windows only: WSL is meaningless on Linux/macOS. */
+  const wslMissing = $derived(
+    isWindows && !!launchedHasDocker && !!wslState && !wslState.present,
+  );
+  /** The Docker Desktop first-run note (sign-in/terms) only applies where
+   *  Docker Desktop is the runtime — never on a plain Linux Docker Engine. */
+  const showDockerSigninNote = $derived(
+    launchedHasDocker && caps?.docker_desktop === true,
+  );
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
   const wsError = $derived($workspaceContext.error);
+
+  let projectEnv = $state<EnvironmentBinding | null>(null);
+
+  $effect(() => {
+    const pPath = project?.project_path;
+    if (pPath) {
+      findEnvironmentForProject(pPath)
+        .then((env: EnvironmentBinding | null) => {
+          projectEnv = env;
+        })
+        .catch(() => {
+          projectEnv = null;
+        });
+    } else {
+      projectEnv = null;
+    }
+  });
+
+  async function openEnvTerminalSafe(bindingId: string) {
+    try {
+      await openEnvironmentTerminal(bindingId);
+      notifySuccess("Терминал", "Терминал окружения запущен");
+    } catch (e) {
+      notifyError("Ошибка терминала", String(e));
+    }
+  }
+
+  let showEnvSwitcherModal = $state(false);
+  let allEnvironments = $state<EnvironmentBinding[]>([]);
+  let loadingEnvs = $state(false);
+  let switchingEnv = $state(false);
+
+  async function openEnvSwitcher() {
+    showEnvSwitcherModal = true;
+    loadingEnvs = true;
+    try {
+      allEnvironments = await listEnvironments();
+    } catch (e) {
+      notifyError("Ошибка загрузки сред", String(e));
+    } finally {
+      loadingEnvs = false;
+    }
+  }
+
+  async function handleSwitchEnvironment(targetEnv: EnvironmentBinding) {
+    if (!project?.project_path) return;
+    switchingEnv = true;
+    try {
+      if (projectEnv && projectEnv.binding_id !== targetEnv.binding_id) {
+        await unbindProjectFromEnvironment(projectEnv.binding_id, project.project_path);
+      }
+      const updated = await bindProjectToEnvironment(targetEnv.binding_id, project.project_path);
+      projectEnv = updated;
+      notifySuccess("Окружение переключено", `Проект использует среду «${targetEnv.name || targetEnv.binding_id}»`);
+      showEnvSwitcherModal = false;
+    } catch (e) {
+      notifyError("Ошибка переключения среды", String(e));
+    } finally {
+      switchingEnv = false;
+    }
+  }
+
+  async function handleExportStandaloneFromWorkspace() {
+    if (!project?.project_path || !projectEnv) return;
+    try {
+      const res = await exportStandaloneEnvironment(projectEnv.binding_id, project.project_path);
+      notifySuccess(
+        "Standalone скрипты экспортированы",
+        `Созданы ${res.created_files.join(", ")} в папке проекта`
+      );
+    } catch (e) {
+      notifyError("Ошибка экспорта", String(e));
+    }
+  }
+
+  async function handleConfigureVsCodeFromWorkspace() {
+    if (!project?.project_path || !projectEnv) return;
+    try {
+      await configureVsCodeEnvironment(projectEnv.binding_id, project.project_path);
+      notifySuccess("VS Code", `Конфигурация .vscode/settings.json обновлена для «${projectEnv.name}»`);
+    } catch (e) {
+      notifyError("Ошибка настройки VS Code", String(e));
+    }
+  }
+
+  let creatingEnv = $state(false);
+  async function handleCreateIsolatedEnvForProject() {
+    if (!project?.project_path) return;
+    creatingEnv = true;
+    try {
+      const now = new Date().toISOString();
+      const envName = `${project.profile_name || 'Проект'} (Песочница)`;
+
+      const toolCandidates = new Set<string>(["git"]);
+      for (const tech of (project.stack || [])) {
+        const lower = tech.toLowerCase();
+        if (
+          lower.includes("node") ||
+          lower.includes("js") ||
+          lower.includes("ts") ||
+          lower.includes("react") ||
+          lower.includes("vue") ||
+          lower.includes("svelte") ||
+          lower.includes("next") ||
+          lower.includes("vite")
+        ) {
+          toolCandidates.add("node");
+          toolCandidates.add("npm");
+        }
+        if (
+          lower.includes("python") ||
+          lower.includes("django") ||
+          lower.includes("fastapi") ||
+          lower.includes("flask")
+        ) {
+          toolCandidates.add("python");
+          toolCandidates.add("pip");
+        }
+        if (
+          lower.includes("rust") ||
+          lower.includes("cargo") ||
+          lower.includes("tauri") ||
+          lower.includes("actix")
+        ) {
+          toolCandidates.add("cargo");
+          toolCandidates.add("rustc");
+        }
+        if (lower.includes("go") || lower.includes("golang")) {
+          toolCandidates.add("go");
+        }
+      }
+
+      let toolOverrides = {};
+      try {
+        toolOverrides = await resolveToolsForProject(Array.from(toolCandidates));
+      } catch (err) {
+        console.warn("Could not auto-resolve tools:", err);
+      }
+
+      const newBinding: EnvironmentBinding = {
+        schema_version: 1,
+        binding_id: `env_${Date.now().toString(16)}`,
+        name: envName,
+        isolation_mode: "isolated",
+        is_default: false,
+        description: `Изолированное окружение для ${project.profile_name || 'проекта'}`,
+        icon: "box",
+        color: "amber",
+        project_path: project.project_path,
+        bound_projects: [project.project_path],
+        env_dir: null,
+        tool_overrides: toolOverrides,
+        managed_path_entries: [],
+        env_vars: {},
+        env_vars_remove: [],
+        preferred_ide: null,
+        preferred_ide_args: null,
+        created_at: now,
+        updated_at: now,
+      };
+
+      const saved = await saveEnvironment(newBinding);
+      const bound = await bindProjectToEnvironment(saved.binding_id, project.project_path);
+      projectEnv = bound;
+      allEnvironments = await listEnvironments();
+      notifySuccess("Песочница создана", `Среда «${envName}» привязана к проекту`);
+      showEnvSwitcherModal = false;
+    } catch (e) {
+      notifyError("Ошибка создания среды", String(e));
+    } finally {
+      creatingEnv = false;
+    }
+  }
 
   const runningProcs = $derived(processes.filter((p) => isProcessRunning(p.status)));
   const runningCount = $derived(runningProcs.length);
@@ -193,6 +402,7 @@
       }
     }
     void refreshWsl();
+    void refreshCaps();
   });
 
   onDestroy(() => {
@@ -317,7 +527,9 @@
         if (!action.enabled) continue;
         launchCurrent = action.label;
         try {
-          const result = await executeAction(action);
+          const result = await executeAction(action, {
+            projectPath: profile.project_path,
+          });
           actionResults = new Map(actionResults).set(action.id, formatResultSafe(result));
         } catch (e) {
           actionResults = new Map(actionResults).set(action.id, `✗ ${e}`);
@@ -592,6 +804,29 @@
           <div class="sp-hero-head">
             <h2 class="sp-hero-name">{project.profile_name}</h2>
             <Badge tone="violet">{i18n.t("devl.current") as TranslationKey}</Badge>
+            {#if projectEnv}
+              <button
+                type="button"
+                class="sp-env-switcher-badge"
+                onclick={openEnvSwitcher}
+                title="Нажмите для переключения или настройки среды проекта"
+              >
+                {#if projectEnv.isolation_mode === "isolated"}
+                  <Badge tone="amber">{projectEnv.name || "Изолированная среда"} ▾</Badge>
+                {:else}
+                  <Badge tone="neutral">{projectEnv.name || "Глобальная среда"} ▾</Badge>
+                {/if}
+              </button>
+            {:else if project.project_path}
+              <button
+                type="button"
+                class="sp-env-switcher-badge"
+                onclick={openEnvSwitcher}
+                title="Выбрать или привязать среду для проекта"
+              >
+                <Badge tone="neutral">Среда: не привязана ▾</Badge>
+              </button>
+            {/if}
           </div>
           {#if project.description}
             <p class="sp-hero-desc">{project.description}</p>
@@ -604,6 +839,24 @@
               {#each project.stack as tech}
                 <Badge tone="blue">{tech}</Badge>
               {/each}
+            </div>
+          {/if}
+          {#if projectEnv && Object.keys(projectEnv.tool_overrides || {}).length > 0}
+            <div class="sp-hero-env-tools">
+              <span class="sp-hero-env-label">
+                <Icon name="wrench" size={12} />
+                Инструменты среды:
+              </span>
+              <div class="sp-hero-tool-chips">
+                {#each Object.entries(projectEnv.tool_overrides) as [tId, tOverride]}
+                  <span class="sp-hero-tool-chip" title={tOverride.executable_path || "Системный"}>
+                    <span class="sp-tool-name">{tId}</span>
+                    {#if tOverride.version}
+                      <span class="sp-tool-ver">v{tOverride.version}</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
             </div>
           {/if}
           <p class="sp-hero-opened">
@@ -619,6 +872,24 @@
             {i18n.t("ws.open_in_devlauncher") as TranslationKey}
           </Button>
           {#if project.project_path}
+            {#if projectEnv}
+              <Button
+                variant="secondary"
+                icon="terminal"
+                onclick={() => openEnvTerminalSafe(projectEnv!.binding_id)}
+                label="Терминал среды"
+              >
+                Терминал среды
+              </Button>
+              <Button
+                variant="secondary"
+                icon="download"
+                onclick={handleExportStandaloneFromWorkspace}
+                label="Экспортировать автономные скрипты активации (activate.bat, activate.sh)"
+              >
+                Экспорт среды
+              </Button>
+            {/if}
             <Button
               variant="secondary"
               icon="external"
@@ -964,7 +1235,7 @@
             </div>
           {/if}
 
-          {#if launchedHasDocker}
+          {#if showDockerSigninNote}
             <p class="docker-signin-note">
               {i18n.t("devl.docker_signin_hint") as TranslationKey}
             </p>
@@ -975,7 +1246,123 @@
   {/if}
 </PageContainer>
 
-{#if showWslModal}
+{#if showEnvSwitcherModal}
+  <Modal
+    open={showEnvSwitcherModal}
+    onclose={() => showEnvSwitcherModal = false}
+    title="Окружение проекта"
+    description="Выберите среду выполнения для текущего проекта. Инструменты и переменные будут применены автоматически."
+    size="md"
+  >
+    {#if loadingEnvs}
+      <LoadingState label="Загрузка доступных сред…" />
+    {:else}
+      <div class="sp-env-notice">
+        <Icon name="info" size={14} />
+        <span>Песочница изолирует установку пакетов (<code>npm -g</code>, <code>pip</code>, <code>cargo</code>) и пути инструментов. Мгновенный запуск через системные шиммы без виртуальных машин.</span>
+      </div>
+
+      <div class="sp-env-switcher-list">
+        {#each allEnvironments as env}
+          {@const isActive = projectEnv?.binding_id === env.binding_id}
+          <button
+            type="button"
+            class="sp-env-switcher-item {isActive ? 'is-active' : ''}"
+            onclick={() => handleSwitchEnvironment(env)}
+            disabled={switchingEnv}
+          >
+            <div class="sp-env-switcher-item-left">
+              <div class="sp-env-switcher-icon">
+                <Icon name={env.isolation_mode === "isolated" ? "package" : "globe"} size={20} />
+              </div>
+              <div class="sp-env-switcher-item-info">
+                <div class="sp-env-switcher-name">
+                  <span>{env.name || env.binding_id}</span>
+                  {#if env.is_default}
+                    <Badge tone="cyan">Система</Badge>
+                  {:else if env.isolation_mode === "isolated"}
+                    <Badge tone="amber">Изолированная</Badge>
+                  {/if}
+                  {#if isActive}
+                    <Badge tone="lime">Активно ✓</Badge>
+                  {/if}
+                </div>
+                {#if env.description}
+                  <div class="sp-env-switcher-desc">{env.description}</div>
+                {/if}
+                {#if env.tool_overrides && Object.keys(env.tool_overrides).length > 0}
+                  <div class="sp-env-switcher-tools">
+                    {#each Object.entries(env.tool_overrides) as [tId, tOverride]}
+                      <span class="sp-tool-micro-chip">
+                        {tId}{tOverride.version ? `@${tOverride.version}` : ''}
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+            <Icon name={isActive ? "check" : "chevronRight"} size={16} />
+          </button>
+        {/each}
+      </div>
+
+      {#if !projectEnv || projectEnv.isolation_mode !== "isolated"}
+        <div class="sp-env-switcher-create-banner">
+          <div class="sp-create-banner-info">
+            <span class="sp-create-banner-title">Нужна чистая песочница для проекта?</span>
+            <span class="sp-create-banner-sub">Создаст изолированное окружение с локальными шиммами (.cmd/.ps1) и привяжет к проекту.</span>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            icon="plus"
+            loading={creatingEnv}
+            onclick={handleCreateIsolatedEnvForProject}
+          >
+            Создать песочницу
+          </Button>
+        </div>
+      {/if}
+
+      <div class="sp-env-switcher-footer">
+        <div class="sp-env-switcher-actions-left">
+          {#if projectEnv}
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="terminal"
+              onclick={handleConfigureVsCodeFromWorkspace}
+              label="Обновить .vscode/settings.json"
+            >
+              VS Code
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="download"
+              onclick={handleExportStandaloneFromWorkspace}
+              label="Экспортировать автономные скрипты"
+            >
+              Экспорт
+            </Button>
+          {/if}
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => {
+            showEnvSwitcherModal = false;
+            goto("/environments");
+          }}
+        >
+          Все окружения →
+        </Button>
+      </div>
+    {/if}
+  </Modal>
+{/if}
+
+{#if showWslModal && isWindows}
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
   <div class="docker-auth-modal-overlay" onclick={closeWslInstall} role="presentation">
     <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
@@ -1725,4 +2112,199 @@
     to { transform: rotate(360deg); }
   }
   .wsl-error { color: var(--sp-danger); }
+
+  /* Project Environment Switcher */
+  .sp-env-switcher-badge {
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--sp-radius-sm);
+    transition: transform var(--sp-duration-fast) ease, opacity var(--sp-duration-fast) ease;
+  }
+  .sp-env-switcher-badge:hover {
+    transform: translateY(-1px);
+    opacity: 0.85;
+  }
+  .sp-env-switcher-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    max-height: 380px;
+    overflow-y: auto;
+    margin-bottom: var(--sp-4);
+  }
+  .sp-env-switcher-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    border: 1px solid var(--sp-border);
+    background: var(--sp-bg-1);
+    cursor: pointer;
+    text-align: left;
+    transition: all var(--sp-duration-fast) ease;
+    width: 100%;
+  }
+  .sp-env-switcher-item:hover:not(:disabled) {
+    background: var(--sp-bg-2);
+    border-color: var(--sp-primary);
+  }
+  .sp-env-switcher-item.is-active {
+    border-color: var(--sp-primary);
+    background: var(--sp-primary-subtle, rgba(99, 102, 241, 0.08));
+  }
+  .sp-env-switcher-item-left {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+  .sp-env-switcher-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    flex-shrink: 0;
+  }
+  .sp-env-switcher-item-info {
+    min-width: 0;
+  }
+  .sp-env-switcher-name {
+    font-weight: var(--sp-fw-medium);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .sp-env-switcher-desc {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sp-env-switcher-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--sp-border);
+    gap: var(--sp-2);
+  }
+  .sp-env-switcher-actions-left {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .sp-hero-env-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+    font-size: var(--sp-fs-xs);
+  }
+  .sp-hero-env-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--sp-text-3);
+    font-weight: var(--sp-fw-medium);
+  }
+  .sp-hero-tool-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .sp-hero-tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    border-radius: var(--sp-radius-sm);
+    font-family: var(--sp-font-mono);
+    font-size: var(--sp-fs-xs);
+  }
+  .sp-hero-tool-chip .sp-tool-name {
+    color: var(--sp-text-1);
+    font-weight: var(--sp-fw-medium);
+  }
+  .sp-hero-tool-chip .sp-tool-ver {
+    color: var(--sp-amber-fg, #f59e0b);
+  }
+
+  .sp-env-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-bg-2);
+    border: 1px solid var(--sp-border);
+    color: var(--sp-text-2);
+    font-size: var(--sp-fs-xs);
+    line-height: 1.45;
+    margin-bottom: var(--sp-3);
+  }
+  .sp-env-notice code {
+    background: var(--sp-bg-3);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--sp-font-mono);
+  }
+
+  .sp-env-switcher-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .sp-tool-micro-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    background: var(--sp-bg-3);
+    border-radius: var(--sp-radius-xs);
+    font-size: 11px;
+    font-family: var(--sp-font-mono);
+    color: var(--sp-text-2);
+  }
+
+  .sp-env-switcher-create-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+    border-radius: var(--sp-radius-md);
+    background: var(--sp-primary-subtle, rgba(99, 102, 241, 0.08));
+    border: 1px dashed var(--sp-primary);
+    margin-bottom: var(--sp-3);
+  }
+  .sp-create-banner-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .sp-create-banner-title {
+    font-weight: var(--sp-fw-medium);
+    font-size: var(--sp-fs-sm);
+    color: var(--sp-text-1);
+  }
+  .sp-create-banner-sub {
+    font-size: var(--sp-fs-xs);
+    color: var(--sp-text-3);
+  }
 </style>

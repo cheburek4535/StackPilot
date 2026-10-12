@@ -185,9 +185,15 @@ pub async fn run_check(
 
             // Скачивать нужно только то, чего нет или что устарело.
             // ManualInstall ни откуда не скачивается — предупреждение.
+            // Права администратора — по единой точке правды установщика
+            // (Linux PkgManager: apt/dnf/pacman/zypper требуют root).
+            let needs_admin = os_sources
+                .first()
+                .map(|s| super::installer::source_requires_elevation(s, &def))
+                .unwrap_or(def.needs_admin);
             if !status.is_ok() && !matches!(status, ToolStatus::ManualInstall { .. }) {
                 total_size_mb += def.size_mb as u64;
-                if def.needs_admin {
+                if needs_admin {
                     needs_admin_any = true;
                 }
             }
@@ -205,7 +211,7 @@ pub async fn run_check(
                     status,
                     // ManualInstall ни откуда не скачивается — размер 0.
                     size_mb: if is_manual { 0 } else { def.size_mb },
-                    needs_admin: def.needs_admin && !is_manual,
+                    needs_admin: needs_admin && !is_manual,
                     source_description: desc,
                     install_options,
                 },

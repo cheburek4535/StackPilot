@@ -531,11 +531,24 @@ fn tokenize_command_string(input: &str) -> Vec<String> {
                 in_double_quote = !in_double_quote;
             }
             '\\' if !in_single_quote && cfg!(not(target_os = "windows")) => {
-                if let Some(&next) = chars.peek() {
-                    chars.next();
-                    current.push(next);
-                } else {
-                    current.push('\\');
+                // On Unix `\` escapes the next character — but ONLY when the
+                // escaped character is a shell metacharacter. Treating every
+                // backslash as an escape mangled Windows-style paths carried
+                // by profiles created on another OS: `.venv\Scripts\python.exe`
+                // became `.venvScriptspython.exe`, so the orchestrator's
+                // cross-platform venv fallback (which accepts `Scripts`/`bin`)
+                // never ran and the step failed with "not found".
+                match chars.peek().copied() {
+                    Some(next)
+                        if next.is_whitespace()
+                            || matches!(next, '"' | '\'' | '\\' | '&' | '|' | '<' | '>'
+                                | '(' | ')' | ';' | '$' | '`') =>
+                    {
+                        chars.next();
+                        current.push(next);
+                    }
+                    // Path separator (or a trailing backslash): keep literal.
+                    _ => current.push('\\'),
                 }
             }
             ' ' | '\t' if !in_single_quote && !in_double_quote => {
@@ -584,14 +597,36 @@ mod tests {
 
     #[test]
     fn tokenize_backslash_escape() {
-        // On Unix `\` escapes the next character (so `hello\ world` is one
-        // token). On Windows `\` is a path separator вЂ” never an escape вЂ” so
-        // the backslash is kept and the space still splits the tokens.
+        // On Unix `\` escapes the next character when it is a shell
+        // metacharacter (so `hello\ world` is one token). On Windows `\` is a
+        // path separator вЂ” never an escape вЂ” so the backslash is kept and the
+        // space still splits the tokens.
         let tokens = tokenize_command_string(r#"echo hello\ world"#);
         #[cfg(not(target_os = "windows"))]
         assert_eq!(tokens, vec!["echo", "hello world"]);
         #[cfg(target_os = "windows")]
         assert_eq!(tokens, vec!["echo", r"hello\", "world"]);
+    }
+
+    /// Profiles created on Windows carry backslash paths. On Unix the
+    /// tokenizer must keep them intact so the orchestrator's cross-platform
+    /// venv fallback (`Scripts` vs `bin`) can recognize and repair them.
+    #[test]
+    fn tokenize_preserves_windows_paths_on_unix() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let tokens = tokenize_command_string(r".venv\Scripts\python.exe manage.py runserver");
+            assert_eq!(
+                tokens,
+                vec![r".venv\Scripts\python.exe", "manage.py", "runserver"]
+            );
+            // A real escape (whitespace) still works.
+            let tokens = tokenize_command_string(r"echo a\ b");
+            assert_eq!(tokens, vec!["echo", "a b"]);
+            // A literal backslash before a non-metacharacter stays literal.
+            let tokens = tokenize_command_string(r"echo C:\temp\file");
+            assert_eq!(tokens, vec!["echo", r"C:\temp\file"]);
+        }
     }
 
     #[test]

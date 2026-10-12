@@ -164,36 +164,39 @@ pub fn is_likely_secret(key: &str) -> bool {
 /// re-prepended.
 pub fn build_overlay_path(prepend: &[String], os: HostOs) -> String {
     let inherited = std::env::var("PATH").unwrap_or_default();
+    build_overlay_path_with_inherited(prepend, &inherited, os)
+}
+
+/// Testable core of [`build_overlay_path`]: the inherited PATH is an explicit
+/// argument, so tests never touch (and never race) the process environment.
+pub fn build_overlay_path_with_inherited(
+    prepend: &[String],
+    inherited: &str,
+    os: HostOs,
+) -> String {
     let separator = path_separator(os);
-    let mut existing_entries: Vec<String> = inherited
+    let existing_entries: Vec<String> = inherited
         .split(separator)
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect();
 
-    let mut new_path = String::new();
-
+    let mut prepended_entries: Vec<String> = Vec::new();
     for entry in prepend {
-        let dominated = existing_entries
+        let already_in_existing = existing_entries
             .iter()
             .any(|existing| path_entry_eq(existing, entry, os));
-        if !dominated {
-            if !new_path.is_empty() {
-                new_path.push(separator);
-            }
-            new_path.push_str(entry);
-            existing_entries.push(entry.clone());
+        let already_prepended = prepended_entries
+            .iter()
+            .any(|p| path_entry_eq(p, entry, os));
+        if !already_in_existing && !already_prepended {
+            prepended_entries.push(entry.clone());
         }
     }
 
-    for entry in &existing_entries {
-        if !new_path.is_empty() {
-            new_path.push(separator);
-        }
-        new_path.push_str(entry);
-    }
-
-    new_path
+    let mut result_entries = prepended_entries;
+    result_entries.extend(existing_entries);
+    result_entries.join(&separator.to_string())
 }
 
 /// Platform-specific path separator character.
@@ -207,15 +210,27 @@ pub fn path_separator(os: HostOs) -> char {
 /// Platform-aware path entry equality.
 ///
 /// On Windows, comparison is case-insensitive and normalizes forward slashes
-/// to backslashes. On Unix, comparison is case-sensitive and literal.
+/// to backslashes. On macOS, comparison is case-insensitive (APFS default).
+/// On Linux, comparison is case-sensitive. Trailing slashes are normalized across all platforms.
 pub fn path_entry_eq(a: &str, b: &str, os: HostOs) -> bool {
     match os {
         HostOs::Windows => {
-            let a_norm = a.replace('/', "\\").to_lowercase();
-            let b_norm = b.replace('/', "\\").to_lowercase();
+            let a_norm = a.replace('/', "\\");
+            let a_norm = a_norm.trim_end_matches('\\').to_lowercase();
+            let b_norm = b.replace('/', "\\");
+            let b_norm = b_norm.trim_end_matches('\\').to_lowercase();
             a_norm == b_norm
         }
-        HostOs::Linux | HostOs::Macos => a == b,
+        HostOs::Macos => {
+            let a_norm = a.trim_end_matches('/').to_lowercase();
+            let b_norm = b.trim_end_matches('/').to_lowercase();
+            a_norm == b_norm
+        }
+        HostOs::Linux => {
+            let a_norm = a.trim_end_matches('/');
+            let b_norm = b.trim_end_matches('/');
+            a_norm == b_norm
+        }
     }
 }
 
@@ -288,11 +303,8 @@ mod tests {
     #[test]
     fn build_overlay_path_deduplicates_case_insensitive_windows() {
         let inherited = r"C:\Windows\System32;C:\Users\test\bin";
-        let old_val = std::env::var("PATH").ok();
-        std::env::set_var("PATH", inherited);
-
         let prepend = vec![r"C:\Users\test\bin".to_string(), "/opt/new".to_string()];
-        let result = build_overlay_path(&prepend, HostOs::Windows);
+        let result = build_overlay_path_with_inherited(&prepend, inherited, HostOs::Windows);
 
         // C:\Users\test\bin is already in inherited PATH → not prepended
         // /opt/new is new → prepended
@@ -314,21 +326,16 @@ mod tests {
             count, 1,
             r"test\bin should appear once, got {count} in: {result}"
         );
-
-        if let Some(val) = old_val {
-            std::env::set_var("PATH", val);
-        } else {
-            std::env::remove_var("PATH");
-        }
     }
 
     #[test]
     fn build_overlay_path_deduplicates_case_sensitive_unix() {
-        let old_val = std::env::var("PATH").ok();
-        std::env::set_var("PATH", "/usr/bin:/usr/local/bin");
-
         let prepend = vec!["/usr/bin".to_string(), "/opt/new".to_string()];
-        let result = build_overlay_path(&prepend, HostOs::Linux);
+        let result = build_overlay_path_with_inherited(
+            &prepend,
+            "/usr/bin:/usr/local/bin",
+            HostOs::Linux,
+        );
 
         // /usr/bin is already in inherited PATH → not prepended
         // /opt/new is new → prepended
@@ -342,42 +349,27 @@ mod tests {
             count, 1,
             "/usr/bin should appear once, got {count} in: {result}"
         );
-
-        if let Some(val) = old_val {
-            std::env::set_var("PATH", val);
-        } else {
-            std::env::remove_var("PATH");
-        }
     }
 
     #[test]
     fn build_overlay_path_prepends_in_order() {
-        // Verify that prepended entries appear in front of inherited PATH.
-        // (Parallel test isolation makes env-dependent tests inherently flaky,
-        // so we test the ordering property instead of exact content.)
-        let old_val = std::env::var("PATH").ok();
-        let inherited = std::env::var("PATH").unwrap_or_default();
-
+        // Prepended entries must appear in front of the inherited PATH, in
+        // order. Uses the pure core so parallel tests mutating PATH (or
+        // reading it) cannot make this flaky.
         let prepend = vec![
             "/prepended_first".to_string(),
             "/prepended_second".to_string(),
         ];
-        let result = build_overlay_path(&prepend, HostOs::Linux);
-
-        // Prepended entries must appear before the inherited content.
-        let first_pos = result.find("/prepended_first").unwrap();
-        let second_pos = result.find("/prepended_second").unwrap();
-        assert!(first_pos < second_pos, "prepend order must be preserved");
-        assert!(
-            second_pos < result.len() - (result.len() - inherited.len() + 20).min(result.len()),
-            "prepended entries must come before inherited PATH"
+        let result = build_overlay_path_with_inherited(
+            &prepend,
+            "/usr/bin:/bin",
+            HostOs::Linux,
         );
 
-        if let Some(val) = old_val {
-            std::env::set_var("PATH", val);
-        } else {
-            std::env::remove_var("PATH");
-        }
+        assert!(
+            result.starts_with("/prepended_first:/prepended_second:/usr/bin:/bin"),
+            "prepended entries must come first, in order; got: {result}"
+        );
     }
 
     #[test]

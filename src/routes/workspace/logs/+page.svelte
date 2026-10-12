@@ -39,6 +39,10 @@
   );
 
   let autoRefreshId: ReturnType<typeof setInterval> | null = null;
+  /** Whether the selected process was running at the last refresh. Drives
+   *  the single final log fetch after it stops (the old code skipped all
+   *  refreshes for stopped processes, so the last output was never shown). */
+  let lastRefreshWasRunning = $state(true);
 
   const project = $derived($workspaceContext.project);
   const wsLoading = $derived($workspaceContext.loading);
@@ -66,8 +70,21 @@
     if (autoRefreshId) return;
     autoRefreshId = setInterval(() => {
       if (document.hidden) return;
-      refreshSelectedLogs();
+      // Refresh statuses first: a process that died between polls must still
+      // get its FINAL output fetched (see refreshSelectedLogs).
+      void refreshStatuses();
+      void refreshSelectedLogs();
     }, 5000);
+  }
+
+  /** Refresh the process list without surfacing transient IPC errors (the
+   *  statuses drive the "one final log fetch after death" logic). */
+  async function refreshStatuses() {
+    try {
+      processes = await listProcesses();
+    } catch {
+      // transient — keep the last good list
+    }
   }
 
   function stopAutoRefresh() {
@@ -97,8 +114,13 @@
   }
 
   async function refreshSelectedLogs() {
-    if (!selectedId || !selectedProc || !isProcessRunning(selectedProc.status)) return;
-    if (logsLoading) return;
+    if (!selectedId || !selectedProc || logsLoading) return;
+    const running = isProcessRunning(selectedProc.status);
+    // Fetch while the process runs, plus exactly one FINAL fetch after it
+    // stops: the crash/exit output is written just before death, and the
+    // old early-return discarded it forever.
+    if (!running && !lastRefreshWasRunning) return;
+    lastRefreshWasRunning = running;
     try {
       logs = await getProcessLogs(selectedId);
     } catch {
@@ -112,6 +134,7 @@
     logs = null;
     logsError = "";
     logsLoading = true;
+    lastRefreshWasRunning = true;
     try {
       logs = await getProcessLogs(id);
     } catch (e) {

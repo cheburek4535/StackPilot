@@ -181,13 +181,29 @@ pub fn get_session_info(state: State<'_, WorkspaceState>) -> Option<SessionInfo>
 // Файловый IO (read_dir, чтение/запись файлов) — блокирующая работа:
 // async + spawn_blocking, чтобы навигация по файлам не фризила UI.
 
+fn validate_sandbox_path(state: &WorkspaceState, path: &str) -> Result<std::path::PathBuf, String> {
+    let ctx = state
+        .project
+        .get_current()
+        .ok_or_else(|| "No active project: access denied".to_string())?;
+    let project_path_str = ctx
+        .project_path
+        .ok_or_else(|| "Project path is not set: access denied".to_string())?;
+    if project_path_str.trim().is_empty() {
+        return Err("Project path is empty: access denied".to_string());
+    }
+    file_explorer::resolve_and_verify_path(std::path::Path::new(&project_path_str), path)
+}
+
 #[tauri::command]
 pub async fn list_directory(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<Vec<file_explorer::FileEntry>, String> {
+    let verified = validate_sandbox_path(&state, &path)?;
+    let verified_str = verified.to_string_lossy().to_string();
     let explorer = Arc::clone(&state.file_explorer);
-    tauri::async_runtime::spawn_blocking(move || explorer.list_directory(&path))
+    tauri::async_runtime::spawn_blocking(move || explorer.list_directory(&verified_str))
         .await
         .map_err(|e| format!("List directory task failed: {e}"))?
 }
@@ -197,8 +213,10 @@ pub async fn read_file(
     state: State<'_, WorkspaceState>,
     path: String,
 ) -> Result<file_explorer::FileContent, String> {
+    let verified = validate_sandbox_path(&state, &path)?;
+    let verified_str = verified.to_string_lossy().to_string();
     let explorer = Arc::clone(&state.file_explorer);
-    tauri::async_runtime::spawn_blocking(move || explorer.read_file(&path))
+    tauri::async_runtime::spawn_blocking(move || explorer.read_file(&verified_str))
         .await
         .map_err(|e| format!("Read file task failed: {e}"))?
 }
@@ -209,10 +227,43 @@ pub async fn write_file(
     path: String,
     content: String,
 ) -> Result<(), String> {
+    let verified = validate_sandbox_path(&state, &path)?;
+    let verified_str = verified.to_string_lossy().to_string();
     let explorer = Arc::clone(&state.file_explorer);
-    tauri::async_runtime::spawn_blocking(move || explorer.write_file(&path, &content))
+    tauri::async_runtime::spawn_blocking(move || explorer.write_file(&verified_str, &content))
         .await
         .map_err(|e| format!("Write file task failed: {e}"))?
+}
+
+fn resolve_open_vscode_path(state: &WorkspaceState, path: &str) -> Result<String, String> {
+    let trimmed = path.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    if let Some(ctx) = state.project.get_current() {
+        if let Some(ref proj_dir) = ctx.project_path {
+            if !proj_dir.trim().is_empty() {
+                let verified = file_explorer::resolve_and_verify_path(
+                    std::path::Path::new(proj_dir),
+                    trimmed,
+                )?;
+                if !verified.exists() {
+                    return Err(format!("Path does not exist: {}", verified.display()));
+                }
+                return Ok(verified.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    let target = std::path::Path::new(trimmed);
+    let resolved_path = target.to_path_buf();
+
+    if !resolved_path.exists() {
+        return Err(format!("Path does not exist: {}", resolved_path.display()));
+    }
+
+    Ok(resolved_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -221,10 +272,11 @@ pub async fn open_in_vscode(
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<(), String> {
+    let path_str = resolve_open_vscode_path(&state, &path)?;
     let vscode_path = settings.0.get_settings().ok().map(|s| s.vscode_path);
     let explorer = Arc::clone(&state.file_explorer);
     tauri::async_runtime::spawn_blocking(move || {
-        explorer.open_in_vscode(&path, vscode_path.as_deref())
+        explorer.open_in_vscode(&path_str, vscode_path.as_deref())
     })
     .await
     .map_err(|e| format!("Open in VS Code task failed: {e}"))?
@@ -253,4 +305,117 @@ pub fn get_workspace_overview(state: State<'_, WorkspaceState>) -> OverviewData 
         .get_session()
         .and_then(|s| s.started_at.parse::<u64>().ok());
     state.overview.compute_overview(&processes, session_started)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::workspace::process_manager::OsProcessManager;
+
+    fn create_test_workspace() -> WorkspaceState {
+        WorkspaceState::new(Arc::new(OsProcessManager::new()), None)
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_empty() {
+        let ws = create_test_workspace();
+        let err = resolve_open_vscode_path(&ws, "").unwrap_err();
+        assert!(err.contains("Path cannot be empty"));
+
+        let err_spaces = resolve_open_vscode_path(&ws, "   ").unwrap_err();
+        assert!(err_spaces.contains("Path cannot be empty"));
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_nonexistent() {
+        let ws = create_test_workspace();
+        let err = resolve_open_vscode_path(&ws, "C:/this/path/definitely/does/not/exist_12345").unwrap_err();
+        assert!(err.contains("Path does not exist"));
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_existing_without_active_project() {
+        let ws = create_test_workspace();
+        // Ensure there is NO active project
+        assert!(ws.project.get_current().is_none());
+
+        // Test with current directory which exists
+        let current_dir = std::env::current_dir().unwrap();
+        let current_dir_str = current_dir.to_str().unwrap();
+
+        let resolved = resolve_open_vscode_path(&ws, current_dir_str).unwrap();
+        assert_eq!(resolved, current_dir_str);
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_with_quotes() {
+        let ws = create_test_workspace();
+        let current_dir = std::env::current_dir().unwrap();
+        let current_dir_str = current_dir.to_str().unwrap();
+        let quoted = format!("\"{}\"", current_dir_str);
+
+        let resolved = resolve_open_vscode_path(&ws, &quoted).unwrap();
+        assert_eq!(resolved, current_dir_str);
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_no_active_project() {
+        let ws = create_test_workspace();
+        let err = validate_sandbox_path(&ws, "src/main.rs").unwrap_err();
+        assert!(err.contains("No active project: access denied"));
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_traversal_blocked() {
+        let ws = create_test_workspace();
+        let current_dir = std::env::current_dir().unwrap();
+        ws.project.set_current(ProjectContext {
+            profile_name: "TestProfile".into(),
+            project_path: Some(current_dir.to_string_lossy().to_string()),
+            description: "".into(),
+            stack: vec![],
+            opened_at: "0".into(),
+        });
+
+        let err = validate_sandbox_path(&ws, "../../outside_file.txt").unwrap_err();
+        assert!(err.contains("Access Denied: Path Traversal detected"));
+
+        #[cfg(target_os = "windows")]
+        {
+            let win_err = validate_sandbox_path(&ws, "C:\\Windows\\System32\\calc.exe").unwrap_err();
+            assert!(win_err.contains("Access Denied: Path Traversal detected"));
+        }
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_valid_path() {
+        let ws = create_test_workspace();
+        let current_dir = std::env::current_dir().unwrap();
+        ws.project.set_current(ProjectContext {
+            profile_name: "TestProfile".into(),
+            project_path: Some(current_dir.to_string_lossy().to_string()),
+            description: "".into(),
+            stack: vec![],
+            opened_at: "0".into(),
+        });
+
+        let resolved = validate_sandbox_path(&ws, "Cargo.toml").unwrap();
+        assert!(resolved.ends_with("Cargo.toml"));
+    }
+
+    #[test]
+    fn test_resolve_open_vscode_path_blocks_traversal_when_project_active() {
+        let ws = create_test_workspace();
+        let current_dir = std::env::current_dir().unwrap();
+        ws.project.set_current(ProjectContext {
+            profile_name: "TestProfile".into(),
+            project_path: Some(current_dir.to_string_lossy().to_string()),
+            description: "".into(),
+            stack: vec![],
+            opened_at: "0".into(),
+        });
+
+        let err = resolve_open_vscode_path(&ws, "../../outside_file.txt").unwrap_err();
+        assert!(err.contains("Access Denied: Path Traversal detected"));
+    }
 }

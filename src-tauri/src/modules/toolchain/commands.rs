@@ -427,7 +427,13 @@ pub async fn tcx_retry_job(
 
     let mut request = engine::EngineRequest::new(record.plan.operation, tools);
     request.confirm_unverified_sources = !record.plan.unverified_tools().is_empty();
-    request.confirm_admin_elevation = record.plan.needs_admin_any;
+    // Повтор — явное действие пользователя по уже одобренному заданию:
+    // подтверждения не запрашиваются заново. Флаг ставится безусловно,
+    // потому что требования администратора могли ИЗМЕНИТЬСЯ между
+    // превью и повтором (например, после исправления платформенных
+    // прав Linux-пакетных менеджеров) — повтор всё равно инициирован
+    // человеком, молчаливой элевации не происходит.
+    request.confirm_admin_elevation = true;
 
     // Свежий план строится ОДИН раз: если окружение изменилось и все
     // инструменты уже в порядке, повторять нечего — запуск noop-задания
@@ -1174,7 +1180,7 @@ pub async fn tcx_profile_resolve(
     let request =
         super::domain::profile::EnvironmentProfileRequest::from_project_requirements(&requirements);
     let platform = crate::modules::toolchain::platforms::current_platform();
-    let elevation_supported = crate::modules::toolchain::core::linux_pkg::elevation_available();
+    let elevation_supported = cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos"));
     let mut profile = super::domain::profile::build_profile(
         &request,
         state.definitions(),
@@ -1559,4 +1565,61 @@ pub async fn tcx_uninstall_tool(
     })
     .await
     .map_err(|e| format!("Uninstall task failed: {e}"))?
+}
+
+/// Получить список всех обнаруженных и доступных версий инструмента
+/// (StackPilot Store, fnm, nvm, pyenv, uv, системный PATH, официальные загрузки).
+#[tauri::command]
+pub async fn tc_list_tool_versions(
+    state: State<'_, ToolchainState>,
+    tool_id: String,
+) -> Result<Vec<ToolVersionCandidate>, String> {
+    let store_dir = state.shared_store_dir.clone();
+    let query_id = tool_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(core::version_store::list_available_versions(&query_id, &store_dir))
+    })
+    .await
+    .map_err(|e| format!("Ошибка поиска версий {}: {}", tool_id, e))?
+}
+
+/// Скачать и распаковать портативную версию инструмента в Shared Tool Store StackPilot.
+#[tauri::command]
+pub async fn tc_install_tool_version(
+    state: State<'_, ToolchainState>,
+    tool_id: String,
+    version: String,
+    download_url: String,
+) -> Result<String, String> {
+    let store_dir = state.shared_store_dir.clone();
+    core::version_store::download_and_install_to_shared_store(
+        &tool_id,
+        &version,
+        &download_url,
+        &store_dir,
+    )
+    .await
+}
+
+/// Получить сводную матрицу использования версий по всем проектам/окружениям
+/// с расчётом сэкономленного дискового пространства благодаря дедупликации.
+#[tauri::command]
+pub async fn tc_get_toolchain_environments_matrix(
+    tc_state: State<'_, ToolchainState>,
+    pe_state: State<'_, crate::modules::project_environment::ProjectEnvironmentState>,
+) -> Result<ToolchainDeduplicationReport, String> {
+    let store_dir = tc_state.shared_store_dir.clone();
+    let environments = pe_state.binding_service.list()?;
+    Ok(core::version_store::calculate_deduplication_report(&store_dir, &environments))
+}
+
+/// Удалить из Shared Tool Store неиспользуемые версии (на которые не ссылается ни один проект).
+#[tauri::command]
+pub async fn tc_prune_unused_tool_versions(
+    tc_state: State<'_, ToolchainState>,
+    pe_state: State<'_, crate::modules::project_environment::ProjectEnvironmentState>,
+) -> Result<Vec<String>, String> {
+    let store_dir = tc_state.shared_store_dir.clone();
+    let environments = pe_state.binding_service.list()?;
+    core::version_store::prune_unused_versions(&store_dir, &environments)
 }

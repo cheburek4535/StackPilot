@@ -113,18 +113,36 @@ pub async fn delete_profile(
         .map_err(|e| format!("Delete profile task failed: {e}"))?
 }
 
-/// Относительный working_dir действия (например "./backend") резолвится
-/// относительно текущего проекта Workspace — иначе команда выполнится в
-/// рабочей папке самого приложения и упадёт с "No such file or directory".
-fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
-    let project_path = workspace
-        .project
-        .get_current()
-        .and_then(|ctx| ctx.project_path);
+/// Относительный working_dir действия (например "./backend") и цель IDE
+/// резолвятся относительно корня проекта профиля — иначе команда выполнится
+/// в рабочей папке самого приложения и упадёт или откроет src-tauri.
+///
+/// # Security Threat Model & Isolation Notice:
+/// В текущей архитектуре логика `resolve_working_dir` разрешает использование абсолютных путей
+/// (`if path.is_relative() { ... }`). Это архитектурно допустимо, поскольку профили запуска
+/// (`LaunchProfile`) создаются пользователем вручную и хранятся исключительно в изолированной
+/// доверенной системной зоне конфигурации пользователя (`%APPDATA%/StackPilot` / User Config Dir),
+/// защищенной правами доступа операционной системы.
+///
+/// **ПРЕДОСТЕРЕЖЕНИЕ ПО БЕЗОПАСНОСТИ ДЛЯ БУДУЩИХ ДОРАБОТОК:**
+/// Если в будущем в StackPilot появится поддержка автоматической загрузки профилей напрямую
+/// из директории открываемого проекта (например, `.stackpilot/profiles.json` или `launch.json`
+/// из сторонних репозиториев или клонированных проектов), абсолютные пути и последовательности `..`
+/// в `working_dir` станут прямым вектором для Remote Code Execution (RCE) с побегом из песочницы.
+/// В этом случае загрузчик профилей обязан строго верифицировать и изолировать все пути через
+/// Path Sandboxing (запрещая выполнение команд вне корня проекта без явного подтверждения пользователя).
+fn resolve_working_dir(
+    action: &mut LaunchAction,
+    workspace: &WorkspaceState,
+    profile_project_path: Option<&str>,
+) {
+    let project_path = profile_project_path
+        .map(String::from)
+        .or_else(|| workspace.project.get_current().and_then(|ctx| ctx.project_path));
     match &mut action.action_type {
         ActionType::RunCommand { working_dir, .. } => {
             let Some(dir) = working_dir else { return };
-            let Some(base) = project_path else { return };
+            let Some(ref base) = project_path else { return };
             let path = Path::new(dir);
             if path.is_relative() {
                 *dir = PathBuf::from(base)
@@ -136,20 +154,44 @@ fn resolve_working_dir(action: &mut LaunchAction, workspace: &WorkspaceState) {
         ActionType::OpenApplication {
             ref mut args_list,
             ref mut args,
-            ..
+            ref path,
         } => {
-            let Some(base) = project_path else { return };
+            let Some(ref base) = project_path else { return };
             let base_str = PathBuf::from(base).to_string_lossy().into_owned();
+            let mut replaced = false;
+
             if let Some(list) = args_list {
                 for arg in list.iter_mut() {
                     if arg == "." {
                         *arg = base_str.clone();
+                        replaced = true;
                     }
                 }
             }
             if let Some(single) = args {
                 if single == "." {
-                    *single = base_str;
+                    *single = base_str.clone();
+                    replaced = true;
+                }
+            }
+
+            let lower_path = path.to_ascii_lowercase();
+            let is_ide = lower_path == "code"
+                || lower_path.contains("vscode")
+                || lower_path.contains("cursor")
+                || lower_path.contains("windsurf")
+                || lower_path.contains("idea")
+                || lower_path.contains("pycharm")
+                || lower_path.contains("webstorm")
+                || lower_path.contains("goland")
+                || lower_path.contains("clion")
+                || lower_path.contains("rider");
+
+            if is_ide && !replaced {
+                let has_args = args_list.as_ref().map_or(false, |l| !l.is_empty())
+                    || args.as_ref().map_or(false, |s| !s.trim().is_empty());
+                if !has_args {
+                    *args_list = Some(vec![base_str]);
                 }
             }
         }
@@ -176,10 +218,38 @@ pub async fn execute_action(
     action: LaunchAction,
     session_id: Option<String>,
     environment_binding_id: Option<String>,
+    project_path: Option<String>,
 ) -> Result<ActionStatus, String> {
     let engine = Arc::clone(&state.launch_engine);
     let mut action = action;
-    resolve_working_dir(&mut action, &workspace);
+
+    // Resolve profile project path:
+    // 1. Explicitly passed from frontend (profile.project_path)
+    // 2. Looked up in saved profiles by action ID
+    // 3. Fallback to active workspace project
+    let profile_project_path = project_path.or_else(|| {
+        if let Ok(profiles) = state.profile_manager.list_profiles_v2() {
+            for p in profiles {
+                if p.steps.iter().any(|s| s.id == action.id) {
+                    if let Some(root) = p.project_root {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        if let Ok(profiles) = state.profile_manager.list_profiles() {
+            for p in profiles {
+                if p.actions.iter().any(|a| a.id == action.id) {
+                    if let Some(root) = p.project_path {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    resolve_working_dir(&mut action, &workspace, profile_project_path.as_deref());
     let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
     // Процессы, запущенные из профиля, привязываются к текущей сессии —
     // иначе таймер сессии никогда не увидит их завершения. If no session is
@@ -208,6 +278,28 @@ pub async fn execute_action(
                     );
                     None
                 }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = match &action.action_type {
+            ActionType::RunCommand { working_dir, .. } => working_dir.clone(),
+            _ => None,
+        }
+        .or_else(|| profile_project_path.clone())
+        .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
             }
         } else {
             None
@@ -442,6 +534,25 @@ pub async fn run_profile(
         } else {
             None
         }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = profile
+            .project_path
+            .clone()
+            .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -638,13 +749,62 @@ pub fn validate_profile_v2(profile: LaunchProfileV2) -> Result<serde_json::Value
 #[tauri::command]
 pub fn create_run(
     state: State<'_, DevLauncherState>,
+    workspace: State<'_, WorkspaceState>,
     settings: State<'_, SettingsState>,
     profile: LaunchProfileV2,
 ) -> Result<LaunchRun, String> {
     let browser_path = settings.0.get_settings().ok().map(|s| s.browser_path);
+
+    // Resolve environment overlay from profile binding or project path
+    let overlay = if let Some(ref binding_id) = profile.environment_binding_id {
+        if let Some(ref svc) = state.binding_service {
+            match svc.get(binding_id) {
+                Ok(binding) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Warning: environment binding '{}' not found: {}. Using host environment.",
+                        binding_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        let p_candidate = profile
+            .project_root
+            .clone()
+            .or_else(|| workspace.project.get_current().and_then(|c| c.project_path));
+        if let Some(ref p) = p_candidate {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let session_id = workspace.session.get_session().map(|s| s.started_at.clone());
+
     state
         .orchestrator
-        .create_run_with_browser(profile, browser_path)
+        .create_run_with_browser_and_overlay(profile, session_id, overlay, browser_path)
         .map_err(|validation| {
             let msgs: Vec<String> = validation
                 .diagnostics
@@ -729,6 +889,21 @@ pub async fn run_profile_v2(
                     );
                     None
                 }
+            }
+        } else {
+            None
+        }
+    } else if let Some(ref svc) = state.binding_service {
+        if let Some(ref p) = profile.project_root {
+            match svc.find_by_project_path(p) {
+                Ok(Some(binding)) => {
+                    let (ov, _diag) =
+                        crate::modules::project_environment::resolver::resolve_with_diagnostics(
+                            &binding,
+                        );
+                    Some(ov)
+                }
+                _ => None,
             }
         } else {
             None
@@ -855,8 +1030,14 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
             cli_diag.status != crate::platform::docker_service::DockerStatus::CliMissing;
         // Compose availability is a property of the CLI, not the daemon:
         // `docker compose version` answers even when the daemon is down.
-        let has_compose = if has_docker {
-            let mut cmd = std::process::Command::new("docker");
+        // The CLI is resolved (PATH, then platform-specific locations) rather
+        // than spawned by its bare name — GUI-launched apps do not inherit
+        // shell-profile PATH entries, and on Linux the Docker Desktop bundled
+        // CLI often is not on PATH at all.
+        let has_compose = if let Some(cli) =
+            crate::platform::docker_service::DockerService::resolve_cli()
+        {
+            let mut cmd = std::process::Command::new(&cli);
             cmd.args(["compose", "version"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
@@ -866,9 +1047,19 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
         } else {
             false
         };
+        // Whether a Docker Desktop application launcher resolves on this
+        // host (the UI uses it to decide between "open Docker Desktop" hints
+        // and plain Docker Engine wording).
+        let docker_desktop =
+            crate::platform::docker_service::DockerService::desktop_launcher().is_some();
 
-        let default_shell = crate::platform::shell::default_shell_for_platform();
-        let (default_terminal, _) = crate::platform::shell::shell_executable(default_shell);
+        // The UI needs the TERMINAL, not the shell: `cmd`/`sh` is the shell
+        // used inside a terminal, while visible steps are opened with the
+        // platform terminal emulator (gnome-terminal, ptyxis, Terminal.app,
+        // Windows Terminal, ...). Reporting the shell here made every
+        // platform-aware terminal hint wrong on Linux/macOS.
+        let default_terminal =
+            format!("{}", crate::platform::terminal::default_terminal_for_platform());
 
         let supports_terminal_windows = cfg!(not(target_os = "windows"))
             || std::env::var("WT_SESSION").is_ok()
@@ -880,8 +1071,9 @@ pub async fn get_platform_capabilities() -> Result<super::models::PlatformCapabi
             shells,
             has_docker,
             has_compose,
-            default_terminal: default_terminal.to_string(),
+            default_terminal,
             supports_terminal_windows,
+            docker_desktop,
         })
     })
     .await
@@ -1014,4 +1206,65 @@ pub async fn devl_wsl_install(app: tauri::AppHandle) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::platform::wsl::install(emit))
         .await
         .map_err(|e| format!("WSL install task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::devlauncher::models::ActionType;
+    use crate::modules::workspace::process_manager::OsProcessManager;
+
+    #[test]
+    fn test_resolve_working_dir_replaces_dot_for_open_app() {
+        let pm = Arc::new(OsProcessManager::new());
+        let ws = WorkspaceState::new(pm, None);
+        let mut action = LaunchAction {
+            id: "act-1".into(),
+            label: "Open VS Code".into(),
+            action_type: ActionType::OpenApplication {
+                path: "code".into(),
+                args: None,
+                args_list: Some(vec![".".into()]),
+            },
+            enabled: true,
+        };
+
+        resolve_working_dir(&mut action, &ws, Some("C:\\my\\target\\project"));
+
+        if let ActionType::OpenApplication { args_list, .. } = &action.action_type {
+            assert_eq!(
+                args_list.as_ref().unwrap(),
+                &vec!["C:\\my\\target\\project".to_string()]
+            );
+        } else {
+            panic!("Unexpected action type");
+        }
+    }
+
+    #[test]
+    fn test_resolve_working_dir_injects_root_when_empty_ide_args() {
+        let pm = Arc::new(OsProcessManager::new());
+        let ws = WorkspaceState::new(pm, None);
+        let mut action = LaunchAction {
+            id: "act-2".into(),
+            label: "Open VS Code".into(),
+            action_type: ActionType::OpenApplication {
+                path: "code".into(),
+                args: None,
+                args_list: None,
+            },
+            enabled: true,
+        };
+
+        resolve_working_dir(&mut action, &ws, Some("C:\\my\\target\\project"));
+
+        if let ActionType::OpenApplication { args_list, .. } = &action.action_type {
+            assert_eq!(
+                args_list.as_ref().unwrap(),
+                &vec!["C:\\my\\target\\project".to_string()]
+            );
+        } else {
+            panic!("Unexpected action type");
+        }
+    }
 }

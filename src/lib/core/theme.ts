@@ -121,11 +121,94 @@ export function applyAccentColor(value: string): void {
 
 const FONT_SIZES: Record<string, string> = { sm: "15px", md: "16px", lg: "17px" };
 
+export const UI_SCALES = [
+  "auto",
+  "100%",
+  "110%",
+  "120%",
+  "125%",
+  "135%",
+  "150%",
+  "175%",
+  "200%",
+] as const;
+
+export type UiScale = (typeof UI_SCALES)[number];
+
+export const UI_SCALE_FACTORS: Record<string, number> = {
+  "100%": 1.0,
+  "110%": 1.1,
+  "120%": 1.2,
+  "125%": 1.25,
+  "135%": 1.35,
+  "150%": 1.5,
+  "175%": 1.75,
+  "200%": 2.0,
+};
+
+/**
+ * Resolves the numeric scale factor from setting.
+ * When set to 'auto', inspects screen/window metrics to compensate for
+ * Linux Wayland / GTK3 fractional scaling where devicePixelRatio defaults to 1.
+ */
+export function resolveScaleFactor(scalePref?: string): number {
+  if (!scalePref || scalePref === "auto") {
+    if (typeof window !== "undefined") {
+      const dpr = window.devicePixelRatio || 1;
+      // Если это HiDPI экран (например 4K или 2K), но системный dpr равен 1
+      // (частая проблема под Linux Wayland при fractional scaling 125%/150%):
+      if (dpr === 1 && typeof screen !== "undefined") {
+        if (screen.width >= 3200 || screen.height >= 1800) {
+          return 1.5;
+        }
+        if (screen.width >= 2200 || screen.height >= 1300) {
+          return 1.25;
+        }
+      }
+    }
+    return 1.0;
+  }
+  return UI_SCALE_FACTORS[scalePref] ?? 1.0;
+}
+
+/**
+ * Returns the next/previous scale level for keyboard shortcuts (Ctrl + / -).
+ */
+export function getNextZoomLevel(current: string, direction: "in" | "out"): string {
+  const manualScales = ["100%", "110%", "120%", "125%", "135%", "150%", "175%", "200%"];
+  const currentIdx = manualScales.indexOf(current);
+  if (currentIdx === -1) {
+    const factor = resolveScaleFactor(current);
+    let closestIdx = 0;
+    let minDiff = 999;
+    manualScales.forEach((scale, i) => {
+      const diff = Math.abs((UI_SCALE_FACTORS[scale] ?? 1.0) - factor);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    });
+    if (direction === "in") {
+      return manualScales[Math.min(manualScales.length - 1, closestIdx + 1)];
+    } else {
+      return manualScales[Math.max(0, closestIdx - 1)];
+    }
+  }
+  if (direction === "in") {
+    return manualScales[Math.min(manualScales.length - 1, currentIdx + 1)];
+  } else {
+    return manualScales[Math.max(0, currentIdx - 1)];
+  }
+}
+
 /** Applies UI-level preferences that live in AppSettings. */
 export function applyUiPrefs(settings: AppSettings): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.style.fontSize = FONT_SIZES[settings.font_size] ?? FONT_SIZES.md;
+  const basePx = parseFloat(FONT_SIZES[settings.font_size] ?? FONT_SIZES.md);
+  const factor = resolveScaleFactor(settings.ui_scale);
+  root.style.fontSize = `${basePx * factor}px`;
+  root.style.setProperty("--sp-scale-factor", factor.toString());
   root.classList.toggle("sp-reduced-motion", settings.reduced_motion);
   root.classList.toggle("sp-hints-off", !settings.show_interface_hints);
   applyAccentColor(settings.accent_color);

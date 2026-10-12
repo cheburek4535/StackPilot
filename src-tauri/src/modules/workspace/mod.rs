@@ -30,16 +30,20 @@ pub struct WorkspaceState {
 
 impl WorkspaceState {
     pub fn new(process_manager: Arc<dyn ProcessManager>, data_dir: Option<PathBuf>) -> Self {
+        let project = project::DefaultProjectService::new();
+        let file_explorer = Arc::new(file_explorer::DefaultFileExplorerService::new(Arc::new(
+            project.clone(),
+        )));
         Self {
             process_manager,
-            project: project::DefaultProjectService::new(),
+            project,
             overview: overview::DefaultOverviewService::new(),
             runtime: runtime::DefaultRuntimeService::new(),
             session: session::DefaultSessionService::new(data_dir),
             logs: logs::DefaultLogsService::new(),
             problems: problems::DefaultProblemsService::new(),
             info: info::DefaultInfoService::new(),
-            file_explorer: Arc::new(file_explorer::DefaultFileExplorerService::new()),
+            file_explorer,
         }
     }
 }

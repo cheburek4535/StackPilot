@@ -68,6 +68,8 @@ pub struct AppSettings {
     pub auto_save: bool,
     /// "sm" | "md" | "lg" — applied to the root font size.
     pub font_size: String,
+    /// Масштаб интерфейса (UI Zoom): "auto", "100%", "110%", "125%", "150%", "175%", "200%".
+    pub ui_scale: String,
     pub reduced_motion: bool,
     pub show_interface_hints: bool,
     /// Accent color: preset key ("violet", "green", ...) or "#rrggbb".

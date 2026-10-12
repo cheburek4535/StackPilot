@@ -1,7 +1,8 @@
-mod core;
-mod modules;
+pub mod core;
+pub mod modules;
 pub mod platform;
 pub mod ports;
+pub mod cli;
 
 use std::sync::Arc;
 use tauri::{Listener, Manager};
@@ -29,10 +30,33 @@ pub fn run() {
 
             core::logging::init(&data_dir);
 
+            // Приложение стартует с PATH момента запуска — инструменты,
+            // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
+            // winget, SDK), могут остаться вне него. Подтягиваем свежий
+            // пользовательский PATH из системы ДО инициализации модулей,
+            // иначе Homebrew и другие утилиты не будут найдены при первой детекции.
+            tauri::async_runtime::block_on(async {
+                let _ = modules::toolchain::core::path_service::sync_process_path().await;
+            });
+
+            // Register stkpil in App Paths / User PATH (Windows) or symlink into ~/.local/bin (Unix)
+            let _ = platform::paths::register_stkpil_in_app_paths();
+
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
 
             std::fs::create_dir_all(data_dir.join("profiles"))
                 .expect("Failed to create profiles dir");
+
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
+                    let _ = app.set_menu(menu);
+                }
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_decorations(true);
+                    let _ = window.set_shadow(true);
+                }
+            }
 
             // Project environments directory
             std::fs::create_dir_all(data_dir.join("project_environments"))
@@ -84,9 +108,12 @@ pub fn run() {
                 .set_app_handle(app.handle().clone());
 
             // === ProjectEnvironment module ===
-            let project_env_state = modules::project_environment::ProjectEnvironmentState::new(
+            let project_env_state = modules::project_environment::ProjectEnvironmentState::with_environments_dir(
                 data_dir.join("project_environments"),
+                data_dir.join("environments"),
             );
+            // Ensure default global environment profile is initialized
+            let _ = project_env_state.binding_service.get_or_create_default();
 
             // Wire up binding service to DevLauncher
             let devlauncher_state =
@@ -114,20 +141,42 @@ pub fn run() {
                 );
             }
 
-            // Приложение стартует с PATH момента запуска — инструменты,
-            // установленные в прошлой сессии (npm-global в %APPDATA%\npm,
-            // winget, SDK), могут остаться вне него. Подтягиваем свежий
-            // пользовательский PATH из системы, пока UI ещё инициализируется.
-            tauri::async_runtime::spawn(async move {
-                let _ = modules::toolchain::core::path_service::sync_process_path().await;
-            });
-
             // Register all states
             app.manage(devlauncher_state);
             app.manage(workspace_state);
             app.manage(project_creator_state);
             app.manage(project_env_state);
             app.manage(core::settings::SettingsState(settings_service));
+
+            // Catch SIGTERM / Ctrl+C to terminate all processes.
+            tauri::async_runtime::spawn(async move {
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to bind SIGTERM");
+                    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to bind SIGINT");
+                    tokio::select! {
+                        _ = sigterm.recv() => {
+                            log::info!("Received SIGTERM, terminating processes...");
+                            crate::core::process_registry::terminate_all();
+                            std::process::exit(0);
+                        }
+                        _ = sigint.recv() => {
+                            log::info!("Received SIGINT, terminating processes...");
+                            crate::core::process_registry::terminate_all();
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if let Ok(()) = tokio::signal::ctrl_c().await {
+                        log::info!("Received Ctrl-C, terminating processes...");
+                        crate::core::process_registry::terminate_all();
+                        std::process::exit(0);
+                    }
+                }
+            });
 
             // Auto-track process errors in the session
             let handle = app.handle().clone();
@@ -227,6 +276,7 @@ pub fn run() {
             modules::project_creator::commands::preview_project_recipe,
             modules::project_creator::commands::preview_project_files,
             modules::project_creator::commands::start_project_execution,
+            modules::project_creator::commands::cancel_project_execution,
             modules::project_creator::commands::project_execution_snapshot,
             modules::project_creator::commands::count_project_files,
             modules::project_creator::commands::check_project_folder_exists,
@@ -266,6 +316,11 @@ pub fn run() {
             modules::toolchain::commands::tcx_cancel_job,
             modules::toolchain::commands::tcx_retry_job,
             modules::toolchain::commands::tcx_adopt_tool,
+            // ToolchainManager: multi-version & shared store
+            modules::toolchain::commands::tc_list_tool_versions,
+            modules::toolchain::commands::tc_install_tool_version,
+            modules::toolchain::commands::tc_get_toolchain_environments_matrix,
+            modules::toolchain::commands::tc_prune_unused_tool_versions,
             // Core commands
             core::settings::get_settings,
             core::settings::update_settings,
@@ -284,6 +339,15 @@ pub fn run() {
             modules::project_environment::commands::pe_validate_binding,
             modules::project_environment::commands::pe_resolve_overlay,
             modules::project_environment::commands::pe_create_binding,
+            modules::project_environment::commands::pe_get_or_create_default,
+            modules::project_environment::commands::pe_bind_project,
+            modules::project_environment::commands::pe_unbind_project,
+            modules::project_environment::commands::pe_export_standalone,
+            modules::project_environment::commands::pe_calculate_disk_usage,
+            modules::project_environment::commands::pe_cleanup_sandbox,
+            modules::project_environment::commands::pe_open_terminal,
+            modules::project_environment::commands::pe_configure_vscode_environment,
+            modules::project_environment::commands::pe_resolve_tools_for_project,
             // Plugin commands
             #[cfg(feature = "plugins")]
             mini_ide::commands::get_completions,

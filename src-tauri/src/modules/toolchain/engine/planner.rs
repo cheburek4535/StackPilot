@@ -306,7 +306,7 @@ pub async fn build_plan(
     // --- platform capability gate ----------------------------------------
     let capabilities = PlatformCapabilities {
         install_execution_supported: tc_core::installer::install_execution_supported(),
-        elevation_supported: crate::modules::toolchain::core::linux_pkg::elevation_available(),
+        elevation_supported: cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos")),
     };
     if matches!(
         request.operation,
@@ -516,6 +516,26 @@ fn draft_for(
 
             let sources = inputs.os_sources(def);
             if sources.is_empty() {
+                if let Some(host_id) = def.bundled_with.as_deref() {
+                    if let Some(host_def) = inputs.def(host_id) {
+                        let host_sources = inputs.os_sources(host_def);
+                        if !host_sources.is_empty() {
+                            return Ok(Some(Draft {
+                                tool_id: def.id.clone(),
+                                display: def.display.clone(),
+                                icon: def.icon.clone(),
+                                action: TaskAction::HealthCheck,
+                                source: None,
+                                size_mb: 0,
+                                needs_admin: false,
+                                depends_on_tools: vec![host_id.to_string()],
+                                path_entries: def.path_entries.clone(),
+                                install_options: vec![],
+                                execution_mode: ExecutionMode::Host,
+                            }));
+                        }
+                    }
+                }
                 return Err("нет источника установки для этой ОС".to_string());
             }
 
@@ -537,7 +557,7 @@ fn draft_for(
                 id: selected.id.clone(),
                 description: describe_source(selected),
                 sha256: selected.sha256.clone(),
-                needs_admin: selected.needs_admin.unwrap_or(def.needs_admin),
+                needs_admin: tc_core::installer::source_requires_elevation(selected, def),
             };
 
             let action = decide_action(request.operation, status, req.force_reinstall);
@@ -567,7 +587,7 @@ fn draft_for(
                 action,
                 source: Some(selected_info),
                 size_mb: def.size_mb,
-                needs_admin: selected.needs_admin.unwrap_or(def.needs_admin),
+                needs_admin: tc_core::installer::source_requires_elevation(selected, def),
                 depends_on_tools: vec![],
                 path_entries: def.path_entries.clone(),
                 install_options: req.install_options.clone(),
@@ -1144,6 +1164,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bundled_tool_without_sources_auto_brings_parent() {
+        let mut pip = base_def("pip");
+        pip.bundled_with = Some("python".to_string());
+        let defs = vec![pip, win_def("python")];
+        let det = FakeDetector::default();
+        let plan = build_plan(&install_request(&["pip"]), &inputs_for(&defs, &det))
+            .await
+            .unwrap();
+
+        let py_idx = plan
+            .tasks
+            .iter()
+            .position(|t| t.tool_id == "python")
+            .expect("python auto-added for pip");
+        let pip_idx = plan.tasks.iter().position(|t| t.tool_id == "pip").unwrap();
+        assert!(py_idx < pip_idx, "python precedes pip");
+        assert!(matches!(plan.tasks[pip_idx].action, TaskAction::HealthCheck));
+    }
+
+    #[tokio::test]
     async fn bundled_parent_already_present_is_reused_not_duplicated() {
         let mut npm = win_def("npm");
         npm.bundled_with = Some("node".to_string());
@@ -1381,22 +1421,17 @@ mod tests {
         let defs = vec![d];
         let det = FakeDetector::default();
 
+        // Elevation поддерживается на всех ОС (Windows UAC / Unix sudo):
+        // без явного подтверждения план не строится.
         let err = build_plan(&install_request(&["sdk"]), &inputs_for(&defs, &det))
             .await
             .unwrap_err();
-        if crate::modules::toolchain::core::linux_pkg::elevation_available() {
-            // Elevation поддерживается: без подтверждения план не строится.
-            assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
+        assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
 
-            let mut req = install_request(&["sdk"]);
-            req.confirm_admin_elevation = true;
-            let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
-            assert!(plan.needs_admin_any);
-        } else {
-            // Elevation не поддерживается (Linux/macOS): отказ до всяких
-            // подтверждений — это задокументированное поведение платформы.
-            assert!(matches!(err, PlanError::ElevationUnsupported { .. }));
-        }
+        let mut req = install_request(&["sdk"]);
+        req.confirm_admin_elevation = true;
+        let plan = build_plan(&req, &inputs_for(&defs, &det)).await.unwrap();
+        assert!(plan.needs_admin_any);
     }
 
     #[tokio::test]
@@ -1870,6 +1905,9 @@ mod tests {
 
         let mut req = install_request(&["terraform"]);
         req.confirm_unverified_sources = true; // реальный zip-источник без sha256
+        // На Linux первый источник terraform — пакетный менеджер (root),
+        // на Windows — zip без UAC: подтверждение прав даётся явно.
+        req.confirm_admin_elevation = true;
         let plan = build_plan(&req, &inputs).await.unwrap();
         assert_eq!(plan.tasks.len(), 1, "план содержит только запрошенный тул");
 

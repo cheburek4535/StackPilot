@@ -332,6 +332,43 @@ pub fn resolve_spawn_plan(program: &str) -> SpawnPlan {
     }
 }
 
+/// Resolve an arbitrary command string into a spawnable [`SpawnPlan`],
+/// checking any directory in `overlay.path_prepend` BEFORE looking at system PATH.
+pub fn resolve_spawn_plan_with_overlay(
+    program: &str,
+    overlay: Option<&super::environment::EnvironmentOverlay>,
+) -> SpawnPlan {
+    let trimmed = program.trim();
+    if let Some(ov) = overlay {
+        if !trimmed.is_empty() && !trimmed.contains('/') && !trimmed.contains('\\') {
+            for dir in &ov.path_prepend {
+                let dir_path = std::path::Path::new(dir);
+                let candidates = if cfg!(target_os = "windows") {
+                    vec![
+                        dir_path.join(format!("{}.cmd", trimmed)),
+                        dir_path.join(format!("{}.bat", trimmed)),
+                        dir_path.join(format!("{}.exe", trimmed)),
+                        dir_path.join(trimmed),
+                    ]
+                } else {
+                    vec![dir_path.join(trimmed)]
+                };
+                for c in candidates {
+                    if c.is_file() {
+                        let path_str = c.to_string_lossy().into_owned();
+                        let is_batch = is_batch_file(&path_str);
+                        return SpawnPlan {
+                            program: path_str,
+                            batch_shim: is_batch,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    resolve_spawn_plan(program)
+}
+
 /// Build the argv for launching a resolved batch shim through `cmd /C`:
 /// `cmd /C "<shim>" <quoted args...>`.
 pub fn batch_shim_cmd_line(program: &str, args: &[&str]) -> Vec<String> {
@@ -349,9 +386,10 @@ fn validate_shell_os(shell: ShellKind, os: HostOs) -> Result<(), CommandBuildErr
         (ShellKind::Cmd | ShellKind::PowerShell, HostOs::Linux | HostOs::Macos) => {
             Err(CommandBuildError::WindowsOnlyShell { shell, os })
         }
-        (ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh, HostOs::Windows) => {
-            Err(CommandBuildError::UnixOnlyShell { shell, os })
-        }
+        (
+            ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish,
+            HostOs::Windows,
+        ) => Err(CommandBuildError::UnixOnlyShell { shell, os }),
         _ => Ok(()),
     }
 }
@@ -379,13 +417,17 @@ fn build_script_line(program: &str, args: &[String], shell: ShellKind) -> String
             }
             line
         }
-        ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh => {
-            let mut line = program.to_string();
-            for arg in args {
-                line.push(' ');
-                line.push_str(&sh_quote(arg));
+        ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish => {
+            if args.is_empty() {
+                program.to_string()
+            } else {
+                let mut line = sh_quote(program);
+                for arg in args {
+                    line.push(' ');
+                    line.push_str(&sh_quote(arg));
+                }
+                line
             }
-            line
         }
         ShellKind::Default => {
             let resolved = default_shell_for_platform();
@@ -867,5 +909,18 @@ mod tests {
         );
         // The argument stays protected in single quotes
         assert!(line.contains("'const x = '"), "{line}");
+    }
+
+    #[test]
+    fn sh_script_line_quotes_program_with_spaces() {
+        let line = build_script_line(
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            &["--version".into()],
+            ShellKind::Sh,
+        );
+        assert_eq!(
+            line,
+            "'/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' --version"
+        );
     }
 }
