@@ -306,7 +306,7 @@ pub async fn build_plan(
     // --- platform capability gate ----------------------------------------
     let capabilities = PlatformCapabilities {
         install_execution_supported: tc_core::installer::install_execution_supported(),
-        elevation_supported: std::env::consts::OS == "windows",
+        elevation_supported: crate::modules::toolchain::core::linux_pkg::elevation_available(),
     };
     if matches!(
         request.operation,
@@ -1384,7 +1384,7 @@ mod tests {
         let err = build_plan(&install_request(&["sdk"]), &inputs_for(&defs, &det))
             .await
             .unwrap_err();
-        if cfg!(target_os = "windows") {
+        if crate::modules::toolchain::core::linux_pkg::elevation_available() {
             // Elevation поддерживается: без подтверждения план не строится.
             assert!(matches!(err, PlanError::AdminConfirmationRequired { .. }));
 

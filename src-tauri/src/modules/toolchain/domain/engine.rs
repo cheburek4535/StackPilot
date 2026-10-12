@@ -558,7 +558,7 @@ impl ScanEngine {
         };
 
         let admin = AdminCapability {
-            elevation_supported: std::env::consts::OS == "windows",
+            elevation_supported: crate::modules::toolchain::core::linux_pkg::elevation_available(),
             required_by_tools: definitions.iter().any(|d| d.needs_admin),
         };
 

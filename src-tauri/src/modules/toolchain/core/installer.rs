@@ -650,16 +650,23 @@ fn build_linux_pkg_command(
         ("zypper", &["zypper", "install", "-y"]),
     ];
 
+    // Arch и производные: свои имена пакетов, AUR, pkexec и пост-настройка
+    // служб (docker/БД) — см. linux_pkg.
+    if which_exists("pacman") && !which_exists("apt-get") && !which_exists("dnf") {
+        let mut extra = source.args.clone();
+        extra.extend(source.extra_args.iter().cloned());
+        let (program, args) = super::linux_pkg::build_arch_command(&source.id, &extra)?;
+        return Ok(InstallCommand { program, args });
+    }
+
     for &(manager, base_args) in managers {
         if which_exists(manager) {
             let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
             args.push(source.id.clone());
             args.extend(source.args.iter().cloned());
             args.extend(source.extra_args.iter().cloned());
-            return Ok(InstallCommand {
-                program: manager.to_string(),
-                args,
-            });
+            let (program, args) = super::linux_pkg::with_privileges(manager, args)?;
+            return Ok(InstallCommand { program, args });
         }
     }
 
@@ -1720,7 +1727,8 @@ async fn try_install_source(
             // resolve_command: .cmd/.bat-бинари (npm) оборачивает в cmd /c.
             let needs_admin = source.needs_admin.unwrap_or(def.needs_admin);
             let (program, args) = platforms::resolve_command(&cmd.program, &cmd.args);
-            let run = if needs_admin {
+            // На Linux повышение уже вшито в команду (pkexec), UAC-обёртка — только Windows.
+            let run = if needs_admin && platforms::current_platform().os_name() == "windows" {
                 console::run_elevated(
                     &program,
                     &args,
@@ -3425,7 +3433,7 @@ mod tests {
         let result = build_install_command(&def, &source, None, None);
         if result.is_ok() {
             let cmd = result.unwrap();
-            let valid_programs = ["apt-get", "dnf", "pacman", "zypper"];
+            let valid_programs = ["apt-get", "dnf", "pacman", "zypper", "pkexec", "sh", "paru", "yay"];
             assert!(
                 valid_programs.contains(&cmd.program.as_str()),
                 "unexpected Linux package manager: {}",

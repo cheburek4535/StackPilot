@@ -27,8 +27,8 @@ trap cleanup EXIT
 echo "==> Упаковываю текущий checkout (git HEAD) как источник для makepkg..."
 git -C "$REPO_ROOT" archive --prefix="StackPilot-$PKGVER/" -o "$ARCHIVE" HEAD
 
-echo "==> Собираю и устанавливаю через makepkg -si..."
+echo "==> Собираю и устанавливаю через makepkg -sif..."
 cd "$SCRIPT_DIR"
-makepkg -si
+makepkg -sif
 
 echo "==> Готово. Запуск: stackpilot"

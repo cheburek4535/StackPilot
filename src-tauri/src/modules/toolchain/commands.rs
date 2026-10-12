@@ -1174,7 +1174,7 @@ pub async fn tcx_profile_resolve(
     let request =
         super::domain::profile::EnvironmentProfileRequest::from_project_requirements(&requirements);
     let platform = crate::modules::toolchain::platforms::current_platform();
-    let elevation_supported = std::env::consts::OS == "windows";
+    let elevation_supported = crate::modules::toolchain::core::linux_pkg::elevation_available();
     let mut profile = super::domain::profile::build_profile(
         &request,
         state.definitions(),
@@ -1528,12 +1528,21 @@ pub async fn tcx_uninstall_tool(
                 run_uninstall_program("brew", &["uninstall", &pkg_id])?;
             }
             "linux" => {
+                use crate::modules::toolchain::core::linux_pkg::with_privileges;
+                let run = |prog: &str, args: Vec<String>| -> Result<(), String> {
+                    let (p, a) = with_privileges(prog, args)?;
+                    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+                    run_uninstall_program(&p, &a)
+                };
                 if command_exists("apt-get") {
-                    run_uninstall_program("apt-get", &["remove", "-y", &pkg_id])?;
+                    run("apt-get", vec!["remove".into(), "-y".into(), pkg_id.clone()])?;
                 } else if command_exists("dnf") {
-                    run_uninstall_program("dnf", &["remove", "-y", &pkg_id])?;
+                    run("dnf", vec!["remove".into(), "-y".into(), pkg_id.clone()])?;
                 } else if command_exists("pacman") {
-                    run_uninstall_program("pacman", &["-R", "--noconfirm", &pkg_id])?;
+                    let (p, a) =
+                        crate::modules::toolchain::core::linux_pkg::build_arch_remove(&pkg_id)?;
+                    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+                    run_uninstall_program(&p, &a)?;
                 } else {
                     return Err(
                         "Не найден менеджер пакетов (apt-get/dnf/pacman) — удалите инструмент вручную."
