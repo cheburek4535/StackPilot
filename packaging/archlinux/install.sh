@@ -82,7 +82,7 @@ else
       -czf "$ARCHIVE" -C "$REPO_ROOT" .
 fi
 
-echo "==> Собираю и устанавливаю через makepkg -si..."
-makepkg -si
+echo "==> Собираю и устанавливаю через makepkg -sif..."
+makepkg -sif
 
 echo "==> Готово! StackPilot успешно установлен. Запуск: stackpilot"

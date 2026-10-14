@@ -766,6 +766,20 @@ fn build_linux_pkg_command(
         if !which_exists(manager) {
             continue;
         }
+        if manager == "pacman" {
+            // Arch и производные: свои имена пакетов (часть — несколько
+            // пакетов), AUR через yay/paru и пост-настройка служб
+            // (docker/БД) — см. linux_pkg. Повышение прав — как и для
+            // остальных менеджеров, через run_elevated (кроме AUR).
+            let extra: Vec<String> = source
+                .args
+                .iter()
+                .chain(source.extra_args.iter())
+                .map(|a| path_service::expand_env_vars(a))
+                .collect();
+            let (program, args) = super::linux_pkg::build_arch_command(&source.id, &extra)?;
+            return Ok(InstallCommand { program, args });
+        }
         // Дистрибутивные имена пакетов: каталог написан под Debian/Ubuntu.
         // Одно имя может раскрыться в НЕСКОЛЬКО пакетов через пробел
         // (apt: python3 → "python3 python3-venv") — каждое имя уходит
@@ -864,6 +878,13 @@ pub fn source_requires_elevation(source: &InstallSource, def: &ToolDefinition) -
     let catalog_flag = source.needs_admin.unwrap_or(def.needs_admin);
     match platforms::current_platform().os_name().as_str() {
         "linux" => {
+            // AUR-помощник (yay/paru) под root не работает (makepkg отказывается)
+            // и сам просит повышение через pkexec — внешняя элевация ему не нужна.
+            if matches!(source.kind, InstallSourceKind::PkgManager)
+                && super::linux_pkg::is_arch_aur_install(&source.id)
+            {
+                return false;
+            }
             if matches!(source.kind, InstallSourceKind::PkgManager) && !running_as_root() {
                 return true;
             }
@@ -3687,7 +3708,7 @@ mod tests {
         let def = bare_def();
         let result = build_install_command(&def, &source, None, None);
         if let Ok(cmd) = result {
-            let valid_programs = ["apt-get", "dnf", "pacman", "zypper", "sh"];
+            let valid_programs = ["apt-get", "dnf", "pacman", "zypper", "sh", "paru", "yay"];
             assert!(
                 valid_programs.contains(&cmd.program.as_str()),
                 "unexpected Linux package manager: {}",

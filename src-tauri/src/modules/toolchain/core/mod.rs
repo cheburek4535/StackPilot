@@ -26,6 +26,7 @@ pub mod disk;
 pub mod health;
 pub mod installer;
 pub mod jobs;
+pub mod linux_pkg;
 pub mod metadata;
 pub mod path_service;
 pub mod planner;
